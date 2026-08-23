@@ -30,7 +30,9 @@ android {
 }
 
 dependencies {
-    // The whole app: drop's interface and its node, compiled by `gogio` from ./src/phone.
+    // The whole app: drop's interface and its node, compiled by `gogio` from ./phone.
+    //
+    // Nothing else. The archive brings the support classes a Gio activity needs, and adding
+    // appcompat beside it puts two copies of them on the classpath.
     implementation(files("../libs/drop.aar"))
-    implementation("androidx.appcompat:appcompat:1.7.0")
 }
