@@ -1,0 +1,117 @@
+package node
+
+import (
+	"context"
+	"fmt"
+	"net/netip"
+	"os"
+	"strconv"
+
+	"github.com/tmc/go-iroh/iroh"
+	"github.com/tmc/go-iroh/netaddr"
+)
+
+// What drop speaks. ALPN is negotiated per connection in iroh, so each protocol is its own ALPN
+// rather than a header inside a shared one.
+const (
+	ALPNSession = "drop/session/1"
+	ALPNHello   = "drop/hello/1"
+	ALPNPair    = "drop/pair/1"
+)
+
+// ALPNs is every protocol this node answers.
+var ALPNs = []string{ALPNSession, ALPNHello, ALPNPair}
+
+// Node is this machine on the drop network.
+type Node struct {
+	Endpoint *iroh.Endpoint
+}
+
+// Start brings up the endpoint under this node's persisted identity.
+func Start(ctx context.Context) (*Node, error) {
+	sk, err := Identity()
+	if err != nil {
+		return nil, err
+	}
+
+	// A fixed port, so the address a peer wrote down at pairing still reaches this device on
+	// the next run. With an ephemeral port every restart moves the node and everything that
+	// remembered it is pointing at nothing.
+	opts := []iroh.Option{
+		iroh.WithBindAddr(netip.AddrPortFrom(netip.IPv4Unspecified(), Port())),
+		iroh.WithSecretKey(sk),
+		iroh.WithALPNs(ALPNs...),
+	}
+
+	ep, err := iroh.Bind(ctx, opts...)
+	if err != nil && Port() != 0 {
+		// The preferred port is taken. An address others wrote down will not reach this node
+		// until it is free again, but refusing to start would be worse: everything that does not
+		// depend on a remembered address still works.
+		fmt.Fprintf(os.Stderr, "drop: port %d is in use; listening on any port\n", Port())
+		opts[0] = iroh.WithBindAddr(netip.AddrPortFrom(netip.IPv4Unspecified(), 0))
+		ep, err = iroh.Bind(ctx, opts...)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("starting the endpoint: %w", err)
+	}
+	return &Node{Endpoint: ep}, nil
+}
+
+// ID is this node's address.
+func (n *Node) ID() ID {
+	return n.Endpoint.ID()
+}
+
+// Addr is where this node currently is, as it would be handed to a peer.
+func (n *Node) Addr() netaddr.EndpointAddr {
+	return n.Endpoint.Addr()
+}
+
+// Dial opens a connection to a peer for one protocol.
+func (n *Node) Dial(ctx context.Context, at netaddr.EndpointAddr, alpn string) (*iroh.Conn, error) {
+	conn, err := n.Endpoint.Connect(ctx, at, alpn)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to %s: %w", Brief(at.ID), err)
+	}
+	return conn, nil
+}
+
+// Accept waits for the next incoming connection.
+func (n *Node) Accept(ctx context.Context) (*iroh.Conn, error) {
+	return n.Endpoint.Accept(ctx)
+}
+
+func (n *Node) Close() error {
+	return n.Endpoint.Shutdown(context.Background())
+}
+
+// AddrFor builds an address for a peer from its id and whatever is known about where it is.
+func AddrFor(id ID, addrs ...netip.AddrPort) netaddr.EndpointAddr {
+	at := netaddr.NewEndpointAddr(id)
+	for _, ap := range addrs {
+		at = at.WithIP(ap)
+	}
+	return at
+}
+
+// DefaultPort is where a drop node listens unless told otherwise.
+// Not 51820: that is WireGuard's, and a machine running one would refuse to start drop.
+const DefaultPort = 47777
+
+// Port is the UDP port this node binds, from $DROP_PORT or the default.
+//
+// Zero is allowed and means "pick any", which is right for a one-off command that nobody has
+// written an address down for.
+func Port() uint16 {
+	written := os.Getenv("DROP_PORT")
+	if written == "" {
+		return DefaultPort
+	}
+
+	chosen, err := strconv.ParseUint(written, 10, 16)
+	if err != nil {
+		return DefaultPort
+	}
+	return uint16(chosen)
+}

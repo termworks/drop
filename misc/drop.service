@@ -1,0 +1,14 @@
+[Unit]
+Description=drop peer-to-peer file transfer
+Documentation=https://github.com/bresilla/drop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/drop daemon
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

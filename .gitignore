@@ -1,0 +1,21 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/drop
+/target
+
+# Test binary and coverage output
+*.test
+*.out
+
+dist
+result
+result-*
+.direnv
+.devbox
+/.vscode/
+/__debug_bin
+docs/

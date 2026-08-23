@@ -1,0 +1,357 @@
+# drop
+
+Distributed peer-to-peer file transfer.
+
+Pair two devices once, by key. After that either can reach the other from anywhere — across NATs,
+across networks, through address changes — with no account and no server holding your data.
+
+```
+drop pair                      # on one device: prints a code
+drop pair qxwo-e62y-bzfs       # on the other: done, forever
+```
+
+## how it addresses things
+
+A node's address is its ed25519 public key, and it never changes. Finding where a device currently
+*is* happens in three steps, cheapest first:
+
+1. **mDNS**, if both machines are on the same network
+2. **the DHT**, under a rendezvous only the two paired devices can compute
+3. **a relay**, when a NAT will not allow a direct connection, with hole-punching upgrading to a
+   direct link when it can
+
+For that to work the receiving device has to be online, which is what the daemon is for.
+
+## privacy
+
+The rendezvous a device announces under is derived from the secret it shares with each paired peer,
+not from its public key:
+
+```
+key = HMAC-SHA256(shared_secret, "drop:pair:v1:" + hour)
+```
+
+Three consequences. Someone holding your peer id cannot look up where you are or watch when you
+come online. The key rotates hourly, so learning one buys no lasting handle. And because the secret
+is per-pair, one paired device cannot observe your availability to another.
+
+The secret is derived during pairing over a stream libp2p has already encrypted and mutually
+authenticated, mixing both sides' nonces through HKDF, salted with both peer ids and ordered so the
+two ends compute the same value.
+
+## status
+
+Discovery, pairing and transfer work.
+
+- ed25519 identity, persisted; the public half is the address
+- pairing over a one-time 60-bit code, hashed into its own rendezvous
+- private DHT rendezvous per pair, hourly rotation
+- AutoRelay, so a node behind a NAT still has a dialable address
+- transfer with blake3 verification, resume, and paired-only acceptance
+- directories are not supported yet; files only
+
+## build
+
+```
+make build        # the static release binary, into ./drop
+make run peers    # run it; bare words pass through
+make verify       # fmt-check, vet, test, build
+make install      # into $PREFIX/bin
+make compress     # a packed copy in dist/, for shipping
+```
+
+At an oslo prompt in this directory `make` is enough; everywhere else it is `oslo make`.
+
+The toolchain comes from the flake — `nix develop`, or `direnv allow` and it is loaded on `cd`.
+
+### size
+
+The binary is around 32 MB, and that is libp2p: `.text` 12.9 MB, Go's `.gopclntab` 10.6 MB and
+`.rodata` 6.2 MB. `-s -w`, `-trimpath` and `CGO_ENABLED=0` are already applied — `-s -w` strips
+DWARF and the symbol table, not `gopclntab`, which Go needs for panics and has no flag to remove.
+What is left is genuine code.
+
+`make compress` packs a copy into `dist/`:
+
+```
+uncompressed   32.1 MB   0.005s to start
+-9 (default)   11.7 MB   0.09s
+--best --lzma   8.6 MB   0.40s
+```
+
+The compression level is free at startup — `-1`, `-5` and `-9` all unpack in the same 0.09s — so
+the default is the smallest of them. Only lzma is slow to unpack, which is why it is not the
+default. It writes to `dist/` rather than over the binary, so `build` keeps telling the truth
+about what it produced.
+
+## commands
+
+```
+drop to <peer>[/path] [args]  open a namespace; what it is decides what happens
+drop serve                     serve the namespaces the config declares
+drop ns                        what this node serves
+drop pair [code]               link a device to this one
+drop chat <name>               talk to a device
+drop log [name]                a conversation, or all of them
+drop peers                     who is on this network
+drop peers list                the devices this one knows
+drop find <name|id>            locate a paired device
+drop id                        this node's peer id
+```
+
+## namespaces
+
+One identity per device, and named paths under it. An address is a peer and a path:
+
+```
+   workstation/inbox
+   workstation/inbox/photos
+   workstation/stream/of/one/specific/namespace
+   ╰────┬────╯╰──────────────┬───────────────╯
+     who                   what
+```
+
+Each path has a **type**, and the type is what decides what happens when someone opens it. That is
+declared in the config, not chosen by a flag at the far end — so there is one verb:
+
+```
+drop to laptop/inbox report.pdf     it is a files namespace, so this sends a file
+drop to laptop/inbox -              and - is standard input, whose length is unknown
+drop to laptop/logs                 it is a stream namespace, so this reads it
+drop to laptop/term                 it is a tty namespace, so this watches it
+drop to laptop/chat "on my way"     it is a chat namespace, so this is a message
+drop to laptop/open https://…       it is a link namespace, so that opens over there
+```
+
+Asking a namespace for something it is not is refused with the reason, rather than half-working:
+
+```
+$ drop to laptop/chat report.pdf
+drop: 12D3KooW… declined: /chat is a chat namespace
+```
+
+### the types
+
+| type | what opening it does | needs |
+| --- | --- | --- |
+| `files` | receives files into a directory | `dir` |
+| `stream` | runs a command and sends what it writes, for as long as it writes | `command` |
+| `tty` | a shell in a pty; read-only unless told otherwise | `shell`, `input` |
+| `chat` | conversation messages | |
+| `link` | a URL, optionally handed to a browser | `action` |
+
+### the longest prefix wins
+
+A mount serves everything below it, so `/stream` answers
+`/stream/of/one/specific/namespace` without declaring each one — and a more specific mount still
+takes precedence:
+
+```
+   declared:   /stream            /stream/logs
+   asked:      /stream/a/b        →  /stream        rest /a/b
+               /stream/logs/today →  /stream/logs   rest /today
+               /streaming         →  nothing        (boundary, not substring)
+```
+
+## configuration
+
+`$XDG_CONFIG_HOME/drop/init.lua`, or `$DROP_CONFIG`. Settings are assigned, namespaces are
+registered, and the file returns nothing — so it is a program, and a machine can decide for itself
+what it offers:
+
+```lua
+local drop = require("drop")
+
+drop.name = "workstation"
+drop.open_links = true
+
+drop.mount("/inbox",        { type = "files",  dir = "~/Downloads" })
+drop.mount("/inbox/photos", { type = "files",  dir = "~/Pictures/drop" })
+drop.mount("/logs",         { type = "stream", command = "journalctl -f -n 50" })
+drop.mount("/term",         { type = "tty",    shell = "/bin/sh", input = false })
+drop.mount("/chat",         { type = "chat" })
+drop.mount("/open",         { type = "link",   action = "xdg-open" })
+
+if os.getenv("DROP_DEV") then
+  drop.mount("/build", { type = "stream", command = "tail -f /tmp/build.log" })
+end
+```
+
+Mounts are keyed by path, so declaring one twice replaces it rather than adding a second — a config
+that loops, or is re-read, cannot silently grow the table.
+
+A file that exists and does not parse is **fatal**, and the error names the file and line. A typo
+that silently drops half the namespaces is worse than not starting. With no file at all, drop serves
+a small default: `/inbox`, `/chat`, `/open`, and nothing that runs a command or shares a terminal,
+because those are decisions.
+
+`drop ns` prints what this node serves. `misc/init.lua` is a worked example.
+
+## conversations
+
+Everything drop does is a **conversation with a peer id**. Files, chat, links, terminals and
+endless streams are modalities inside it, not separate features that happen to share a binary:
+
+```
+drop chat laptop                        # talk
+drop log laptop                         # the whole story, in one place
+```
+
+and the log reads as one thing, because it is:
+
+```
+11:59 ← beta         first message, sent while you were asleep
+12:01 ← beta         link  https://example.com/thing-i-was-reading
+12:01 ← beta         file  report.pdf (390.6 KB)
+12:01 ← beta         that is the report you asked for
+```
+
+### saying something to a device that is off
+
+A message is recorded the moment it is composed. What is uncertain is whether it *arrived*, not
+whether it was said, so `drop say` never fails because the far end is asleep — it queues, and goes
+out when the device appears. `drop chat` retries in the background while you keep typing.
+
+Delivery is acknowledged **per message, after it is on the far end's disk**. Acknowledging before
+storing turns a crash into silent loss: the sender drops it from its outbox and then nobody has it.
+Anything unacknowledged stays queued, so a partial delivery is retried rather than lost.
+
+### how it is stored
+
+Two files per peer under `$XDG_DATA_HOME/drop/convo/<peer-id>/`:
+
+| | |
+| --- | --- |
+| `history` | append-only, never rewritten. A crash can truncate the tail; it cannot corrupt what came before, and reading stops at the tear rather than throwing away the rest. |
+| `outbox` | only what is undelivered. Small enough to rewrite whole, and replaced by rename so an interruption leaves either the old queue or the new one. |
+
+Both use the same binary codec as the wire, so what is stored is what was sent.
+
+Message ids are ULID-shaped — 48 bits of milliseconds then 80 of tail — and **strictly increasing**,
+not merely time-ordered. Two lines typed in the same millisecond would otherwise sort by a random
+tail and appear in the wrong order; a clock that steps backwards is handled the same way, because an
+id smaller than the last one has the same effect. Ids are also how a resend is told from a first
+delivery, so a reconnect does not duplicate the backlog.
+
+## the wire
+
+Binary, varint-based. No JSON, no reflection, no codegen.
+
+Everything drop moves runs over one protocol, `/drop/session/1.0.0`, as a sequence of frames:
+
+```
+frame = [1 byte kind][uvarint length][body]
+```
+
+A body is either raw bytes (data frames) or a packed message: varints, length-prefixed strings, no
+field names on the wire. A `uint` under 128 costs one byte; sizes are zigzag so `-1` costs one too.
+
+Every read on a stream goes through one buffered reader. That is what makes it safe to mix control
+frames with bulk data: nothing else reads from the stream, so nothing can consume bytes belonging
+to the next frame.
+
+### sizes, known and unknown
+
+An item carries `Size`, and `-1` means nobody knows yet:
+
+| | known size | unknown size |
+|---|---|---|
+| where from | a file on disk | stdin, a pipe, a terminal |
+| how it ends | the count runs out | an `End` frame |
+| resume | yes, from bytes already held | no — a partial is indistinguishable from a whole one |
+| progress | a percentage | a running total |
+| verification | blake3, both ways | blake3, both ways |
+
+Both end the same way: an `End` frame carrying the length the sender actually wrote and a blake3
+digest of all of it. For an unknown-size item that frame is where the length is finally learned.
+The receiver checks both before renaming anything into place.
+
+### the two modes
+
+**Files** is one side pushing items:
+
+```
+sender                          receiver
+  Open{files, sizes}   ------->
+        <------- Accept{resume[]}      // per item, bytes already held
+  Data ... Data        ------->
+  End{size, digest}    ------->
+        <------- Ack{ok}               // hashed and verified
+```
+
+**Duplex** is a live stream, both ends writing at once, nobody counting:
+
+```
+  Open{duplex}         ------->
+        <------- Accept
+  Data          <-- both ways -->  Data
+  Resize        <-- both ways -->  Resize
+  End (half-close)     ------->
+```
+
+The two directions are independent. One end finishing does not end the other — the same way a pipe
+closing its input does not stop it producing output. `Close` writes an `End` and half-closes the
+stream, so the far end reads a real end of file while its own writes keep working.
+
+## sharing a terminal
+
+```
+```
+
+Watchers are read-only. `drop cast --input` lets them type, and `drop watch --input` sends
+what you type; only paired devices can attach either way.
+
+Someone attaching mid-session gets the last 128KB of output replayed, because a terminal is a
+stream of escape sequences and a watcher starting from nothing sees a blank screen until the
+next full redraw.
+
+The casting terminal's size is authoritative and is sent on connect and on every SIGWINCH. A
+watcher with a smaller terminal is told its output will wrap rather than silently getting a
+mangled render.
+
+A watcher that cannot keep up is dropped rather than fed a stream with holes in it: a terminal
+rendered from a gappy byte stream is worse than one that stopped.
+
+## staying reachable
+
+`drop daemon` keeps the node announced and holding a relay reservation. Install it as a user
+service so the device is reachable whenever it is on:
+
+```
+install -m 0644 misc/drop.service ~/.config/systemd/user/
+systemctl --user enable --now drop
+```
+
+Without a daemon, `--to laptop` only connects while someone is running `drop recv` on the laptop.
+
+## layout
+
+```
+src/main.go         entry point; the version lives here
+src/cmd/            the cobra command tree, one file per command
+src/pkg/node/       identity, the libp2p host, DHT bootstrap, relays
+src/pkg/discovery/  mDNS and the private DHT rendezvous
+src/pkg/proto/      pairing, hello, transfer, and the framing under them
+src/pkg/book/       the address book, including pairing secrets
+src/pkg/cast/       one terminal fanned out to many watchers
+src/pkg/convo/      the durable conversation log and outbox
+src/pkg/ns/         namespace paths and the mount table
+src/pkg/conf/       the Lua configuration
+misc/               the systemd user unit
+```
+
+## configuration
+
+```
+DROP_NAME          what this node calls itself; defaults to the hostname
+DROP_BOOTSTRAP     comma-separated /p2p/ multiaddrs to join the DHT through;
+                   defaults to the public libp2p bootstrappers
+DROP_RELAYS        comma-separated /p2p/ multiaddrs of relays to reserve on;
+                   without it, relays are discovered through the DHT
+DROP_CONFIG        the config file; defaults to $XDG_CONFIG_HOME/drop/init.lua
+DROP_OPENER        what opens an arriving link; defaults to xdg-open
+XDG_CONFIG_HOME    where identity and peers.json live; defaults to ~/.config
+XDG_DATA_HOME      where conversations live; defaults to ~/.local/share
+```
+
+`peers.json` holds pairing secrets and is written 0600.
