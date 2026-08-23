@@ -29,19 +29,24 @@ func reachAt(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.E
 	at := node.AddrFor(entry.ID, known...)
 	if len(known) == 0 {
 		// What the book remembers comes first: it was learned at pairing and needs nothing
-		// running to resolve it. mDNS is the fallback for a peer that has moved.
+		// running to resolve it. It can also be stale, which is what the other two are for.
 		if remembered := parseAddrs(entry.Addrs); len(remembered) > 0 {
 			at = node.AddrFor(entry.ID, remembered...)
 		}
+
+		onWire := false
 		if found, ok := lan.Find(ctx, entry.ID); ok {
 			at = found
+			onWire = true
 		}
 
-		// Last, because it is the only step that asks a third party. A peer on this network,
-		// or one that has not moved, is found without telling a relay anything.
-		if rv := rendezvousFor(n); rv != nil {
-			if found, ok := rv.Find(ctx, entry); ok {
-				at = found
+		// Only when this wire did not answer, because it is the one step that asks a third party.
+		// A peer standing next to you is reached without telling a relay anything about it.
+		if !onWire {
+			if rv := rendezvousFor(n); rv != nil {
+				if found, ok := rv.Find(ctx, entry); ok {
+					at = found
+				}
 			}
 		}
 	}
