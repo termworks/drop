@@ -143,7 +143,7 @@ make.recipe{
 make.recipe{
   name = "_wasm",
   desc = "compile the interface to webassembly",
-  inputs = { "src/pkg/gui/*.go", "src/browser/*.go", "go.mod", "go.sum" },
+  inputs = { "src/pkg/gui/*.go", "browser/*.go", "go.mod", "go.sum" },
   outputs = { WASM },
   stale = "content",
   run = function()
@@ -157,7 +157,7 @@ make.recipe{
     -- did not produce, and what sits there in a fresh checkout is a placeholder.
     local staging = WASM .. ".new"
 
-    sh.go("build", "-trimpath", "-ldflags", "-s -w", "-o", staging, "./src/browser")
+    sh.go("build", "-trimpath", "-ldflags", "-s -w", "-o", staging, "./browser")
     sh.mv("-f", staging, WASM)
 
     oslo.env.set("GOOS", "")

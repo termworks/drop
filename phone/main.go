@@ -1,5 +1,3 @@
-//go:build android
-
 // Command phone is drop on Android.
 //
 // A node in its own right, not a client of one: it generates its own keypair, keeps its own address

@@ -62,8 +62,9 @@ jobs:
             drop-${{ matrix.goos }}-${{ matrix.goarch }}
             drop-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
 
-  # The phone app is a share client, not a node: it holds no identity and pairs with nothing. It
-  # asks a machine running `drop web` to send on its behalf.
+  # The phone is a node in its own right: its own keypair, its own address book, dialling other
+  # devices over QUIC. Interface and node are both Go — the Gradle project beside it adds only a
+  # manifest.
   apk:
     runs-on: ubuntu-latest
     steps:
@@ -100,7 +101,7 @@ jobs:
           go install gioui.org/cmd/gogio@v0.10.0
           mkdir -p android/libs
           "$(go env GOPATH)/bin/gogio" -target android -arch arm64,arm,amd64 \
-            -appid dev.bresilla.drop -o android/libs/drop.aar ./src/phone
+            -appid dev.bresilla.drop -o android/libs/drop.aar ./phone
 
       - name: Package
         working-directory: android

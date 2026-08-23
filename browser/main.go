@@ -1,5 +1,3 @@
-//go:build js
-
 // Command browser is drop as a page.
 //
 // A browser cannot open a UDP socket, so this is not a node: it talks to the machine that served it,
