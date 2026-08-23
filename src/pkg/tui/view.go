@@ -1,10 +1,10 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/bresilla/drop/src/pkg/convo"
@@ -15,25 +15,24 @@ func (m Model) View() string {
 		return dimStyle.Render("  starting…")
 	}
 
-	panes := lipgloss.JoinHorizontal(lipgloss.Top,
-		box("devices", m.peersPane(), m.listWidth(), m.paneHeight(), m.focus == panePeers),
-		box(m.pathsTitle(), m.pathsPane(), m.listWidth(), m.paneHeight(), m.focus == panePaths),
-		box(m.viewTitle(), m.viewPane(), m.viewWidth(), m.paneHeight(), m.focus == paneView),
-	)
-
-	return m.header() + "\n" + panes + "\n" + m.footer()
-}
-
-// header names this device, because two of these open side by side are two machines.
-func (m Model) header() string {
-	left := brandStyle.Render("▍drop")
-	if m.me.Name != "" {
-		left += "  " + nameStyle.Render(m.me.Name) + faintStyle.Render("  "+m.me.ID)
+	body := m.list.View()
+	if m.at == levelOpen {
+		body = m.openView()
 	}
 
-	right := dimStyle.Render(fmt.Sprintf("%d paired", len(m.peers)))
+	return m.header() + "\n" + body + "\n" + m.footer()
+}
+
+// header is where you are and which device you are.
+func (m Model) header() string {
+	left := brandStyle.Render("▍") + " " + m.where()
+
+	right := faintStyle.Render(m.me.Name)
 	if m.live {
-		right = goodStyle.Render("● live") + dimStyle.Render("   ") + right
+		right = goodStyle.Render("● live") + faintStyle.Render("   "+m.me.Name)
+	}
+	if m.loading {
+		right = dimStyle.Render("asking…") + faintStyle.Render("   "+m.me.Name)
 	}
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
@@ -43,86 +42,32 @@ func (m Model) header() string {
 	return " " + left + strings.Repeat(" ", gap) + right + " "
 }
 
-func (m Model) peersPane() string {
-	if len(m.peers) == 0 {
-		return stack(dimStyle, "nothing paired.", "") + "\n" + stack(faintStyle, "run", "drop pair", "on both", "devices.")
-	}
+// where is the trail of what you entered to get here.
+func (m Model) where() string {
+	parts := []string{"drop"}
 
-	var out strings.Builder
-	for i, p := range m.peers {
-		on := i == m.atPeer
-
-		dot := faintStyle.Render("○")
-		if p.Paired() {
-			dot = pickStyle.Render("●")
+	if m.at >= levelPaths {
+		if with, ok := m.peer(); ok {
+			parts = append(parts, with.Name)
 		}
-
-		name := p.Name
-		if on {
-			name = pickStyle.Render(name)
-		}
-
-		out.WriteString(bar(on) + " " + dot + " " + fit(name, m.listWidth()-8) + "\n")
 	}
-	return out.String()
+	if m.at == levelOpen {
+		if at, ok := m.path(); ok {
+			parts = append(parts, at.Path)
+		}
+	}
+	return crumb(parts...)
 }
 
-func (m Model) pathsTitle() string {
-	if at, ok := m.peer(); ok {
-		return at.Name
-	}
-	return "paths"
-}
-
-func (m Model) pathsPane() string {
-	if m.loading {
-		if at, ok := m.peer(); ok {
-			return dimStyle.Render("asking " + at.Name + "…")
-		}
-		return dimStyle.Render("asking…")
-	}
-	if _, ok := m.peer(); !ok {
-		return stack(faintStyle, "choose a", "device.")
-	}
-	if len(m.paths) == 0 {
-		return stack(dimStyle, "shares nothing", "with you.")
-	}
-
-	var out strings.Builder
-	for i, s := range m.paths {
-		on := i == m.atPath
-		kind := kindOf(s)
-
-		path := s.Path
-		if on {
-			path = pickStyle.Render(path)
-		}
-
-		out.WriteString(bar(on) + " " + kindStyle.Render(glyph(kind)) + " " + fit(path, m.listWidth()-8) + "\n")
-		out.WriteString("    " + faintStyle.Render(kind) + "\n")
-	}
-	return out.String()
-}
-
-func (m Model) viewTitle() string {
-	at, ok := m.path()
-	if !ok {
-		return "nothing open"
-	}
-	return at.Path
-}
-
-func (m Model) viewPane() string {
+// openView is whatever is at the path that was entered.
+func (m Model) openView() string {
 	if m.trouble != "" {
-		return badStyle.Render("✗ ") + m.trouble
+		return "\n " + badStyle.Render("✗ ") + m.trouble
 	}
 
 	at, ok := m.path()
 	if !ok {
-		if _, has := m.peer(); has {
-			return faintStyle.Render("choose a path.")
-		}
-		return faintStyle.Render("choose a device.")
+		return ""
 	}
 
 	switch kindOf(at) {
@@ -131,20 +76,21 @@ func (m Model) viewPane() string {
 
 	case "tty", "stream":
 		if m.screen == nil {
-			return faintStyle.Render("not watching.")
+			return "\n " + faintStyle.Render("not watching.")
 		}
-		return lines(m.screen.Draw(), m.paneHeight())
+		return lines(m.screen.Draw(), m.viewHeight())
 
 	case "files":
 		with, _ := m.peer()
-		return dimStyle.Render("a place to send files.\n\n") +
+		return "\n " + dimStyle.Render("a place to send files.") + "\n\n " +
 			faintStyle.Render("drop to ") + kindStyle.Render(with.Name+at.Path) + faintStyle.Render(" <file>")
 
 	case "branch":
-		return stack(dimStyle, "holds other paths.") + "\n" + stack(faintStyle, "nothing to open here.")
+		return "\n " + dimStyle.Render("holds other paths.") + "\n " +
+			faintStyle.Render("go back and pick one under it.")
 
 	default:
-		return dimStyle.Render("a " + kindOf(at) + " path.")
+		return "\n " + dimStyle.Render("a "+kindOf(at)+" path.")
 	}
 }
 
@@ -152,37 +98,49 @@ func (m Model) chatView() string {
 	var out strings.Builder
 
 	if len(m.history) == 0 {
-		out.WriteString(faintStyle.Render("nothing said yet.\n"))
+		out.WriteString(" " + faintStyle.Render("nothing said yet.") + "\n")
 	}
 
 	for _, msg := range m.history {
 		when := faintStyle.Render(time.UnixMilli(msg.At).Format("15:04"))
 
+		arrow := kindStyle.Render("←")
 		if msg.Dir == convo.Out {
-			out.WriteString(when + " " + pickStyle.Render("→") + " " + msg.Body + "\n")
-			continue
+			arrow = pickStyle.Render("→")
 		}
-		out.WriteString(when + " " + kindStyle.Render("←") + " " + msg.Body + "\n")
+		out.WriteString(" " + when + " " + arrow + " " + msg.Body + "\n")
 	}
 
-	body := lines(out.String(), m.paneHeight()-2)
+	body := lines(out.String(), m.viewHeight()-1)
 	if m.writing {
-		return body + "\n" + pickStyle.Render("›") + " " + m.typing + pickStyle.Render("▏")
+		return body + "\n " + pickStyle.Render("›") + " " + m.typing + pickStyle.Render("▏")
 	}
 	return body
 }
 
-// footer is the keys that work here, named rather than listed: which ones are shown depends on what
-// is open, so it never offers something that would do nothing.
+// footer names the keys that do something here, so it never offers one that would do nothing.
 func (m Model) footer() string {
 	type hint struct{ key, does string }
 
-	keys := []hint{{"tab", "panes"}, {"↑↓", "move"}, {"r", "reload"}, {"q", "quit"}}
-	if at, ok := m.path(); ok && kindOf(at) == "chat" {
-		keys = append([]hint{{"i", "write"}}, keys...)
-	}
-	if m.writing {
+	var keys []hint
+	switch {
+	case m.writing:
 		keys = []hint{{"enter", "send"}, {"esc", "cancel"}}
+
+	case m.at != levelOpen && m.list.FilterState() == list.Filtering:
+		keys = []hint{{"enter", "keep"}, {"esc", "clear"}}
+
+	case m.at == levelDevices:
+		keys = []hint{{"↑↓", "move"}, {"enter", "open"}, {"/", "find"}, {"r", "reload"}, {"q", "quit"}}
+
+	case m.at == levelPaths:
+		keys = []hint{{"↑↓", "move"}, {"enter", "open"}, {"esc", "devices"}, {"r", "reload"}}
+
+	default:
+		keys = []hint{{"esc", "back"}}
+		if at, ok := m.path(); ok && kindOf(at) == "chat" {
+			keys = append([]hint{{"i", "write"}}, keys...)
+		}
 	}
 
 	var parts []string

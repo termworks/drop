@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -11,6 +12,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.list.SetSize(m.width, m.listHeight())
 		if m.screen != nil {
 			m.screen.Resize(m.viewWidth(), m.viewHeight())
 		}
@@ -32,8 +34,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.peers, m.trouble = msg.peers, ""
-		if len(m.peers) > 0 {
-			return m, m.openPeer()
+		if m.at == levelDevices {
+			m.showDevices()
 		}
 		return m, nil
 
@@ -46,8 +48,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.paths, m.trouble = nil, msg.err.Error()
 			return m, nil
 		}
-		m.paths, m.atPath, m.trouble = msg.paths, 0, ""
-		return m, m.openPath()
+		m.paths, m.trouble = msg.paths, ""
+		if m.at == levelPaths {
+			m.showPaths()
+		}
+		return m, nil
 
 	case historyLoaded:
 		if at, ok := m.peer(); !ok || at.Name != msg.peer {
@@ -90,124 +95,165 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// While composing, the keys are the message — except the two that end it.
 	if m.writing {
-		switch msg.Type {
-		case tea.KeyEsc:
-			m.writing, m.typing = false, ""
-			return m, nil
-		case tea.KeyEnter:
-			body := strings.TrimSpace(m.typing)
-			m.typing = ""
-			if body == "" {
-				return m, nil
-			}
-			at, ok := m.peer()
-			if !ok {
-				return m, nil
-			}
-			return m, say(m.back, at, body)
-		case tea.KeyBackspace:
-			if n := len(m.typing); n > 0 {
-				m.typing = m.typing[:n-1]
-			}
-			return m, nil
-		case tea.KeyRunes, tea.KeySpace:
-			m.typing += string(msg.Runes)
-			if msg.Type == tea.KeySpace {
-				m.typing += " "
-			}
-			return m, nil
-		}
-		return m, nil
+		return m.typeKey(msg)
+	}
+
+	// While filtering, the list owns the keyboard.
+	if m.at != levelOpen && m.list.FilterState() == list.Filtering {
+		var cmd tea.Cmd
+		m.list, cmd = m.list.Update(msg)
+		return m, cmd
 	}
 
 	switch msg.String() {
-	case "q", "ctrl+c":
+	case "ctrl+c":
 		m.stop()
 		return m, tea.Quit
 
-	case "tab":
-		m.focus = (m.focus + 1) % 3
-		return m, nil
-	case "shift+tab":
-		m.focus = (m.focus + 2) % 3
-		return m, nil
+	case "q":
+		// q leaves the level rather than the program, until there is nowhere left to go back to.
+		if m.at == levelDevices {
+			m.stop()
+			return m, tea.Quit
+		}
+		return m.back_()
 
-	case "left", "h":
-		if m.focus > panePeers {
-			m.focus--
-		}
-		return m, nil
-	case "right", "l":
-		if m.focus < paneView {
-			m.focus++
-		}
-		return m, nil
+	case "esc", "left", "h":
+		return m.back_()
 
-	case "up", "k":
-		return m.move(-1)
-	case "down", "j":
-		return m.move(1)
-
-	case "enter":
-		if m.focus == panePeers {
-			m.focus = panePaths
-			return m, nil
-		}
-		if m.focus == panePaths {
-			m.focus = paneView
-			return m, nil
-		}
-		return m, nil
+	case "enter", "right", "l":
+		return m.enter()
 
 	case "i":
-		if at, ok := m.path(); ok && kindOf(at) == "chat" {
-			m.writing, m.focus = true, paneView
+		if at, ok := m.path(); ok && m.at == levelOpen && kindOf(at) == "chat" {
+			m.writing = true
 		}
 		return m, nil
 
 	case "r":
 		m.loading = true
+		if m.at == levelPaths {
+			if with, ok := m.peer(); ok {
+				return m, loadPaths(m.back, with)
+			}
+		}
 		return m, loadPeers(m.back)
+	}
+
+	if m.at != levelOpen {
+		var cmd tea.Cmd
+		m.list, cmd = m.list.Update(msg)
+		return m, cmd
 	}
 	return m, nil
 }
 
-// move steps the list the focused pane is showing.
-func (m Model) move(by int) (tea.Model, tea.Cmd) {
-	switch m.focus {
-	case panePeers:
-		next := m.atPeer + by
-		if next < 0 || next >= len(m.peers) {
-			return m, nil
-		}
-		m.atPeer = next
-		return m, m.openPeer()
+func (m Model) typeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.writing, m.typing = false, ""
+		return m, nil
 
-	case panePaths:
-		next := m.atPath + by
-		if next < 0 || next >= len(m.paths) {
+	case tea.KeyEnter:
+		body := strings.TrimSpace(m.typing)
+		m.typing = ""
+		if body == "" {
 			return m, nil
 		}
-		m.atPath = next
+		at, ok := m.peer()
+		if !ok {
+			return m, nil
+		}
+		return m, say(m.back, at, body)
+
+	case tea.KeyBackspace:
+		if n := len(m.typing); n > 0 {
+			m.typing = m.typing[:n-1]
+		}
+		return m, nil
+
+	case tea.KeyRunes:
+		m.typing += string(msg.Runes)
+		return m, nil
+
+	case tea.KeySpace:
+		m.typing += " "
+		return m, nil
+	}
+	return m, nil
+}
+
+// enter goes one level deeper: a device, then a path, then the thing itself.
+func (m Model) enter() (tea.Model, tea.Cmd) {
+	switch m.at {
+	case levelDevices:
+		if len(m.peers) == 0 {
+			return m, nil
+		}
+		m.atPeer = m.list.Index()
+		m.at = levelPaths
+		m.paths = nil
+		m.loading = true
+		m.showPaths()
+
+		with, _ := m.peer()
+		return m, loadPaths(m.back, with)
+
+	case levelPaths:
+		if len(m.paths) == 0 {
+			return m, nil
+		}
+		m.atPath = m.list.Index()
+		m.at = levelOpen
 		return m, m.openPath()
 	}
 	return m, nil
 }
 
-// openPeer asks the newly selected device what it shares.
-func (m *Model) openPeer() tea.Cmd {
-	m.stop()
-	m.paths, m.atPath, m.history = nil, 0, nil
+// back_ comes out one level, stopping whatever the level was doing.
+func (m Model) back_() (tea.Model, tea.Cmd) {
+	switch m.at {
+	case levelOpen:
+		m.stop()
+		m.history = nil
+		m.at = levelPaths
+		m.showPaths()
+		return m, nil
 
-	at, ok := m.peer()
-	if !ok {
-		return nil
+	case levelPaths:
+		m.at = levelDevices
+		m.paths, m.trouble = nil, ""
+		m.showDevices()
+		return m, nil
 	}
-	m.loading = true
-	return loadPaths(m.back, at)
+	return m, nil
 }
 
-// openPath does whatever the path at the cursor is: reads a conversation, or starts watching.
+// showDevices puts the address book in the list.
+func (m *Model) showDevices() {
+	items := make([]list.Item, 0, len(m.peers))
+	for _, p := range m.peers {
+		items = append(items, deviceItem{entry: p, addr: strings.Join(p.Addrs, "  ")})
+	}
+	m.list.SetItems(items)
+	m.list.Select(m.atPeer)
+	m.list.SetSize(m.width, m.listHeight())
+}
+
+// showPaths puts what the open device shares in the list.
+func (m *Model) showPaths() {
+	with, _ := m.peer()
+
+	items := make([]list.Item, 0, len(m.paths))
+	for _, s := range m.paths {
+		items = append(items, pathItem{served: s, on: with.Name})
+	}
+	m.list.SetItems(items)
+	m.list.Select(m.atPath)
+	m.list.SetSize(m.width, m.listHeight())
+}
+
+// openPath does whatever the path is: reads a conversation, or starts watching.
 func (m *Model) openPath() tea.Cmd {
 	m.stop()
 	m.history = nil

@@ -9,6 +9,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/charmbracelet/bubbles/list"
+
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/proto"
@@ -32,20 +34,22 @@ type Backend interface {
 	Watch(ctx context.Context, on book.Entry, path string, into io.Writer, resize func(cols, rows int)) error
 }
 
-// pane is which column the keys reach.
-type pane int
+// level is how deep you have gone. Entering rather than tabbing: what a path is depends on the
+// device it is on, so the two are a sequence rather than two columns to compare.
+type level int
 
 const (
-	panePeers pane = iota
-	panePaths
-	paneView
+	levelDevices level = iota
+	levelPaths
+	levelOpen
 )
 
 // Model is the whole interface.
 type Model struct {
 	back Backend
 
-	focus  pane
+	at     level
+	list   list.Model
 	width  int
 	height int
 
@@ -72,7 +76,14 @@ type Model struct {
 
 // New builds the interface over a backend.
 func New(back Backend) Model {
-	return Model{back: back, focus: panePeers}
+	shown := list.New(nil, rows{}, 0, 0)
+	shown.SetShowTitle(false)
+	shown.SetShowHelp(false)
+	shown.SetShowStatusBar(false)
+	shown.SetFilteringEnabled(true)
+	shown.SetShowPagination(true)
+
+	return Model{back: back, at: levelDevices, list: shown}
 }
 
 func (m Model) Init() tea.Cmd { return tea.Batch(loadSelf(m.back), loadPeers(m.back)) }
@@ -217,34 +228,26 @@ func waitForFrame(nudge chan struct{}) tea.Cmd {
 	}
 }
 
-// The three panes split the width: two narrow lists and whatever is left for the content.
-func (m Model) listWidth() int {
-	if m.width < 60 {
-		return 16
+// The list is the page: full width, with room left for the header and the keys.
+func (m Model) listHeight() int {
+	got := m.height - 3
+	if got < rowHeight {
+		return rowHeight
 	}
-	return min(26, m.width/5)
+	return got
 }
 
 func (m Model) viewWidth() int {
-	got := m.width - 2*m.listWidth() - 10
-	if got < 20 {
+	if m.width < 20 {
 		return 20
 	}
-	return got
-}
-
-func (m Model) paneHeight() int {
-	got := m.height - 5
-	if got < 4 {
-		return 4
-	}
-	return got
+	return m.width - 2
 }
 
 func (m Model) viewHeight() int {
-	got := m.height - 6
-	if got < 5 {
-		return 5
+	got := m.height - 5
+	if got < 4 {
+		return 4
 	}
 	return got
 }

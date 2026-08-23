@@ -60,54 +60,6 @@ func glyph(kind string) string {
 	return "·"
 }
 
-// box draws a titled pane.
-//
-// Lip Gloss has no border title of its own, so the top edge is built by hand: the alternative is a
-// heading floating above an untitled box, which reads as two things rather than one.
-func box(title, body string, width, height int, focused bool) string {
-	edge := lipgloss.NewStyle().Foreground(line)
-	if focused {
-		edge = lipgloss.NewStyle().Foreground(violet)
-	}
-
-	label := dimStyle.Render(title)
-	if focused {
-		label = brandStyle.Render(title)
-	}
-
-	// Two corners, the opening dash, and a space either side of the title.
-	rest := width - lipgloss.Width(title) - 5
-	if rest < 0 {
-		rest = 0
-	}
-
-	top := edge.Render("╭─ ") + label + edge.Render(" "+strings.Repeat("─", rest)+"╮")
-	bottom := edge.Render("╰" + strings.Repeat("─", width-2) + "╯")
-
-	inner := lipgloss.NewStyle().Width(width - 4).Height(height).MaxHeight(height).Render(body)
-
-	var out strings.Builder
-	out.WriteString(top + "\n")
-	for _, row := range strings.Split(inner, "\n") {
-		pad := width - 4 - lipgloss.Width(row)
-		if pad < 0 {
-			pad = 0
-		}
-		out.WriteString(edge.Render("│") + " " + row + strings.Repeat(" ", pad) + " " + edge.Render("│") + "\n")
-	}
-	out.WriteString(bottom)
-
-	return out.String()
-}
-
-// bar is the accent stripe that marks the row the cursor is on.
-func bar(on bool) string {
-	if on {
-		return pickStyle.Render("▌")
-	}
-	return " "
-}
-
 // fit shortens text to a width, keeping the end.
 //
 // The end is what tells two paths apart — /friends/chat and /friends/files share everything but
@@ -125,14 +77,68 @@ func fit(text string, width int) string {
 	return "…" + string(runes[len(runes)-keep:])
 }
 
-// stack styles each line on its own, then joins them.
-//
-// A style applied across a newline pads and aligns every line to the widest, which turns a short
-// second line into an indented one.
-func stack(style lipgloss.Style, lines ...string) string {
-	out := make([]string, 0, len(lines))
-	for _, at := range lines {
-		out = append(out, style.Render(at))
+// A row carries a solid background across its whole width, so three lines read as one block and
+// columns line up down the list. Alternating shades separate neighbours without a rule between them.
+var (
+	rowBg    = lipgloss.AdaptiveColor{Light: "#faf9fb", Dark: "#17141d"}
+	rowBgAlt = lipgloss.AdaptiveColor{Light: "#f3f0f6", Dark: "#1c1924"}
+	rowBgOn  = lipgloss.AdaptiveColor{Light: "#e9e2f3", Dark: "#271f33"}
+)
+
+// row is the background a line of an item is drawn on.
+func row(index int, selected bool) lipgloss.Style {
+	switch {
+	case selected:
+		return lipgloss.NewStyle().Background(rowBgOn)
+	case index%2 == 1:
+		return lipgloss.NewStyle().Background(rowBgAlt)
+	default:
+		return lipgloss.NewStyle().Background(rowBg)
 	}
-	return strings.Join(out, "\n")
+}
+
+// cell draws text in a fixed-width column carrying the row's background, which is what keeps the
+// block solid and the columns aligned across rows.
+func cell(base lipgloss.Style, fg lipgloss.TerminalColor, width int, text string, right, bold bool) string {
+	if width < 1 {
+		width = 1
+	}
+
+	style := base.Foreground(fg).Width(width).Bold(bold)
+	if right {
+		style = style.Align(lipgloss.Right)
+	}
+	return style.Render(clip(text, width))
+}
+
+// clip cuts text to a width, from the end, marking that it was cut.
+func clip(text string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	if lipgloss.Width(text) <= width {
+		return text
+	}
+
+	runes := []rune(text)
+	if width == 1 {
+		return "…"
+	}
+	return string(runes[:width-1]) + "…"
+}
+
+// crumb is where you are, as a path through what you entered.
+func crumb(parts ...string) string {
+	shown := make([]string, 0, len(parts))
+	for i, at := range parts {
+		if at == "" {
+			continue
+		}
+		if i == len(parts)-1 {
+			shown = append(shown, nameStyle.Render(at))
+			continue
+		}
+		shown = append(shown, dimStyle.Render(at))
+	}
+	return strings.Join(shown, faintStyle.Render(" › "))
 }

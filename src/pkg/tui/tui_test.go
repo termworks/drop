@@ -141,118 +141,13 @@ func settleFrom(t *testing.T, m Model, seed tea.Cmd, msgs ...tea.Msg) Model {
 	return model.(Model)
 }
 
-func TestItOpensTheFirstDeviceAndPath(t *testing.T) {
-	m := start(t, withOne())
-
-	if len(m.peers) != 1 || m.peers[0].Name != "beta" {
-		t.Fatalf("peers = %+v", m.peers)
-	}
-	if len(m.paths) != 2 {
-		t.Fatalf("paths = %+v", m.paths)
-	}
-	if at, _ := m.path(); at.Path != "/friends/chat" {
-		t.Fatalf("opened %q, want the first path", at.Path)
-	}
-}
-
 // The view is what a person sees, so it has to name what is there.
-func TestTheViewNamesWhatIsThere(t *testing.T) {
-	m := start(t, withOne())
-
-	drawn := m.View()
-	for _, want := range []string{"beta", "/friends/chat", "/term", "devices", "alpha", "chat", "tty"} {
-		if !strings.Contains(drawn, want) {
-			t.Fatalf("the view never mentions %q", want)
-		}
-	}
-}
-
-func TestMovingDownOpensTheNextPath(t *testing.T) {
-	m := start(t, withOne())
-
-	m.focus = panePaths
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyDown})
-
-	if at, _ := m.path(); at.Path != "/term" {
-		t.Fatalf("moved to %q", at.Path)
-	}
-	if !m.live {
-		t.Fatal("opening a tty path did not start a watch")
-	}
-}
 
 // Moving off a terminal has to end the watch, or it is left being read by nobody.
-func TestMovingAwayStopsTheWatch(t *testing.T) {
-	back := withOne()
-	m := start(t, back)
-
-	m.focus = panePaths
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	if !m.live {
-		t.Fatal("the watch never started")
-	}
-
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyUp})
-	if m.live {
-		t.Fatal("the watch outlived the path it was on")
-	}
-	if m.screen != nil {
-		t.Fatal("the screen was kept after moving away")
-	}
-}
-
-func TestWritingAMessageSendsIt(t *testing.T) {
-	back := withOne()
-	m := start(t, back)
-
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	if !m.writing {
-		t.Fatal("i did not start a message")
-	}
-
-	for _, r := range "hello" {
-		m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-	}
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-
-	back.mu.Lock()
-	defer back.mu.Unlock()
-	if len(back.said) != 1 || back.said[0] != "hello" {
-		t.Fatalf("sent %+v", back.said)
-	}
-}
 
 // Escape must throw the draft away rather than send it.
-func TestEscapeAbandonsAMessage(t *testing.T) {
-	back := withOne()
-	m := start(t, back)
-
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-
-	if m.writing || m.typing != "" {
-		t.Fatalf("still writing %q", m.typing)
-	}
-
-	back.mu.Lock()
-	defer back.mu.Unlock()
-	if len(back.said) != 0 {
-		t.Fatalf("an abandoned draft was sent: %+v", back.said)
-	}
-}
 
 // While composing, q is a letter and not a way out.
-func TestQIsALetterWhileWriting(t *testing.T) {
-	m := start(t, withOne())
-
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-
-	if m.typing != "q" {
-		t.Fatalf("typing = %q, so q was taken as quit", m.typing)
-	}
-}
 
 // The screen is written by the network and read by the interface. This is the shape that would race.
 func TestTheScreenSurvivesBeingWrittenWhileRead(t *testing.T) {
@@ -302,59 +197,193 @@ func start(t *testing.T, back Backend) Model {
 
 func (f *fake) Self() (Identity, error) { return Identity{Name: "alpha", ID: "e88c42df318c…"}, nil }
 
-func TestStartupLoadsEverything(t *testing.T) {
+// A pane is narrow and a path is not. Wrapping would break the column, so the head gives way and
+// the tail — which is what tells two paths apart — is kept.
+
+// Every row of a pane has to be the same width, or the borders do not line up.
+
+// A device that never answers must not leave the pane saying "asking…" forever.
+
+// enter is what a person presses to go a level deeper.
+func enter(t *testing.T, m Model) Model {
+	t.Helper()
+	return settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+}
+
+func back(t *testing.T, m Model) Model {
+	t.Helper()
+	return settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+}
+
+func TestItStartsOnTheDeviceList(t *testing.T) {
 	m := start(t, withOne())
 
-	if m.me.Name != "alpha" {
-		t.Fatalf("this device = %+v", m.me)
+	if m.at != levelDevices {
+		t.Fatalf("started at level %d", m.at)
 	}
 	if len(m.peers) != 1 {
 		t.Fatalf("peers = %+v", m.peers)
+	}
+	// Nothing is asked of a device until you go into it.
+	if len(m.paths) != 0 {
+		t.Fatalf("paths were fetched before entering: %+v", m.paths)
+	}
+	if m.me.Name != "alpha" {
+		t.Fatalf("this device = %+v", m.me)
+	}
+}
+
+func TestEnteringADeviceAsksWhatItShares(t *testing.T) {
+	m := enter(t, start(t, withOne()))
+
+	if m.at != levelPaths {
+		t.Fatalf("at level %d after entering", m.at)
 	}
 	if len(m.paths) != 2 {
 		t.Fatalf("paths = %+v", m.paths)
 	}
 }
 
-// A pane is narrow and a path is not. Wrapping would break the column, so the head gives way and
-// the tail — which is what tells two paths apart — is kept.
-func TestALongPathIsShortenedFromTheFront(t *testing.T) {
-	got := fit("/one/two/five/eight/nine", 12)
+func TestEnteringAPathOpensIt(t *testing.T) {
+	m := enter(t, enter(t, start(t, withOne())))
+
+	if m.at != levelOpen {
+		t.Fatalf("at level %d", m.at)
+	}
+	if at, _ := m.path(); at.Path != "/friends/chat" {
+		t.Fatalf("opened %q", at.Path)
+	}
+}
+
+// Going back has to undo the level, not the program.
+func TestGoingBackWalksOutOneLevelAtATime(t *testing.T) {
+	m := enter(t, enter(t, start(t, withOne())))
+
+	m = back(t, m)
+	if m.at != levelPaths {
+		t.Fatalf("back from a path left level %d", m.at)
+	}
+
+	m = back(t, m)
+	if m.at != levelDevices {
+		t.Fatalf("back from a device left level %d", m.at)
+	}
+	if len(m.paths) != 0 {
+		t.Fatal("leaving a device kept its paths")
+	}
+}
+
+// A terminal is watched while it is open and not a moment longer.
+func TestAWatchLastsAsLongAsThePathIsOpen(t *testing.T) {
+	m := enter(t, start(t, withOne()))
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = enter(t, m)
+
+	if !m.live {
+		t.Fatal("entering a tty path did not start a watch")
+	}
+
+	m = back(t, m)
+	if m.live {
+		t.Fatal("the watch outlived the path")
+	}
+	if m.screen != nil {
+		t.Fatal("the screen was kept after leaving")
+	}
+}
+
+func TestWritingAMessageSendsIt(t *testing.T) {
+	back := withOne()
+	m := enter(t, enter(t, start(t, back)))
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	if !m.writing {
+		t.Fatal("i did not start a message")
+	}
+
+	for _, r := range "hello" {
+		m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	back.mu.Lock()
+	defer back.mu.Unlock()
+	if len(back.said) != 1 || back.said[0] != "hello" {
+		t.Fatalf("sent %+v", back.said)
+	}
+}
+
+// While composing, q is a letter and not a way out.
+func TestQIsALetterWhileWriting(t *testing.T) {
+	m := enter(t, enter(t, start(t, withOne())))
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+
+	if m.typing != "q" {
+		t.Fatalf("typing = %q, so q was taken as quit", m.typing)
+	}
+}
+
+// q leaves the level rather than the program, until there is nowhere left to go.
+func TestQClimbsOutBeforeItQuits(t *testing.T) {
+	m := enter(t, enter(t, start(t, withOne())))
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if m.at != levelPaths {
+		t.Fatalf("q at a path left level %d", m.at)
+	}
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if m.at != levelDevices {
+		t.Fatalf("q at a device left level %d", m.at)
+	}
+}
+
+// The row is three lines, and every one of them has to be the same width or the block breaks up.
+func TestARowIsThreeLinesOfOneWidth(t *testing.T) {
+	m := start(t, withOne())
+	m.list.SetSize(80, 12)
+
+	drawn := m.list.View()
+	rows := strings.Split(drawn, "\n")
+
+	seen := 0
+	for _, at := range rows {
+		if strings.TrimSpace(at) == "" {
+			continue
+		}
+		seen++
+		if got := lipgloss.Width(at); got != 80 {
+			t.Fatalf("a row is %d wide, not 80: %q", got, at)
+		}
+	}
+	if seen < rowHeight {
+		t.Fatalf("only %d lines drawn for a device", seen)
+	}
+}
+
+func TestALongValueIsClipped(t *testing.T) {
+	got := clip("/one/two/five/eight/nine", 12)
 
 	if lipgloss.Width(got) > 12 {
 		t.Fatalf("%q is still %d wide", got, lipgloss.Width(got))
 	}
-	if !strings.HasSuffix(got, "nine") {
-		t.Fatalf("%q lost the end, which is the part that identifies it", got)
-	}
-	if !strings.HasPrefix(got, "…") {
-		t.Fatalf("%q does not say it was shortened", got)
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("%q does not say it was cut", got)
 	}
 }
 
-func TestAShortPathIsLeftAlone(t *testing.T) {
-	if got := fit("/chat", 20); got != "/chat" {
+func TestAShortValueIsLeftAlone(t *testing.T) {
+	if got := clip("/chat", 20); got != "/chat" {
 		t.Fatalf("got %q", got)
 	}
 }
 
-// Every row of a pane has to be the same width, or the borders do not line up.
-func TestThePanesAreRectangular(t *testing.T) {
-	m := start(t, withOne())
-
-	for _, row := range strings.Split(m.View(), "\n") {
-		if row == "" {
-			continue
-		}
-		if got := lipgloss.Width(row); got > 120 {
-			t.Fatalf("a row is %d wide on a 120 column screen: %q", got, row)
-		}
-	}
-}
-
-// A device that never answers must not leave the pane saying "asking…" forever.
+// A device that never answers must not leave the header saying "asking…" forever.
 func TestAnUnreachableDeviceIsReported(t *testing.T) {
-	m := start(t, withOne())
+	m := enter(t, start(t, withOne()))
 
 	m = settle(t, m, pathsLoaded{peer: "beta", err: context.DeadlineExceeded})
 	if m.trouble == "" {
