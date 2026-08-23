@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -36,6 +37,7 @@ type fake struct {
 	said    []string
 	watched string
 	offered bool
+	took    string
 	paired  chan string
 	stream  string
 }
@@ -407,6 +409,17 @@ func (f *fake) Offer(ctx context.Context) (string, <-chan string, error) {
 	return "7b9773d9#code#192.168.1.1:47777", done, nil
 }
 
+func (f *fake) Join(ctx context.Context, ticket string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if ticket == "" {
+		return "", errors.New("that does not look like a ticket")
+	}
+	f.took = ticket
+	return "tron", nil
+}
+
 // A device with nothing paired must not be a dead end: the way out has to be on the screen.
 func TestPairingCanBeStartedFromTheInterface(t *testing.T) {
 	back := &fake{}
@@ -459,5 +472,48 @@ func TestPairingCanBeAbandoned(t *testing.T) {
 
 	if m.linking != nil {
 		t.Fatal("escape did not leave the pairing screen")
+	}
+}
+
+// Pairing has two sides, and a device that can only show a code can only ever be found. Typing in
+// a ticket has to reach the backend, or a phone showing a code has nobody to answer it.
+func TestATicketCanBeTypedIn(t *testing.T) {
+	back := &fake{}
+	m := settle(t, start(t, back), tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+
+	if !m.joining {
+		t.Fatalf("t did not open the ticket field:\n%s", m.View())
+	}
+
+	ticket := "7b9773d9#code"
+	for _, r := range ticket {
+		m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if !strings.Contains(m.View(), ticket) {
+		t.Fatalf("what was typed is not on the screen:\n%s", m.View())
+	}
+
+	// A mistyped character has to be correctable, or a hundred-character ticket is unusable.
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.joining {
+		t.Fatal("the field stayed up after the ticket was entered")
+	}
+
+	back.mu.Lock()
+	defer back.mu.Unlock()
+	if back.took != ticket {
+		t.Fatalf("the backend was given %q, not the ticket that was typed", back.took)
+	}
+}
+
+// Escape has to leave, or the field is a trap: it owns the keyboard while it is up.
+func TestTheTicketFieldCanBeLeft(t *testing.T) {
+	m := settle(t, start(t, &fake{}), tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+
+	if m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc}); m.joining {
+		t.Fatal("escape did not leave the ticket field")
 	}
 }

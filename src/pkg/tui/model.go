@@ -81,6 +81,10 @@ type Model struct {
 	stopped context.CancelFunc
 
 	// typing is the message being composed, and whether the view pane is taking keys for it.
+	// joining is a ticket being typed in, which is the other half of pairing: one device
+	// shows a code, the other takes it.
+	joining bool
+
 	typing  string
 	writing bool
 }
@@ -329,5 +333,21 @@ func waitForPair(waited <-chan string) tea.Cmd {
 			return nil
 		}
 		return pairDone{with: with}
+	}
+}
+
+type joined struct {
+	with string
+	err  error
+}
+
+// join takes a ticket another device is showing.
+func join(back Backend, ticket string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, stop := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stop()
+
+		with, err := back.Join(ctx, ticket)
+		return joined{with: with, err: err}
 	}
 }

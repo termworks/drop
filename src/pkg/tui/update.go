@@ -37,6 +37,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.trouble = ""
 		return m, loadPeers(m.back)
 
+	case joined:
+		m.loading = false
+		if msg.err != nil {
+			m.trouble = msg.err.Error()
+			return m, nil
+		}
+		m.trouble = ""
+		return m, loadPeers(m.back)
+
 	case selfLoaded:
 		if msg.err == nil {
 			m.me = msg.me
@@ -121,6 +130,11 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// A ticket being typed owns the keyboard the same way: it is one field and two ways out.
+	if m.joining {
+		return m.joinKey(msg)
+	}
+
 	if m.writing {
 		return m.typeKey(msg)
 	}
@@ -160,6 +174,12 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "p":
 		if m.at == levelDevices && m.linking == nil {
 			return m, offer(m.back)
+		}
+		return m, nil
+
+	case "t":
+		if m.at == levelDevices && m.linking == nil {
+			m.joining, m.typing, m.trouble = true, "", ""
 		}
 		return m, nil
 
@@ -314,4 +334,38 @@ func (m *Model) openPath() tea.Cmd {
 		)
 	}
 	return nil
+}
+
+// joinKey takes a ticket a character at a time.
+//
+// A ticket arrives pasted more often than typed, and a paste reaches a terminal program as one
+// run of runes, which is why nothing here works a key at a time except the corrections.
+func (m Model) joinKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyCtrlC:
+		m.joining, m.typing = false, ""
+		return m, nil
+
+	case tea.KeyEnter:
+		ticket := strings.TrimSpace(m.typing)
+		if ticket == "" {
+			return m, nil
+		}
+		m.joining, m.typing, m.loading = false, "", true
+		return m, join(m.back, ticket)
+
+	case tea.KeyBackspace:
+		if n := len(m.typing); n > 0 {
+			m.typing = m.typing[:n-1]
+		}
+		return m, nil
+
+	case tea.KeyRunes:
+		m.typing += string(msg.Runes)
+		return m, nil
+
+	case tea.KeySpace:
+		return m, nil
+	}
+	return m, nil
 }

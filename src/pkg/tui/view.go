@@ -15,6 +15,10 @@ func (m Model) View() string {
 		return dimStyle.Render("  starting…")
 	}
 
+	if m.joining {
+		return m.header() + "\n" + m.joiningView() + "\n" + m.footer()
+	}
+
 	if m.linking != nil {
 		return m.header() + "\n" + m.pairingView() + "\n" + m.footer()
 	}
@@ -25,6 +29,12 @@ func (m Model) View() string {
 	}
 	if m.at == levelOpen {
 		body = m.openView()
+	}
+
+	// Trouble at a list level has nowhere else to go: without this a mistyped ticket is
+	// indistinguishable from a key that did nothing.
+	if m.trouble != "" && m.at != levelOpen {
+		body += "\n\n " + badStyle.Render("✗ ") + m.trouble
 	}
 
 	return m.header() + "\n" + body + "\n" + m.footer()
@@ -141,7 +151,7 @@ func (m Model) footer() string {
 		keys = []hint{{"esc", "cancel"}}
 
 	case m.at == levelDevices:
-		keys = []hint{{"p", "pair"}, {"↑↓", "move"}, {"enter", "open"}, {"r", "reload"}, {"q", "quit"}}
+		keys = []hint{{"p", "show code"}, {"t", "take code"}, {"↑↓", "move"}, {"enter", "open"}, {"r", "reload"}, {"q", "quit"}}
 
 	case m.at == levelPaths:
 		keys = []hint{{"↑↓", "move"}, {"enter", "open"}, {"esc", "devices"}, {"r", "reload"}}
@@ -163,11 +173,36 @@ func (m Model) footer() string {
 // nothingPaired is the first thing anyone sees, so it says what to do rather than "no items".
 func (m Model) nothingPaired() string {
 	return "\n " + dimStyle.Render("No devices yet.") +
-		"\n\n " + faintStyle.Render("Press ") + keyStyle.Render("p") +
-		faintStyle.Render(" to show a code, then run") +
-		"\n " + kindStyle.Render("   drop pair <ticket>") +
-		faintStyle.Render(" on the other device,") +
-		"\n " + faintStyle.Render("   or point its camera at the code.")
+		"\n\n " + keyStyle.Render("p") + faintStyle.Render(" shows a code for another device to scan or type in.") +
+		"\n " + keyStyle.Render("t") + faintStyle.Render(" takes a code another device is showing.")
+}
+
+// joiningView is the other half of pairing: somewhere to put a ticket a device is showing.
+//
+// The field wraps rather than scrolls. A ticket is a hundred characters of identity and
+// every one of them has to be checkable by eye against what the other screen says.
+func (m Model) joiningView() string {
+	var out strings.Builder
+
+	out.WriteString(" " + brandStyle.Render("Enter a ticket") + "\n")
+	out.WriteString("\n " + faintStyle.Render("Paste what the other device is showing.") + "\n")
+
+	typed := m.typing
+	if typed == "" {
+		out.WriteString("\n " + dimStyle.Render("waiting for a ticket…") + "\n")
+	} else {
+		out.WriteString("\n")
+		for _, at := range fold(typed, m.width-2) {
+			out.WriteString(" " + kindStyle.Render(at) + "\n")
+		}
+	}
+
+	out.WriteString("\n " + faintStyle.Render("press ") + keyStyle.Render("enter") + faintStyle.Render(" to pair, ") + keyStyle.Render("esc") + faintStyle.Render(" to go back"))
+
+	if m.trouble != "" {
+		out.WriteString("\n\n " + badStyle.Render(m.trouble))
+	}
+	return out.String()
 }
 
 // pairingView is the code, the ticket, and the wait.
