@@ -450,6 +450,9 @@ src/pkg/rendezvous/service.go   publishing one record per pair, and resolving
 src/pkg/proto/pair.go           the exchange the shared secret comes from
 src/pkg/proto/session.go        what a connection can be asked to do
 src/pkg/ns/                     paths, kinds, and the mount table
+src/pkg/term/screen.go          the terminal grid another device is drawing on
+src/pkg/term/frame.go           what changed since a watcher was last told
+src/pkg/web/watch.go            that screen, streamed to a browser on this machine
 src/cmd/dial.go                 the ladder itself, in twenty lines
 ```
 
