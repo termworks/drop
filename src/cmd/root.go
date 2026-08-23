@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/bresilla/drop/src/pkg/conf"
 )
 
 // Set once by Execute, read by the subcommands.
@@ -27,10 +29,16 @@ func Execute(v string, exit func(int), args []string) {
 		SilenceErrors: true,
 	}
 
+	// Settings before any command runs, so one that only dials still knows what it is allowed
+	// to do. The commands that serve load the whole config themselves.
+	root.PersistentPreRun = func(*cobra.Command, []string) { conf.ApplySettings() }
+
 	root.SetArgs(args)
 	root.AddCommand(
 		newToCmd(),
 		newServeCmd(),
+		newCastCmd(),
+		newWebCmd(),
 		newPairCmd(),
 		newPeersCmd(),
 		newLogCmd(),

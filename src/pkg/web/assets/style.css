@@ -1,0 +1,283 @@
+:root {
+  --bg: #fbfbfa;
+  --panel: #ffffff;
+  --line: #e4e2dd;
+  --ink: #23211e;
+  --dim: #6f6a62;
+  --mine: #2f6f4f;
+  --theirs: #2b4c7e;
+  --accent: #2f6f4f;
+  --radius: 10px;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #17181a;
+    --panel: #1e2023;
+    --line: #303337;
+    --ink: #e6e4e0;
+    --dim: #9a958d;
+    --mine: #7fc9a2;
+    --theirs: #8fb4e8;
+    --accent: #7fc9a2;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.55 var(--sans);
+}
+
+.shell { display: grid; grid-template-columns: 250px 1fr; height: 100vh; }
+
+aside {
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+aside header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+h1 { font-size: 15px; margin: 0; letter-spacing: .02em; }
+
+#refresh {
+  border: 1px solid var(--line);
+  background: none;
+  color: var(--dim);
+  border-radius: 6px;
+  cursor: pointer;
+  width: 26px; height: 26px;
+  font-size: 13px;
+}
+#refresh:hover { color: var(--ink); }
+
+#peers { list-style: none; margin: 0; padding: 6px; overflow-y: auto; flex: 1; }
+
+#peers button {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+#peers button:hover { background: var(--bg); }
+#peers button[aria-current="true"] { background: var(--bg); font-weight: 600; }
+
+#peers .state { font-size: 11px; color: var(--dim); margin-left: auto; }
+#peers .waiting { color: var(--accent); }
+
+.hint { padding: 0 16px 16px; color: var(--dim); font-size: 13px; }
+code { font-family: var(--mono); font-size: .92em; }
+
+main { display: flex; flex-direction: column; min-width: 0; position: relative; }
+
+main > header {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+main > header .name { font-weight: 600; }
+main > header .id { color: var(--dim); font-family: var(--mono); font-size: 11px; }
+
+#log {
+  list-style: none;
+  margin: 0;
+  padding: 18px 20px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#log li { max-width: min(62ch, 80%); }
+#log li.mine { align-self: flex-end; }
+
+.bubble {
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  overflow-wrap: anywhere;
+}
+li.mine .bubble { border-color: color-mix(in srgb, var(--mine) 40%, var(--line)); }
+
+.meta { font-size: 11px; color: var(--dim); margin-top: 3px; }
+li.mine .meta { text-align: right; }
+
+.tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--dim);
+  margin-right: 6px;
+}
+
+.bubble a { color: var(--theirs); }
+li.mine .bubble a { color: var(--mine); }
+
+li.event { align-self: center; max-width: none; }
+li.event .bubble { border: 0; background: none; color: var(--dim); font-size: 12px; padding: 2px; }
+
+.empty { margin: auto; color: var(--dim); }
+
+#compose {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+#body {
+  flex: 1;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+#body:focus { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -1px; }
+
+#compose button {
+  padding: 9px 16px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--bg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+#compose button:disabled { opacity: .5; cursor: default; }
+
+@media (max-width: 620px) {
+  .shell { grid-template-columns: 1fr; }
+  aside { display: none; }
+  aside.showing { display: flex; }
+}
+
+#attach {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--dim);
+  border-radius: var(--radius);
+  width: 2.2rem;
+  font-size: 1.05rem;
+  cursor: pointer;
+}
+
+#attach:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* The overlay covers the conversation while something is being dragged over the window, so there is
+   never a doubt about which device the file is about to go to. */
+#drop-target {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  margin: 0.5rem;
+  color: var(--accent);
+  font-weight: 600;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* The terminal palette. Named so the renderer can set a colour by index without knowing the theme,
+   which is what lets the same output look right on both. */
+:root {
+  --term-bg: #1b1d1f;
+  --term-fg: #d8d4cd;
+  --t0: #2b2e31; --t1: #cc6666; --t2: #8fae63; --t3: #d6a760;
+  --t4: #6c9ccc; --t5: #b294bb; --t6: #74b0b0; --t7: #c5c8c6;
+  --t8: #5a5f63; --t9: #e08b8b; --t10: #b1cc8a; --t11: #e8c88a;
+  --t12: #93b8e0; --t13: #cbb4d0; --t14: #9fd4d4; --t15: #f0efec;
+}
+
+#term-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  border-top: 1px solid var(--line);
+}
+
+#term-panel > header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+#term-path {
+  font: 13px var(--mono);
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  width: 14rem;
+}
+
+#term-state { font: 12px var(--sans); color: var(--dim); margin-left: auto; }
+#term-state.live { color: var(--accent); }
+#term-state.gone { color: #cc6666; }
+
+#watch-open, #term-go, #term-close {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--dim);
+  border-radius: 6px;
+  padding: 4px 9px;
+  cursor: pointer;
+  font: 13px var(--sans);
+}
+
+#watch-open:hover, #term-go:hover, #term-close:hover { color: var(--accent); border-color: var(--accent); }
+#watch-open { margin-left: auto; }
+
+.term {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--term-bg);
+  color: var(--term-fg);
+  font: 13px/1.25 var(--mono);
+  padding: 8px 10px;
+}
+
+/* pre-wrap keeps the trailing spaces the grid is padded with, so a background colour runs to the
+   end of the line the way it does in a terminal. */
+.trow { white-space: pre; min-height: 1.25em; }

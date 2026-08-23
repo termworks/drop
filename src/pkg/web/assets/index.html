@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>drop</title>
+<link rel="stylesheet" href="/style.css">
+
+<div class="shell">
+  <aside>
+    <header>
+      <h1>drop</h1>
+      <button id="refresh" title="Reload the device list">↻</button>
+    </header>
+    <ul id="peers"></ul>
+    <p class="hint" id="no-peers" hidden>
+      Nothing paired yet. Run <code>drop pair</code> on this machine and
+      <code>drop pair &lt;ticket&gt;</code> on the other.
+    </p>
+  </aside>
+
+  <main>
+    <header id="with" hidden>
+      <span class="name"></span>
+      <span class="id"></span>
+      <button type="button" id="watch-open" title="Watch a terminal on this device">⌨</button>
+    </header>
+
+    <ol id="log" aria-live="polite"></ol>
+    <div id="drop-target" hidden><span>Release to send</span></div>
+
+    <section id="term-panel" hidden>
+      <header>
+        <input id="term-path" value="/tty" spellcheck="false" aria-label="Namespace to watch">
+        <button type="button" id="term-go">Watch</button>
+        <span id="term-state"></span>
+        <button type="button" id="term-close" title="Stop watching">✕</button>
+      </header>
+      <div id="term" class="term"></div>
+    </section>
+
+    <p class="empty" id="pick">Choose a device on the left.</p>
+
+    <form id="compose" hidden autocomplete="off">
+      <input type="file" id="file" multiple hidden>
+      <button type="button" id="attach" title="Send a file">＋</button>
+      <input id="body" placeholder="Write something, or paste a link" aria-label="Message">
+      <button type="submit">Send</button>
+    </form>
+  </main>
+</div>
+
+<script type="module" src="/app.js"></script>
