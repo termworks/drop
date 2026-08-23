@@ -15,6 +15,8 @@ const (
 	KindTTY    Kind = 3
 	KindChat   Kind = 4
 	KindLink   Kind = 5
+	// KindBranch serves nothing. It exists to carry an access rule for what is under it.
+	KindBranch Kind = 6
 )
 
 var kindNames = map[Kind]string{
@@ -23,6 +25,7 @@ var kindNames = map[Kind]string{
 	KindTTY:    "tty",
 	KindChat:   "chat",
 	KindLink:   "link",
+	KindBranch: "branch",
 }
 
 func (k Kind) String() string {
@@ -63,8 +66,9 @@ type Mount struct {
 	Input bool
 	// Action is what a link namespace hands a URL to; empty means it only records it.
 	Action string
-	// Open, on a files namespace, accepts from any paired peer rather than only the named ones.
-	Only []string
+	// Access is who may reach this path and everything under it, until something deeper says
+	// otherwise. Undeclared means nobody.
+	Access Access
 }
 
 // Table is every namespace this node serves.
@@ -85,8 +89,14 @@ func (t *Table) Add(m Mount) error {
 	if err != nil {
 		return err
 	}
+	// A mount with no type is a branch: it serves nothing itself and exists to carry an access rule
+	// for the paths beneath it. One that is neither a type nor a rule is a typo, and saying so is
+	// better than quietly keeping a line that does nothing.
 	if _, ok := kindNames[m.Kind]; !ok {
-		return fmt.Errorf("%s has no type", path)
+		if !m.Access.Declared() {
+			return fmt.Errorf("%s has neither a type nor an access rule, so it does nothing", path)
+		}
+		m.Kind = KindBranch
 	}
 
 	m.Path = path
