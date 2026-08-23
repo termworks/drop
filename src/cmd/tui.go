@@ -64,7 +64,7 @@ func runTUI(parent context.Context) error {
 
 	// The interface serves while it is open, so a device that pairs with it can reach it — and
 	// so what arrives lands in a conversation rather than being refused.
-	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){
+	ears := listenOn(ctx, n, map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
 			_ = proto.Handle(s, from, proto.Policy{
@@ -81,7 +81,7 @@ func runTUI(parent context.Context) error {
 	})
 
 	program := tea.NewProgram(
-		tui.New(&live{node: n, lan: lan}),
+		tui.New(&live{node: n, lan: lan, ears: ears}),
 		tea.WithAltScreen(),
 		tea.WithContext(ctx),
 	)
@@ -92,6 +92,7 @@ func runTUI(parent context.Context) error {
 
 // live is the interface's view of a running node.
 type live struct {
+	ears *listener
 	node *node.Node
 	lan  *discovery.LAN
 }
@@ -193,34 +194,39 @@ func (l *live) Offer(ctx context.Context) (string, <-chan string, error) {
 		return "", nil, err
 	}
 
-	go serveLoop(ctx, l.node, map[string]func(node.ID, *iroh.Stream){
-		node.ALPNPair: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+	// Registered on the interface's own listener rather than starting a second one. Two accept
+	// loops on one endpoint race, and the loser hangs up on a connection it does not know.
+	l.ears.Handle(node.ALPNPair, func(from node.ID, s *iroh.Stream) {
+		defer s.Close()
 
-			p, err := proto.AnswerPairing(s, l.node.ID(), node.DisplayName(), written(discovery.LocalAddrs(l.node)))
-			if err != nil {
-				return
-			}
-			// The far end has to prove it was given the code, not merely the address.
-			if !hmac.Equal(p.Proof, codeProof(code, from, l.node.ID())) {
-				return
-			}
+		p, err := proto.AnswerPairing(s, l.node.ID(), node.DisplayName(), written(discovery.LocalAddrs(l.node)))
+		if err != nil {
+			return
+		}
+		// The far end has to prove it was given the code, not merely the address.
+		if !hmac.Equal(p.Proof, codeProof(code, from, l.node.ID())) {
+			return
+		}
 
-			name := p.Name
-			if name == "" {
-				name = node.Brief(from)
-			}
-			pinned.Pair(name, from, p.Secret, p.Addrs...)
-			if err := pinned.Save(); err != nil {
-				return
-			}
+		name := p.Name
+		if name == "" {
+			name = node.Brief(from)
+		}
+		pinned.Pair(name, from, p.Secret, p.Addrs...)
+		if err := pinned.Save(); err != nil {
+			return
+		}
 
-			select {
-			case done <- name:
-			default:
-			}
-		},
+		select {
+		case done <- name:
+		default:
+		}
 	})
+
+	go func() {
+		<-ctx.Done()
+		l.ears.Handle(node.ALPNPair, nil)
+	}()
 
 	return invite, done, nil
 }

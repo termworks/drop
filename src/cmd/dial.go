@@ -140,3 +140,69 @@ func rendezvousFor(n *node.Node) *rendezvous.Service {
 	rendezvousOn = svc
 	return svc
 }
+
+// listener is the one accept loop an endpoint gets.
+//
+// Two loops on one endpoint do not divide the work, they race for it: whichever wins a connection
+// decides, and one that does not know the protocol hangs up on it. That is a pairing refused for no
+// reason a person could see, so there is one loop and handlers are added to it.
+type listener struct {
+	mu       sync.Mutex
+	handlers map[string]func(node.ID, *iroh.Stream)
+}
+
+func listenOn(ctx context.Context, n *node.Node, handlers map[string]func(node.ID, *iroh.Stream)) *listener {
+	if handlers == nil {
+		handlers = map[string]func(node.ID, *iroh.Stream){}
+	}
+	l := &listener{handlers: handlers}
+
+	go func() {
+		for {
+			conn, err := n.Accept(ctx)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				continue
+			}
+			go l.answer(ctx, conn)
+		}
+	}()
+
+	return l
+}
+
+// Handle adds a protocol, or takes one away when given nil — which is how a pairing stops being
+// offered the moment it is finished with.
+func (l *listener) Handle(alpn string, handle func(node.ID, *iroh.Stream)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if handle == nil {
+		delete(l.handlers, alpn)
+		return
+	}
+	l.handlers[alpn] = handle
+}
+
+func (l *listener) answer(ctx context.Context, conn *iroh.Conn) {
+	defer conn.Close()
+
+	l.mu.Lock()
+	handle, ok := l.handlers[conn.ALPN()]
+	l.mu.Unlock()
+
+	if !ok {
+		return
+	}
+	from := conn.RemoteID()
+
+	for {
+		s, err := conn.AcceptStream(ctx)
+		if err != nil {
+			return
+		}
+		go handle(from, s)
+	}
+}

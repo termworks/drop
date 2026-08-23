@@ -171,18 +171,50 @@ func (m Model) nothingPaired() string {
 }
 
 // pairingView is the code, the ticket, and the wait.
+//
+// The code is only drawn when there is room for the whole of it. A code with its top row cut
+// off is not a smaller code, it is an unreadable one, and the ticket underneath still works.
 func (m Model) pairingView() string {
 	var out strings.Builder
 
-	out.WriteString("\n " + brandStyle.Render("Pair a device") + "\n")
+	out.WriteString(" " + brandStyle.Render("Pair a device") + "\n")
 
-	if m.linking.code != "" {
-		out.WriteString("\n" + m.linking.code)
+	// The ticket is long and every character of it matters, so it is folded rather than cut.
+	folded := fold("drop pair "+m.linking.ticket, m.width-2)
+
+	// What the rest of the screen costs: the title, the two lines around the ticket, the wait,
+	// and a blank line either side of the code.
+	spare := m.listHeight() - len(folded) - 5
+
+	if drawn := strings.Split(strings.TrimRight(m.linking.code, "\n"), "\n"); m.linking.code != "" {
+		if len(drawn) <= spare {
+			out.WriteString("\n" + m.linking.code)
+		} else {
+			out.WriteString("\n " + faintStyle.Render("(the window is too short to draw the code)") + "\n")
+		}
 	}
 
 	out.WriteString("\n " + faintStyle.Render("or run this on the other device:") + "\n")
-	out.WriteString(" " + kindStyle.Render("drop pair "+m.linking.ticket) + "\n")
-	out.WriteString("\n " + goodStyle.Render("waiting for it to answer…") + "\n")
+	for _, at := range folded {
+		out.WriteString(" " + kindStyle.Render(at) + "\n")
+	}
 
-	return lines(out.String(), m.listHeight())
+	out.WriteString("\n " + goodStyle.Render("waiting for it to answer…"))
+
+	return out.String()
+}
+
+// fold breaks a long line into ones that fit, because a ticket with its tail cut off is a
+// ticket nobody can use.
+func fold(text string, width int) []string {
+	if width < 8 {
+		width = 8
+	}
+
+	var out []string
+	for len(text) > width {
+		out = append(out, text[:width])
+		text = text[width:]
+	}
+	return append(out, text)
 }

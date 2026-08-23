@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -58,9 +59,20 @@ func newPairCmd() *cobra.Command {
 //
 // It carries where as well as who: an id alone is not dialable until something has resolved
 // it, and on a network with no mDNS and no relay there is nothing to do that.
+// MaxTicketAddrs caps how many addresses an invitation carries.
+//
+// Every one of them is twenty characters somebody may have to type, and it is the length of
+// the ticket that decides how big its QR code comes out — four addresses makes one too large
+// to draw in an ordinary terminal window. The ones left out are not lost: this wire and the
+// rendezvous both find a device that moved.
+const MaxTicketAddrs = 2
+
 func ticketFor(id node.ID, code string, addrs []netip.AddrPort) string {
-	written := make([]string, 0, len(addrs))
-	for _, a := range addrs {
+	written := make([]string, 0, MaxTicketAddrs)
+	for _, a := range likeliest(addrs) {
+		if len(written) == MaxTicketAddrs {
+			break
+		}
 		written = append(written, a.String())
 	}
 
@@ -69,6 +81,55 @@ func ticketFor(id node.ID, code string, addrs []netip.AddrPort) string {
 		ticket += "#" + strings.Join(written, ",")
 	}
 	return ticket
+}
+
+// likeliest sorts addresses by how likely they are to reach this machine from another one.
+//
+// An ordinary home or office network first, then anything else. A virtual bridge is put last:
+// libvirt and docker hand out 192.168.122.x and 172.17.x on every machine that runs them, so
+// the address is real here and means nothing there.
+func likeliest(addrs []netip.AddrPort) []netip.AddrPort {
+	out := make([]netip.AddrPort, 0, len(addrs))
+	for _, at := range addrs {
+		// Dropped rather than ranked last: it is the same address on the far machine as on this
+		// one, so offering it sends them to themselves. A slot spent on it is a slot wasted.
+		if virtual(at.Addr()) {
+			continue
+		}
+		out = append(out, at)
+	}
+
+	sort.SliceStable(out, func(i, j int) bool { return rank(out[i]) < rank(out[j]) })
+	return out
+}
+
+func rank(at netip.AddrPort) int {
+	ip := at.Addr()
+
+	switch {
+	case ip.IsPrivate():
+		return 1
+	case ip.IsLoopback() || ip.IsLinkLocalUnicast():
+		return 4
+	default:
+		return 2
+	}
+}
+
+// virtual spots the ranges a hypervisor or a container runtime hands out on every host.
+func virtual(ip netip.Addr) bool {
+	if !ip.Is4() {
+		return false
+	}
+	b := ip.As4()
+
+	switch {
+	case b[0] == 192 && b[1] == 168 && b[2] == 122: // libvirt
+		return true
+	case b[0] == 172 && b[1] >= 17 && b[1] <= 31: // docker
+		return true
+	}
+	return false
 }
 
 func readTicket(text string) (node.ID, string, []netip.AddrPort, error) {
