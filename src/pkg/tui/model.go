@@ -14,6 +14,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/proto"
+	tickets "github.com/bresilla/drop/src/pkg/ticket"
 	"io"
 )
 
@@ -30,6 +31,10 @@ type Backend interface {
 	History(with book.Entry) ([]convo.Message, error)
 	// Say sends a message.
 	Say(ctx context.Context, to book.Entry, body string) error
+	// Offer puts this device up for pairing and reports the name it paired with. The ticket comes
+	// back at once so it can be shown; the channel yields once the far end has finished.
+	Offer(ctx context.Context) (ticket string, done <-chan string, err error)
+
 	// Watch reads a live path, writing what arrives into screen until ctx ends.
 	Watch(ctx context.Context, on book.Entry, path string, into io.Writer, resize func(cols, rows int)) error
 }
@@ -54,7 +59,10 @@ type Model struct {
 	height int
 
 	// me is this device, shown in the header: two of these side by side are two machines.
-	me      Identity
+	me Identity
+
+	// linking is a pairing being offered, shown until it finishes or is abandoned.
+	linking *pairing
 	peers   []book.Entry
 	atPeer  int
 	paths   []proto.Served
@@ -267,5 +275,56 @@ func loadSelf(back Backend) tea.Cmd {
 	return func() tea.Msg {
 		me, err := back.Self()
 		return selfLoaded{me: me, err: err}
+	}
+}
+
+// pairing is what the interface shows while a device is being linked.
+type pairing struct {
+	ticket string
+	code   string
+	waited <-chan string
+	stop   context.CancelFunc
+}
+
+type pairStarted struct {
+	at  *pairing
+	err error
+}
+
+type pairDone struct{ with string }
+
+// offer puts this device up for pairing.
+func offer(back Backend) tea.Cmd {
+	return func() tea.Msg {
+		ctx, stop := context.WithCancel(context.Background())
+
+		ticket, waited, err := back.Offer(ctx)
+		if err != nil {
+			stop()
+			return pairStarted{err: err}
+		}
+
+		at := &pairing{ticket: ticket, waited: waited, stop: stop}
+
+		// The code is drawn rather than the ticket alone: a phone has no keyboard worth typing a
+		// hundred characters on, and a camera is the whole point of showing one.
+		if drawn, err := tickets.Code(ticket); err == nil {
+			at.code = tickets.Render(drawn)
+		}
+		return pairStarted{at: at}
+	}
+}
+
+// waitForPair blocks until the far end finishes, so the list can be reloaded the moment it does.
+func waitForPair(waited <-chan string) tea.Cmd {
+	if waited == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		with, ok := <-waited
+		if !ok {
+			return nil
+		}
+		return pairDone{with: with}
 	}
 }

@@ -7,7 +7,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"crypto/hmac"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/tmc/go-iroh/iroh"
+
 	"github.com/spf13/cobra"
 
 	"github.com/bresilla/drop/src/pkg/book"
@@ -51,8 +54,31 @@ func runTUI(parent context.Context) error {
 	}
 	defer n.Close()
 
+	pinned, err := book.Load()
+	if err != nil {
+		return err
+	}
+
 	lan, _ := discovery.StartLAN(ctx, n)
 	startRendezvous(ctx, n)
+
+	// The interface serves while it is open, so a device that pairs with it can reach it — and
+	// so what arrives lands in a conversation rather than being refused.
+	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){
+		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
+			defer s.Close()
+			_ = proto.Handle(s, from, proto.Policy{
+				Mounts:  cfg.Mounts,
+				Allow:   accepting(pinned, false),
+				Who:     whoIs(pinned),
+				Message: receiving(pinned, cfg.OpenLinks, nil),
+			})
+		},
+		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
+			defer s.Close()
+			_ = proto.AnswerHello(s, greeting(pinned, cfg.Mounts, from))
+		},
+	})
 
 	program := tea.NewProgram(
 		tui.New(&live{node: n, lan: lan}),
@@ -147,4 +173,54 @@ func (l *live) Self() (tui.Identity, error) {
 		id = id[:12] + "…"
 	}
 	return tui.Identity{Name: node.DisplayName(), ID: id}, nil
+}
+
+// Offer puts this device up for pairing and reports the name it paired with.
+//
+// The interface shows the ticket and the code while this waits, which is the whole point: a device
+// with nothing paired is a dead end, and reaching for a second terminal to fix that is not a design.
+func (l *live) Offer(ctx context.Context) (string, <-chan string, error) {
+	code, err := proto.NewCode()
+	if err != nil {
+		return "", nil, err
+	}
+
+	invite := ticketFor(l.node.ID(), code, discovery.LocalAddrs(l.node))
+	done := make(chan string, 1)
+
+	pinned, err := book.Load()
+	if err != nil {
+		return "", nil, err
+	}
+
+	go serveLoop(ctx, l.node, map[string]func(node.ID, *iroh.Stream){
+		node.ALPNPair: func(from node.ID, s *iroh.Stream) {
+			defer s.Close()
+
+			p, err := proto.AnswerPairing(s, l.node.ID(), node.DisplayName(), written(discovery.LocalAddrs(l.node)))
+			if err != nil {
+				return
+			}
+			// The far end has to prove it was given the code, not merely the address.
+			if !hmac.Equal(p.Proof, codeProof(code, from, l.node.ID())) {
+				return
+			}
+
+			name := p.Name
+			if name == "" {
+				name = node.Brief(from)
+			}
+			pinned.Pair(name, from, p.Secret, p.Addrs...)
+			if err := pinned.Save(); err != nil {
+				return
+			}
+
+			select {
+			case done <- name:
+			default:
+			}
+		},
+	})
+
+	return invite, done, nil
 }

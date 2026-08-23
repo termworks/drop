@@ -15,7 +15,14 @@ func (m Model) View() string {
 		return dimStyle.Render("  starting…")
 	}
 
+	if m.linking != nil {
+		return m.header() + "\n" + m.pairingView() + "\n" + m.footer()
+	}
+
 	body := m.list.View()
+	if m.at == levelDevices && len(m.peers) == 0 {
+		body = m.nothingPaired()
+	}
 	if m.at == levelOpen {
 		body = m.openView()
 	}
@@ -130,8 +137,11 @@ func (m Model) footer() string {
 	case m.at != levelOpen && m.list.FilterState() == list.Filtering:
 		keys = []hint{{"enter", "keep"}, {"esc", "clear"}}
 
+	case m.linking != nil:
+		keys = []hint{{"esc", "cancel"}}
+
 	case m.at == levelDevices:
-		keys = []hint{{"↑↓", "move"}, {"enter", "open"}, {"/", "find"}, {"r", "reload"}, {"q", "quit"}}
+		keys = []hint{{"p", "pair"}, {"↑↓", "move"}, {"enter", "open"}, {"r", "reload"}, {"q", "quit"}}
 
 	case m.at == levelPaths:
 		keys = []hint{{"↑↓", "move"}, {"enter", "open"}, {"esc", "devices"}, {"r", "reload"}}
@@ -148,4 +158,31 @@ func (m Model) footer() string {
 		parts = append(parts, keyStyle.Render(k.key)+sayStyle.Render(" "+k.does))
 	}
 	return " " + strings.Join(parts, sayStyle.Render("  ·  "))
+}
+
+// nothingPaired is the first thing anyone sees, so it says what to do rather than "no items".
+func (m Model) nothingPaired() string {
+	return "\n " + dimStyle.Render("No devices yet.") +
+		"\n\n " + faintStyle.Render("Press ") + keyStyle.Render("p") +
+		faintStyle.Render(" to show a code, then run") +
+		"\n " + kindStyle.Render("   drop pair <ticket>") +
+		faintStyle.Render(" on the other device,") +
+		"\n " + faintStyle.Render("   or point its camera at the code.")
+}
+
+// pairingView is the code, the ticket, and the wait.
+func (m Model) pairingView() string {
+	var out strings.Builder
+
+	out.WriteString("\n " + brandStyle.Render("Pair a device") + "\n")
+
+	if m.linking.code != "" {
+		out.WriteString("\n" + m.linking.code)
+	}
+
+	out.WriteString("\n " + faintStyle.Render("or run this on the other device:") + "\n")
+	out.WriteString(" " + kindStyle.Render("drop pair "+m.linking.ticket) + "\n")
+	out.WriteString("\n " + goodStyle.Render("waiting for it to answer…") + "\n")
+
+	return lines(out.String(), m.listHeight())
 }
