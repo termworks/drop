@@ -1,51 +1,54 @@
 :root {
-  --bg: #fbfafc;
+  --bg: #faf9fb;
   --panel: #ffffff;
-  --line: #e7e2ec;
-  --ink: #221e28;
-  --dim: #6d6579;
-  --soft: #f4f1f7;
+  --line: #e5e1ea;
+  --ink: #1f1b26;
+  --dim: #6b6376;
+  --soft: #f2eff6;
 
-  /* Violet through pink. One ramp, used for anything that is "this device acting". */
-  --violet: #7c3aed;
-  --pink: #db2777;
-  --accent: var(--violet);
-  --accent-soft: #f3e9fd;
-  --grad: linear-gradient(135deg, var(--violet), var(--pink));
-  --mine: var(--violet);
-  --theirs: var(--pink);
-  --bad: #d1436a;
+  /* Deep violet, drifting only slightly toward plum at the far end. The pink is a hint that the
+     gradient is moving, not a second colour competing with the first. */
+  --violet: #4c1d95;
+  --plum: #6b2273;
+  --accent: #5b21b6;
+  --accent-soft: #efe9f7;
+  --grad: linear-gradient(135deg, var(--violet), var(--plum));
+  --on-accent: #ffffff;
+  --theirs: #6b2273;
+  --bad: #a3324f;
 
-  /* One rounding family. Every control, bubble and panel picks from these three and nothing
-     invents its own, which is what makes the page look like one thing. */
-  --r-sm: 12px;
-  --r-md: 16px;
-  --r-lg: 22px;
+  /* One radius. Every rectangle on the page uses it, so nothing looks rounder than anything else. */
+  --r: 12px;
 
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
-  --term-bg: #1b1823;
-  --term-fg: #ddd6e3;
-  --t0: #2c2735; --t1: #e06c9f; --t2: #9ad18f; --t3: #e0b072;
-  --t4: #8fa6f0; --t5: #c58af0; --t6: #7fc9cf; --t7: #cdc6d6;
-  --t8: #5d556b; --t9: #f090b8; --t10: #b5e0aa; --t11: #f0c98f;
-  --t12: #adc0f7; --t13: #d9aef7; --t14: #a2dee3; --t15: #f2eef6;
+  /* Comfortable to hit with a thumb, and the same everywhere so a row of controls lines up. */
+  --touch: 40px;
+
+  --term-bg: #17141d;
+  --term-fg: #cec6d6;
+  --t0: #262130; --t1: #b45f7f; --t2: #7d9e77; --t3: #b18f5e;
+  --t4: #6f83bd; --t5: #9a6fb5; --t6: #5f9c9c; --t7: #b3aabd;
+  --t8: #4a4356; --t9: #c87d99; --t10: #97b88f; --t11: #c7a877;
+  --t12: #8b9ed0; --t13: #b48fc8; --t14: #7fb6ba; --t15: #ded6e6;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #151219;
-    --panel: #1d1923;
-    --line: #322c3c;
-    --ink: #ece7f2;
-    --dim: #9a91a8;
-    --soft: #262030;
+    --bg: #121016;
+    --panel: #1a171f;
+    --line: #2c2734;
+    --ink: #e4dfeb;
+    --dim: #8f8799;
+    --soft: #221d2a;
 
-    --violet: #b388f9;
-    --pink: #f472b6;
-    --accent-soft: #2a2036;
-    --bad: #f0768f;
+    --violet: #5b3a9e;
+    --plum: #743a80;
+    --accent: #9070d8;
+    --accent-soft: #241d30;
+    --theirs: #a878b8;
+    --bad: #c76e86;
   }
 }
 
@@ -56,24 +59,23 @@
    permanently on screen — including the drag overlay, on top of everything. */
 [hidden] { display: none !important; }
 
-/* A squircle is the shape between a circle and a square. Where the browser understands it every
-   rounded thing gets the same one; where it does not, the border-radius above is already correct
-   on its own and nothing looks broken. */
-@supports (corner-shape: squircle) {
-  .sq, button, input, .bubble, #peers button, #spaces button,
-  .view, #files-drop, #drop-target, #me, #transfers .bar-outer {
-    corner-shape: squircle;
-  }
-}
+html, body { height: 100%; }
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
   font: 15px/1.55 var(--sans);
+  -webkit-text-size-adjust: 100%;
 }
 
-.shell { display: grid; grid-template-columns: 260px 1fr; height: 100vh; }
+/* dvh rather than vh: on a phone the address bar shrinks and grows, and vh does not notice, so a
+   composer pinned to the bottom ends up under the browser's own chrome. */
+.shell {
+  display: grid;
+  grid-template-columns: 268px 1fr;
+  height: 100dvh;
+}
 
 /* ---------------------------------------------------------------- who this page is */
 
@@ -90,19 +92,19 @@ aside {
 #me {
   margin: 12px;
   padding: 12px 14px;
-  border-radius: var(--r-md);
+  border-radius: var(--r);
   background: var(--grad);
-  color: #fff;
+  color: var(--on-accent);
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
 
-#me .who { display: flex; align-items: baseline; gap: 8px; }
-#me .name { font-weight: 650; font-size: 16px; letter-spacing: 0.01em; }
-#me .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em; opacity: 0.75; }
-#me .id { font: 11px var(--mono); opacity: 0.85; overflow-wrap: anywhere; }
-#me .addr { font: 10px var(--mono); opacity: 0.7; }
+#me .who { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+#me .name { font-weight: 650; font-size: 16px; }
+#me .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em; opacity: 0.7; }
+#me .id { font: 11px var(--mono); opacity: 0.8; overflow-wrap: anywhere; }
+#me .addr { font: 10px var(--mono); opacity: 0.62; overflow-wrap: anywhere; }
 
 aside > header {
   display: flex;
@@ -120,34 +122,22 @@ aside h1 {
   font-weight: 600;
 }
 
-#refresh {
-  margin-left: auto;
-  border: 0;
-  background: none;
-  color: var(--dim);
-  cursor: pointer;
-  font-size: 15px;
-  padding: 2px 6px;
-  border-radius: var(--r-sm);
-}
-
-#refresh:hover { color: var(--accent); background: var(--soft); }
-
 #peers { list-style: none; margin: 0; padding: 0 10px 10px; overflow-y: auto; flex: 1; }
 
 #peers button {
   width: 100%;
+  min-height: var(--touch);
   text-align: left;
   border: 1px solid transparent;
   background: none;
   color: var(--ink);
-  padding: 9px 12px;
-  border-radius: var(--r-md);
+  padding: 8px 12px;
+  border-radius: var(--r);
   cursor: pointer;
   font: inherit;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   margin-bottom: 2px;
 }
 
@@ -155,19 +145,19 @@ aside h1 {
 
 #peers button[aria-current="true"] {
   background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
   font-weight: 600;
 }
 
-#peers .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--grad); flex: none; }
-#peers button[aria-current="false"] .dot { opacity: 0.35; }
+#peers .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+#peers button[aria-current="false"] .dot { opacity: 0.3; }
 
 #peers .unread {
   margin-left: auto;
-  background: var(--grad);
-  color: #fff;
-  border-radius: 999px;
-  padding: 1px 8px;
+  background: var(--accent);
+  color: var(--on-accent);
+  border-radius: 7px;
+  padding: 1px 7px;
   font-size: 11px;
   font-weight: 700;
 }
@@ -181,36 +171,56 @@ aside h1 {
 
 main { position: relative; display: flex; flex-direction: column; min-width: 0; }
 
-.empty { margin: auto; color: var(--dim); }
+.empty { margin: auto; color: var(--dim); padding: 20px; text-align: center; }
 
 #device { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
 #device > header {
-  padding: 16px 22px 12px;
+  padding: 14px 20px 12px;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
+  min-height: 56px;
 }
 
 #device .name { font-weight: 650; font-size: 17px; }
 #device .id { font: 11px var(--mono); color: var(--dim); }
+
+/* Only shown when the sidebar is not, which is the narrow layout below. */
+#back {
+  display: none;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  border-radius: var(--r);
+  width: var(--touch);
+  height: var(--touch);
+  flex: none;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
 
 /* The namespaces a device serves. This is the whole navigation: what a path does was decided in
    that device's config, so the page only shows what came back and opens the matching view. */
 #spaces {
   display: flex;
   gap: 8px;
-  padding: 0 22px 14px;
+  padding: 0 20px 14px;
   border-bottom: 1px solid var(--line);
   overflow-x: auto;
+  scrollbar-width: none;
 }
 
+#spaces::-webkit-scrollbar { display: none; }
+
 #spaces button {
+  min-height: var(--touch);
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--ink);
-  border-radius: var(--r-md);
-  padding: 7px 14px;
+  border-radius: var(--r);
+  padding: 6px 14px;
   cursor: pointer;
   font: inherit;
   font-size: 13px;
@@ -218,7 +228,7 @@ main { position: relative; display: flex; flex-direction: column; min-width: 0; 
   display: flex;
   align-items: center;
   gap: 8px;
-  line-height: 1.4;
+  flex: none;
 }
 
 #spaces button:hover { border-color: var(--accent); color: var(--accent); }
@@ -226,40 +236,42 @@ main { position: relative; display: flex; flex-direction: column; min-width: 0; 
 #spaces button[aria-current="true"] {
   background: var(--grad);
   border-color: transparent;
-  color: #fff;
+  color: var(--on-accent);
 }
 
 #spaces .kind {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  opacity: 0.72;
+  opacity: 0.68;
 }
 
-.note { color: var(--dim); font-size: 13px; padding: 12px 22px; margin: 0; }
+.note { color: var(--dim); font-size: 13px; padding: 12px 20px; margin: 0; }
 
 .view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
 /* ---------------------------------------------------------------- controls */
 
-/* Every control is the same shape and the same height. The bubbles set the rounding and these
-   follow it, so nothing on the page argues with anything else. */
-button, input {
-  font: inherit;
-  border-radius: var(--r-md);
-}
+/* Every control is one shape and one height, so a row of them lines up and nothing looks rounder
+   than its neighbour. */
+button, input { font: inherit; border-radius: var(--r); }
 
-.btn, button[type="submit"], #term-go, #term-stop, #attach {
+.btn, button[type="submit"], #term-go, #term-stop, #attach, #refresh, #back {
+  min-height: var(--touch);
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--ink);
-  padding: 9px 16px;
+  padding: 0 16px;
   cursor: pointer;
   font-size: 14px;
-  line-height: 1.4;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
-.btn:hover, button[type="submit"]:hover, #term-go:hover, #term-stop:hover, #attach:hover {
+.btn:hover, button[type="submit"]:hover, #term-go:hover, #term-stop:hover,
+#attach:hover, #refresh:hover, #back:hover {
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -267,50 +279,53 @@ button, input {
 .btn-primary, button[type="submit"] {
   background: var(--grad);
   border-color: transparent;
-  color: #fff;
+  color: var(--on-accent);
 }
 
-.btn-primary:hover, button[type="submit"]:hover { color: #fff; opacity: 0.9; border-color: transparent; }
+.btn-primary:hover, button[type="submit"]:hover {
+  color: var(--on-accent);
+  border-color: transparent;
+  filter: brightness(1.12);
+}
 
 button[disabled] { opacity: 0.45; cursor: default; }
 
+#refresh { margin-left: auto; width: var(--touch); padding: 0; border-color: transparent; background: none; }
+#refresh:hover { background: var(--soft); }
+
 .field {
   flex: 1;
-  padding: 9px 14px;
+  min-width: 0;
+  min-height: var(--touch);
+  padding: 0 14px;
   border: 1px solid var(--line);
   background: var(--bg);
   color: var(--ink);
-  min-width: 0;
 }
 
 .field:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 /* ---------------------------------------------------------------- chat */
 
-#log { list-style: none; margin: 0; padding: 18px 22px; overflow-y: auto; flex: 1; }
+#log { list-style: none; margin: 0; padding: 18px 20px; overflow-y: auto; flex: 1; }
 
-#log li { margin-bottom: 12px; max-width: 66ch; }
+#log li { margin-bottom: 12px; max-width: min(66ch, 86%); }
 #log li.mine { margin-left: auto; }
 
 .bubble {
   border: 1px solid var(--line);
   background: var(--panel);
-  border-radius: var(--r-lg);
-  padding: 9px 14px;
+  border-radius: var(--r);
+  padding: 9px 13px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-li.mine .bubble {
-  background: var(--grad);
-  border-color: transparent;
-  color: #fff;
-}
+li.mine .bubble { background: var(--grad); border-color: transparent; color: var(--on-accent); }
+li.mine .bubble a { color: var(--on-accent); text-decoration: underline; }
+li.mine .tag { color: rgba(255, 255, 255, 0.78); }
 
-li.mine .bubble a { color: #fff; text-decoration: underline; }
-li.mine .tag { color: rgba(255, 255, 255, 0.8); }
-
-.meta { font-size: 11px; color: var(--dim); margin-top: 4px; padding: 0 6px; }
+.meta { font-size: 11px; color: var(--dim); margin-top: 4px; padding: 0 4px; }
 li.mine .meta { text-align: right; }
 
 li.event { max-width: none; margin-left: 0; }
@@ -329,7 +344,7 @@ li.event .bubble { border: 0; background: none; color: var(--dim); font-size: 12
 #compose, #link-form {
   display: flex;
   gap: 10px;
-  padding: 14px 22px;
+  padding: 12px 20px calc(12px + env(safe-area-inset-bottom));
   border-top: 1px solid var(--line);
   background: var(--panel);
 }
@@ -337,18 +352,18 @@ li.event .bubble { border: 0; background: none; color: var(--dim); font-size: 12
 /* ---------------------------------------------------------------- files */
 
 #files-drop {
-  margin: 22px;
+  margin: 20px;
   border: 2px dashed var(--line);
-  border-radius: var(--r-lg);
-  padding: 34px;
+  border-radius: var(--r);
+  padding: clamp(20px, 6vw, 36px);
   text-align: center;
   color: var(--dim);
 }
 
-#files-drop strong { color: var(--ink); font-weight: 650; display: block; margin-bottom: 6px; }
-#attach { padding: 5px 12px; font-size: 13px; border-radius: var(--r-sm); }
+#files-drop strong { color: var(--ink); font-weight: 650; display: block; margin-bottom: 8px; }
+#attach { min-height: 34px; padding: 0 12px; font-size: 13px; }
 
-#transfers { list-style: none; margin: 0; padding: 0 22px 22px; overflow-y: auto; }
+#transfers { list-style: none; margin: 0; padding: 0 20px 20px; overflow-y: auto; }
 
 #transfers li {
   display: flex;
@@ -357,17 +372,18 @@ li.event .bubble { border: 0; background: none; color: var(--dim); font-size: 12
   padding: 9px 0;
   border-bottom: 1px solid var(--line);
   font-size: 14px;
+  flex-wrap: wrap;
 }
 
-#transfers .what { min-width: 0; overflow-wrap: anywhere; }
+#transfers .what { min-width: 0; overflow-wrap: anywhere; flex: 1 1 40%; }
 
 #transfers .bar-outer {
-  flex: 1;
+  flex: 1 1 40%;
   height: 6px;
   background: var(--soft);
-  border-radius: 999px;
+  border-radius: 3px;
   overflow: hidden;
-  min-width: 60px;
+  min-width: 80px;
 }
 
 #transfers .bar-inner { height: 100%; width: 0; background: var(--grad); transition: width 0.15s; }
@@ -380,28 +396,30 @@ li.event .bubble { border: 0; background: none; color: var(--dim); font-size: 12
   display: flex;
   gap: 10px;
   align-items: center;
-  padding: 12px 22px;
+  padding: 12px 20px;
   border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
 }
 
 #term-state { color: var(--dim); font-size: 13px; margin-right: auto; }
 #term-state.live { color: var(--accent); font-weight: 600; }
 #term-state.gone { color: var(--bad); }
 
+/* The far end decides how wide its terminal is, so this scrolls rather than wraps: a rewrapped
+   terminal is not the same picture. */
 .term {
   flex: 1;
   min-height: 0;
   overflow: auto;
   background: var(--term-bg);
   color: var(--term-fg);
-  font: 13px/1.3 var(--mono);
-  padding: 14px 16px;
-  margin: 0 22px 22px;
-  border-radius: var(--r-md);
+  font: clamp(10px, 2.2vw, 13px)/1.3 var(--mono);
+  padding: 12px 14px;
+  margin: 0 20px 20px;
+  border-radius: var(--r);
+  -webkit-overflow-scrolling: touch;
 }
 
-/* pre keeps the padding the grid is made of, so a background colour runs to the end of a line the
-   way it does in a terminal. */
 .trow { white-space: pre; min-height: 1.3em; }
 
 /* ---------------------------------------------------------------- drag overlay */
@@ -413,17 +431,55 @@ li.event .bubble { border: 0; background: none; color: var(--dim); font-size: 12
   place-items: center;
   background: color-mix(in srgb, var(--bg) 86%, transparent);
   border: 2px dashed var(--accent);
-  border-radius: var(--r-lg);
+  border-radius: var(--r);
   color: var(--accent);
   font-weight: 650;
   pointer-events: none;
   z-index: 5;
 }
 
-@media (max-width: 640px) {
-  .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
-  aside { border-right: 0; border-bottom: 1px solid var(--line); max-height: 40vh; }
-  #spaces, #device > header, #compose, #link-form, .note { padding-left: 16px; padding-right: 16px; }
-  #log { padding: 14px 16px; }
-  .term { margin: 0 16px 16px; }
+/* ---------------------------------------------------------------- adapting */
+
+/* Roomy: the identity card can afford to breathe. */
+@media (min-width: 1200px) {
+  .shell { grid-template-columns: 300px 1fr; }
+  #log { padding: 22px 28px; }
+  #device > header, #spaces, #compose, #link-form { padding-left: 28px; padding-right: 28px; }
+  .term { margin-left: 28px; margin-right: 28px; }
+}
+
+/* Tight: one pane at a time. A phone has no room for a list beside a conversation, so the list is
+   the page until a device is chosen, and then the device is. */
+@media (max-width: 860px) {
+  .shell { grid-template-columns: 1fr; }
+
+  aside { border-right: 0; }
+  main { display: none; }
+
+  body.viewing aside { display: none; }
+  body.viewing main { display: flex; }
+
+  #back { display: inline-flex; }
+  #me .addr { display: none; }
+
+  #device > header { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  #spaces { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  #log { padding: 14px; }
+  #compose, #link-form { padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); }
+  .note { padding: 10px 14px; }
+  #files-drop { margin: 14px; }
+  #transfers { padding: 0 14px 14px; }
+  .term { margin: 0 14px 14px; }
+  #view-term > .bar { padding: 10px 14px; }
+}
+
+/* Short: a landscape phone has almost no height, so the chrome gives way to the content. */
+@media (max-height: 480px) {
+  #me { margin: 8px; padding: 8px 12px; }
+  #me .id, #me .addr { display: none; }
+  aside > header { padding: 2px 14px 6px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
 }

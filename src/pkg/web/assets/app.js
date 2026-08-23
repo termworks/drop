@@ -88,6 +88,7 @@ async function open(peer) {
   space = null;
 
   pick.hidden = true;
+  document.body.classList.add("viewing");
   device.hidden = false;
   device.querySelector(".name").textContent = peer.name;
   device.querySelector(".id").textContent = peer.id.slice(0, 16) + "…";
@@ -548,3 +549,11 @@ async function loadSelf() {
 }
 
 loadSelf();
+
+// On a narrow screen the list and the device are one pane at a time, so leaving a device has to be
+// possible. On a wide one both are on screen and this never shows.
+document.querySelector("#back").addEventListener("click", () => {
+  stopWatching();
+  document.body.classList.remove("viewing");
+  loadPeers();
+});
