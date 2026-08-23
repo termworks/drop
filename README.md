@@ -16,7 +16,7 @@ A node's address is its ed25519 public key, and it never changes. Finding where 
 *is* happens in three steps, cheapest first:
 
 1. **mDNS**, if both machines are on the same network
-2. **the DHT**, under a rendezvous only the two paired devices can compute
+2. **a rendezvous relay**, under an identity only the two paired devices can compute
 3. **a relay**, when a NAT will not allow a direct connection, with hole-punching upgrading to a
    direct link when it can
 
@@ -31,12 +31,12 @@ not from its public key:
 key = HMAC-SHA256(shared_secret, "drop:pair:v1:" + hour)
 ```
 
-Three consequences. Someone holding your peer id cannot look up where you are or watch when you
+Three consequences. Someone holding your endpoint id cannot look up where you are or watch when you
 come online. The key rotates hourly, so learning one buys no lasting handle. And because the secret
 is per-pair, one paired device cannot observe your availability to another.
 
-The secret is derived during pairing over a stream libp2p has already encrypted and mutually
-authenticated, mixing both sides' nonces through HKDF, salted with both peer ids and ordered so the
+The secret is derived during pairing over a stream QUIC has already encrypted and mutually
+authenticated, mixing both sides' nonces through HKDF, salted with both endpoint ids and ordered so the
 two ends compute the same value.
 
 ## status
@@ -45,7 +45,7 @@ Discovery, pairing and transfer work.
 
 - ed25519 identity, persisted; the public half is the address
 - pairing over a one-time 60-bit code, hashed into its own rendezvous
-- private DHT rendezvous per pair, hourly rotation
+- private rendezvous per pair, hourly rotation
 - AutoRelay, so a node behind a NAT still has a dialable address
 - transfer with blake3 verification, resume, and paired-only acceptance
 - directories are not supported yet; files only
@@ -55,9 +55,10 @@ Discovery, pairing and transfer work.
 ```
 make build        # the static release binary, into ./drop
 make run peers    # run it; bare words pass through
-make verify       # fmt-check, vet, test, build
+make verify       # fmt-check, vet, test, test-web, build
+make test         # the go suite
+make test-web     # the page rules, if bun or deno is installed
 make install      # into $PREFIX/bin
-make compress     # a packed copy in dist/, for shipping
 ```
 
 At an oslo prompt in this directory `make` is enough; everywhere else it is `oslo make`.
@@ -66,37 +67,42 @@ The toolchain comes from the flake — `nix develop`, or `direnv allow` and it i
 
 ### size
 
-The binary is around 32 MB, and that is libp2p: `.text` 12.9 MB, Go's `.gopclntab` 10.6 MB and
-`.rodata` 6.2 MB. `-s -w`, `-trimpath` and `CGO_ENABLED=0` are already applied — `-s -w` strips
-DWARF and the symbol table, not `gopclntab`, which Go needs for panics and has no flag to remove.
-What is left is genuine code.
+The binary is 6.4 MB packed, from 18 MB compiled. `-s -w`, `-trimpath` and
+`CGO_ENABLED=0` are already applied — `-s -w` strips DWARF and the symbol table, not
+`gopclntab`, which Go needs for panics and has no flag to remove. What is left is genuine
+code.
 
-`make compress` packs a copy into `dist/`:
+It was 32 MB on libp2p. Moving to iroh took it to 15 MB compiled: 682 packages became 307.
+
+`build` packs with upx, and the compression level is free at startup — `-1`, `-5` and `-9` all
+unpack in the same 0.09s — so the default is the smallest of them. Only lzma is slow to
+unpack, which is why it is not the default.
+whichever of these you are looking at.
 
 ```
-uncompressed   32.1 MB   0.005s to start
--9 (default)   11.7 MB   0.09s
---best --lzma   8.6 MB   0.40s
+drop ls beta          the command line: what beta shares with you
+drop ui               a full-screen interface: enter a device, then a path
+drop web              a page in a browser, on this machine or from your phone
 ```
-
-The compression level is free at startup — `-1`, `-5` and `-9` all unpack in the same 0.09s — so
-the default is the smallest of them. Only lzma is slow to unpack, which is why it is not the
-default. It writes to `dist/` rather than over the binary, so `build` keeps telling the truth
-about what it produced.
 
 ## commands
 
 ```
-drop to <peer>[/path] [args]  open a namespace; what it is decides what happens
-drop serve                     serve the namespaces the config declares
-drop ns                        what this node serves
-drop pair [code]               link a device to this one
-drop chat <name>               talk to a device
-drop log [name]                a conversation, or all of them
-drop peers                     who is on this network
-drop peers list                the devices this one knows
-drop find <name|id>            locate a paired device
-drop id                        this node's peer id
+drop ls [device[/path]]        what a device shares with you
+drop to <device>/<path> [args] open a path; what is there decides what happens
+drop ui                        all of it, in a full-screen terminal
+drop web [--addr]              all of it, in a browser
+
+drop pair [ticket]             link a device to this one; --qr to show a code
+drop passwd                    hash a password, to guard a path with
+
+drop serve                     serve what the config declares, and stay reachable
+drop ns                        what this node serves, and who to
+drop peers                     the devices this one knows
+drop chat <device>             talk to one
+drop log [device]              a conversation, or all of them
+drop cast                      serve a terminal read from stdin as asciicast
+drop id                        this node's identity
 ```
 
 ## namespaces
@@ -129,6 +135,42 @@ Asking a namespace for something it is not is refused with the reason, rather th
 $ drop to laptop/chat report.pdf
 drop: 12D3KooW… declined: /chat is a chat namespace
 ```
+
+## who may reach what
+
+Every path carries an `access` rule, and it **inherits down the tree**. A path with no rule
+anywhere above it is reachable by nobody — forgetting to write one closes a path rather than
+opening it.
+
+A rule declared deeper **replaces** the one it inherited rather than merging with it, so a
+declaration says what it means.
+
+```lua
+access = { "bob", "carol" }      -- paired devices, by the name you filed them under
+access = "paired"                 -- anyone in your address book
+access = { keys = { "7b97…" } }   -- a machine that never paired, by its endpoint id
+access = { password = "$argon2id$…" }
+access = { paired = { "laptop" }, password = "$argon2id$…", require = "all" }
+```
+
+An endpoint id is a public key, and QUIC proves possession of the private half during the
+handshake — so `keys` is a real cryptographic statement, not a hostname you could spoof. What
+pairing buys on top is a shared secret, which is what the rendezvous derives its rotating
+identity from.
+
+A password is the weak one: the other two bind to a key nobody else holds, and a password
+binds to knowledge, which spreads. It earns its place because it is the only one that works
+before you know who is coming. `drop passwd` prints the hash to put in the config — the
+plaintext never goes in a file, so a leaked config is not a leaked password.
+
+### listings are filtered, not refused
+
+`drop ls beta` shows what beta shares **with you**. A path shared with someone else is absent,
+not marked refused: a listing that showed the whole tree would tell someone which machine has
+a terminal worth attacking.
+
+A path guarded by a password is in no listing at all — nobody offers a secret to ask what
+exists — so whoever you hand one to needs the path as well as the word.
 
 ### the types
 
@@ -166,15 +208,23 @@ drop.name = "workstation"
 drop.open_links = true
 drop.rendezvous = true  -- optional; see below
 
-drop.mount("/inbox",        { type = "files",  dir = "~/Downloads" })
-drop.mount("/inbox/photos", { type = "files",  dir = "~/Pictures/drop" })
-drop.mount("/logs",         { type = "stream", command = "journalctl -f -n 50" })
-drop.mount("/term",         { type = "tty",    shell = "/bin/sh", input = false })
-drop.mount("/chat",         { type = "chat" })
-drop.mount("/open",         { type = "link",   action = "xdg-open" })
+-- A branch: no type, just who may reach everything under it. Access inherits downward, and
+-- a path with no rule above it is reachable by nobody.
+drop.mount("/work",    { access = { "laptop", "phone" } })
+drop.mount("/friends", { access = { "bob", "carol" } })
+
+drop.mount("/work/inbox", { type = "files",  dir = "~/Downloads" })
+drop.mount("/work/logs",  { type = "stream", command = "journalctl -f -n 50" })
+drop.mount("/work/term",  { type = "tty",    shell = "/bin/sh", input = false })
+
+drop.mount("/friends/chat", { type = "chat" })
+drop.mount("/friends/open", { type = "link", action = "xdg-open" })
+
+-- A deeper rule replaces the one above it rather than adding to it.
+drop.mount("/friends/just-bob", { type = "files", dir = "~/bob", access = { "bob" } })
 
 if os.getenv("DROP_DEV") then
-  drop.mount("/build", { type = "stream", command = "tail -f /tmp/build.log" })
+  drop.mount("/work/build", { type = "stream", command = "tail -f /tmp/build.log" })
 end
 ```
 
@@ -217,9 +267,31 @@ because those are decisions.
 
 `drop ns` prints what this node serves. `misc/init.lua` is a worked example.
 
+## the phone
+
+`android/` is a share client, not a node: it holds no identity and pairs with nothing. It asks
+a machine running `drop web` to send on its behalf, which is why it is four HTTP calls and no
+cryptography.
+
+Share anything to *drop* and it asks the two questions the share sheet cannot: which device,
+and which path. It offers only what will take it — a text share sees `chat` paths, a file share
+sees `files` paths, and a terminal is never offered because it cannot be sent to.
+
+The bridge has to be reachable from the phone, so run it on an interface rather than loopback:
+
+```
+drop web --addr 0.0.0.0:47990
+```
+
+There is no password on that page. Anyone who can reach the address can read your
+conversations, send as you, and watch a terminal — fine on a private network, not on café wifi.
+
+The APK is on the releases page, signed with a debug key so it installs by sideloading. It
+talks plain HTTP, which a native app may do and a browser page may not.
+
 ## conversations
 
-Everything drop does is a **conversation with a peer id**. Files, chat, links, terminals and
+Everything drop does is a **conversation with an endpoint id**. Files, chat, links, terminals and
 endless streams are modalities inside it, not separate features that happen to share a binary:
 
 ```
@@ -344,7 +416,7 @@ rendered from a gappy byte stream is worse than one that stopped.
 
 ## staying reachable
 
-`drop daemon` keeps the node announced and holding a relay reservation. Install it as a user
+`drop serve` keeps the node reachable. Install it as a user
 service so the device is reachable whenever it is on:
 
 ```
@@ -357,27 +429,33 @@ Without a daemon, `--to laptop` only connects while someone is running `drop rec
 ## layout
 
 ```
-src/main.go         entry point; the version lives here
-src/cmd/            the cobra command tree, one file per command
-src/pkg/node/       identity, the libp2p host, DHT bootstrap, relays
-src/pkg/discovery/  mDNS and the private DHT rendezvous
-src/pkg/proto/      pairing, hello, transfer, and the framing under them
-src/pkg/book/       the address book, including pairing secrets
-src/pkg/cast/       one terminal fanned out to many watchers
-src/pkg/convo/      the durable conversation log and outbox
-src/pkg/ns/         namespace paths and the mount table
-src/pkg/conf/       the Lua configuration
-misc/               the systemd user unit
+src/main.go            entry point; the version lives here
+src/cmd/               the cobra command tree, one file per command
+src/pkg/node/          identity, the iroh endpoint, relays
+src/pkg/discovery/     finding a device on this wire
+src/pkg/rendezvous/    finding one that moved, under a derived identity
+src/pkg/ns/            paths, kinds, and the access rules on them
+src/pkg/passwd/        argon2id, for the secrets that guard a path
+src/pkg/proto/         pairing, hello, transfer, and the framing under them
+src/pkg/book/          the address book, including pairing secrets
+src/pkg/convo/         the durable conversation log and outbox
+src/pkg/term/          a terminal screen, rebuilt from what a device sends
+src/pkg/cast/          one terminal fanned out to many watchers
+src/pkg/asciicast/     reading an asciicast stream
+src/pkg/ticket/        a pairing invitation, as text, link, or QR
+src/pkg/tui/           the full-screen interface
+src/pkg/web/           the browser bridge and the page it serves
+src/pkg/conf/          the Lua configuration
+android/               the phone share client
+misc/                  the systemd user unit
 ```
 
-## configuration
+## environment
 
 ```
 DROP_NAME          what this node calls itself; defaults to the hostname
-DROP_BOOTSTRAP     comma-separated /p2p/ multiaddrs to join the DHT through;
-                   defaults to the public libp2p bootstrappers
-DROP_RELAYS        comma-separated /p2p/ multiaddrs of relays to reserve on;
-                   without it, relays are discovered through the DHT
+DROP_PORT          the port to listen on; defaults to 47777
+DROP_RELAYS        relay urls to use instead of the defaults, when a rendezvous is on
 DROP_CONFIG        the config file; defaults to $XDG_CONFIG_HOME/drop/init.lua
 DROP_OPENER        what opens an arriving link; defaults to xdg-open
 XDG_CONFIG_HOME    where identity and peers.json live; defaults to ~/.config
