@@ -140,3 +140,11 @@ func (l *live) Watch(ctx context.Context, on book.Entry, path string, into io.Wr
 }
 
 var _ = fmt.Sprintf
+
+func (l *live) Self() (tui.Identity, error) {
+	id := l.node.ID().String()
+	if len(id) > 12 {
+		id = id[:12] + "…"
+	}
+	return tui.Identity{Name: node.DisplayName(), ID: id}, nil
+}

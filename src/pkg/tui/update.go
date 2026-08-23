@@ -19,6 +19,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.key(msg)
 
+	case selfLoaded:
+		if msg.err == nil {
+			m.me = msg.me
+		}
+		return m, nil
+
 	case peersLoaded:
 		m.loading = false
 		if msg.err != nil {

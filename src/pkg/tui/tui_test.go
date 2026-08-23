@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/tmc/go-iroh/key"
 
 	"github.com/bresilla/drop/src/pkg/book"
@@ -87,10 +88,16 @@ func withOne() *fake {
 // Commands run with a deadline rather than being waited on: some of them are meant never to
 // return — a watch runs until its path is left — and a test that waited would simply hang.
 func settle(t *testing.T, m Model, msgs ...tea.Msg) Model {
+	return settleFrom(t, m, nil, msgs...)
+}
+
+// settleFrom is the same, with a command to run first — which is how startup is driven, since Init
+// hands back a batch rather than a message.
+func settleFrom(t *testing.T, m Model, seed tea.Cmd, msgs ...tea.Msg) Model {
 	t.Helper()
 
 	model := tea.Model(m)
-	var queue []tea.Cmd
+	queue := []tea.Cmd{seed}
 
 	for _, msg := range msgs {
 		var cmd tea.Cmd
@@ -117,6 +124,12 @@ func settle(t *testing.T, m Model, msgs ...tea.Msg) Model {
 				continue
 			}
 			if msg == nil {
+				continue
+			}
+
+			// A batch is a bag of commands rather than something to hand to Update.
+			if batch, ok := msg.(tea.BatchMsg); ok {
+				queue = append(queue, batch...)
 				continue
 			}
 
@@ -147,7 +160,7 @@ func TestTheViewNamesWhatIsThere(t *testing.T) {
 	m := start(t, withOne())
 
 	drawn := m.View()
-	for _, want := range []string{"beta", "/friends/chat", "/term", "devices", "shared with you"} {
+	for _, want := range []string{"beta", "/friends/chat", "/term", "devices", "alpha", "chat", "tty"} {
 		if !strings.Contains(drawn, want) {
 			t.Fatalf("the view never mentions %q", want)
 		}
@@ -284,5 +297,70 @@ func start(t *testing.T, back Backend) Model {
 	t.Helper()
 
 	m := New(back)
-	return settle(t, m, m.Init()(), tea.WindowSizeMsg{Width: 120, Height: 30})
+	return settleFrom(t, m, m.Init(), tea.WindowSizeMsg{Width: 120, Height: 30})
+}
+
+func (f *fake) Self() (Identity, error) { return Identity{Name: "alpha", ID: "e88c42df318c…"}, nil }
+
+func TestStartupLoadsEverything(t *testing.T) {
+	m := start(t, withOne())
+
+	if m.me.Name != "alpha" {
+		t.Fatalf("this device = %+v", m.me)
+	}
+	if len(m.peers) != 1 {
+		t.Fatalf("peers = %+v", m.peers)
+	}
+	if len(m.paths) != 2 {
+		t.Fatalf("paths = %+v", m.paths)
+	}
+}
+
+// A pane is narrow and a path is not. Wrapping would break the column, so the head gives way and
+// the tail — which is what tells two paths apart — is kept.
+func TestALongPathIsShortenedFromTheFront(t *testing.T) {
+	got := fit("/one/two/five/eight/nine", 12)
+
+	if lipgloss.Width(got) > 12 {
+		t.Fatalf("%q is still %d wide", got, lipgloss.Width(got))
+	}
+	if !strings.HasSuffix(got, "nine") {
+		t.Fatalf("%q lost the end, which is the part that identifies it", got)
+	}
+	if !strings.HasPrefix(got, "…") {
+		t.Fatalf("%q does not say it was shortened", got)
+	}
+}
+
+func TestAShortPathIsLeftAlone(t *testing.T) {
+	if got := fit("/chat", 20); got != "/chat" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// Every row of a pane has to be the same width, or the borders do not line up.
+func TestThePanesAreRectangular(t *testing.T) {
+	m := start(t, withOne())
+
+	for _, row := range strings.Split(m.View(), "\n") {
+		if row == "" {
+			continue
+		}
+		if got := lipgloss.Width(row); got > 120 {
+			t.Fatalf("a row is %d wide on a 120 column screen: %q", got, row)
+		}
+	}
+}
+
+// A device that never answers must not leave the pane saying "asking…" forever.
+func TestAnUnreachableDeviceIsReported(t *testing.T) {
+	m := start(t, withOne())
+
+	m = settle(t, m, pathsLoaded{peer: "beta", err: context.DeadlineExceeded})
+	if m.trouble == "" {
+		t.Fatal("a failed lookup left nothing to act on")
+	}
+	if m.loading {
+		t.Fatal("still loading after a failure")
+	}
 }

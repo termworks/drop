@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -17,6 +18,8 @@ import (
 // Backend is what the interface needs from the rest of drop. An interface rather than the node
 // itself, so the panes can be driven by a fake and tested without a network.
 type Backend interface {
+	// Self is this device, for the header.
+	Self() (Identity, error)
 	// Peers is the address book.
 	Peers() ([]book.Entry, error)
 	// Serves asks a device what it shares with us.
@@ -46,6 +49,8 @@ type Model struct {
 	width  int
 	height int
 
+	// me is this device, shown in the header: two of these side by side are two machines.
+	me      Identity
 	peers   []book.Entry
 	atPeer  int
 	paths   []proto.Served
@@ -70,7 +75,7 @@ func New(back Backend) Model {
 	return Model{back: back, focus: panePeers}
 }
 
-func (m Model) Init() tea.Cmd { return loadPeers(m.back) }
+func (m Model) Init() tea.Cmd { return tea.Batch(loadSelf(m.back), loadPeers(m.back)) }
 
 // ---------------------------------------------------------------- what arrives
 
@@ -106,9 +111,19 @@ func loadPeers(back Backend) tea.Cmd {
 	}
 }
 
+// Reaching costs a lookup and a dial, so it gets a deadline: without one an unreachable device
+// leaves the pane saying "asking…" for as long as the program is open, with nothing to act on.
+const askFor = 30 * time.Second
+
 func loadPaths(back Backend, with book.Entry) tea.Cmd {
 	return func() tea.Msg {
-		paths, err := back.Serves(context.Background(), with)
+		ctx, cancel := context.WithTimeout(context.Background(), askFor)
+		defer cancel()
+
+		paths, err := back.Serves(ctx, with)
+		if err != nil && ctx.Err() != nil {
+			err = fmt.Errorf("%s did not answer within %s", with.Name, askFor)
+		}
 		return pathsLoaded{peer: with.Name, paths: paths, err: err}
 	}
 }
@@ -169,8 +184,6 @@ func joinPanes(width int, panes ...string) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, panes...)
 }
 
-var _ = fmt.Sprintf
-
 // say puts a message on the wire.
 func say(back Backend, to book.Entry, body string) tea.Cmd {
 	return func() tea.Msg {
@@ -220,10 +233,36 @@ func (m Model) viewWidth() int {
 	return got
 }
 
+func (m Model) paneHeight() int {
+	got := m.height - 5
+	if got < 4 {
+		return 4
+	}
+	return got
+}
+
 func (m Model) viewHeight() int {
 	got := m.height - 6
 	if got < 5 {
 		return 5
 	}
 	return got
+}
+
+// Identity is this device, as the header shows it.
+type Identity struct {
+	Name string
+	ID   string
+}
+
+type selfLoaded struct {
+	me  Identity
+	err error
+}
+
+func loadSelf(back Backend) tea.Cmd {
+	return func() tea.Msg {
+		me, err := back.Self()
+		return selfLoaded{me: me, err: err}
+	}
 }
