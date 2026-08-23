@@ -125,3 +125,15 @@ func (c *Caster) Stop() {
 		close(v.out)
 	}
 }
+
+// Clear throws the scrollback away.
+//
+// What a password prompt requires. Detection cannot precede the prompt: the bytes that drew
+// `Password:` went out before the terminal's echo flag changed, so they are already recorded.
+// Pausing would leave them there for the next watcher to be handed.
+func (c *Caster) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.history = nil
+}
