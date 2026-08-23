@@ -30,33 +30,29 @@ type LAN struct {
 	disc *mdns.Discovery
 }
 
-// StartWindow bounds bringing LAN discovery up.
-//
-// go-iroh v0.1.0's mDNS Start blocks indefinitely when another instance is already listening on
-// the host, so it is never waited on without a bound: a device that cannot announce locally should
-// fall back to being reached the ordinary way, not fail to start at all.
-const StartWindow = 10 * time.Second
+// SettleWindow is how long to watch for an immediate failure before assuming the listener is
+// healthy. A bind or multicast-join error happens at once; anything later is the loop running.
+const SettleWindow = 250 * time.Millisecond
 
 // StartLAN begins announcing and listening. It stops when ctx is done.
 //
-// Returns nil when discovery could not be brought up, which callers treat as "no local network
-// shortcut" rather than an error.
+// Start is the listener loop rather than a constructor: it runs until ctx is cancelled, so it
+// belongs in a goroutine. Waiting on it waits forever, which is what made local discovery look
+// broken when it was in fact never given a chance to run.
 func StartLAN(ctx context.Context, n *node.Node) (*LAN, error) {
 	disc := mdns.New(n.ID(), mdns.WithServiceName(ServiceName))
 
-	ready := make(chan error, 1)
-	go func() { ready <- disc.Start(ctx) }()
+	failed := make(chan error, 1)
+	go func() { failed <- disc.Start(ctx) }()
 
 	select {
-	case err := <-ready:
+	case err := <-failed:
 		if err != nil {
 			return nil, fmt.Errorf("starting mDNS: %w", err)
 		}
-	case <-time.After(StartWindow):
-		return nil, fmt.Errorf("mDNS did not come up within %s", StartWindow)
+	case <-time.After(SettleWindow):
 	}
 
-	// What this node publishes is where it can be reached on this network.
 	disc.Publish(dns.NewEndpointData().WithIPAddrs(localAddrs(n)...))
 
 	return &LAN{disc: disc}, nil
