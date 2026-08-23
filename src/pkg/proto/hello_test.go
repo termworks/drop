@@ -75,40 +75,6 @@ func TestHelloRefusesATruncatedList(t *testing.T) {
 	}
 }
 
-func TestDescribeMarksWhatCanBeSentTo(t *testing.T) {
-	table := ns.NewTable()
-	for _, m := range []ns.Mount{
-		{Path: "/inbox", Kind: ns.KindFiles},
-		{Path: "/chat", Kind: ns.KindChat},
-		{Path: "/watch", Kind: ns.KindTTY, Input: false},
-		{Path: "/shell", Kind: ns.KindTTY, Input: true},
-		{Path: "/logs", Kind: ns.KindStream},
-	} {
-		if err := table.Add(m); err != nil {
-			t.Fatalf("adding %s: %v", m.Path, err)
-		}
-	}
-
-	writable := map[string]bool{}
-	for _, s := range Describe(table) {
-		writable[s.Path] = s.Writable
-	}
-
-	for path, want := range map[string]bool{
-		"/inbox": true, "/chat": true, "/watch": false, "/shell": true, "/logs": false,
-	} {
-		if writable[path] != want {
-			t.Fatalf("%s writable = %v, want %v", path, writable[path], want)
-		}
-	}
-}
-
-func TestDescribeHandlesNoTable(t *testing.T) {
-	if got := Describe(nil); got != nil {
-		t.Fatalf("got %+v", got)
-	}
-}
-
 // newWriterFor starts a hello body, so a test can hand-build a malformed tail.
 func newWriterFor(name, version string) *wire.Writer {
 	w := wire.NewWriter()

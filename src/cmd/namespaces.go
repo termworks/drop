@@ -3,9 +3,12 @@ package cmd
 import (
 	"fmt"
 
+	"strings"
+
 	"github.com/spf13/cobra"
 
 	"github.com/bresilla/drop/src/pkg/conf"
+	"github.com/bresilla/drop/src/pkg/ns"
 )
 
 func newNamespacesCmd() *cobra.Command {
@@ -15,20 +18,67 @@ func newNamespacesCmd() *cobra.Command {
 		Short:   "Show the namespaces this node serves",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := conf.Load()
-			if err != nil {
-				return err
-			}
-
-			if cfg.Path == "" {
-				fmt.Printf("no config file; serving the defaults\n\n")
-			} else {
-				fmt.Printf("%s\n\n", cfg.Path)
-			}
-			for _, m := range cfg.Mounts.All() {
-				fmt.Printf("  %-24s %-7s %s\n", m.Path, m.Kind, detail(m))
-			}
-			return nil
+			return showOwnTable()
 		},
 	}
+}
+
+// showOwnTable prints what this node serves.
+//
+// Unfiltered, deliberately: you are not a guest on your own machine, and this is where you check
+// that a rule says what you meant it to.
+func showOwnTable() error {
+	cfg, err := conf.Load()
+	if err != nil {
+		return err
+	}
+
+	if cfg.Path == "" {
+		fmt.Printf("no config file; serving the defaults\n\n")
+	} else {
+		fmt.Printf("%s\n\n", cfg.Path)
+	}
+
+	for _, m := range cfg.Mounts.All() {
+		fmt.Printf("  %-24s %-7s %-22s %s\n", m.Path, m.Kind, shared(cfg.Mounts, m), detail(m))
+	}
+	return nil
+}
+
+// shared says who a path is open to, so a config can be read back rather than reasoned about.
+func shared(table *ns.Table, m ns.Mount) string {
+	a := m.Access
+	if !a.Declared() {
+		// Nothing here, so say what it actually resolves to rather than "inherited" — a path with
+		// nothing above it inherits nothing, and reads as reachable when it is not.
+		if rule, found := table.AccessFor(m.Path); found {
+			return "↑ " + describeRule(rule)
+		}
+		return "nobody"
+	}
+	return describeRule(a)
+}
+
+// describeRule says who a rule admits, so a config can be read back rather than reasoned about.
+func describeRule(a ns.Access) string {
+
+	var parts []string
+	if a.AnyPaired {
+		parts = append(parts, "anyone paired")
+	}
+	if len(a.Named) > 0 {
+		parts = append(parts, strings.Join(a.Named, ", "))
+	}
+	if len(a.Keys) > 0 {
+		parts = append(parts, fmt.Sprintf("%d key(s)", len(a.Keys)))
+	}
+	if a.Password != "" {
+		parts = append(parts, "a password")
+	}
+
+	joined := strings.Join(parts, " + ")
+	if a.All && len(parts) > 1 {
+		return "all of: " + joined
+	}
+	return joined
 }

@@ -60,12 +60,13 @@ func streamOver(err error) bool {
 // The namespace list goes only to a peer that is paired: what a device serves says a great deal
 // about it, and hello is answered by anyone who dials.
 func greeting(pinned *book.Book, mounts *ns.Table, from node.ID) proto.Hello {
-	hello := proto.Hello{Name: node.DisplayName(), Version: version}
-
-	if entry, ok := pinned.ByID(from); ok && entry.Paired() {
-		hello.Serves = proto.Describe(mounts)
+	// No pairing check here any more: the rules on the paths decide, and one of them may name a
+	// bare key. What an unpaired caller can reach is usually nothing, and then the list is empty.
+	return proto.Hello{
+		Name:    node.DisplayName(),
+		Version: version,
+		Serves:  proto.Describe(mounts, whoIs(pinned)(from)),
 	}
-	return hello
 }
 
 // whoIs describes a caller from the address book, for the access rules to judge.

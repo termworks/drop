@@ -19,13 +19,15 @@ import (
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/proto"
+	tickets "github.com/bresilla/drop/src/pkg/ticket"
 )
 
 func newPairCmd() *cobra.Command {
 	var (
-		as   string
-		code string
-		wait time.Duration
+		as     string
+		showQR bool
+		code   string
+		wait   time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -40,12 +42,13 @@ func newPairCmd() *cobra.Command {
 			if len(args) == 1 {
 				return joinPairing(cmd.Context(), args[0], as, wait)
 			}
-			return offerPairing(cmd.Context(), as, code, wait)
+			return offerPairing(cmd.Context(), as, code, wait, showQR)
 		},
 	}
 
 	cmd.Flags().StringVar(&as, "as", "", "the local name to file the other device under")
 	cmd.Flags().StringVar(&code, "code", "", "use this pairing code instead of a generated one")
+	cmd.Flags().BoolVar(&showQR, "qr", false, "draw the ticket as a code a phone can read")
 	cmd.Flags().DurationVarP(&wait, "wait", "w", 5*time.Minute, "how long to keep pairing open")
 
 	return cmd
@@ -99,7 +102,7 @@ func codeProof(code string, initiator, responder node.ID) []byte {
 	return mac.Sum(nil)
 }
 
-func offerPairing(parent context.Context, as, code string, wait time.Duration) error {
+func offerPairing(parent context.Context, as, code string, wait time.Duration, showQR bool) error {
 	// A given code makes pairing scriptable: the ticket can be built by the caller rather than
 	// scraped out of this output.
 	if code == "" {
@@ -126,10 +129,19 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration) e
 		fmt.Fprintf(os.Stderr, "drop: mDNS unavailable: %v\n", err)
 	}
 
-	fmt.Printf("\n  ticket:  %s\n\n", ticketFor(n.ID(), code, discovery.LocalAddrs(n)))
-	fmt.Printf("run this on the other device, within %s:\n\n", wait)
-	fmt.Printf("  drop pair %s\n\n", ticketFor(n.ID(), code, discovery.LocalAddrs(n)))
-	fmt.Printf("waiting...\n")
+	invite := ticketFor(n.ID(), code, discovery.LocalAddrs(n))
+
+	if showQR {
+		if qrCode, err := tickets.Code(invite); err == nil {
+			fmt.Printf("\n%s", tickets.Render(qrCode))
+		} else {
+			fmt.Fprintf(os.Stderr, "drop: could not draw a code: %v\n", err)
+		}
+	}
+
+	fmt.Printf("\n  ticket:  %s\n", invite)
+	fmt.Printf("  link:    %s\n\n", tickets.Link(invite))
+	fmt.Printf("run this on the other device, within %s:\n\n  drop pair %s\n\nwaiting...\n", wait, invite)
 
 	paired := make(chan proto.Pairing, 1)
 	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){
@@ -162,7 +174,7 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration) e
 
 func joinPairing(parent context.Context, ticket, as string, wait time.Duration) error {
 	trace("start")
-	id, code, addrs, err := readTicket(ticket)
+	id, code, addrs, err := readTicket(tickets.FromLink(ticket))
 	trace("ticket read")
 	if err != nil {
 		return err

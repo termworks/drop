@@ -46,6 +46,7 @@ func Execute(v string, exit func(int), args []string) {
 		newIDCmd(),
 		newNamespacesCmd(),
 		newPasswdCmd(),
+		newListCmd(),
 	)
 
 	if err := root.Execute(); err != nil {

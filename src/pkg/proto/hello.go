@@ -92,14 +92,24 @@ func decodeHello(body []byte) (Hello, error) {
 	return out, nil
 }
 
-// Describe lists what a table serves, in the order a person would read it.
-func Describe(table *ns.Table) []Served {
+// Describe lists what one caller may reach, in the order a person would read it.
+//
+// Filtered rather than gated: a path the caller cannot open is absent, not marked refused. A
+// listing that showed the whole tree would tell someone which machine has a terminal worth
+// attacking, which is exactly what they should not learn from asking politely.
+//
+// A path guarded by a password is therefore never listed — nobody offers a secret to ask what
+// exists — so whoever is given one needs the path as well as the word.
+func Describe(table *ns.Table, caller ns.Caller) []Served {
 	if table == nil {
 		return nil
 	}
 
 	var out []Served
 	for _, m := range table.All() {
+		if ok, _ := table.Admits(m.Path, caller); !ok {
+			continue
+		}
 		out = append(out, Served{Path: m.Path, Kind: m.Kind, Writable: writable(m)})
 	}
 	return out
