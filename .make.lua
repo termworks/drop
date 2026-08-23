@@ -26,7 +26,20 @@ local RAW = "target/" .. NAME
 local ENTRY = "./src"
 local PREFIX = os.getenv("PREFIX") or (os.getenv("HOME") .. "/.local")
 
-local SOURCES = { "src/*.go", "src/**/*.go", "go.mod", "go.sum" }
+-- What the binary is built from. `**` matches one directory level, not any depth, so each
+-- level is listed: without the third pattern nothing under src/pkg/<name>/ counts as a source
+-- and `build` reports up to date while shipping the previous binary.
+--
+-- The web assets are here because go:embed bakes them into the binary. They are not Go, but
+-- changing one changes what `drop web` serves.
+local SOURCES = {
+  "src/*.go",
+  "src/**/*.go",
+  "src/**/**/*.go",
+  "src/pkg/web/assets/*",
+  "go.mod",
+  "go.sum",
+}
 
 -- Stamped into the binary, so `drop --version` answers with the checkout it came from.
 local function ldflags()
