@@ -68,6 +68,9 @@ func runServe(parent context.Context, quiet bool) error {
 		fmt.Fprintf(os.Stderr, "drop: mDNS unavailable: %v\n", err)
 	}
 
+	shells := newTerminals()
+	defer shells.stop()
+
 	bar := &progress{}
 	policy := proto.Policy{
 		Mounts:   cfg.Mounts,
@@ -84,7 +87,7 @@ func runServe(parent context.Context, quiet bool) error {
 				From: nameFor(pinned, from), Kind: kindName(m.Kind), Body: m.Body, Path: "/chat",
 			})
 		}),
-		Duplex: serveDuplex(pinned),
+		Duplex: serveDuplex(pinned, shells),
 	}
 
 	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){

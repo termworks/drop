@@ -3,10 +3,7 @@ package cmd
 import (
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-
-	"github.com/creack/pty"
 
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/ns"
@@ -14,7 +11,7 @@ import (
 )
 
 // serveDuplex answers a live stream according to what the namespace says it is.
-func serveDuplex(pinned *book.Book) func(proto.Resolved, *proto.Duplex) error {
+func serveDuplex(pinned *book.Book, shells *terminals) func(proto.Resolved, *proto.Duplex) error {
 	return func(at proto.Resolved, d *proto.Duplex) error {
 		who := nameFor(pinned, at.From)
 
@@ -23,8 +20,12 @@ func serveDuplex(pinned *book.Book) func(proto.Resolved, *proto.Duplex) error {
 			fmt.Printf("  %s opened %s\n", who, at.Mount.Path)
 			return pipeCommand(at, d)
 		case ns.KindTTY:
-			fmt.Printf("  %s opened %s\n", who, at.Mount.Path)
-			return serveTTY(at, d)
+			live, err := shells.at(at.Mount)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("  %s is watching %s (%d total)\n", who, at.Mount.Path, live.stage.Watching()+1)
+			return serveTTY(at, d, live)
 		default:
 			return fmt.Errorf("%s is not a live namespace", at.Mount.Path)
 		}
@@ -53,48 +54,6 @@ func pipeCommand(at proto.Resolved, d *proto.Duplex) error {
 	go func() { done <- d.Pump(io.Discard) }()
 
 	if _, err := io.Copy(d, out); err != nil {
-		return err
-	}
-	_ = d.Close()
-	return <-done
-}
-
-// serveTTY starts a shell in a pty for one caller. Input reaches it only when the namespace said
-// it may.
-func serveTTY(at proto.Resolved, d *proto.Duplex) error {
-	shell := at.Mount.Shell
-	if shell == "" {
-		shell = os.Getenv("SHELL")
-	}
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-
-	cmd := exec.Command(shell)
-	ptmx, err := pty.Start(cmd)
-	if err != nil {
-		return fmt.Errorf("%s: %w", at.Mount.Path, err)
-	}
-	defer func() {
-		_ = ptmx.Close()
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	}()
-
-	_ = pty.Setsize(ptmx, &pty.Winsize{Cols: 80, Rows: 24})
-	d.OnResize = func(cols, rows uint16) {
-		_ = pty.Setsize(ptmx, &pty.Winsize{Cols: cols, Rows: rows})
-	}
-
-	into := io.Writer(io.Discard)
-	if at.Mount.Input {
-		into = ptmx
-	}
-
-	done := make(chan error, 1)
-	go func() { done <- d.Pump(into) }()
-
-	if _, err := io.Copy(d, ptmx); err != nil {
 		return err
 	}
 	_ = d.Close()
