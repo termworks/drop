@@ -31,3 +31,6 @@ android/gradlew.bat
 
 # the staging file `_pack` renames onto ./drop
 drop.new
+
+# the interface, built by `make build`
+src/pkg/web/assets/drop.wasm

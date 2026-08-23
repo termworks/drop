@@ -71,6 +71,7 @@ func (s *Server) Arrived(m convo.Message) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("GET /drop.wasm", s.wasm)
 	mux.HandleFunc("POST /share", s.share)
 	mux.HandleFunc("GET /api/shared/{token}", s.shared)
 	mux.HandleFunc("GET /api/self", s.self)
@@ -343,3 +344,17 @@ func (s *Server) sendFile(w http.ResponseWriter, r *http.Request) {
 // opens it. Anyone who can reach the address can read every conversation, send as you, and watch a
 // terminal. It exists because a phone cannot reach loopback, and it is off unless asked for.
 func (s *Server) AllowRemote() { s.open = true }
+
+// Built reports whether the interface in this binary is the real one.
+//
+// The compiled interface is a build output, so what sits in the tree is a placeholder and `go:embed`
+// needs *something* there to compile at all. Saying so beats serving a file that is not WebAssembly
+// and letting the browser explain it.
+func Built() bool {
+	body, err := assets.ReadFile("assets/drop.wasm")
+	if err != nil {
+		return false
+	}
+	// Every WebAssembly module starts with these four bytes.
+	return len(body) > 4 && string(body[:4]) == "\x00asm"
+}

@@ -23,6 +23,8 @@ assert(VERSION, "src/main.go is missing its version line")
 local BIN = NAME
 -- What the compiler produces, before packing. Kept so `_compile` has an output of its own.
 local RAW = "target/" .. NAME
+-- The interface, as the browser gets it. Written into the assets the binary embeds.
+local WASM = "src/pkg/web/assets/drop.wasm"
 local ENTRY = "./src"
 local PREFIX = os.getenv("PREFIX") or (os.getenv("HOME") .. "/.local")
 
@@ -139,9 +141,35 @@ make.recipe{
 -- build sees the file present, calls itself up to date, and leaves a packed binary to be tested
 -- and installed as though it were the compiler's.
 make.recipe{
+  name = "_wasm",
+  desc = "compile the interface to webassembly",
+  inputs = { "src/pkg/gui/*.go", "src/browser/*.go", "go.mod", "go.sum" },
+  outputs = { WASM },
+  stale = "content",
+  run = function()
+    -- The interface is Go, and the browser gets it as WebAssembly. It is written into the
+    -- assets the binary embeds, so `_compile` picks it up on the next step.
+    oslo.env.set("CGO_ENABLED", "0")
+    oslo.env.set("GOOS", "js")
+    oslo.env.set("GOARCH", "wasm")
+
+    -- Built beside the target and moved onto it: `go build -o` refuses to overwrite a file it
+    -- did not produce, and what sits there in a fresh checkout is a placeholder.
+    local staging = WASM .. ".new"
+
+    sh.go("build", "-trimpath", "-ldflags", "-s -w", "-o", staging, "./src/browser")
+    sh.mv("-f", staging, WASM)
+
+    oslo.env.set("GOOS", "")
+    oslo.env.set("GOARCH", "")
+  end,
+}
+
+make.recipe{
   name = "_compile",
   desc = "compile the release binary",
   inputs = SOURCES,
+  deps = { "_wasm" },
   outputs = { RAW },
   stale = "content",
   run = function()
@@ -234,29 +262,6 @@ make.recipe{
 
 make.alias("t", "test")
 
--- The page walks a device's paths by rules worth getting wrong, and those are JavaScript, so
--- `go test` cannot reach them. Run with whatever is installed; neither runtime is a dependency
--- of drop, and the binary ships whether or not this was ever run.
-make.recipe{
-  name = "test-web",
-  desc = "the page rules, if bun or deno is installed",
-  run = function()
-    local suite = "src/pkg/web/paths.test.js"
-
-    for _, runner in ipairs{ "bun", "deno" } do
-      if oslo.run{ "sh", "-c", "command -v " .. runner }.ok then
-        if runner == "deno" then
-          sh.deno("run", "--allow-read", suite)
-        else
-          sh.bun(suite)
-        end
-        return
-      end
-    end
-
-    print(oslo.ui.style("neither bun nor deno is installed; skipping the page rules", { fg = "yellow" }))
-  end,
-}
 
 make.recipe{
   name = "test-all",
@@ -320,7 +325,7 @@ make.recipe{
 make.recipe{
   name = "verify",
   desc = "the whole local gate",
-  deps = { "fmt-check", "check", "test", "test-web", "build" },
+  deps = { "fmt-check", "check", "test", "build" },
 }
 
 make.alias("v", "verify")
