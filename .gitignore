@@ -28,3 +28,12 @@ android/local.properties
 android/gradle/
 android/gradlew
 android/gradlew.bat
+
+# the staging file `_pack` renames onto ./drop
+drop.new
+
+# the interface, built by `make build`
+src/pkg/web/assets/drop.wasm
+
+# built by gogio
+android/libs/

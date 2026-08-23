@@ -10,6 +10,7 @@ import (
 	"github.com/tmc/go-iroh/iroh"
 
 	"github.com/bresilla/drop/src/pkg/book"
+	"github.com/bresilla/drop/src/pkg/dial"
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/rendezvous"
@@ -26,40 +27,12 @@ func reach(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.Ent
 // reachAt is reach with addresses the caller already knows, which is how a ticket works: it
 // carries where the far end is so the first connection needs nothing to resolve it.
 func reachAt(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.Entry, alpn string, known []netip.AddrPort) (*iroh.Conn, *iroh.Stream, error) {
-	at := node.AddrFor(entry.ID, known...)
-	if len(known) == 0 {
-		// What the book remembers comes first: it was learned at pairing and needs nothing
-		// running to resolve it. It can also be stale, which is what the other two are for.
-		if remembered := parseAddrs(entry.Addrs); len(remembered) > 0 {
-			at = node.AddrFor(entry.ID, remembered...)
-		}
-
-		onWire := false
-		if found, ok := lan.Find(ctx, entry.ID); ok {
-			at = found
-			onWire = true
-		}
-
-		// Only when this wire did not answer, because it is the one step that asks a third party.
-		// A peer standing next to you is reached without telling a relay anything about it.
-		if !onWire {
-			if rv := rendezvousFor(n); rv != nil {
-				if found, ok := rv.Find(ctx, entry); ok {
-					at = found
-				}
-			}
-		}
+	// rendezvousFor is consulted lazily, so a command that never needs one never builds it.
+	var moved dial.Finder
+	if rv := rendezvousFor(n); rv != nil {
+		moved = rv
 	}
-	conn, err := n.Dial(ctx, at, alpn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("reaching %s: %w", entry.Name, err)
-	}
-	s, err := conn.OpenStreamSync(ctx)
-	if err != nil {
-		conn.Close()
-		return nil, nil, fmt.Errorf("opening a stream to %s: %w", entry.Name, err)
-	}
-	return conn, s, nil
+	return dial.At(ctx, n, lan, moved, entry, alpn, known)
 }
 
 // serveLoop accepts connections and routes each by the protocol it negotiated.

@@ -9,7 +9,7 @@ import (
 
 // nolint: gochecknoglobals
 var (
-	version = "0.2.0"
+	version = "0.2.1"
 	commit  = ""
 	date    = ""
 	builtBy = ""

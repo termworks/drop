@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.1] - 2026-08-23
+
+### <!-- 0 -->⛰️  Features
+
+- A node on android, drawn by the same go
+- Claim a share, and draw a terminal
+- One go interface, served as webassembly
+- Show the same page, not a second ui
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Let the archive bring its own classes
+- Build the android archive, not an apk
+- Keep the entry points out of the go build
+- Rebuild while drop is running
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Linux and android only
+
 ## [0.2.0] - 2026-08-23
 
 ### <!-- 0 -->⛰️  Features

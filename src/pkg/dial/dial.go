@@ -1,0 +1,82 @@
+// Package dial turns a device you know into a connection to it.
+//
+// The ladder lives here rather than in a command, because a phone climbs the same one: what the book
+// remembers, then this wire, then — only if neither answered — a rendezvous, which is the one step
+// that involves anybody else.
+package dial
+
+import (
+	"context"
+	"fmt"
+	"net/netip"
+
+	"github.com/tmc/go-iroh/iroh"
+	"github.com/tmc/go-iroh/netaddr"
+
+	"github.com/bresilla/drop/src/pkg/book"
+	"github.com/bresilla/drop/src/pkg/discovery"
+	"github.com/bresilla/drop/src/pkg/node"
+)
+
+// Finder is something that knows where a device moved to. Nil is fine: it means nobody is asked.
+type Finder interface {
+	Find(ctx context.Context, entry book.Entry) (netaddr.EndpointAddr, bool)
+}
+
+// To reaches a device and opens a stream on it.
+func To(ctx context.Context, n *node.Node, lan *discovery.LAN, moved Finder, entry book.Entry, alpn string) (*iroh.Conn, *iroh.Stream, error) {
+	return At(ctx, n, lan, moved, entry, alpn, nil)
+}
+
+// At is the same, with addresses the caller already has — which is how pairing works, before there
+// is anything written down to look up.
+func At(ctx context.Context, n *node.Node, lan *discovery.LAN, moved Finder, entry book.Entry, alpn string, known []netip.AddrPort) (*iroh.Conn, *iroh.Stream, error) {
+	at := node.AddrFor(entry.ID, known...)
+
+	if len(known) == 0 {
+		// What the book remembers comes first: it was learned at pairing and needs nothing running
+		// to resolve it. It can also be stale, which is what the other two are for.
+		if remembered := Addrs(entry.Addrs); len(remembered) > 0 {
+			at = node.AddrFor(entry.ID, remembered...)
+		}
+
+		onWire := false
+		if lan != nil {
+			if found, ok := lan.Find(ctx, entry.ID); ok {
+				at, onWire = found, true
+			}
+		}
+
+		// Only when this wire did not answer, because it is the one step that asks a third party. A
+		// peer standing next to you is reached without telling a relay anything about it.
+		if !onWire && moved != nil {
+			if found, ok := moved.Find(ctx, entry); ok {
+				at = found
+			}
+		}
+	}
+
+	conn, err := n.Dial(ctx, at, alpn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reaching %s: %w", entry.Name, err)
+	}
+
+	s, err := conn.OpenStreamSync(ctx)
+	if err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("opening a stream to %s: %w", entry.Name, err)
+	}
+	return conn, s, nil
+}
+
+// Addrs reads the addresses a book wrote down, dropping any it cannot make sense of rather than
+// refusing the lot.
+func Addrs(written []string) []netip.AddrPort {
+	out := make([]netip.AddrPort, 0, len(written))
+	for _, at := range written {
+		if parsed, err := netip.ParseAddrPort(at); err == nil {
+			out = append(out, parsed)
+		}
+	}
+	return out
+}

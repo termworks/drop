@@ -1,99 +1,58 @@
 <!doctype html>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>drop</title>
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <meta name="theme-color" content="#4c1d95">
-<link rel="stylesheet" href="/style.css">
 
-<div class="shell">
-  <aside>
-    <!-- Whose device this page is. Two pages side by side are two machines. -->
-    <div id="me">
-      <span class="who">
-        <span class="name">…</span>
-        <span class="label">this device</span>
-      </span>
-      <span class="id"></span>
-      <span class="addr"></span>
-    </div>
+<!-- The interface is Go, compiled to WebAssembly, and the same code the phone runs. This page is the
+     loader: everything a person sees is drawn onto the canvas Gio takes over. -->
+<style>
+  html, body { margin: 0; height: 100%; background: #faf9fb; overflow: hidden; }
+  @media (prefers-color-scheme: dark) { html, body { background: #121016; } }
 
-    <header>
-      <h1>paired devices</h1>
-      <button id="refresh" title="Reload the device list">↻</button>
-    </header>
+  #loading {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    font: 15px/1.5 system-ui, sans-serif;
+    color: #6b6376;
+    text-align: center;
+    padding: 24px;
+  }
 
-    <ul id="peers"></ul>
+  #loading b { display: block; color: #4c1d95; font-size: 17px; margin-bottom: 6px; }
+  @media (prefers-color-scheme: dark) {
+    #loading { color: #8f8799; }
+    #loading b { color: #a583e8; }
+  }
+</style>
 
-    <p class="hint" id="no-peers" hidden>
-      Nothing paired yet. Run <code>drop pair</code> here and
-      <code>drop pair &lt;ticket&gt;</code> on the other device.
-    </p>
-  </aside>
+<div id="loading"><b>drop</b><span id="said">loading…</span></div>
 
-  <main>
-    <!-- What a phone shared, waiting to be told where it goes. -->
-    <aside id="shared" hidden>
-      <span class="what"></span>
-      <span class="say"></span>
-      <button type="button" id="send-shared" class="btn btn-primary">Send here</button>
-      <button type="button" id="drop-shared" class="btn">Discard</button>
-    </aside>
+<script src="/wasm_exec.js"></script>
+<script>
+  const said = document.querySelector("#said");
 
-    <p class="empty" id="pick">Choose a device on the left.</p>
+  // Streamed rather than fetched whole: the interface is a few megabytes, and compiling it while it
+  // arrives is the difference between a pause and a wait.
+  async function start() {
+    const go = new Go();
 
-    <section id="device" hidden>
-      <header>
-        <button type="button" id="back" title="Back to the device list" aria-label="Back">‹</button>
-        <span class="name"></span>
-        <span class="id"></span>
-      </header>
+    try {
+      const source = WebAssembly.instantiateStreaming
+        ? WebAssembly.instantiateStreaming(fetch("/drop.wasm"), go.importObject)
+        : fetch("/drop.wasm").then((r) => r.arrayBuffer()).then((b) => WebAssembly.instantiate(b, go.importObject));
 
-      <!-- What the device serves. Each one is a namespace it declared in its config, and what it
-           does is decided over there, not here. -->
-      <nav id="crumbs" aria-label="Where you are"></nav>
-      <ul id="spaces" aria-label="What this device serves"></ul>
-      <p class="note" id="spaces-note" hidden></p>
+      const built = await source;
+      document.querySelector("#loading").remove();
+      go.run(built.instance);
+    } catch (err) {
+      said.textContent = "could not start: " + err.message;
+    }
+  }
 
-      <!-- One view per kind of namespace. Only the one matching the open namespace is shown. -->
-      <section class="view" id="view-chat" hidden>
-        <ol id="log" aria-live="polite"></ol>
-        <form id="compose" autocomplete="off">
-          <input id="body" class="field" placeholder="Write something, or paste a link" aria-label="Message">
-          <button type="submit">Send</button>
-        </form>
-      </section>
-
-      <section class="view" id="view-files" hidden>
-        <div id="files-drop">
-          <p><strong>Drop files here</strong></p>
-          <p class="note">or <button type="button" id="attach" class="btn">choose a file</button></p>
-          <input type="file" id="file" multiple hidden>
-        </div>
-        <ol id="transfers"></ol>
-      </section>
-
-      <section class="view" id="view-term" hidden>
-        <header class="bar">
-          <span id="term-state"></span>
-          <button type="button" id="term-go" class="btn btn-primary">Watch</button>
-          <button type="button" id="term-stop" class="btn">Stop</button>
-        </header>
-        <div id="term" class="term"></div>
-      </section>
-
-      <section class="view" id="view-link" hidden>
-        <form id="link-form" autocomplete="off">
-          <input id="link-url" class="field" placeholder="https://…" aria-label="Link to open over there">
-          <button type="submit">Open there</button>
-        </form>
-        <p class="note">The far device opens this, or records it, depending on how it declared the namespace.</p>
-      </section>
-    </section>
-
-    <div id="drop-target" hidden><span>Release to send</span></div>
-  </main>
-</div>
-
-<script type="module" src="/app.js"></script>
+  start();
+</script>
