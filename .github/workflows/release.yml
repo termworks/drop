@@ -76,9 +76,33 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       - uses: android-actions/setup-android@v3
 
-      - name: Build
+      - name: NDK
+        run: |
+          set -eu
+          # gogio cross-compiles the Go for the phone's processors, which needs the NDK's
+          # toolchain rather than the runner's own compiler.
+          sdkmanager --install "ndk;27.2.12479018" >/dev/null
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Build the interface
+        run: |
+          set -eu
+          # gogio compiles the Go — interface and node both — into an Android library. The
+          # Gradle project beside it adds nothing but a manifest saying drop belongs in the
+          # share sheet, which is the one thing a Gio activity cannot declare for itself.
+          go install gioui.org/cmd/gogio@v0.10.0
+          mkdir -p android/libs
+          "$(go env GOPATH)/bin/gogio" -target android -arch arm64,arm,amd64 \
+            -appid dev.bresilla.drop -o android/libs/drop.aar ./src/phone
+
+      - name: Package
         working-directory: android
         run: |
           set -eu

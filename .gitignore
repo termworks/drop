@@ -34,3 +34,6 @@ drop.new
 
 # the interface, built by `make build`
 src/pkg/web/assets/drop.wasm
+
+# built by gogio
+android/libs/

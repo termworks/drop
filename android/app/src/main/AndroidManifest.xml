@@ -1,22 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-permission android:name="android.permission.INTERNET" />
-
-    <!-- The bridge is reached over a private network by address, so it is plain http and there is
-         no certificate anywhere. cleartextTrafficPermitted is scoped to that in network_security
-         rather than opened for everything. -->
+    <!-- The app is the Go library next to this. All this declares is the one thing a Gio activity
+         cannot declare for itself: that drop belongs in the share sheet. -->
     <application
         android:allowBackup="true"
         android:icon="@drawable/icon"
         android:label="@string/app_name"
-        android:networkSecurityConfig="@xml/network_security"
-        android:theme="@style/Theme.AppCompat.DayNight">
+        android:theme="@style/Theme.GioApp">
 
         <activity
-            android:name=".ShareActivity"
+            android:name="org.gioui.GioActivity"
             android:exported="true"
             android:launchMode="singleTop"
+            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|density|uiMode"
+            android:windowSoftInputMode="adjustResize"
             android:label="@string/app_name">
 
             <intent-filter>
@@ -24,7 +22,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- What puts drop in the share sheet. -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
