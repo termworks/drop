@@ -36,6 +36,9 @@ type Sender interface {
 type Server struct {
 	send Sender
 
+	// open is set when the bridge was deliberately bound somewhere other than loopback.
+	open bool
+
 	mu       sync.Mutex
 	watchers map[chan convo.Message]struct{}
 }
@@ -75,17 +78,19 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.Handle("GET /", http.FileServerFS(pages))
 
-	return guard(mux)
+	return s.guard(mux)
 }
 
-// guard turns away a request that did not come from this machine.
+// guard turns away a request that did not come from this machine, unless the bridge was told to
+// answer the network.
 //
 // The page acts as this node: it can read every conversation and send as you. A stray binding or a
 // helpful reverse proxy would hand that to the network, so the check is here rather than resting
-// on the listener address alone.
-func guard(next http.Handler) http.Handler {
+// on the listener address alone. AllowRemote is the one way past it, and nothing sets it by
+// accident.
+func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !localRequest(r) {
+		if !s.open && !localRequest(r) {
 			http.Error(w, "drop's web bridge only answers this machine", http.StatusForbidden)
 			return
 		}
@@ -316,3 +321,10 @@ func (s *Server) sendFile(w http.ResponseWriter, r *http.Request) {
 	}
 	reply(w, map[string]any{"ok": true, "name": name, "size": head.Size})
 }
+
+// AllowRemote lets the bridge answer machines other than this one.
+//
+// Nothing else about the page changes: it still acts as this node, with nothing asked of whoever
+// opens it. Anyone who can reach the address can read every conversation, send as you, and watch a
+// terminal. It exists because a phone cannot reach loopback, and it is off unless asked for.
+func (s *Server) AllowRemote() { s.open = true }

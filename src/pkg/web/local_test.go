@@ -57,7 +57,7 @@ func TestLocalRequestIgnoresForwardingHeaders(t *testing.T) {
 // reaches a handler at all has already read or sent something.
 func TestGuardRefusesBeforeTheHandlerRuns(t *testing.T) {
 	reached := false
-	handler := guard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(&stub{}).guard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reached = true
 	}))
 
@@ -74,7 +74,7 @@ func TestGuardRefusesBeforeTheHandlerRuns(t *testing.T) {
 
 func TestGuardLetsThisMachineThrough(t *testing.T) {
 	reached := false
-	handler := guard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(&stub{}).guard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reached = true
 	}))
 
@@ -86,5 +86,43 @@ func TestGuardLetsThisMachineThrough(t *testing.T) {
 	}
 	if got := w.Header().Get("X-Frame-Options"); got != "DENY" {
 		t.Errorf("X-Frame-Options = %q, want DENY", got)
+	}
+}
+
+// The bridge answers only this machine unless something asked otherwise, and the asking has to be
+// deliberate. A default that drifted open would hand the node to the network.
+func TestRemoteIsRefusedUnlessAllowed(t *testing.T) {
+	reached := false
+	s := New(&stub{})
+	h := s.guard(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
+
+	r := httptest.NewRequest(http.MethodGet, "/api/peers", nil)
+	r.RemoteAddr = "192.168.1.40:5000"
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", w.Code)
+	}
+	if reached {
+		t.Fatal("the handler ran for an off-machine request")
+	}
+}
+
+func TestRemoteIsAllowedOnceAsked(t *testing.T) {
+	reached := false
+	s := New(&stub{})
+	s.AllowRemote()
+	h := s.guard(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
+
+	r := httptest.NewRequest(http.MethodGet, "/api/peers", nil)
+	r.RemoteAddr = "192.168.1.40:5000"
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+
+	if !reached {
+		t.Fatalf("an allowed remote request was refused: %d", w.Code)
 	}
 }

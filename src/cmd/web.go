@@ -29,17 +29,19 @@ func newWebCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "web",
 		Short: "Open drop in a browser on this machine",
-		Long: "web runs a small server on loopback and serves a page that talks to it. A browser\n" +
-			"cannot dial another device directly, so this node does it on the page's behalf.\n\n" +
-			"It binds 127.0.0.1 and refuses anything that did not come from this machine: the page\n" +
-			"acts as this node, so reaching it is the same as sitting at the keyboard.",
+		Long: "web runs a small server and serves a page that talks to it. A browser cannot dial\n" +
+			"another device directly, so this node does it on the page's behalf.\n\n" +
+			"By default it binds 127.0.0.1 and refuses anything that did not come from this machine:\n" +
+			"the page acts as this node, so reaching it is the same as sitting at the keyboard.\n\n" +
+			"Give --addr an interface address and it answers the network instead, which is what a\n" +
+			"phone needs. There is no password on the page, so only do that on a network you trust.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWeb(cmd.Context(), addr)
 		},
 	}
 
-	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:7777", "where to listen; loopback only")
+	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:7777", "where to listen; a non-loopback address opens it to the network")
 
 	return cmd
 }
@@ -74,6 +76,15 @@ func runWeb(parent context.Context, addr string) error {
 	startRendezvous(ctx, n)
 
 	site := web.New(&bridge{node: n, lan: lan})
+
+	// Binding anywhere but loopback is the opt-in: nobody types an interface address by accident,
+	// and the guard would otherwise refuse every request to the address they asked for.
+	if remote := !loopbackAddr(addr); remote {
+		site.AllowRemote()
+		fmt.Fprintf(os.Stderr, "drop: %s is reachable from the network, and the page acts as this\n"+
+			"     device with nothing asked of whoever opens it: conversations, sending, terminals.\n"+
+			"     Use 127.0.0.1 and an ssh tunnel if that is not what you want.\n\n", addr)
+	}
 
 	// The node serves while the page is open, so a peer can reach this device and what it sends
 	// appears without a reload.
@@ -195,4 +206,23 @@ func (b *bridge) Watch(ctx context.Context, to book.Entry, path string, into web
 		conn.Close()
 		return ctx.Err()
 	}
+}
+
+// loopbackAddr reports whether a listen address only this machine can reach.
+//
+// An empty host means every interface, which is the least local thing there is.
+func loopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
