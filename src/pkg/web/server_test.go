@@ -47,6 +47,8 @@ type stub struct {
 	watched   *watched
 	watchErr  error
 	watchBody string
+	watchCols int
+	watchRows int
 	last      *sent
 	file      *upload
 	fileErr   error
@@ -384,13 +386,16 @@ func TestSendFileRefusesFromOffMachine(t *testing.T) {
 	}
 }
 
-func (s *stub) Watch(ctx context.Context, to book.Entry, path string, out io.Writer) error {
+func (s *stub) Watch(ctx context.Context, to book.Entry, path string, into Terminal) error {
 	s.watched = &watched{to: to, path: path}
 	if s.watchErr != nil {
 		return s.watchErr
 	}
+	if s.watchCols > 0 {
+		into.Resize(s.watchCols, s.watchRows)
+	}
 	if s.watchBody != "" {
-		if _, err := io.WriteString(out, s.watchBody); err != nil {
+		if _, err := io.WriteString(into, s.watchBody); err != nil {
 			return err
 		}
 	}

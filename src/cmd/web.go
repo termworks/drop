@@ -164,7 +164,7 @@ func (b *bridge) SendFile(ctx context.Context, to book.Entry, name string, size 
 // Read-only, deliberately: the page never sends keystrokes back. A browser tab is not a terminal
 // this node controls, and a watcher that could type would be a shell handed to whatever loaded the
 // page.
-func (b *bridge) Watch(ctx context.Context, to book.Entry, path string, out io.Writer) error {
+func (b *bridge) Watch(ctx context.Context, to book.Entry, path string, into web.Terminal) error {
 	conn, s, err := reach(ctx, b.node, b.lan, to, node.ALPNSession)
 	if err != nil {
 		return err
@@ -176,11 +176,17 @@ func (b *bridge) Watch(ctx context.Context, to book.Entry, path string, out io.W
 		return err
 	}
 
-	// Half-closing says there will be no input, which is what lets the far end stop waiting on one.
+	// The far end says how big its terminal is, and the screen follows it. Without this the
+	// grid stays whatever it started as and every line wraps in the wrong place.
+	d.OnResize = func(cols, rows uint16) { into.Resize(int(cols), int(rows)) }
+
+	// Half-closing says there will be no input, which is what lets the far end stop waiting
+	// on one. The page never sends keystrokes: a browser tab is not a terminal this node
+	// controls, and a watcher that could type would be a shell handed to whoever loaded it.
 	_ = d.Close()
 
 	done := make(chan error, 1)
-	go func() { done <- d.Pump(out) }()
+	go func() { done <- d.Pump(into) }()
 
 	select {
 	case err := <-done:

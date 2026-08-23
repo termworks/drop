@@ -29,7 +29,7 @@ var assets embed.FS
 type Sender interface {
 	Say(ctx context.Context, to book.Entry, kind byte, body string) error
 	SendFile(ctx context.Context, to book.Entry, name string, size int64, body io.Reader) error
-	Watch(ctx context.Context, to book.Entry, path string, out io.Writer) error
+	Watch(ctx context.Context, to book.Entry, path string, into Terminal) error
 }
 
 // Server is the bridge.

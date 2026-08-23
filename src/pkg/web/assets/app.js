@@ -1,5 +1,3 @@
-import { Screen, paint } from "/term.js";
-
 const peersList = document.querySelector("#peers");
 const noPeers = document.querySelector("#no-peers");
 const logList = document.querySelector("#log");
@@ -257,33 +255,53 @@ window.addEventListener("drop", (e) => {
   if (e.dataTransfer?.files?.length) sendFiles([...e.dataTransfer.files]);
 });
 
+
 const termPanel = document.querySelector("#term-panel");
 const termBox = document.querySelector("#term");
 const termPath = document.querySelector("#term-path");
 const termState = document.querySelector("#term-state");
 
-let screen = new Screen(80, 24);
 let watching = null;
+let lines = [];
 
-// The grid is sized from one character, measured from the element that will hold it. Guessing a
-// width instead would wrap every line at the wrong column on any font but the one guessed for.
-function fit() {
-  const probe = document.createElement("span");
-  probe.textContent = "M".repeat(50);
-  probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
-  termBox.append(probe);
-  const rect = probe.getBoundingClientRect();
-  probe.remove();
+// The screen is built and kept on the other side. What arrives is a list of styled strings, so
+// there is nothing here to parse and nothing that could be read as markup: every run goes in as
+// text, and the only styles applied are the ones the server named.
+function sized(_cols, rows) {
+  lines = Array.from({ length: rows }, () => {
+    const el = document.createElement("div");
+    el.className = "trow";
+    return el;
+  });
+  termBox.replaceChildren(...lines);
+}
 
-  const cw = rect.width / 50;
-  const ch = rect.height;
-  if (!cw || !ch) return;
+function drawLine(el, runs) {
+  if (!runs || !runs.length) {
+    el.replaceChildren();
+    return;
+  }
 
-  const cols = Math.max(20, Math.floor(termBox.clientWidth / cw));
-  const rows = Math.max(6, Math.floor(termBox.clientHeight / ch));
-  if (cols !== screen.cols || rows !== screen.rows) {
-    screen.resize(cols, rows);
-    schedulePaint();
+  el.replaceChildren(...runs.map((r) => {
+    const span = document.createElement("span");
+    span.textContent = r.t;
+    if (r.f) span.style.color = r.f;
+    if (r.b) span.style.background = r.b;
+    if (r.o) span.style.fontWeight = "700";
+    if (r.d) span.style.opacity = "0.65";
+    if (r.i) span.style.fontStyle = "italic";
+    if (r.u) span.style.textDecoration = "underline";
+    return span;
+  }));
+}
+
+function apply(frame) {
+  if (frame.cols && frame.rows) sized(frame.cols, frame.rows);
+  if (!frame.lines) return;
+
+  for (const [at, runs] of Object.entries(frame.lines)) {
+    const el = lines[Number(at)];
+    if (el) drawLine(el, runs);
   }
 }
 
@@ -296,27 +314,18 @@ function startWatching() {
   stopWatching();
 
   const path = termPath.value.trim() || "/tty";
-  screen = new Screen(screen.cols, screen.rows);
-  paint(screen, termBox);
+  termBox.replaceChildren();
+  lines = [];
   termState.textContent = "connecting";
   termState.className = "";
 
-  const decoder = new TextDecoder("utf-8");
   const source = new EventSource(`/api/watch/${encodeURIComponent(current)}/${path.replace(/^\/+/, "")}`);
 
   source.onopen = () => { termState.textContent = "live"; termState.className = "live"; };
-
-  source.onmessage = (e) => {
-    const raw = atob(e.data);
-    const bytes = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-    // stream:true, because a multi-byte character can be split across two arrivals.
-    screen.write(decoder.decode(bytes, { stream: true }));
-    schedulePaint();
-  };
+  source.onmessage = (e) => apply(JSON.parse(e.data));
 
   source.addEventListener("gone", (e) => {
-    termState.textContent = atob(e.data);
+    termState.textContent = JSON.parse(e.data);
     termState.className = "gone";
     stopWatching();
   });
@@ -336,7 +345,7 @@ function startWatching() {
 
 document.querySelector("#watch-open").addEventListener("click", () => {
   termPanel.hidden = !termPanel.hidden;
-  if (!termPanel.hidden) { fit(); termPath.focus(); } else { stopWatching(); }
+  if (!termPanel.hidden) termPath.focus(); else stopWatching();
 });
 
 document.querySelector("#term-go").addEventListener("click", startWatching);
@@ -345,17 +354,3 @@ document.querySelector("#term-close").addEventListener("click", () => {
   stopWatching();
   termPanel.hidden = true;
 });
-
-window.addEventListener("resize", () => { if (!termPanel.hidden) fit(); });
-
-// Output can arrive far faster than a screen refreshes. Painting per chunk would rebuild the grid
-// thousands of times a second for a scrolling build log; one paint per frame shows the same thing.
-let paintQueued = false;
-function schedulePaint() {
-  if (paintQueued) return;
-  paintQueued = true;
-  requestAnimationFrame(() => {
-    paintQueued = false;
-    paint(screen, termBox);
-  });
-}
