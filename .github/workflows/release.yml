@@ -14,9 +14,9 @@ permissions:
   contents: write
 
 jobs:
-  # The binary is pure Go with cgo off, so every target cross-compiles from one runner and the
-  # result is static. No musl, no container, no QEMU — which is the whole reason the build stayed
-  # cgo-free in the first place.
+  # The binary is pure Go with cgo off, so both targets cross-compile from one runner and the
+  # result is static. No musl, no container, no QEMU — which is the whole reason the build
+  # stayed cgo-free in the first place.
   binaries:
     runs-on: ubuntu-latest
     strategy:
@@ -25,8 +25,6 @@ jobs:
         include:
           - { goos: linux, goarch: amd64 }
           - { goos: linux, goarch: arm64 }
-          - { goos: darwin, goarch: amd64 }
-          - { goos: darwin, goarch: arm64 }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,13 +51,8 @@ jobs:
             -ldflags "-s -w -X main.version=${version} -X main.commit=${commit} -X main.date=${stamp} -X main.builtBy=ci" \
             -o "${name}" ./src
 
-          # upx is skipped for darwin: recent macOS refuses to run a packed binary, and shipping one
-          # that cannot start is worse than shipping a larger one.
-          if [ "${{ matrix.goos }}" = "linux" ]; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq upx-ucl
-            upx -9 -q "${name}" || true
-          fi
-
+          sudo apt-get update -qq && sudo apt-get install -y -qq upx-ucl
+          upx -9 -q "${name}"
           sha256sum "${name}" > "${name}.sha256"
 
       - uses: actions/upload-artifact@v4
