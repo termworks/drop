@@ -179,3 +179,77 @@ func (a *App) composer(gtx layout.Context) layout.Dimensions {
 			)
 		})
 }
+
+// banner is what the share sheet handed over, sitting above everything until it is told where to go.
+func (a *App) banner(gtx layout.Context, item *Shared) layout.Dimensions {
+	if a.dropShared.Clicked(gtx) {
+		a.mu.Lock()
+		a.pending = nil
+		a.mu.Unlock()
+	}
+	if a.sendShared.Clicked(gtx) {
+		if with, ok := a.peer(); ok && a.at == atOpen {
+			go a.deliverPending(with.Name)
+		}
+	}
+
+	// What to say depends on how far in they are, because the button only does something once a
+	// conversation is open.
+	say := "choose a device"
+	if a.at == atPaths {
+		say = "choose a conversation"
+	}
+	if a.at == atOpen {
+		say = "send it here"
+	}
+
+	return layout.Inset{Left: pad, Right: pad, Bottom: gap}.Layout(gtx,
+		func(gtx layout.Context) layout.Dimensions {
+			return fill(gtx, soft, round, func(gtx layout.Context) layout.Dimensions {
+				gtx.Constraints.Min.X = gtx.Constraints.Max.X
+
+				return layout.UniformInset(unit.Dp(12)).Layout(gtx,
+					func(gtx layout.Context) layout.Dimensions {
+						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								what := material.Body2(a.theme, item.What())
+								what.Color = ink
+								what.Font.Weight = 650
+								what.MaxLines = 2
+								return what.Layout(gtx)
+							}),
+							layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+									layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+										note := material.Caption(a.theme, "shared with drop · "+say)
+										note.Color = dim
+										return note.Layout(gtx)
+									}),
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										if a.at != atOpen {
+											return layout.Dimensions{}
+										}
+										b := material.Button(a.theme, &a.sendShared, "Send")
+										b.Background = violet
+										b.Color = onDark
+										b.CornerRadius = round
+										b.Inset = layout.UniformInset(unit.Dp(8))
+										return b.Layout(gtx)
+									}),
+									layout.Rigid(layout.Spacer{Width: gap}.Layout),
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										b := material.Button(a.theme, &a.dropShared, "Discard")
+										b.Background = panel
+										b.Color = dim
+										b.CornerRadius = round
+										b.Inset = layout.UniformInset(unit.Dp(8))
+										return b.Layout(gtx)
+									}),
+								)
+							}),
+						)
+					})
+			})
+		})
+}

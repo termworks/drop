@@ -41,7 +41,13 @@ type App struct {
 	paths   []Space
 	history []Message
 	trouble string
-	busy    bool
+
+	// pending is something the share sheet handed over, waiting to be told where it goes.
+	pending *Shared
+
+	// live is the terminal being watched, when the open path is one.
+	live *watching
+	busy bool
 
 	at     level
 	onPeer int
@@ -54,6 +60,8 @@ type App struct {
 	refresh    widget.Clickable
 	compose    widget.Editor
 	send       widget.Clickable
+	sendShared widget.Clickable
+	dropShared widget.Clickable
 	invalidate func()
 }
 
@@ -78,6 +86,7 @@ func (a *App) Start(invalidate func()) {
 
 	go a.loadSelf()
 	go a.loadPeers()
+	go a.claimShare()
 }
 
 func (a *App) redraw() {
@@ -204,8 +213,12 @@ func (a *App) enter(i int) {
 		}
 		a.at = atOpen
 		a.history = nil
-		if on.Kind == "chat" {
+		switch on.Kind {
+		case "chat":
 			go a.loadLog(with.Name)
+		case "tty", "stream":
+			// Sized to something ordinary until the far end says what it actually is.
+			a.live = startWatching(a.from, with.Name, on.Path, 80, 24, a.redraw)
 		}
 	}
 }
@@ -213,6 +226,7 @@ func (a *App) enter(i int) {
 func (a *App) goBack() {
 	switch a.at {
 	case atOpen:
+		a.endWatch()
 		a.at, a.history = atPaths, nil
 	case atPaths:
 		a.at, a.paths, a.trouble = atDevices, nil, ""
@@ -244,4 +258,73 @@ func fill(gtx layout.Context, c color.NRGBA, radius unit.Dp, w layout.Widget) la
 
 func when(at int64) string {
 	return time.UnixMilli(at).Format("15:04")
+}
+
+// claimShare takes whatever was shared to this device from outside.
+//
+// Only a Remote has one: a share reaches a browser through the bridge that redirected here. A phone
+// is handed its own directly, which is a different path and not this one.
+func (a *App) claimShare() {
+	taker, ok := a.from.(interface{ Claim() (*Shared, error) })
+	if !ok {
+		return
+	}
+
+	item, err := taker.Claim()
+	if err != nil {
+		a.mu.Lock()
+		a.trouble = err.Error()
+		a.mu.Unlock()
+		a.redraw()
+		return
+	}
+	if item == nil {
+		return
+	}
+
+	a.mu.Lock()
+	a.pending = item
+	a.mu.Unlock()
+	a.redraw()
+}
+
+// deliverPending sends what was shared into the conversation that was just opened, which is the
+// answer to the question the share sheet could not ask.
+func (a *App) deliverPending(peer string) {
+	a.mu.Lock()
+	item := a.pending
+	a.mu.Unlock()
+
+	if item == nil {
+		return
+	}
+	if item.Name != "" {
+		a.mu.Lock()
+		a.trouble = "sending a file from a share is not wired up yet"
+		a.mu.Unlock()
+		a.redraw()
+		return
+	}
+
+	if err := a.from.Say(peer, item.Body(), item.IsLink()); err != nil {
+		a.mu.Lock()
+		a.trouble = err.Error()
+		a.mu.Unlock()
+		a.redraw()
+		return
+	}
+
+	a.mu.Lock()
+	a.pending, a.trouble = nil, ""
+	a.mu.Unlock()
+
+	a.loadLog(peer)
+}
+
+// endWatch stops reading a terminal, so leaving a path does not leave one being read by nobody.
+func (a *App) endWatch() {
+	if a.live != nil {
+		a.live.end()
+		a.live = nil
+	}
 }

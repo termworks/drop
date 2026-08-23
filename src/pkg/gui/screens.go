@@ -18,6 +18,7 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 	a.mu.Lock()
 	me, peers, paths := a.me, a.peers, a.paths
 	history, trouble, busy := a.history, a.trouble, a.busy
+	pending := a.pending
 	a.mu.Unlock()
 
 	if a.back.Clicked(gtx) {
@@ -30,6 +31,12 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return a.header(gtx, me, busy)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			if pending == nil {
+				return layout.Dimensions{}
+			}
+			return a.banner(gtx, pending)
 		}),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 			if trouble != "" && a.at != atOpen {
@@ -161,7 +168,10 @@ func (a *App) open(gtx layout.Context, history []Message, trouble string) layout
 	case "files":
 		return a.note(gtx, "A place to send files. Use `drop to` or the share sheet.", dim)
 	case "tty", "stream":
-		return a.note(gtx, "A live terminal. Not drawn here yet.", dim)
+		if a.live == nil {
+			return a.note(gtx, "not watching.", faint)
+		}
+		return a.terminal(gtx, a.live)
 	default:
 		return a.note(gtx, "A "+on.Kind+" path.", dim)
 	}
