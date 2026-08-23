@@ -20,7 +20,7 @@ import (
 const ServiceName = "drop"
 
 // LANWindow is how long to listen before deciding a peer is not on this network.
-const LANWindow = 3 * time.Second
+const LANWindow = 5 * time.Second
 
 // LAN announces this node on the local network and answers where a peer is.
 //
@@ -33,6 +33,10 @@ type LAN struct {
 // SettleWindow is how long to watch for an immediate failure before assuming the listener is
 // healthy. A bind or multicast-join error happens at once; anything later is the loop running.
 const SettleWindow = 250 * time.Millisecond
+
+// AnnounceEvery is how often this node says where it is, so a peer that starts later still hears
+// it. Frequent enough that a lookup does not outlast it: LANWindow covers more than one interval.
+const AnnounceEvery = 2 * time.Second
 
 // StartLAN begins announcing and listening. It stops when ctx is done.
 //
@@ -53,7 +57,27 @@ func StartLAN(ctx context.Context, n *node.Node) (*LAN, error) {
 	case <-time.After(SettleWindow):
 	}
 
-	disc.Publish(dns.NewEndpointData().WithIPAddrs(localAddrs(n)...))
+	// Announce on a tick, not once.
+	//
+	// Nothing in mDNS answers a query here: a lookup fires one and then reads a cache that only
+	// arriving announcements fill. A single announcement at startup is therefore heard by
+	// whoever is already listening and by nobody who starts later, which is most of the time.
+	go func() {
+		tick := time.NewTicker(AnnounceEvery)
+		defer tick.Stop()
+
+		for {
+			// Rebuilt each time: the addresses are read fresh, so moving networks re-announces the
+			// new ones rather than repeating where this node used to be.
+			disc.Publish(dns.NewEndpointData().WithIPAddrs(localAddrs(n)...))
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
+		}
+	}()
 
 	return &LAN{disc: disc}, nil
 }
