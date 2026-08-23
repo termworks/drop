@@ -143,7 +143,10 @@ make.recipe{
 make.recipe{
   name = "_wasm",
   desc = "compile the interface to webassembly",
-  inputs = { "src/pkg/gui/*.go", "browser/*.go", "go.mod", "go.sum" },
+  -- Everything the interface links, not just the files that draw it: the browser build pulls in
+  -- the ticket, the terminal, the address book. Watching only the drawing meant a change to any
+  -- of those left a stale interface embedded in the binary, built from code nobody had run.
+  inputs = { "src/pkg/**/*.go", "browser/*.go", "go.mod", "go.sum" },
   outputs = { WASM },
   stale = "content",
   run = function()

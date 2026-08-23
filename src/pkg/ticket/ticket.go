@@ -85,3 +85,28 @@ func black(code *qr.Code, x, y int) bool {
 	}
 	return code.Black(x, y)
 }
+
+// Wide draws a QR code where a module is two characters across and one line down.
+//
+// Render halves the rows because a terminal cell is about twice as tall as it is wide. A proportional
+// layout engine drawing a monospace face has no such ratio — a character is nearer 0.6 of the line
+// height — so halving there squashes the code, and a squashed code is one a camera gives up on. Two
+// characters per module and no halving comes out square enough to read.
+func Wide(code *qr.Code) string {
+	const quiet = 2
+
+	size := code.Size
+	var out strings.Builder
+
+	for y := -quiet; y < size+quiet; y++ {
+		for x := -quiet; x < size+quiet; x++ {
+			if black(code, x, y) {
+				out.WriteString("██")
+				continue
+			}
+			out.WriteString("  ")
+		}
+		out.WriteString("\n")
+	}
+	return out.String()
+}

@@ -18,7 +18,7 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 	a.mu.Lock()
 	me, peers, paths := a.me, a.peers, a.paths
 	history, trouble, busy := a.history, a.trouble, a.busy
-	pending := a.pending
+	pending, linking := a.pending, a.linking
 	a.mu.Unlock()
 
 	if a.back.Clicked(gtx) {
@@ -39,6 +39,9 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 			return a.banner(gtx, pending)
 		}),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			if linking != nil {
+				return a.pairingView(gtx, linking)
+			}
 			if trouble != "" && a.at != atOpen {
 				return a.note(gtx, trouble, bad)
 			}
@@ -106,7 +109,7 @@ func (a *App) where() string {
 // devices is the address book, one three-line card each.
 func (a *App) devices(gtx layout.Context, peers []Peer) layout.Dimensions {
 	if len(peers) == 0 {
-		return a.note(gtx, "Nothing paired yet. Run `drop pair` on both devices.", dim)
+		return a.nothingPaired(gtx)
 	}
 
 	a.fitRows(len(peers))

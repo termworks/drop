@@ -4,6 +4,7 @@ package gui
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"time"
@@ -201,3 +202,11 @@ func (d *Direct) Watch(peer, path string, into io.Writer, resize func(cols, rows
 	}
 	return err
 }
+
+// Offer, Pairing and Unpair are not wired on a phone yet: pairing there wants a camera, which is a
+// different piece of work. Saying so beats a button that does nothing.
+func (d *Direct) Offer() (string, error)           { return "", errNotYet }
+func (d *Direct) Pairing() (string, string, error) { return "", "", nil }
+func (d *Direct) Unpair() error                    { return nil }
+
+var errNotYet = errors.New("pairing from the phone is not built yet; pair from the other device")

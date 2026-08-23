@@ -9,6 +9,9 @@ import (
 	"sync"
 	"time"
 
+	tickets "github.com/bresilla/drop/src/pkg/ticket"
+	"rsc.io/qr"
+
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -47,7 +50,10 @@ type App struct {
 
 	// live is the terminal being watched, when the open path is one.
 	live *watching
-	busy bool
+
+	// linking is a pairing being offered, shown until it finishes or is put away.
+	linking *linking
+	busy    bool
 
 	at     level
 	onPeer int
@@ -62,6 +68,8 @@ type App struct {
 	send       widget.Clickable
 	sendShared widget.Clickable
 	dropShared widget.Clickable
+	pairNow    widget.Clickable
+	pairStop   widget.Clickable
 	invalidate func()
 }
 
@@ -327,4 +335,72 @@ func (a *App) endWatch() {
 		a.live.end()
 		a.live = nil
 	}
+}
+
+// linking is a pairing on screen: the ticket to use, and the code to point a camera at.
+type linking struct {
+	ticket string
+	code   *qr.Code
+	with   string
+	err    string
+}
+
+// startPairing opens this device up and puts the code on screen.
+func (a *App) startPairing() {
+	ticket, err := a.from.Offer()
+	if err != nil {
+		a.mu.Lock()
+		a.linking = &linking{err: err.Error()}
+		a.mu.Unlock()
+		a.redraw()
+		return
+	}
+
+	at := &linking{ticket: ticket}
+	if drawn, err := tickets.Code(ticket); err == nil {
+		at.code = drawn
+	}
+
+	a.mu.Lock()
+	a.linking = at
+	a.mu.Unlock()
+	a.redraw()
+
+	a.awaitPairing()
+}
+
+// awaitPairing watches the offer until somebody answers it or it is put away.
+func (a *App) awaitPairing() {
+	for range 600 {
+		time.Sleep(time.Second)
+
+		a.mu.Lock()
+		open := a.linking != nil
+		a.mu.Unlock()
+		if !open {
+			return
+		}
+
+		_, with, err := a.from.Pairing()
+		if err != nil || with == "" {
+			continue
+		}
+
+		a.mu.Lock()
+		a.linking = nil
+		a.mu.Unlock()
+
+		a.loadPeers()
+		return
+	}
+}
+
+// stopPairing takes the offer down, so a code shown by mistake stops being one.
+func (a *App) stopPairing() {
+	a.mu.Lock()
+	a.linking = nil
+	a.mu.Unlock()
+
+	go func() { _ = a.from.Unpair() }()
+	a.redraw()
 }

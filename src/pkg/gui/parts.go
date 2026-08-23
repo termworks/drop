@@ -253,3 +253,102 @@ func (a *App) banner(gtx layout.Context, item *Shared) layout.Dimensions {
 			})
 		})
 }
+
+// pairingView is the code, the ticket, and the wait — the way out of a device that knows nobody.
+func (a *App) pairingView(gtx layout.Context, at *linking) layout.Dimensions {
+	if a.pairStop.Clicked(gtx) {
+		a.stopPairing()
+	}
+
+	return layout.UniformInset(pad).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				title := material.H6(a.theme, "Pair a device")
+				title.Color = ink
+				return title.Layout(gtx)
+			}),
+			layout.Rigid(layout.Spacer{Height: gap}.Layout),
+
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				if at.err != "" {
+					return a.note(gtx, at.err, bad)
+				}
+				return layout.Dimensions{}
+			}),
+
+			// Painted rather than typed, so a module is a square whatever the font happens to do.
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				if at.code == nil {
+					return layout.Dimensions{}
+				}
+				return qrCode(gtx, at.code, ink)
+			}),
+
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				if at.ticket == "" {
+					return layout.Dimensions{}
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						note := material.Caption(a.theme, "or run this on the other device:")
+						note.Color = dim
+						return note.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						cmd := material.Caption(a.theme, "drop pair "+at.ticket)
+						cmd.Font.Typeface = "Go Mono"
+						cmd.Color = violet
+						return cmd.Layout(gtx)
+					}),
+				)
+			}),
+
+			layout.Rigid(layout.Spacer{Height: gap}.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				waiting := material.Caption(a.theme, "waiting for it to answer…")
+				waiting.Color = dim
+				return waiting.Layout(gtx)
+			}),
+			layout.Rigid(layout.Spacer{Height: gap}.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				b := material.Button(a.theme, &a.pairStop, "Cancel")
+				b.Background = panel
+				b.Color = dim
+				b.CornerRadius = round
+				return b.Layout(gtx)
+			}),
+		)
+	})
+}
+
+// nothingPaired is the first thing anyone sees, so it offers the way forward rather than naming a
+// command they have to go and find a terminal for.
+func (a *App) nothingPaired(gtx layout.Context) layout.Dimensions {
+	if a.pairNow.Clicked(gtx) {
+		go a.startPairing()
+	}
+
+	return layout.UniformInset(pad).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				said := material.Body1(a.theme, "No devices yet.")
+				said.Color = ink
+				return said.Layout(gtx)
+			}),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				said := material.Body2(a.theme, "Pair one to send it files, messages, or a terminal.")
+				said.Color = dim
+				return said.Layout(gtx)
+			}),
+			layout.Rigid(layout.Spacer{Height: pad}.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				b := material.Button(a.theme, &a.pairNow, "Pair a device")
+				b.Background = violet
+				b.Color = onDark
+				b.CornerRadius = round
+				return b.Layout(gtx)
+			}),
+		)
+	})
+}

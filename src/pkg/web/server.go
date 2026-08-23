@@ -32,6 +32,7 @@ type Sender interface {
 	Watch(ctx context.Context, to book.Entry, path string, into Terminal) error
 	Spaces(ctx context.Context, to book.Entry) ([]Space, error)
 	Self(ctx context.Context) (Identity, error)
+	Offer(ctx context.Context) (ticket string, done <-chan string, err error)
 }
 
 // Server is the bridge.
@@ -43,6 +44,7 @@ type Server struct {
 
 	// shares holds what the phone handed over until the page says where it goes.
 	shares  *shares
+	offer   *offering
 	claimed *Shared
 
 	mu       sync.Mutex
@@ -50,7 +52,7 @@ type Server struct {
 }
 
 func New(send Sender) *Server {
-	return &Server{send: send, watchers: map[chan convo.Message]struct{}{}, shares: newShares()}
+	return &Server{send: send, watchers: map[chan convo.Message]struct{}{}, shares: newShares(), offer: &offering{}}
 }
 
 // Arrived tells every open page about a message, so what a peer sends appears without a reload.
@@ -75,6 +77,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /share", s.share)
 	mux.HandleFunc("GET /api/shared/{token}", s.shared)
 	mux.HandleFunc("GET /api/self", s.self)
+	mux.HandleFunc("POST /api/pair", s.pair)
+	mux.HandleFunc("GET /api/pair", s.pairing)
+	mux.HandleFunc("DELETE /api/pair", s.unpair)
 	mux.HandleFunc("GET /api/peers", s.peers)
 	mux.HandleFunc("GET /api/log/{peer}", s.log)
 	mux.HandleFunc("POST /api/say", s.say)

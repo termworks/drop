@@ -129,3 +129,57 @@ func (r *Remote) Watch(peer, path string, into io.Writer, resize func(cols, rows
 
 	return readFrames(res.Body, into, resize)
 }
+
+// Offer opens this device to a pairing, through the machine that served this page.
+func (r *Remote) Offer() (string, error) {
+	res, err := r.HTTP.Post(r.At+"/api/pair", "application/json", nil)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return "", err
+	}
+	if res.StatusCode < 200 || res.StatusCode > 299 {
+		return "", fmt.Errorf("%s", reason(body, res.Status))
+	}
+
+	var said struct {
+		Ticket string `json:"ticket"`
+	}
+	if err := json.Unmarshal(body, &said); err != nil {
+		return "", err
+	}
+	return said.Ticket, nil
+}
+
+// Pairing reports how an offer is going. Polled rather than pushed: it is one small answer, asked
+// for a few seconds while somebody points a camera, and a second connection to carry it would be
+// more machinery than the question deserves.
+func (r *Remote) Pairing() (string, string, error) {
+	var said struct {
+		Ticket string `json:"ticket"`
+		With   string `json:"with"`
+	}
+	if err := r.get("/api/pair", &said); err != nil {
+		return "", "", err
+	}
+	return said.Ticket, said.With, nil
+}
+
+func (r *Remote) Unpair() error {
+	req, err := http.NewRequest(http.MethodDelete, r.At+"/api/pair", nil)
+	if err != nil {
+		return err
+	}
+	res, err := r.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	_, _ = io.Copy(io.Discard, res.Body)
+	return nil
+}
