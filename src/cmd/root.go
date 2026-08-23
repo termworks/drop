@@ -47,6 +47,7 @@ func Execute(v string, exit func(int), args []string) {
 		newNamespacesCmd(),
 		newPasswdCmd(),
 		newListCmd(),
+		newTUICmd(),
 	)
 
 	if err := root.Execute(); err != nil {
