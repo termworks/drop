@@ -220,6 +220,9 @@ func readSettings(cfg *Config, module *rt.Table) {
 	if list, ok := optStrings(module, "bootstrap"); ok {
 		cfg.Bootstrap = list
 	}
+	if on, ok := optBool(module, "rendezvous"); ok {
+		cfg.Rendezvous, cfg.HasRendezvous = on, true
+	}
 	if list, ok := optStrings(module, "relays"); ok {
 		cfg.Relays = list
 	}

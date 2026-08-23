@@ -9,6 +9,7 @@ import (
 
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/netaddr"
+	"github.com/tmc/go-iroh/relay"
 )
 
 // What drop speaks. ALPN is negotiated per connection in iroh, so each protocol is its own ALPN
@@ -41,6 +42,13 @@ func Start(ctx context.Context) (*Node, error) {
 		iroh.WithBindAddr(netip.AddrPortFrom(netip.IPv4Unspecified(), Port())),
 		iroh.WithSecretKey(sk),
 		iroh.WithALPNs(ALPNs...),
+	}
+
+	// Relays are what carry a connection when neither side can be dialled directly, and the
+	// address published for a rendezvous is a relay address. Off otherwise: a relay is a
+	// third party, and traffic should not start crossing one because a default said so.
+	if Rendezvous() {
+		opts = append(opts, iroh.WithRelayMode(relayMode()), iroh.WithNetReport())
 	}
 
 	ep, err := iroh.Bind(ctx, opts...)
@@ -114,4 +122,26 @@ func Port() uint16 {
 		return DefaultPort
 	}
 	return uint16(chosen)
+}
+
+// relayMode is the configured relays, or the defaults when the config named none.
+func relayMode() relay.Mode {
+	configured := configuredRelays()
+	if len(configured) == 0 {
+		return relay.ModeDefault()
+	}
+
+	urls := make([]netaddr.RelayURL, 0, len(configured))
+	for _, raw := range configured {
+		u, err := netaddr.ParseRelayURL(raw)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "drop: ignoring relay %q: %v\n", raw, err)
+			continue
+		}
+		urls = append(urls, u)
+	}
+	if len(urls) == 0 {
+		return relay.ModeDefault()
+	}
+	return relay.ModeCustom(relay.MapFromURLs(urls...))
 }

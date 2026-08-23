@@ -164,6 +164,7 @@ local drop = require("drop")
 
 drop.name = "workstation"
 drop.open_links = true
+drop.rendezvous = true  -- optional; see below
 
 drop.mount("/inbox",        { type = "files",  dir = "~/Downloads" })
 drop.mount("/inbox/photos", { type = "files",  dir = "~/Pictures/drop" })
@@ -176,6 +177,35 @@ if os.getenv("DROP_DEV") then
   drop.mount("/build", { type = "stream", command = "tail -f /tmp/build.log" })
 end
 ```
+
+### Finding a device that moved
+
+On one network, devices find each other by multicast and need nothing else. A device that
+moves — a laptop that left the building — cannot be found that way, because the address its
+peers wrote down at pairing no longer reaches it.
+
+`drop.rendezvous = true` turns on publishing its current address so paired devices can still
+reach it. It is off by default, because it writes to a relay you do not own.
+
+What gets published is not your identity. For each device you have paired with, drop derives
+a throwaway identity from the secret the two of you established when you paired:
+
+```
+identity = ed25519(HKDF(pair secret, publisher, hour))
+```
+
+Both sides can compute it and nobody else can, because it takes the pair secret. So:
+
+  - Someone who knows your device ID still cannot locate you. The ID is not what the record
+    is filed under.
+  - A device paired with three others publishes three unrelated records. Nothing ties them
+    to each other or to you.
+  - The identity rotates hourly, so a relay cannot watch one record over weeks.
+  - Only relay addresses are published, never your IP.
+
+The cost is that connections may cross a relay, and the relay knows two parties are talking
+even though it cannot tell who they are or read anything. Traffic stays end-to-end encrypted.
+Set `drop.relays` to your own if you would rather not use the defaults.
 
 Mounts are keyed by path, so declaring one twice replaces it rather than adding a second — a config
 that loops, or is re-read, cannot silently grow the table.

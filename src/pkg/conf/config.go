@@ -20,8 +20,11 @@ type Config struct {
 	Relays    []string
 	// HasName and HasOpenLinks say whether the config mentioned the setting at all, so one it never
 	// named leaves the environment alone.
-	HasName      bool
-	HasOpenLinks bool
+	HasName bool
+	// Rendezvous turns on publishing this device's address for paired peers to find.
+	Rendezvous    bool
+	HasRendezvous bool
+	HasOpenLinks  bool
 	// OpenLinks lets a link namespace act rather than only record.
 	OpenLinks bool
 	// Mounts is every namespace this node serves.
@@ -109,7 +112,26 @@ func (c *Config) Apply() {
 	if len(c.Bootstrap) > 0 {
 		node.SetBootstrap(c.Bootstrap)
 	}
+	if c.HasRendezvous {
+		node.SetRendezvous(c.Rendezvous)
+	}
 	if len(c.Relays) > 0 {
 		node.SetRelays(c.Relays)
 	}
+}
+
+// ApplySettings puts the config's settings in effect and nothing else.
+//
+// Every command needs the settings — a command that dials has to know whether a rendezvous is
+// allowed — but only the ones that serve need the namespaces and handlers. An unreadable config is
+// ignored here rather than reported, because the command that actually depends on it loads it
+// again and says so properly.
+func ApplySettings() {
+	cfg, err := Load()
+	if err != nil {
+		return
+	}
+	defer cfg.Close()
+
+	cfg.Apply()
 }

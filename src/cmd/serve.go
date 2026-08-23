@@ -64,6 +64,8 @@ func runServe(parent context.Context, quiet bool) error {
 	}
 	resolveGuests(cfg, pinned)
 
+	startRendezvous(ctx, n)
+
 	if _, err := discovery.StartLAN(ctx, n); err != nil {
 		fmt.Fprintf(os.Stderr, "drop: mDNS unavailable: %v\n", err)
 	}
