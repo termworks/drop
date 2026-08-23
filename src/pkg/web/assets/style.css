@@ -522,3 +522,21 @@ li.event .bubble { border: 0; background: none; color: var(--dim); font-size: 12
 
 .space-may { font-size: 11px; color: var(--dim); margin-left: auto; }
 .space-about { font-size: 13px; color: var(--dim); }
+
+/* What a phone shared, sitting above everything until it is told where to go. */
+#shared {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: var(--pad-y) var(--pad) 0;
+  padding: 12px 14px;
+  border-radius: var(--r);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+#shared .what { font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+#shared .say { color: var(--dim); font-size: 13px; }
+#shared button { margin-left: auto; }
+#shared button + button { margin-left: 0; }

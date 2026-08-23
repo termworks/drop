@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- A maskable icon: everything that matters stays inside the middle 80%, because Android crops
+       the edges to whatever shape the launcher uses. -->
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4c1d95"/>
+      <stop offset="1" stop-color="#6b2273"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#g)"/>
+  <g fill="none" stroke="#ffffff" stroke-width="26" stroke-linecap="round">
+    <circle cx="256" cy="152" r="34" fill="#ffffff" stroke="none"/>
+    <circle cx="160" cy="340" r="34" fill="#ffffff" stroke="none"/>
+    <circle cx="352" cy="340" r="34" fill="#ffffff" stroke="none"/>
+    <path d="M256 186 L166 306"/>
+    <path d="M256 186 L346 306"/>
+    <path d="M194 340 L318 340"/>
+  </g>
+</svg>

@@ -23,6 +23,7 @@ const termBox = document.querySelector("#term");
 const termState = document.querySelector("#term-state");
 const linkForm = document.querySelector("#link-form");
 const linkURL = document.querySelector("#link-url");
+const banner = document.querySelector("#shared");
 
 // Which view each kind of path opens. A kind with no view here is one the page cannot show yet, and
 // it says so rather than opening something misleading.
@@ -51,6 +52,7 @@ let current = null;   // the device
 let here = "/";       // how deep into its paths we have walked
 let space = null;     // the leaf that is open, if any
 let spaces = [];      // everything it shares with us
+let pending = null;   // something a phone shared, waiting to be told where it goes
 
 async function api(path, options) {
   const res = await fetch(path, options);
@@ -667,3 +669,84 @@ document.querySelector("#back").addEventListener("click", () => {
   space = null;
   loadPeers();
 });
+
+// ------------------------------------------------------------------ what the phone shared
+
+// Android's share sheet posts to /share, which files it and sends the browser here with a token.
+// The sheet says what was shared but not who it is for, so that is the one thing left to ask.
+async function claimShare() {
+  const token = new URLSearchParams(location.search).get("shared");
+  if (!token) return;
+
+  // Taken out of the address bar immediately: it is single use, and a reload should not look like a
+  // second share that expired.
+  history.replaceState(null, "", location.pathname);
+
+  let item;
+  try {
+    item = await api(`/api/shared/${encodeURIComponent(token)}`);
+  } catch (err) {
+    spacesNote.hidden = false;
+    spacesNote.textContent = err.message;
+    return;
+  }
+
+  pending = item;
+  showPending();
+}
+
+function showPending() {
+  if (!pending) return;
+
+  const what = pending.name
+    ? `${pending.name} · ${humanSize(pending.size)}`
+    : (pending.url || pending.text || pending.title);
+
+  banner.hidden = false;
+  banner.querySelector(".what").textContent = what;
+  banner.querySelector(".say").textContent = current
+    ? "choose where it goes"
+    : "choose a device";
+}
+
+// send hands what was shared to the path that is open, which is the answer to the question the
+// share sheet could not ask.
+async function sendPending() {
+  if (!pending || !current || !space) return;
+
+  const body = pending.url || pending.text || pending.title || "";
+
+  try {
+    if (pending.name) {
+      spacesNote.hidden = false;
+      spacesNote.textContent = "files shared from a phone are not sent yet.";
+      return;
+    }
+
+    await api("/api/say", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to: current, body, kind: pending.url ? "link" : "text" }),
+    });
+
+    pending = null;
+    banner.hidden = true;
+    if (space.kind === "chat") loadLog();
+  } catch (err) {
+    banner.querySelector(".say").textContent = `not sent: ${err.message}`;
+  }
+}
+
+document.querySelector("#send-shared").addEventListener("click", sendPending);
+document.querySelector("#drop-shared").addEventListener("click", () => {
+  pending = null;
+  banner.hidden = true;
+});
+
+claimShare();
+
+// A service worker is what makes the page installable, and installing is what puts drop in the
+// share sheet. It needs a secure context, so this quietly does nothing over plain http.
+if ("serviceWorker" in navigator && location.protocol === "https:") {
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
+}

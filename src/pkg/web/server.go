@@ -41,12 +41,16 @@ type Server struct {
 	// open is set when the bridge was deliberately bound somewhere other than loopback.
 	open bool
 
+	// shares holds what the phone handed over until the page says where it goes.
+	shares  *shares
+	claimed *Shared
+
 	mu       sync.Mutex
 	watchers map[chan convo.Message]struct{}
 }
 
 func New(send Sender) *Server {
-	return &Server{send: send, watchers: map[chan convo.Message]struct{}{}}
+	return &Server{send: send, watchers: map[chan convo.Message]struct{}{}, shares: newShares()}
 }
 
 // Arrived tells every open page about a message, so what a peer sends appears without a reload.
@@ -67,6 +71,8 @@ func (s *Server) Arrived(m convo.Message) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("POST /share", s.share)
+	mux.HandleFunc("GET /api/shared/{token}", s.shared)
 	mux.HandleFunc("GET /api/self", s.self)
 	mux.HandleFunc("GET /api/peers", s.peers)
 	mux.HandleFunc("GET /api/log/{peer}", s.log)

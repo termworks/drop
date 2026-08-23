@@ -2,6 +2,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>drop</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#4c1d95">
 <link rel="stylesheet" href="/style.css">
 
 <div class="shell">
@@ -30,6 +33,14 @@
   </aside>
 
   <main>
+    <!-- What a phone shared, waiting to be told where it goes. -->
+    <aside id="shared" hidden>
+      <span class="what"></span>
+      <span class="say"></span>
+      <button type="button" id="send-shared" class="btn btn-primary">Send here</button>
+      <button type="button" id="drop-shared" class="btn">Discard</button>
+    </aside>
+
     <p class="empty" id="pick">Choose a device on the left.</p>
 
     <section id="device" hidden>

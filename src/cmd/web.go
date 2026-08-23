@@ -24,7 +24,11 @@ import (
 )
 
 func newWebCmd() *cobra.Command {
-	var addr string
+	var (
+		addr    string
+		cert    string
+		keyFile string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "web",
@@ -37,16 +41,18 @@ func newWebCmd() *cobra.Command {
 			"phone needs. There is no password on the page, so only do that on a network you trust.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runWeb(cmd.Context(), addr)
+			return runWeb(cmd.Context(), addr, cert, keyFile)
 		},
 	}
 
 	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:7777", "where to listen; a non-loopback address opens it to the network")
+	cmd.Flags().StringVar(&cert, "tls-cert", "", "a certificate, so a phone can install the page")
+	cmd.Flags().StringVar(&keyFile, "tls-key", "", "the key for --tls-cert")
 
 	return cmd
 }
 
-func runWeb(parent context.Context, addr string) error {
+func runWeb(parent context.Context, addr, cert, keyFile string) error {
 	cfg, err := conf.Load()
 	if err != nil {
 		return err
@@ -124,8 +130,25 @@ func runWeb(parent context.Context, addr string) error {
 	}()
 
 	fmt.Printf("%s  %s\n\n", node.DisplayName(), n.ID())
-	fmt.Printf("  http://%s\n\n", listener.Addr())
+	scheme := "http"
+	if cert != "" {
+		scheme = "https"
+	}
+	fmt.Printf("  %s://%s\n\n", scheme, listener.Addr())
 	fmt.Println("ctrl-c to stop")
+
+	// A phone will only install a page served over TLS, and installing is what puts drop in the
+	// share sheet. `tailscale cert` issues one for a tailnet name, which is the least painful way
+	// to have a real certificate on a machine with no public address.
+	if cert != "" || keyFile != "" {
+		if cert == "" || keyFile == "" {
+			return fmt.Errorf("--tls-cert and --tls-key go together")
+		}
+		if err := server.ServeTLS(listener, cert, keyFile); err != nil && err != http.ErrServerClosed {
+			return err
+		}
+		return nil
+	}
 
 	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 		return err
