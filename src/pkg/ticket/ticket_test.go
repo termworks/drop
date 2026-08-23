@@ -93,3 +93,38 @@ func TestAnEmptyTicketIsStillEncodable(t *testing.T) {
 		t.Fatalf("the scheme alone should encode: %v", err)
 	}
 }
+
+// A module has to come out square, or a camera will not read it. Wide trades characters for that:
+// two across and one down, rather than one across and half a row down.
+func TestWideIsTwoCharactersPerModule(t *testing.T) {
+	code, err := Code(sample)
+	if err != nil {
+		t.Fatalf("encoding: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimRight(Wide(code), "\n"), "\n")
+
+	// One line per module row, plus the quiet zone above and below.
+	if want := code.Size + 4; len(lines) != want {
+		t.Fatalf("%d lines, want %d", len(lines), want)
+	}
+	// Two characters per module across.
+	if want := (code.Size + 4) * 2; len([]rune(lines[0])) != want {
+		t.Fatalf("%d wide, want %d", len([]rune(lines[0])), want)
+	}
+
+	for i, line := range lines {
+		if got := len([]rune(line)); got != (code.Size+4)*2 {
+			t.Fatalf("line %d is %d wide — not rectangular", i, got)
+		}
+	}
+}
+
+func TestWideKeepsItsQuietZone(t *testing.T) {
+	code, _ := Code(sample)
+	lines := strings.Split(strings.TrimRight(Wide(code), "\n"), "\n")
+
+	if strings.TrimSpace(lines[0]) != "" || strings.TrimSpace(lines[len(lines)-1]) != "" {
+		t.Fatal("the margin has something in it")
+	}
+}

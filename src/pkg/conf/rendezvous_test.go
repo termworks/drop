@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/ns"
 )
 
 // A config must serve something, so every case here declares one namespace it does not otherwise use.
@@ -74,4 +75,20 @@ func TestRendezvousCanBeTurnedOff(t *testing.T) {
 		t.Fatal("an explicit false did not turn it off")
 	}
 	t.Cleanup(func() { node.SetRendezvous(false) })
+}
+
+// A node with no config should be usable by a device you paired with. Anything else is a program
+// that looks broken until its owner learns that a rule was needed.
+func TestTheDefaultsAreOpenToAPairedDevice(t *testing.T) {
+	paired := ns.Caller{ID: "aaaa", Name: "laptop", Paired: true}
+	stranger := ns.Caller{ID: "zzzz"}
+
+	for _, path := range []string{"/inbox", "/chat", "/open"} {
+		if ok, why := Default().Mounts.Admits(path, paired); !ok {
+			t.Fatalf("%s is closed to a paired device: %s", path, why)
+		}
+		if ok, _ := Default().Mounts.Admits(path, stranger); ok {
+			t.Fatalf("%s is open to a stranger", path)
+		}
+	}
 }

@@ -21,6 +21,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.key(msg)
 
+	case pairStarted:
+		if msg.err != nil {
+			m.trouble = msg.err.Error()
+			return m, nil
+		}
+		m.linking, m.trouble = msg.at, ""
+		return m, waitForPair(msg.at.waited)
+
+	case pairDone:
+		if m.linking != nil {
+			m.linking.stop()
+			m.linking = nil
+		}
+		m.trouble = ""
+		return m, loadPeers(m.back)
+
 	case selfLoaded:
 		if msg.err == nil {
 			m.me = msg.me
@@ -94,6 +110,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// While composing, the keys are the message — except the two that end it.
+	// While a pairing is on screen it owns the keyboard: there is one thing to do, and one way
+	// out of it.
+	if m.linking != nil {
+		switch msg.String() {
+		case "esc", "q", "ctrl+c":
+			m.linking.stop()
+			m.linking = nil
+		}
+		return m, nil
+	}
+
 	if m.writing {
 		return m.typeKey(msg)
 	}
@@ -127,6 +154,12 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "i":
 		if at, ok := m.path(); ok && m.at == levelOpen && kindOf(at) == "chat" {
 			m.writing = true
+		}
+		return m, nil
+
+	case "p":
+		if m.at == levelDevices && m.linking == nil {
+			return m, offer(m.back)
 		}
 		return m, nil
 

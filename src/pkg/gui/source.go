@@ -53,6 +53,12 @@ type Source interface {
 	Log(peer string) ([]Message, error)
 	Say(peer, body string, asLink bool) error
 
+	// Offer opens this device to a pairing. The ticket comes back at once, because it is what has
+	// to be on screen; With reports who answered, once anyone has.
+	Offer() (ticket string, err error)
+	Pairing() (ticket, with string, err error)
+	Unpair() error
+
 	// Watch reads a live path until the reader is closed. Writes land on the interface's goroutine
 	// through a screen that takes its own lock.
 	Watch(peer, path string, into io.Writer, resize func(cols, rows int), done <-chan struct{}) error

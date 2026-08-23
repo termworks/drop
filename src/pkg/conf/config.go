@@ -37,11 +37,18 @@ type Config struct {
 
 // Default is what a node serves with no configuration file: somewhere to put files, somewhere to
 // talk, and nothing that runs a command or shares a terminal, because those are decisions.
+// Default is what a node serves with no config at all.
+//
+// Open to anyone paired, because a default that serves nobody is not a default — it is a node
+// that appears broken until its owner finds out a rule was needed. Pairing is already the
+// deliberate act: nothing reaches these without one.
 func Default() *Config {
+	open := ns.Access{AnyPaired: true}
+
 	table := ns.NewTable()
-	_ = table.Add(ns.Mount{Path: "/inbox", Kind: ns.KindFiles, Dir: "."})
-	_ = table.Add(ns.Mount{Path: "/chat", Kind: ns.KindChat})
-	_ = table.Add(ns.Mount{Path: "/open", Kind: ns.KindLink})
+	_ = table.Add(ns.Mount{Path: "/inbox", Kind: ns.KindFiles, Dir: ".", Access: open})
+	_ = table.Add(ns.Mount{Path: "/chat", Kind: ns.KindChat, Access: open})
+	_ = table.Add(ns.Mount{Path: "/open", Kind: ns.KindLink, Access: open})
 
 	return &Config{Mounts: table}
 }

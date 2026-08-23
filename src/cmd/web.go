@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"crypto/hmac"
 	"fmt"
 	"io"
 	"net"
@@ -284,4 +285,54 @@ func (b *bridge) Self(ctx context.Context) (web.Identity, error) {
 		who.Addrs = append(who.Addrs, at.String())
 	}
 	return who, nil
+}
+
+// Offer puts this device up for pairing and reports the name it paired with.
+//
+// The same act as `drop pair`, reachable from the page — because a device with nothing paired is a
+// dead end, and reaching for a terminal to fix that is not an interface.
+func (b *bridge) Offer(ctx context.Context) (string, <-chan string, error) {
+	code, err := proto.NewCode()
+	if err != nil {
+		return "", nil, err
+	}
+
+	pinned, err := book.Load()
+	if err != nil {
+		return "", nil, err
+	}
+
+	invite := ticketFor(b.node.ID(), code, discovery.LocalAddrs(b.node))
+	done := make(chan string, 1)
+
+	go serveLoop(ctx, b.node, map[string]func(node.ID, *iroh.Stream){
+		node.ALPNPair: func(from node.ID, s *iroh.Stream) {
+			defer s.Close()
+
+			p, err := proto.AnswerPairing(s, b.node.ID(), node.DisplayName(), written(discovery.LocalAddrs(b.node)))
+			if err != nil {
+				return
+			}
+			// The far end has to prove it was given the code, not merely the address.
+			if !hmac.Equal(p.Proof, codeProof(code, from, b.node.ID())) {
+				return
+			}
+
+			name := p.Name
+			if name == "" {
+				name = node.Brief(from)
+			}
+			pinned.Pair(name, from, p.Secret, p.Addrs...)
+			if err := pinned.Save(); err != nil {
+				return
+			}
+
+			select {
+			case done <- name:
+			default:
+			}
+		},
+	})
+
+	return invite, done, nil
 }

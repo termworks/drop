@@ -49,6 +49,7 @@ type stub struct {
 	watchErr  error
 	watchBody string
 	serves    []Space
+	offered   chan string
 	spacesErr error
 	asked     *book.Entry
 	watchCols int
@@ -413,4 +414,10 @@ func (s *stub) Watch(ctx context.Context, to book.Entry, path string, into Termi
 
 func (s *stub) Self(ctx context.Context) (Identity, error) {
 	return Identity{Name: "here", ID: "abc123", Addrs: []string{"192.168.1.10:47777"}}, nil
+}
+
+func (s *stub) Offer(ctx context.Context) (string, <-chan string, error) {
+	done := make(chan string, 1)
+	s.offered = done
+	return "7b9773d9#code#192.168.1.1:47777", done, nil
 }

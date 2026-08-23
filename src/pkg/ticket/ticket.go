@@ -35,11 +35,13 @@ func FromLink(text string) string {
 
 // Code renders a ticket as a QR code.
 //
-// Medium correction, which tolerates about 15% damage: this is read off a screen by a camera a foot
-// away, not off a label on a crate, and every level above medium costs modules and therefore columns
-// in a terminal that has only so many.
+// The lowest correction level, deliberately. Correction is there for a code that gets scuffed,
+// and this one is read off a screen a foot from a camera — nothing is going to damage it. The
+// levels above it cost modules, and modules are terminal rows: at M a ticket comes out four
+// rows taller, which is the difference between drawing it and telling somebody their window is
+// too small.
 func Code(text string) (*qr.Code, error) {
-	code, err := qr.Encode(Link(text), qr.M)
+	code, err := qr.Encode(Link(text), qr.L)
 	if err != nil {
 		return nil, fmt.Errorf("encoding the ticket: %w", err)
 	}
@@ -84,4 +86,29 @@ func black(code *qr.Code, x, y int) bool {
 		return false
 	}
 	return code.Black(x, y)
+}
+
+// Wide draws a QR code where a module is two characters across and one line down.
+//
+// Render halves the rows because a terminal cell is about twice as tall as it is wide. A proportional
+// layout engine drawing a monospace face has no such ratio — a character is nearer 0.6 of the line
+// height — so halving there squashes the code, and a squashed code is one a camera gives up on. Two
+// characters per module and no halving comes out square enough to read.
+func Wide(code *qr.Code) string {
+	const quiet = 2
+
+	size := code.Size
+	var out strings.Builder
+
+	for y := -quiet; y < size+quiet; y++ {
+		for x := -quiet; x < size+quiet; x++ {
+			if black(code, x, y) {
+				out.WriteString("██")
+				continue
+			}
+			out.WriteString("  ")
+		}
+		out.WriteString("\n")
+	}
+	return out.String()
 }

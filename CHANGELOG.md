@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.2] - 2026-08-23
+
+### <!-- 0 -->⛰️  Features
+
+- Pair from the page, with a code that scans
+- Pair from the interface, and answer while it is open
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- One listener, a shorter ticket, a code that fits
+- Let the defaults serve a paired device
+
 ## [0.2.1] - 2026-08-23
 
 ### <!-- 0 -->⛰️  Features

@@ -15,7 +15,14 @@ func (m Model) View() string {
 		return dimStyle.Render("  starting…")
 	}
 
+	if m.linking != nil {
+		return m.header() + "\n" + m.pairingView() + "\n" + m.footer()
+	}
+
 	body := m.list.View()
+	if m.at == levelDevices && len(m.peers) == 0 {
+		body = m.nothingPaired()
+	}
 	if m.at == levelOpen {
 		body = m.openView()
 	}
@@ -130,8 +137,11 @@ func (m Model) footer() string {
 	case m.at != levelOpen && m.list.FilterState() == list.Filtering:
 		keys = []hint{{"enter", "keep"}, {"esc", "clear"}}
 
+	case m.linking != nil:
+		keys = []hint{{"esc", "cancel"}}
+
 	case m.at == levelDevices:
-		keys = []hint{{"↑↓", "move"}, {"enter", "open"}, {"/", "find"}, {"r", "reload"}, {"q", "quit"}}
+		keys = []hint{{"p", "pair"}, {"↑↓", "move"}, {"enter", "open"}, {"r", "reload"}, {"q", "quit"}}
 
 	case m.at == levelPaths:
 		keys = []hint{{"↑↓", "move"}, {"enter", "open"}, {"esc", "devices"}, {"r", "reload"}}
@@ -148,4 +158,63 @@ func (m Model) footer() string {
 		parts = append(parts, keyStyle.Render(k.key)+sayStyle.Render(" "+k.does))
 	}
 	return " " + strings.Join(parts, sayStyle.Render("  ·  "))
+}
+
+// nothingPaired is the first thing anyone sees, so it says what to do rather than "no items".
+func (m Model) nothingPaired() string {
+	return "\n " + dimStyle.Render("No devices yet.") +
+		"\n\n " + faintStyle.Render("Press ") + keyStyle.Render("p") +
+		faintStyle.Render(" to show a code, then run") +
+		"\n " + kindStyle.Render("   drop pair <ticket>") +
+		faintStyle.Render(" on the other device,") +
+		"\n " + faintStyle.Render("   or point its camera at the code.")
+}
+
+// pairingView is the code, the ticket, and the wait.
+//
+// The code is only drawn when there is room for the whole of it. A code with its top row cut
+// off is not a smaller code, it is an unreadable one, and the ticket underneath still works.
+func (m Model) pairingView() string {
+	var out strings.Builder
+
+	out.WriteString(" " + brandStyle.Render("Pair a device") + "\n")
+
+	// The ticket is long and every character of it matters, so it is folded rather than cut.
+	folded := fold("drop pair "+m.linking.ticket, m.width-2)
+
+	// What the rest of the screen costs: the title, the two lines around the ticket, the wait,
+	// and a blank line either side of the code.
+	spare := m.listHeight() - len(folded) - 5
+
+	if drawn := strings.Split(strings.TrimRight(m.linking.code, "\n"), "\n"); m.linking.code != "" {
+		if len(drawn) <= spare {
+			out.WriteString("\n" + m.linking.code)
+		} else {
+			out.WriteString("\n " + faintStyle.Render("(the window is too short to draw the code)") + "\n")
+		}
+	}
+
+	out.WriteString("\n " + faintStyle.Render("or run this on the other device:") + "\n")
+	for _, at := range folded {
+		out.WriteString(" " + kindStyle.Render(at) + "\n")
+	}
+
+	out.WriteString("\n " + goodStyle.Render("waiting for it to answer…"))
+
+	return out.String()
+}
+
+// fold breaks a long line into ones that fit, because a ticket with its tail cut off is a
+// ticket nobody can use.
+func fold(text string, width int) []string {
+	if width < 8 {
+		width = 8
+	}
+
+	var out []string
+	for len(text) > width {
+		out = append(out, text[:width])
+		text = text[width:]
+	}
+	return append(out, text)
 }

@@ -35,6 +35,8 @@ type fake struct {
 	log     []convo.Message
 	said    []string
 	watched string
+	offered bool
+	paired  chan string
 	stream  string
 }
 
@@ -391,5 +393,71 @@ func TestAnUnreachableDeviceIsReported(t *testing.T) {
 	}
 	if m.loading {
 		t.Fatal("still loading after a failure")
+	}
+}
+
+func (f *fake) Offer(ctx context.Context) (string, <-chan string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.offered = true
+	done := make(chan string, 1)
+	f.paired = done
+
+	return "7b9773d9#code#192.168.1.1:47777", done, nil
+}
+
+// A device with nothing paired must not be a dead end: the way out has to be on the screen.
+func TestPairingCanBeStartedFromTheInterface(t *testing.T) {
+	back := &fake{}
+	m := start(t, back)
+
+	if len(m.peers) != 0 {
+		t.Fatal("this case is about having nothing paired")
+	}
+	if !strings.Contains(m.View(), "p") {
+		t.Fatal("the empty screen does not offer a way to pair")
+	}
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+
+	if m.linking == nil {
+		t.Fatal("p did not start a pairing")
+	}
+	if !strings.Contains(m.View(), "drop pair") {
+		t.Fatalf("the pairing screen does not show the ticket:\n%s", m.View())
+	}
+}
+
+// Finishing has to bring the device into the list without anyone reaching for a second terminal.
+func TestPairingFinishingReloadsTheDevices(t *testing.T) {
+	back := &fake{}
+	m := start(t, back)
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	if m.linking == nil {
+		t.Fatal("no pairing to finish")
+	}
+
+	back.peers = []book.Entry{{Name: "beta", ID: idFor(2), Secret: make([]byte, book.SecretBytes)}}
+	m = settle(t, m, pairDone{with: "beta"})
+
+	if m.linking != nil {
+		t.Fatal("the pairing screen stayed up after it finished")
+	}
+	if len(m.peers) != 1 || m.peers[0].Name != "beta" {
+		t.Fatalf("the new device did not appear: %+v", m.peers)
+	}
+}
+
+// Escape has to get out of it, or a mistaken keystroke traps you on that screen.
+func TestPairingCanBeAbandoned(t *testing.T) {
+	m := start(t, &fake{})
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+
+	if m.linking != nil {
+		t.Fatal("escape did not leave the pairing screen")
 	}
 }
