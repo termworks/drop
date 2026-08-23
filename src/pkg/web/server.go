@@ -33,6 +33,10 @@ type Sender interface {
 	Spaces(ctx context.Context, to book.Entry) ([]Space, error)
 	Self(ctx context.Context) (Identity, error)
 	Offer(ctx context.Context) (ticket string, done <-chan string, err error)
+
+	// Join takes a ticket somebody else is showing. Pairing has two sides, and an interface that
+	// could only show a code would be half of one.
+	Join(ctx context.Context, ticket string) (with string, err error)
 }
 
 // Server is the bridge.
@@ -80,6 +84,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/pair", s.pair)
 	mux.HandleFunc("GET /api/pair", s.pairing)
 	mux.HandleFunc("DELETE /api/pair", s.unpair)
+	mux.HandleFunc("POST /api/join", s.join)
 	mux.HandleFunc("GET /api/peers", s.peers)
 	mux.HandleFunc("GET /api/log/{peer}", s.log)
 	mux.HandleFunc("POST /api/say", s.say)

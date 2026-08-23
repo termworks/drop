@@ -70,6 +70,10 @@ type App struct {
 	dropShared widget.Clickable
 	pairNow    widget.Clickable
 	pairStop   widget.Clickable
+	joinNow    widget.Clickable
+	joinGo     widget.Clickable
+	joinField  widget.Editor
+	pairScroll layout.List
 	invalidate func()
 }
 

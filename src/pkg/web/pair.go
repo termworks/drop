@@ -2,8 +2,11 @@ package web
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // offering is a pairing this node is currently open to.
@@ -88,4 +91,30 @@ func (s *Server) pairing(w http.ResponseWriter, r *http.Request) {
 func (s *Server) unpair(w http.ResponseWriter, r *http.Request) {
 	s.offer.end()
 	reply(w, map[string]bool{"ok": true})
+}
+
+// join takes a ticket the page was given, which is the other half of pairing: one device shows a
+// code and the other reads it, and an interface that could only do the first is half an interface.
+func (s *Server) join(w http.ResponseWriter, r *http.Request) {
+	var asked struct {
+		Ticket string `json:"ticket"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&asked); err != nil {
+		fail(w, err)
+		return
+	}
+	if asked.Ticket == "" {
+		fail(w, errors.New("no ticket given"))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+
+	with, err := s.send.Join(ctx, asked.Ticket)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	reply(w, map[string]string{"with": with})
 }

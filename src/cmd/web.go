@@ -336,3 +336,8 @@ func (b *bridge) Offer(ctx context.Context) (string, <-chan string, error) {
 
 	return invite, done, nil
 }
+
+// Join takes a ticket another device is showing.
+func (b *bridge) Join(ctx context.Context, ticket string) (string, error) {
+	return joinWith(ctx, b.node, b.lan, ticket, "")
+}

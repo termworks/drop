@@ -183,3 +183,33 @@ func (r *Remote) Unpair() error {
 	_, _ = io.Copy(io.Discard, res.Body)
 	return nil
 }
+
+// Join takes a ticket another device is showing, through the machine that served this page.
+func (r *Remote) Join(ticket string) (string, error) {
+	payload, err := json.Marshal(map[string]string{"ticket": ticket})
+	if err != nil {
+		return "", err
+	}
+
+	res, err := r.HTTP.Post(r.At+"/api/join", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return "", err
+	}
+	if res.StatusCode < 200 || res.StatusCode > 299 {
+		return "", fmt.Errorf("%s", reason(body, res.Status))
+	}
+
+	var said struct {
+		With string `json:"with"`
+	}
+	if err := json.Unmarshal(body, &said); err != nil {
+		return "", err
+	}
+	return said.With, nil
+}

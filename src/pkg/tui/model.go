@@ -35,6 +35,9 @@ type Backend interface {
 	// back at once so it can be shown; the channel yields once the far end has finished.
 	Offer(ctx context.Context) (ticket string, done <-chan string, err error)
 
+	// Join takes a ticket somebody else is showing, which is the other half of pairing.
+	Join(ctx context.Context, ticket string) (with string, err error)
+
 	// Watch reads a live path, writing what arrives into screen until ctx ends.
 	Watch(ctx context.Context, on book.Entry, path string, into io.Writer, resize func(cols, rows int)) error
 }
