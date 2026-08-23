@@ -7,13 +7,21 @@
   --mine: #2f6f4f;
   --theirs: #2b4c7e;
   --accent: #2f6f4f;
+  --soft: #f2f1ee;
   --radius: 10px;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --term-bg: #1b1d1f;
+  --term-fg: #d8d4cd;
+  --t0: #2b2e31; --t1: #cc6666; --t2: #8fae63; --t3: #d6a760;
+  --t4: #6c9ccc; --t5: #b294bb; --t6: #74b0b0; --t7: #c5c8c6;
+  --t8: #5a5f63; --t9: #e08b8b; --t10: #b1cc8a; --t11: #e8c88a;
+  --t12: #93b8e0; --t13: #cbb4d0; --t14: #9fd4d4; --t15: #f0efec;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root {
     --bg: #17181a;
     --panel: #1e2023;
     --line: #303337;
@@ -22,14 +30,15 @@
     --mine: #7fc9a2;
     --theirs: #8fb4e8;
     --accent: #7fc9a2;
+    --soft: #24272a;
   }
 }
 
 * { box-sizing: border-box; }
 
 /* `hidden` only works because the browser's own stylesheet says display:none, and any rule here
-   naming a display beats it. Every panel below sets one, so without this they are all permanently
-   on screen — including the drag overlay, on top of everything. */
+   naming a display beats it. Several panels below set one, so without this they are all
+   permanently on screen — including the drag overlay, on top of everything. */
 [hidden] { display: none !important; }
 
 body {
@@ -39,36 +48,38 @@ body {
   font: 15px/1.55 var(--sans);
 }
 
-.shell { display: grid; grid-template-columns: 250px 1fr; height: 100vh; }
+.shell { display: grid; grid-template-columns: 240px 1fr; height: 100vh; }
+
+/* ---------------------------------------------------------------- the device list */
 
 aside {
   border-right: 1px solid var(--line);
   background: var(--panel);
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  min-height: 0;
 }
 
-aside header {
+aside > header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 14px 16px;
   border-bottom: 1px solid var(--line);
 }
 
-h1 { font-size: 15px; margin: 0; letter-spacing: .02em; }
+aside h1 { font-size: 15px; margin: 0; letter-spacing: 0.02em; }
 
 #refresh {
-  border: 1px solid var(--line);
+  margin-left: auto;
+  border: 0;
   background: none;
   color: var(--dim);
-  border-radius: 6px;
   cursor: pointer;
-  width: 26px; height: 26px;
-  font-size: 13px;
+  font-size: 15px;
 }
-#refresh:hover { color: var(--ink); }
+
+#refresh:hover { color: var(--accent); }
 
 #peers { list-style: none; margin: 0; padding: 6px; overflow-y: auto; flex: 1; }
 
@@ -77,77 +88,129 @@ h1 { font-size: 15px; margin: 0; letter-spacing: .02em; }
   text-align: left;
   border: 0;
   background: none;
-  color: inherit;
-  font: inherit;
+  color: var(--ink);
   padding: 8px 10px;
   border-radius: 8px;
   cursor: pointer;
+  font: inherit;
   display: flex;
   align-items: baseline;
   gap: 8px;
 }
-#peers button:hover { background: var(--bg); }
-#peers button[aria-current="true"] { background: var(--bg); font-weight: 600; }
 
-#peers .state { font-size: 11px; color: var(--dim); margin-left: auto; }
-#peers .waiting { color: var(--accent); }
+#peers button:hover { background: var(--soft); }
+#peers button[aria-current="true"] { background: var(--soft); font-weight: 600; }
 
-.hint { padding: 0 16px 16px; color: var(--dim); font-size: 13px; }
-code { font-family: var(--mono); font-size: .92em; }
+#peers .unread {
+  margin-left: auto;
+  background: var(--accent);
+  color: var(--panel);
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 700;
+}
 
-main { display: flex; flex-direction: column; min-width: 0; position: relative; }
+#peers .unpaired { color: var(--dim); font-size: 11px; margin-left: auto; }
 
-main > header {
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--line);
+.hint { padding: 12px 16px; color: var(--dim); font-size: 13px; }
+.hint code { font: 12px var(--mono); background: var(--soft); padding: 1px 4px; border-radius: 4px; }
+
+/* ---------------------------------------------------------------- the device pane */
+
+main { position: relative; display: flex; flex-direction: column; min-width: 0; }
+
+.empty { margin: auto; color: var(--dim); }
+
+#device { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+#device > header {
+  padding: 14px 20px 10px;
   display: flex;
   align-items: baseline;
   gap: 10px;
 }
-main > header .name { font-weight: 600; }
-main > header .id { color: var(--dim); font-family: var(--mono); font-size: 11px; }
 
-#log {
-  list-style: none;
-  margin: 0;
-  padding: 18px 20px;
-  overflow-y: auto;
-  flex: 1;
+#device .name { font-weight: 600; }
+#device .id { font: 11px var(--mono); color: var(--dim); }
+
+/* The namespaces a device serves. This is the whole navigation: what a path does was decided in
+   that device's config, so the page only shows what came back and opens the matching view. */
+#spaces {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
+  gap: 6px;
+  padding: 0 20px 12px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
 }
 
-#log li { max-width: min(62ch, 80%); }
-#log li.mine { align-self: flex-end; }
-
-.bubble {
-  padding: 8px 12px;
-  border-radius: var(--radius);
+#spaces button {
   border: 1px solid var(--line);
   background: var(--panel);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 5px 12px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#spaces button:hover { border-color: var(--accent); }
+
+#spaces button[aria-current="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--panel);
+}
+
+#spaces .kind {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.7;
+}
+
+.note { color: var(--dim); font-size: 13px; padding: 10px 20px; margin: 0; }
+
+.view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+/* ---------------------------------------------------------------- chat */
+
+#log { list-style: none; margin: 0; padding: 16px 20px; overflow-y: auto; flex: 1; }
+
+#log li { margin-bottom: 10px; max-width: 68ch; }
+#log li.mine { margin-left: auto; }
+
+.bubble {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 8px 11px;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-li.mine .bubble { border-color: color-mix(in srgb, var(--mine) 40%, var(--line)); }
+
+li.mine .bubble { border-color: var(--mine); }
 
 .meta { font-size: 11px; color: var(--dim); margin-top: 3px; }
 li.mine .meta { text-align: right; }
 
+li.event { max-width: none; margin-left: 0; }
+li.event .bubble { border: 0; background: none; color: var(--dim); font-size: 12px; padding: 2px 0; }
+
 .tag {
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: .06em;
+  letter-spacing: 0.06em;
   color: var(--dim);
   margin-right: 6px;
 }
 
-.bubble a { color: var(--theirs); }
-li.mine .bubble a { color: var(--mine); }
-
-li.event { align-self: center; max-width: none; }
-li.event .bubble { border: 0; background: none; color: var(--dim); font-size: 12px; padding: 2px; }
-
-.empty { margin: auto; color: var(--dim); }
+.bubble a { color: var(--theirs); overflow-wrap: anywhere; }
 
 #compose {
   display: flex;
@@ -157,121 +220,86 @@ li.event .bubble { border: 0; background: none; color: var(--dim); font-size: 12
   background: var(--panel);
 }
 
-#body {
+#compose input {
   flex: 1;
-  padding: 9px 12px;
+  padding: 9px 11px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--bg);
   color: var(--ink);
   font: inherit;
 }
-#body:focus { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -1px; }
 
-#compose button {
-  padding: 9px 16px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--bg);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-#compose button:disabled { opacity: .5; cursor: default; }
+#compose input:focus, #link-url:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
-@media (max-width: 620px) {
-  .shell { grid-template-columns: 1fr; }
-  aside { display: none; }
-  aside.showing { display: flex; }
-}
-
-#attach {
+button[type="submit"], #term-go, #term-stop, #attach {
   border: 1px solid var(--line);
   background: var(--panel);
-  color: var(--dim);
-  border-radius: var(--radius);
-  width: 2.2rem;
-  font-size: 1.05rem;
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 8px 14px;
   cursor: pointer;
+  font: inherit;
+  font-size: 14px;
 }
 
-#attach:hover {
-  color: var(--accent);
+button[type="submit"]:hover, #term-go:hover, #term-stop:hover, #attach:hover {
   border-color: var(--accent);
-}
-
-/* The overlay covers the conversation while something is being dragged over the window, so there is
-   never a doubt about which device the file is about to go to. */
-#drop-target {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  border: 2px dashed var(--accent);
-  border-radius: var(--radius);
-  margin: 0.5rem;
   color: var(--accent);
-  font-weight: 600;
-  pointer-events: none;
-  z-index: 5;
 }
 
-/* The terminal palette. Named so the renderer can set a colour by index without knowing the theme,
-   which is what lets the same output look right on both. */
-:root {
-  --term-bg: #1b1d1f;
-  --term-fg: #d8d4cd;
-  --t0: #2b2e31; --t1: #cc6666; --t2: #8fae63; --t3: #d6a760;
-  --t4: #6c9ccc; --t5: #b294bb; --t6: #74b0b0; --t7: #c5c8c6;
-  --t8: #5a5f63; --t9: #e08b8b; --t10: #b1cc8a; --t11: #e8c88a;
-  --t12: #93b8e0; --t13: #cbb4d0; --t14: #9fd4d4; --t15: #f0efec;
+button[disabled] { opacity: 0.5; cursor: default; }
+
+/* ---------------------------------------------------------------- files */
+
+#files-drop {
+  margin: 20px;
+  border: 2px dashed var(--line);
+  border-radius: var(--radius);
+  padding: 30px;
+  text-align: center;
+  color: var(--dim);
 }
 
-#term-panel {
+#files-drop strong { color: var(--ink); font-weight: 600; }
+#attach { padding: 3px 9px; font-size: 13px; }
+
+#transfers { list-style: none; margin: 0; padding: 0 20px 20px; overflow-y: auto; }
+
+#transfers li {
   display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  border-top: 1px solid var(--line);
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
 }
 
-#term-panel > header {
+#transfers .bar-outer {
+  flex: 1;
+  height: 5px;
+  background: var(--soft);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+#transfers .bar-inner { height: 100%; width: 0; background: var(--accent); transition: width 0.15s; }
+#transfers .said { color: var(--dim); font-size: 12px; white-space: nowrap; }
+#transfers li.failed .said { color: #cc6666; }
+
+/* ---------------------------------------------------------------- terminal */
+
+#view-term > .bar {
   display: flex;
   gap: 8px;
   align-items: center;
-  padding: 8px 12px;
+  padding: 10px 20px;
   border-bottom: 1px solid var(--line);
-  background: var(--panel);
 }
 
-#term-path {
-  font: 13px var(--mono);
-  padding: 5px 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--ink);
-  width: 14rem;
-}
-
-#term-state { font: 12px var(--sans); color: var(--dim); margin-left: auto; }
+#term-state { color: var(--dim); font-size: 13px; margin-right: auto; }
 #term-state.live { color: var(--accent); }
 #term-state.gone { color: #cc6666; }
-
-#watch-open, #term-go, #term-close {
-  border: 1px solid var(--line);
-  background: var(--panel);
-  color: var(--dim);
-  border-radius: 6px;
-  padding: 4px 9px;
-  cursor: pointer;
-  font: 13px var(--sans);
-}
-
-#watch-open:hover, #term-go:hover, #term-close:hover { color: var(--accent); border-color: var(--accent); }
-#watch-open { margin-left: auto; }
 
 .term {
   flex: 1;
@@ -280,9 +308,44 @@ li.event .bubble { border: 0; background: none; color: var(--dim); font-size: 12
   background: var(--term-bg);
   color: var(--term-fg);
   font: 13px/1.25 var(--mono);
-  padding: 8px 10px;
+  padding: 10px 12px;
 }
 
-/* pre-wrap keeps the trailing spaces the grid is padded with, so a background colour runs to the
-   end of the line the way it does in a terminal. */
+/* pre keeps the padding the grid is made of, so a background colour runs to the end of a line the
+   way it does in a terminal. */
 .trow { white-space: pre; min-height: 1.25em; }
+
+/* ---------------------------------------------------------------- links */
+
+#link-form { display: flex; gap: 8px; padding: 20px; }
+
+#link-url {
+  flex: 1;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+
+/* ---------------------------------------------------------------- drag overlay */
+
+#drop-target {
+  position: absolute;
+  inset: 8px;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  color: var(--accent);
+  font-weight: 600;
+  pointer-events: none;
+  z-index: 5;
+}
+
+@media (max-width: 640px) {
+  .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  aside { border-right: 0; border-bottom: 1px solid var(--line); max-height: 34vh; }
+}

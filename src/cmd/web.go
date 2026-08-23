@@ -101,7 +101,7 @@ func runWeb(parent context.Context, addr string) error {
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
-			_ = proto.AnswerHello(s, proto.Hello{Name: node.DisplayName(), Version: version})
+			_ = proto.AnswerHello(s, greeting(pinned, cfg.Mounts, from))
 		},
 	})
 
@@ -151,7 +151,7 @@ func (b *bridge) Say(ctx context.Context, to book.Entry, kind byte, body string)
 	return nil
 }
 
-func (b *bridge) SendFile(ctx context.Context, to book.Entry, name string, size int64, body io.Reader) error {
+func (b *bridge) SendFile(ctx context.Context, to book.Entry, path, name string, size int64, body io.Reader) error {
 	conn, s, err := reach(ctx, b.node, b.lan, to, node.ALPNSession)
 	if err != nil {
 		return err
@@ -163,7 +163,7 @@ func (b *bridge) SendFile(ctx context.Context, to book.Entry, name string, size 
 	// upload itself rather than a path: nothing is written to this machine on the way through.
 	source := proto.Source{Name: name, Size: size, Mode: 0o644, Reader: body}
 
-	if err := proto.SendFiles(ctx, s, "/inbox", []proto.Source{source}, node.DisplayName(), nil); err != nil {
+	if err := proto.SendFiles(ctx, s, path, []proto.Source{source}, node.DisplayName(), nil); err != nil {
 		return err
 	}
 	noteFile(to.ID, convo.Out, name, size)
@@ -225,4 +225,29 @@ func loopbackAddr(addr string) bool {
 
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// Spaces asks a peer what it serves.
+func (b *bridge) Spaces(ctx context.Context, to book.Entry) ([]web.Space, error) {
+	conn, s, err := reach(ctx, b.node, b.lan, to, node.ALPNHello)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	defer s.Close()
+
+	hello, err := proto.AskHello(s)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]web.Space, 0, len(hello.Serves))
+	for _, served := range hello.Serves {
+		out = append(out, web.Space{
+			Path:     served.Path,
+			Kind:     served.Kind.String(),
+			Writable: served.Writable,
+		})
+	}
+	return out, nil
 }

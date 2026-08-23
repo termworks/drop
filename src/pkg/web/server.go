@@ -28,8 +28,9 @@ var assets embed.FS
 // drop reaches a peer, which keeps the transport out of the browser's business entirely.
 type Sender interface {
 	Say(ctx context.Context, to book.Entry, kind byte, body string) error
-	SendFile(ctx context.Context, to book.Entry, name string, size int64, body io.Reader) error
+	SendFile(ctx context.Context, to book.Entry, path, name string, size int64, body io.Reader) error
 	Watch(ctx context.Context, to book.Entry, path string, into Terminal) error
+	Spaces(ctx context.Context, to book.Entry) ([]Space, error)
 }
 
 // Server is the bridge.
@@ -70,6 +71,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/say", s.say)
 	mux.HandleFunc("POST /api/send", s.sendFile)
 	mux.HandleFunc("GET /api/events", s.events)
+	mux.HandleFunc("GET /api/spaces/{peer}", s.spaces)
 	mux.HandleFunc("GET /api/watch/{peer}/{path...}", s.watch)
 
 	pages, err := fs.Sub(assets, "assets")
@@ -315,7 +317,12 @@ func (s *Server) sendFile(w http.ResponseWriter, r *http.Request) {
 
 	// No timeout of its own: a large file over a slow link is the ordinary case, and the request
 	// being cancelled is what should stop it.
-	if err := s.send.SendFile(r.Context(), entry, name, head.Size, file); err != nil {
+	at := r.FormValue("path")
+	if at == "" {
+		at = "/inbox"
+	}
+
+	if err := s.send.SendFile(r.Context(), entry, at, name, head.Size, file); err != nil {
 		fail(w, err)
 		return
 	}

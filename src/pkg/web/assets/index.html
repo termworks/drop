@@ -10,41 +10,66 @@
       <h1>drop</h1>
       <button id="refresh" title="Reload the device list">↻</button>
     </header>
+
     <ul id="peers"></ul>
+
     <p class="hint" id="no-peers" hidden>
-      Nothing paired yet. Run <code>drop pair</code> on this machine and
-      <code>drop pair &lt;ticket&gt;</code> on the other.
+      Nothing paired yet. Run <code>drop pair</code> here and
+      <code>drop pair &lt;ticket&gt;</code> on the other device.
     </p>
   </aside>
 
   <main>
-    <header id="with" hidden>
-      <span class="name"></span>
-      <span class="id"></span>
-      <button type="button" id="watch-open" title="Watch a terminal on this device">⌨</button>
-    </header>
-
-    <ol id="log" aria-live="polite"></ol>
-    <div id="drop-target" hidden><span>Release to send</span></div>
-
-    <section id="term-panel" hidden>
-      <header>
-        <input id="term-path" value="/tty" spellcheck="false" aria-label="Namespace to watch">
-        <button type="button" id="term-go">Watch</button>
-        <span id="term-state"></span>
-        <button type="button" id="term-close" title="Stop watching">✕</button>
-      </header>
-      <div id="term" class="term"></div>
-    </section>
-
     <p class="empty" id="pick">Choose a device on the left.</p>
 
-    <form id="compose" hidden autocomplete="off">
-      <input type="file" id="file" multiple hidden>
-      <button type="button" id="attach" title="Send a file">＋</button>
-      <input id="body" placeholder="Write something, or paste a link" aria-label="Message">
-      <button type="submit">Send</button>
-    </form>
+    <section id="device" hidden>
+      <header>
+        <span class="name"></span>
+        <span class="id"></span>
+      </header>
+
+      <!-- What the device serves. Each one is a namespace it declared in its config, and what it
+           does is decided over there, not here. -->
+      <nav id="spaces" aria-label="What this device serves"></nav>
+      <p class="note" id="spaces-note" hidden></p>
+
+      <!-- One view per kind of namespace. Only the one matching the open namespace is shown. -->
+      <section class="view" id="view-chat" hidden>
+        <ol id="log" aria-live="polite"></ol>
+        <form id="compose" autocomplete="off">
+          <input id="body" placeholder="Write something, or paste a link" aria-label="Message">
+          <button type="submit">Send</button>
+        </form>
+      </section>
+
+      <section class="view" id="view-files" hidden>
+        <div id="files-drop">
+          <p><strong>Drop files here</strong></p>
+          <p class="note">or <button type="button" id="attach">choose a file</button></p>
+          <input type="file" id="file" multiple hidden>
+        </div>
+        <ol id="transfers"></ol>
+      </section>
+
+      <section class="view" id="view-term" hidden>
+        <header class="bar">
+          <span id="term-state"></span>
+          <button type="button" id="term-go">Watch</button>
+          <button type="button" id="term-stop">Stop</button>
+        </header>
+        <div id="term" class="term"></div>
+      </section>
+
+      <section class="view" id="view-link" hidden>
+        <form id="link-form" autocomplete="off">
+          <input id="link-url" placeholder="https://…" aria-label="Link to open over there">
+          <button type="submit">Open there</button>
+        </form>
+        <p class="note">The far device opens this, or records it, depending on how it declared the namespace.</p>
+      </section>
+    </section>
+
+    <div id="drop-target" hidden><span>Release to send</span></div>
   </main>
 </div>
 

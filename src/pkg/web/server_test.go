@@ -39,6 +39,7 @@ type watched struct {
 type upload struct {
 	to   book.Entry
 	name string
+	at   string
 	size int64
 	body []byte
 }
@@ -47,6 +48,9 @@ type stub struct {
 	watched   *watched
 	watchErr  error
 	watchBody string
+	serves    []Space
+	spacesErr error
+	asked     *book.Entry
 	watchCols int
 	watchRows int
 	last      *sent
@@ -59,7 +63,7 @@ func (s *stub) Say(ctx context.Context, to book.Entry, kind byte, body string) e
 	return s.err()
 }
 
-func (s *stub) SendFile(ctx context.Context, to book.Entry, name string, size int64, body io.Reader) error {
+func (s *stub) SendFile(ctx context.Context, to book.Entry, path, name string, size int64, body io.Reader) error {
 	if s.fileErr != nil {
 		return s.fileErr
 	}
@@ -67,8 +71,13 @@ func (s *stub) SendFile(ctx context.Context, to book.Entry, name string, size in
 	if err != nil {
 		return err
 	}
-	s.file = &upload{to: to, name: name, size: size, body: read}
+	s.file = &upload{to: to, at: path, name: name, size: size, body: read}
 	return nil
+}
+
+func (s *stub) Spaces(ctx context.Context, to book.Entry) ([]Space, error) {
+	s.asked = &to
+	return s.serves, s.spacesErr
 }
 
 func (s *stub) err() error { return nil }

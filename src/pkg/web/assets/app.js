@@ -1,12 +1,37 @@
+// The page is organised the way drop is: pick a device, then pick one of the namespaces it serves.
+// What a namespace does was decided in that device's config, so nothing here guesses — the list
+// comes back from the device and each kind opens the view that fits it.
+
 const peersList = document.querySelector("#peers");
 const noPeers = document.querySelector("#no-peers");
-const logList = document.querySelector("#log");
 const pick = document.querySelector("#pick");
+const device = document.querySelector("#device");
+const spacesNav = document.querySelector("#spaces");
+const spacesNote = document.querySelector("#spaces-note");
+const logList = document.querySelector("#log");
 const compose = document.querySelector("#compose");
 const bodyInput = document.querySelector("#body");
-const withHeader = document.querySelector("#with");
+const transfers = document.querySelector("#transfers");
+const fileInput = document.querySelector("#file");
+const dropTarget = document.querySelector("#drop-target");
+const termBox = document.querySelector("#term");
+const termState = document.querySelector("#term-state");
+const linkForm = document.querySelector("#link-form");
+const linkURL = document.querySelector("#link-url");
 
-let current = null;
+// Which kind of namespace each view belongs to. A kind with no view here is one the page cannot
+// show yet, and it says so rather than opening something misleading.
+const VIEWS = {
+  chat: "#view-chat",
+  files: "#view-files",
+  tty: "#view-term",
+  stream: "#view-term",
+  link: "#view-link",
+};
+
+let current = null;   // the device
+let space = null;     // the namespace open on it
+let spaces = [];
 
 async function api(path, options) {
   const res = await fetch(path, options);
@@ -19,9 +44,130 @@ function when(at) {
   return new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-// Links are the one thing rendered as markup, and only when the whole body is a URL we parsed
-// ourselves. Everything else is set as text, so a message can never introduce elements.
+// ------------------------------------------------------------------ devices
+
+async function loadPeers() {
+  const found = await api("/api/peers");
+  peersList.replaceChildren();
+  noPeers.hidden = found.length > 0;
+
+  for (const p of found) {
+    const li = document.createElement("li");
+    const button = document.createElement("button");
+
+    const name = document.createElement("span");
+    name.textContent = p.name;
+    button.append(name);
+
+    if (p.unread > 0) {
+      const badge = document.createElement("span");
+      badge.className = "unread";
+      badge.textContent = p.unread;
+      button.append(badge);
+    } else if (!p.paired) {
+      const mark = document.createElement("span");
+      mark.className = "unpaired";
+      mark.textContent = "not paired";
+      button.append(mark);
+    }
+
+    button.setAttribute("aria-current", String(p.name === current));
+    button.addEventListener("click", () => open(p));
+    li.append(button);
+    peersList.append(li);
+  }
+}
+
+async function open(peer) {
+  stopWatching();
+  current = peer.name;
+  space = null;
+
+  pick.hidden = true;
+  device.hidden = false;
+  device.querySelector(".name").textContent = peer.name;
+  device.querySelector(".id").textContent = peer.id.slice(0, 16) + "…";
+
+  for (const b of peersList.querySelectorAll("button")) {
+    b.setAttribute("aria-current", String(b.textContent.startsWith(peer.name)));
+  }
+
+  showView(null);
+  spacesNav.replaceChildren();
+  spacesNote.hidden = false;
+  spacesNote.textContent = `asking ${peer.name} what it serves…`;
+
+  try {
+    spaces = await api(`/api/spaces/${encodeURIComponent(peer.name)}`);
+  } catch (err) {
+    spaces = [];
+    spacesNote.textContent = `could not reach ${peer.name}: ${err.message}`;
+    return;
+  }
+
+  if (!spaces.length) {
+    spacesNote.textContent =
+      `${peer.name} did not offer anything. It may be an older version, or it has not paired with this device.`;
+    return;
+  }
+
+  spacesNote.hidden = true;
+  drawSpaces();
+
+  // Open something sensible rather than leaving the pane blank: a conversation if there is one,
+  // otherwise whatever it listed first.
+  enter(spaces.find((s) => s.kind === "chat") || spaces[0]);
+}
+
+function drawSpaces() {
+  spacesNav.replaceChildren(...spaces.map((s) => {
+    const button = document.createElement("button");
+
+    const path = document.createElement("span");
+    path.textContent = s.path;
+
+    const kind = document.createElement("span");
+    kind.className = "kind";
+    kind.textContent = s.kind;
+
+    button.append(path, kind);
+    button.setAttribute("aria-current", String(space?.path === s.path));
+    button.addEventListener("click", () => enter(s));
+    return button;
+  }));
+}
+
+// enter opens one namespace on the current device.
+function enter(s) {
+  stopWatching();
+  space = s;
+  drawSpaces();
+
+  const view = VIEWS[s.kind];
+  if (!view) {
+    showView(null);
+    spacesNote.hidden = false;
+    spacesNote.textContent = `${s.path} is a ${s.kind} namespace, which this page cannot show yet.`;
+    return;
+  }
+
+  spacesNote.hidden = true;
+  showView(view);
+
+  if (s.kind === "chat") loadLog();
+  if (s.kind === "tty" || s.kind === "stream") startWatching();
+}
+
+function showView(which) {
+  for (const el of device.querySelectorAll(".view")) el.hidden = true;
+  if (which) document.querySelector(which).hidden = false;
+}
+
+// ------------------------------------------------------------------ chat
+
 function fillBubble(el, m) {
+  // Links are the one thing rendered as markup, and only when the whole body is a URL we parsed
+  // ourselves. Everything else is set as text, so a message can never introduce elements.
   if (m.kind === "link") {
     let url;
     try { url = new URL(m.body); } catch { url = null; }
@@ -38,14 +184,15 @@ function fillBubble(el, m) {
       return;
     }
   }
+
   if (m.kind === "file") {
     const tag = document.createElement("span");
     tag.className = "tag";
     tag.textContent = m.extra ? `file · ${m.extra}` : "file";
-    el.append(tag, document.createTextNode(m.body));
-    return;
+    el.append(tag);
   }
-  el.textContent = m.body;
+
+  el.append(document.createTextNode(m.body));
 }
 
 function render(m) {
@@ -68,7 +215,7 @@ function render(m) {
 }
 
 function atBottom() {
-  return logList.scrollHeight - logList.scrollTop - logList.clientHeight < 60;
+  return logList.scrollHeight - logList.scrollTop - logList.clientHeight < 40;
 }
 
 function append(m) {
@@ -79,45 +226,10 @@ function append(m) {
   return row;
 }
 
-async function loadPeers() {
-  const peers = await api("/api/peers");
-  peersList.replaceChildren();
-  noPeers.hidden = peers.length > 0;
-
-  for (const p of peers) {
-    const li = document.createElement("li");
-    const button = document.createElement("button");
-    button.textContent = p.name;
-    button.setAttribute("aria-current", String(p.name === current));
-
-    const state = document.createElement("span");
-    state.className = p.unread ? "state waiting" : "state";
-    state.textContent = p.unread ? `${p.unread} waiting` : (p.paired ? "" : "not paired");
-    button.append(state);
-
-    button.addEventListener("click", () => open(p));
-    li.append(button);
-    peersList.append(li);
-  }
-}
-
-async function open(peer) {
-  current = peer.name;
-  withHeader.hidden = false;
-  withHeader.querySelector(".name").textContent = peer.name;
-  withHeader.querySelector(".id").textContent = peer.id.slice(-12);
-  pick.hidden = true;
-  compose.hidden = false;
-
-  stopWatching();
-  termPanel.hidden = true;
-  const history = await api(`/api/log/${encodeURIComponent(peer.name)}`);
+async function loadLog() {
+  const history = await api(`/api/log/${encodeURIComponent(current)}`);
   logList.replaceChildren(...history.map(render));
   logList.scrollTop = logList.scrollHeight;
-
-  for (const b of peersList.querySelectorAll("button")) {
-    b.setAttribute("aria-current", String(b.textContent.startsWith(peer.name)));
-  }
   bodyInput.focus();
 }
 
@@ -155,35 +267,49 @@ compose.addEventListener("submit", async (e) => {
   }
 });
 
-document.querySelector("#refresh").addEventListener("click", loadPeers);
+// ------------------------------------------------------------------ links
 
-// What arrives while the page is open. Reconnects on its own, because the bridge restarting should
-// not mean a dead tab.
-function listen() {
-  const events = new EventSource("/api/events");
-  events.onmessage = (e) => {
-    const m = JSON.parse(e.data);
-    if (current) append(m);
-    loadPeers();
-  };
-  events.onerror = () => {
-    events.close();
-    setTimeout(listen, 2000);
-  };
-}
+linkForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = linkURL.value.trim();
+  if (!body || !current) return;
 
-loadPeers().catch(() => {});
-listen();
+  try {
+    new URL(body);
+  } catch {
+    spacesNote.hidden = false;
+    spacesNote.textContent = "that is not a URL";
+    return;
+  }
 
-const fileInput = document.querySelector("#file");
-const dropTarget = document.querySelector("#drop-target");
+  const button = linkForm.querySelector("button");
+  button.disabled = true;
+  try {
+    await api("/api/say", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to: current, body, kind: "link" }),
+    });
+    linkURL.value = "";
+    spacesNote.hidden = false;
+    spacesNote.textContent = `sent to ${current}`;
+  } catch (err) {
+    spacesNote.hidden = false;
+    spacesNote.textContent = `not sent: ${err.message}`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+// ------------------------------------------------------------------ files
 
 // Upload goes through XMLHttpRequest rather than fetch because only XHR reports how far a body has
 // got. On a large file over a slow link that number is the difference between working and hung.
-function upload(to, file, onProgress) {
+function upload(to, at, file, onProgress) {
   return new Promise((resolve, reject) => {
     const form = new FormData();
     form.append("to", to);
+    form.append("path", at);
     form.append("file", file);
 
     const req = new XMLHttpRequest();
@@ -198,7 +324,6 @@ function upload(to, file, onProgress) {
       else reject(new Error(body.error || req.statusText || "upload failed"));
     });
     req.addEventListener("error", () => reject(new Error("the connection dropped")));
-    req.addEventListener("abort", () => reject(new Error("cancelled")));
     req.send(form);
   });
 }
@@ -210,24 +335,49 @@ function humanSize(n) {
   return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
 }
 
-// One row per file, updated in place as the bytes go out. Files are sent one at a time: the far end
-// writes them into the same inbox, and one connection at a time is what keeps that ordering.
+function transferRow(name) {
+  const li = document.createElement("li");
+
+  const label = document.createElement("span");
+  label.textContent = name;
+
+  const outer = document.createElement("span");
+  outer.className = "bar-outer";
+  const inner = document.createElement("span");
+  inner.className = "bar-inner";
+  outer.append(inner);
+
+  const said = document.createElement("span");
+  said.className = "said";
+  said.textContent = "0%";
+
+  li.append(label, outer, said);
+  transfers.prepend(li);
+  return { li, inner, said };
+}
+
+// Files go one at a time: the far end writes them into one namespace, and one connection at a time
+// is what keeps that ordering.
 async function sendFiles(files) {
-  if (!current) return;
+  if (!current || !space) return;
+
+  const at = space.kind === "files" ? space.path : "/inbox";
 
   for (const file of files) {
     const to = current;
-    const row = append({ kind: "event", mine: true, body: `${file.name} · 0%`, extra: "", at: Date.now() });
+    const row = transferRow(file.name);
 
     try {
-      await upload(to, file, (fraction) => {
-        row.querySelector(".bubble").textContent =
-          `${file.name} · ${Math.round(fraction * 100)}%`;
+      await upload(to, at, file, (fraction) => {
+        row.inner.style.width = `${Math.round(fraction * 100)}%`;
+        row.said.textContent = `${Math.round(fraction * 100)}%`;
       });
-      row.querySelector(".bubble").textContent = `${file.name} · ${humanSize(file.size)} sent`;
+      row.inner.style.width = "100%";
+      row.said.textContent = `${humanSize(file.size)} sent`;
       loadPeers();
     } catch (err) {
-      row.querySelector(".bubble").textContent = `${file.name} · not sent: ${err.message}`;
+      row.li.className = "failed";
+      row.said.textContent = err.message;
     }
   }
 }
@@ -243,23 +393,27 @@ let dragDepth = 0;
 window.addEventListener("dragover", (e) => e.preventDefault());
 window.addEventListener("dragenter", (e) => {
   e.preventDefault();
-  if (current && ++dragDepth === 1) dropTarget.hidden = false;
+  dragDepth++;
+  if (current && dragDepth === 1) dropTarget.hidden = false;
 });
 window.addEventListener("dragleave", () => {
-  if (--dragDepth <= 0) { dragDepth = 0; dropTarget.hidden = true; }
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dropTarget.hidden = true;
 });
 window.addEventListener("drop", (e) => {
   e.preventDefault();
   dragDepth = 0;
   dropTarget.hidden = true;
-  if (e.dataTransfer?.files?.length) sendFiles([...e.dataTransfer.files]);
+
+  if (!e.dataTransfer?.files?.length || !current) return;
+
+  // Dropping onto any view means the same thing, so switch to where the result is shown.
+  const target = spaces.find((s) => s.kind === "files");
+  if (target && space?.kind !== "files") enter(target);
+  sendFiles([...e.dataTransfer.files]);
 });
 
-
-const termPanel = document.querySelector("#term-panel");
-const termBox = document.querySelector("#term");
-const termPath = document.querySelector("#term-path");
-const termState = document.querySelector("#term-state");
+// ------------------------------------------------------------------ terminal
 
 let watching = null;
 let lines = [];
@@ -267,7 +421,7 @@ let lines = [];
 // The screen is built and kept on the other side. What arrives is a list of styled strings, so
 // there is nothing here to parse and nothing that could be read as markup: every run goes in as
 // text, and the only styles applied are the ones the server named.
-function sized(_cols, rows) {
+function sized(rows) {
   lines = Array.from({ length: rows }, () => {
     const el = document.createElement("div");
     el.className = "trow";
@@ -295,8 +449,8 @@ function drawLine(el, runs) {
   }));
 }
 
-function apply(frame) {
-  if (frame.cols && frame.rows) sized(frame.cols, frame.rows);
+function applyFrame(frame) {
+  if (frame.rows) sized(frame.rows);
   if (!frame.lines) return;
 
   for (const [at, runs] of Object.entries(frame.lines)) {
@@ -310,19 +464,19 @@ function stopWatching() {
 }
 
 function startWatching() {
-  if (!current) return;
+  if (!current || !space) return;
   stopWatching();
 
-  const path = termPath.value.trim() || "/tty";
   termBox.replaceChildren();
   lines = [];
   termState.textContent = "connecting";
   termState.className = "";
 
-  const source = new EventSource(`/api/watch/${encodeURIComponent(current)}/${path.replace(/^\/+/, "")}`);
+  const at = space.path.replace(/^\/+/, "");
+  const source = new EventSource(`/api/watch/${encodeURIComponent(current)}/${at}`);
 
   source.onopen = () => { termState.textContent = "live"; termState.className = "live"; };
-  source.onmessage = (e) => apply(JSON.parse(e.data));
+  source.onmessage = (e) => applyFrame(JSON.parse(e.data));
 
   source.addEventListener("gone", (e) => {
     termState.textContent = JSON.parse(e.data);
@@ -343,14 +497,31 @@ function startWatching() {
   watching = source;
 }
 
-document.querySelector("#watch-open").addEventListener("click", () => {
-  termPanel.hidden = !termPanel.hidden;
-  if (!termPanel.hidden) termPath.focus(); else stopWatching();
+document.querySelector("#term-go").addEventListener("click", startWatching);
+document.querySelector("#term-stop").addEventListener("click", () => {
+  stopWatching();
+  termState.textContent = "stopped";
+  termState.className = "";
 });
 
-document.querySelector("#term-go").addEventListener("click", startWatching);
-termPath.addEventListener("keydown", (e) => { if (e.key === "Enter") startWatching(); });
-document.querySelector("#term-close").addEventListener("click", () => {
-  stopWatching();
-  termPanel.hidden = true;
-});
+// ------------------------------------------------------------------ live
+
+document.querySelector("#refresh").addEventListener("click", loadPeers);
+
+// What arrives while the page is open. Reconnects on its own, because the bridge restarting should
+// not mean a dead tab.
+function listen() {
+  const events = new EventSource("/api/events");
+  events.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (current && space?.kind === "chat") append(m);
+    loadPeers();
+  };
+  events.onerror = () => {
+    events.close();
+    setTimeout(listen, 3000);
+  };
+}
+
+loadPeers();
+listen();
