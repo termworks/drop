@@ -269,15 +269,18 @@ because those are decisions.
 
 ## the phone
 
-`android/` is a share client, not a node: it holds no identity and pairs with nothing. It asks
-a machine running `drop web` to send on its behalf, which is why it is four HTTP calls and no
-cryptography.
+`android/` is a window, not a second interface. It loads the page `drop web` already serves,
+so what a person sees on a phone is the same HTML, the same stylesheet and the same code as in
+a browser — one set of screens to design, one to style, one to fix.
 
-Share anything to *drop* and it asks the two questions the share sheet cannot: which device,
-and which path. It offers only what will take it — a text share sees `chat` paths, a file share
-sees `files` paths, and a terminal is never offered because it cannot be sent to.
+It holds no identity and pairs with nothing. What it adds is the part a page cannot do for
+itself: standing in Android's share sheet. Share anything to *drop* and it posts to `/share`,
+then follows the redirect to the page, which asks the one question the share sheet cannot —
+who it is for.
 
-The bridge has to be reachable from the phone, so run it on an interface rather than loopback:
+It draws exactly one screen of its own, asking where drop is running, because that is what it
+needs in order to load anything else. It is styled from the same tokens, so the first screen is
+not a different program from the second.
 
 ```
 drop web --addr 0.0.0.0:47990

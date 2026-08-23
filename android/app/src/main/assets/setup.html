@@ -1,0 +1,112 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>drop</title>
+
+<!-- The only screen this app draws itself, because it is what is needed in order to load the real
+     one. Same tokens as the page it is about to open, so the first screen is not a different
+     program from the second. -->
+<style>
+  :root {
+    --bg: #faf9fb; --panel: #ffffff; --line: #e5e1ea; --ink: #1f1b26; --dim: #6b6376;
+    --violet: #4c1d95; --plum: #6b2273;
+    --grad: linear-gradient(135deg, var(--violet), var(--plum));
+    --r: 12px;
+    --sans: system-ui, -apple-system, sans-serif;
+    --mono: ui-monospace, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121016; --panel: #1a171f; --line: #2c2734; --ink: #e4dfeb; --dim: #8f8799;
+      --violet: #5b3a9e; --plum: #743a80;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.55 var(--sans);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 24px;
+    gap: 18px;
+  }
+
+  .mark {
+    background: var(--grad);
+    color: #fff;
+    border-radius: var(--r);
+    padding: 16px 18px;
+  }
+
+  .mark b { font-size: 18px; font-weight: 650; }
+  .mark span { display: block; opacity: 0.8; font-size: 13px; margin-top: 2px; }
+
+  label { font-size: 14px; color: var(--dim); }
+
+  input {
+    width: 100%;
+    min-height: 48px;
+    padding: 0 14px;
+    margin-top: 8px;
+    font: 15px var(--mono);
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    background: var(--panel);
+    color: var(--ink);
+  }
+
+  input:focus { outline: 2px solid var(--violet); outline-offset: -1px; }
+
+  button {
+    width: 100%;
+    min-height: 48px;
+    border: 0;
+    border-radius: var(--r);
+    background: var(--grad);
+    color: #fff;
+    font: 600 15px var(--sans);
+  }
+
+  p.note { color: var(--dim); font-size: 13.5px; margin: 0; }
+  code { font: 13px var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 1px 5px; }
+</style>
+
+<div class="mark">
+  <b>drop</b>
+  <span>your devices, and what they share with you</span>
+</div>
+
+<div>
+  <label for="at">Where drop is running</label>
+  <input id="at" inputmode="url" autocapitalize="none" autocorrect="off" spellcheck="false"
+         placeholder="http://100.68.8.159:47990">
+</div>
+
+<button id="go">Connect</button>
+
+<p class="note">
+  The address <code>drop web</code> printed on the machine you want to reach. It has to be listening
+  on an interface rather than loopback, so run it as
+  <code>drop web --addr 0.0.0.0:47990</code>.
+</p>
+
+<script>
+  const at = document.querySelector("#at");
+
+  function save() {
+    const where = at.value.trim();
+    if (!where) return;
+    android.save(where);
+  }
+
+  document.querySelector("#go").addEventListener("click", save);
+  at.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); });
+  at.focus();
+</script>
