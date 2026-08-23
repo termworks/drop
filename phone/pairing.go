@@ -78,14 +78,14 @@ func (e *ears) answer(ctx context.Context, conn *iroh.Conn) {
 				_ = proto.AnswerHello(s, proto.Hello{
 					Name:    node.DisplayName(),
 					Version: "phone",
-					Serves:  proto.Describe(e.mounts, e.whoIs(from)),
+					Serves:  proto.Describe(e.mounts, e.who(from)),
 				})
 			case node.ALPNSession:
 				_ = proto.Handle(s, from, proto.Policy{
 					Mounts:  e.mounts,
 					Dir:     inbox(),
 					Allow:   func(node.ID, proto.Open) (bool, string) { return true, "" },
-					Who:     e.whoIs2,
+					Who:     e.who,
 					Message: e.keep,
 				})
 			}
@@ -245,8 +245,7 @@ func readTicket(text string) (node.ID, string, []netip.AddrPort, error) {
 	return raw, parts[1], addrs, nil
 }
 
-func (e *ears) whoIs(from node.ID) ns.Caller { return e.whoIs2(from) }
-func (e *ears) whoIs2(from node.ID) ns.Caller {
+func (e *ears) who(from node.ID) ns.Caller {
 	who := ns.Caller{ID: from.String()}
 
 	if entry, ok := e.pinned.ByID(from); ok {

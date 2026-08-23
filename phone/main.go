@@ -13,11 +13,9 @@ import (
 	"path/filepath"
 
 	"gioui.org/app"
-	"github.com/tmc/go-iroh/iroh"
 
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/conf"
-	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/dial"
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/gui"

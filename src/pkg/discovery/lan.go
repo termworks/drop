@@ -7,12 +7,10 @@ import (
 	"net"
 	"net/netip"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/tmc/go-iroh/netaddr"
 	"golang.org/x/net/ipv4"
-	"golang.org/x/sys/unix"
 
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/wire"
@@ -52,25 +50,6 @@ type LAN struct {
 type sighting struct {
 	addrs []netip.AddrPort
 	seen  time.Time
-}
-
-// reuseAddr allows several drop instances on one machine to share the port.
-//
-// SO_REUSEADDR only, deliberately: adding SO_REUSEPORT would put them in a load-balancing group
-// where the kernel gives each datagram to exactly one of them, which is the opposite of what a
-// multicast listener needs.
-func reuseAddr(_, _ string, c syscall.RawConn) error {
-	var failed error
-
-	err := c.Control(func(fd uintptr) {
-		if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
-			failed = err
-		}
-	})
-	if err != nil {
-		return err
-	}
-	return failed
 }
 
 // StartLAN begins announcing and listening. It stops when ctx is done.
