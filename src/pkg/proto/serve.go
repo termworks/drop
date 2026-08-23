@@ -15,6 +15,9 @@ type Policy struct {
 	Mounts *ns.Table
 	// Dir is where accepted files are written when a mount does not say.
 	Dir string
+	// Who describes a caller: what it is filed under, and whether a secret is shared with it.
+	// Nil means nothing is known about anyone, which with deny-by-default serves nobody.
+	Who func(from node.ID) ns.Caller
 	// Allow decides whether to take a session. Nil accepts nothing.
 	Allow func(from node.ID, open Open) (bool, string)
 	// Progress, when set, is called as bytes land. Total is SizeUnknown for an item with no length.
@@ -56,7 +59,13 @@ func Handle(s Stream, from node.ID, policy Policy) error {
 	}
 
 	// The namespace decides what this session is, so it is resolved before anything else.
-	at, err := resolve(policy.Mounts, from, open)
+	caller := ns.Caller{ID: from.String()}
+	if policy.Who != nil {
+		caller = policy.Who(from)
+	}
+	caller.Password = open.Secret
+
+	at, err := resolve(policy.Mounts, from, caller, open)
 	if err != nil {
 		return conn.WriteFrame(wire.KindReject, Reject{Reason: err.Error()}.encode())
 	}

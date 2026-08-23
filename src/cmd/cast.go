@@ -90,6 +90,7 @@ func runCast(parent context.Context, addressFile string) error {
 			_ = proto.Handle(s, from, proto.Policy{
 				Mounts: castMounts(),
 				Allow:  accepting(pinned, false),
+				Who:    whoIs(pinned),
 				Duplex: watchCast(pinned, stage),
 			})
 		},

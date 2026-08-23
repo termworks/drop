@@ -9,6 +9,7 @@ import (
 	rt "github.com/arnodel/golua/runtime"
 
 	"github.com/bresilla/drop/src/pkg/ns"
+	"github.com/bresilla/drop/src/pkg/passwd"
 )
 
 // runtime is the Lua state a config left behind.
@@ -288,13 +289,25 @@ func mount(c *rt.GoCont, cfg *Config) (rt.Cont, error) {
 		return nil, fmt.Errorf("drop.mount(%q): the second argument must be a table", path)
 	}
 
-	typeName := fieldString(opts, "type")
-	if typeName == "" {
-		return nil, fmt.Errorf("drop.mount(%q): needs a type", path)
+	access := readAccess(opts)
+
+	// A mount with no type is a branch: it serves nothing and exists to carry an access rule for the
+	// paths under it. The table refuses one that is neither, so a typo is still caught.
+	var kind ns.Kind
+	if typeName := fieldString(opts, "type"); typeName != "" {
+		parsed, err := ns.ParseKind(typeName)
+		if err != nil {
+			return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
+		}
+		kind = parsed
+	} else if !access.Declared() {
+		return nil, fmt.Errorf("drop.mount(%q): needs a type, or an access rule if it is a branch", path)
 	}
-	kind, err := ns.ParseKind(typeName)
-	if err != nil {
-		return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
+
+	// A password written in plain is one a config leak hands over. Say so at load time rather than
+	// letting it never match and look like a broken rule.
+	if access.Password != "" && !passwd.Looks(access.Password) {
+		return nil, fmt.Errorf("drop.mount(%q): the password must be a hash from `drop passwd`, not the word itself", path)
 	}
 
 	m := ns.Mount{
@@ -305,7 +318,7 @@ func mount(c *rt.GoCont, cfg *Config) (rt.Cont, error) {
 		Shell:   fieldString(opts, "shell"),
 		Input:   fieldBool(opts, "input"),
 		Action:  fieldString(opts, "action"),
-		Only:    fieldStrings(opts, "only"),
+		Access:  access,
 	}
 
 	if err := check(m); err != nil {
@@ -373,5 +386,52 @@ func optStrings(t *rt.Table, key string) ([]string, bool) {
 			return out, true
 		}
 		out = append(out, s)
+	}
+}
+
+// readAccess reads who a path is shared with.
+//
+// Two shorthands, because almost every path wants one of them: a list of names is a list of paired
+// devices, and the bare word "paired" is anyone in the address book. The long form is for a path
+// that needs a key or a password.
+func readAccess(opts *rt.Table) ns.Access {
+	value := opts.Get(rt.StringValue("access"))
+
+	if word, ok := value.TryString(); ok {
+		return ns.Access{AnyPaired: word == "paired"}
+	}
+
+	table, ok := value.TryTable()
+	if !ok {
+		return ns.Access{}
+	}
+
+	// A list of names, rather than a table of rules.
+	if names := listOfStrings(table); len(names) > 0 {
+		return ns.Access{Named: names}
+	}
+
+	out := ns.Access{
+		Named:    fieldStrings(table, "paired"),
+		Keys:     fieldStrings(table, "keys"),
+		Password: fieldString(table, "password"),
+		All:      fieldString(table, "require") == "all",
+	}
+	if word, ok := table.Get(rt.StringValue("paired")).TryString(); ok && word == "paired" {
+		out.AnyPaired = true
+		out.Named = nil
+	}
+	return out
+}
+
+// listOfStrings reads a table used as a list, and gives nothing back for one used as a map.
+func listOfStrings(t *rt.Table) []string {
+	var out []string
+	for i := int64(1); ; i++ {
+		item, ok := t.Get(rt.IntValue(i)).TryString()
+		if !ok {
+			return out
+		}
+		out = append(out, item)
 	}
 }

@@ -79,6 +79,7 @@ func runChat(parent context.Context, target string) error {
 	policy := proto.Policy{
 		Mounts: chatMounts(),
 		Allow:  accepting(pinned, false),
+		Who:    whoIs(pinned),
 		Message: receiving(pinned, false, func(from node.ID, m convo.Message) {
 			fmt.Printf("\r%s\n", render(nameFor(pinned, from), m))
 		}),

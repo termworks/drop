@@ -94,6 +94,7 @@ func runWeb(parent context.Context, addr string) error {
 			_ = proto.Handle(s, from, proto.Policy{
 				Mounts: cfg.Mounts,
 				Allow:  accepting(pinned, false),
+				Who:    whoIs(pinned),
 				Message: receiving(pinned, cfg.OpenLinks, func(from node.ID, m convo.Message) {
 					site.Arrived(m)
 				}),

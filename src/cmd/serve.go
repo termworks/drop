@@ -62,7 +62,6 @@ func runServe(parent context.Context, quiet bool) error {
 	if err != nil {
 		return err
 	}
-	resolveGuests(cfg, pinned)
 
 	startRendezvous(ctx, n)
 
@@ -77,6 +76,7 @@ func runServe(parent context.Context, quiet bool) error {
 	policy := proto.Policy{
 		Mounts:   cfg.Mounts,
 		Allow:    accepting(pinned, false),
+		Who:      whoIs(pinned),
 		Progress: bar.update,
 		Done: func(from node.ID, name string, size int64) {
 			fmt.Printf("  received %s (%s)\n", name, bytes(size))
@@ -158,24 +158,5 @@ func detail(m ns.Mount) string {
 		return "recorded, not opened"
 	default:
 		return ""
-	}
-}
-
-// resolveGuests turns the names a config wrote in `only` into ids, which is what the wire carries.
-func resolveGuests(cfg *conf.Config, pinned *book.Book) {
-	for _, m := range cfg.Mounts.All() {
-		if len(m.Only) == 0 {
-			continue
-		}
-		ids := make([]string, 0, len(m.Only))
-		for _, who := range m.Only {
-			if entry, ok := pinned.Lookup(who); ok {
-				ids = append(ids, entry.ID.String())
-				continue
-			}
-			ids = append(ids, who)
-		}
-		m.Only = ids
-		_ = cfg.Mounts.Add(m)
 	}
 }

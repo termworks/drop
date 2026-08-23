@@ -32,7 +32,7 @@ func wanted(kind ns.Kind) byte {
 }
 
 // resolve finds the namespace an Open is asking for.
-func resolve(table *ns.Table, from node.ID, open Open) (Resolved, error) {
+func resolve(table *ns.Table, from node.ID, caller ns.Caller, open Open) (Resolved, error) {
 	if table == nil {
 		return Resolved{}, fmt.Errorf("this node serves no namespaces")
 	}
@@ -47,23 +47,17 @@ func resolve(table *ns.Table, from node.ID, open Open) (Resolved, error) {
 		return Resolved{}, fmt.Errorf("nothing is mounted at %s", path)
 	}
 
+	if mount.Kind == ns.KindBranch {
+		return Resolved{}, fmt.Errorf("%s holds other paths but serves nothing itself", mount.Path)
+	}
 	if want := wanted(mount.Kind); want != open.Mode {
 		return Resolved{}, fmt.Errorf("%s is a %s namespace", mount.Path, mount.Kind)
 	}
-	if len(mount.Only) > 0 && !allowed(mount.Only, from) {
-		return Resolved{}, fmt.Errorf("%s is not open to you", mount.Path)
+	// The tree decides, from the nearest rule above this path. A branch with no type still
+	// governs what is under it, which is the whole point of letting one exist.
+	if ok, why := table.Admits(mount.Path, caller); !ok {
+		return Resolved{}, fmt.Errorf("%s: %s", mount.Path, why)
 	}
 
 	return Resolved{Mount: mount, Rest: rest, From: from, Open: open}, nil
-}
-
-// allowed reports whether a peer is on a namespace's guest list, by name or by id.
-func allowed(only []string, from node.ID) bool {
-	id := from.String()
-	for _, who := range only {
-		if who == id {
-			return true
-		}
-	}
-	return false
 }

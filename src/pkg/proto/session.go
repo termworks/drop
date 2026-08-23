@@ -39,6 +39,8 @@ type Open struct {
 	// a sender does not have to name a mode the far end might not serve.
 	Path  string
 	Items []Item
+	// Secret is a password offered for a path that asks for one. Empty when none was given.
+	Secret string
 }
 
 func (o Open) encode() []byte {
@@ -46,6 +48,7 @@ func (o Open) encode() []byte {
 	w.Byte(o.Mode)
 	w.String(o.From)
 	w.String(o.Path)
+	w.String(o.Secret)
 	w.Uint(uint64(len(o.Items)))
 	for _, item := range o.Items {
 		w.String(item.Name)
@@ -74,6 +77,12 @@ func decodeOpen(body []byte) (Open, error) {
 	if err != nil {
 		return out, err
 	}
+	secret, err := r.String(wire.MaxString)
+	if err != nil {
+		return out, err
+	}
+	out.Secret = secret
+
 	count, err := r.Uint()
 	if err != nil {
 		return out, err

@@ -15,17 +15,13 @@ import (
 
 // accepting builds the policy that decides whose sessions to take. Pairing is the gate: a peer
 // with no shared secret is refused whatever namespace it asks for.
+// accepting is the coarse gate: is this node taking sessions at all.
+//
+// It no longer asks about pairing. Which paths a caller may reach is decided by the access rule
+// on the path, and a rule may name a bare key or a password — neither of which involves being
+// paired. Refusing here first would make those grants unreachable.
 func accepting(pinned *book.Book, any bool) func(node.ID, proto.Open) (bool, string) {
-	return func(from node.ID, open proto.Open) (bool, string) {
-		if any {
-			return true, ""
-		}
-		entry, ok := pinned.ByID(from)
-		if !ok || !entry.Paired() {
-			return false, "not paired with you"
-		}
-		return true, ""
-	}
+	return func(from node.ID, open proto.Open) (bool, string) { return true, "" }
 }
 
 // gather turns command line arguments into sources, with - meaning standard input.
@@ -70,4 +66,20 @@ func greeting(pinned *book.Book, mounts *ns.Table, from node.ID) proto.Hello {
 		hello.Serves = proto.Describe(mounts)
 	}
 	return hello
+}
+
+// whoIs describes a caller from the address book, for the access rules to judge.
+//
+// Nothing here decides anything: it reports what is known — the name this device is filed under, and
+// whether a secret is shared with it — and the rule on the path does the deciding.
+func whoIs(pinned *book.Book) func(node.ID) ns.Caller {
+	return func(from node.ID) ns.Caller {
+		who := ns.Caller{ID: from.String()}
+
+		if entry, ok := pinned.ByID(from); ok {
+			who.Name = entry.Name
+			who.Paired = entry.Paired()
+		}
+		return who
+	}
 }
