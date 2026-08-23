@@ -101,7 +101,7 @@ func runServe(parent context.Context, quiet bool) error {
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
-			_ = proto.AnswerHello(s, proto.Hello{Name: node.DisplayName(), Version: version})
+			_ = proto.AnswerHello(s, greeting(pinned, cfg.Mounts, from))
 		},
 	})
 

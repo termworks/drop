@@ -9,6 +9,7 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 )
 
@@ -56,4 +57,17 @@ func streamOver(err error) bool {
 	}
 	text := err.Error()
 	return strings.Contains(text, "connection closed") || strings.Contains(text, "stream reset")
+}
+
+// greeting is what this node answers a hello with.
+//
+// The namespace list goes only to a peer that is paired: what a device serves says a great deal
+// about it, and hello is answered by anyone who dials.
+func greeting(pinned *book.Book, mounts *ns.Table, from node.ID) proto.Hello {
+	hello := proto.Hello{Name: node.DisplayName(), Version: version}
+
+	if entry, ok := pinned.ByID(from); ok && entry.Paired() {
+		hello.Serves = proto.Describe(mounts)
+	}
+	return hello
 }
