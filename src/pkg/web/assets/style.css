@@ -27,6 +27,11 @@
 
 * { box-sizing: border-box; }
 
+/* `hidden` only works because the browser's own stylesheet says display:none, and any rule here
+   naming a display beats it. Every panel below sets one, so without this they are all permanently
+   on screen — including the drag overlay, on top of everything. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
