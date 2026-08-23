@@ -28,3 +28,6 @@ android/local.properties
 android/gradle/
 android/gradlew
 android/gradlew.bat
+
+# the staging file `_pack` renames onto ./drop
+drop.new

@@ -167,24 +167,28 @@ make.recipe{
   outputs = { BIN },
   stale = "content",
   run = function()
-    if not oslo.run{ "sh", "-c", "command -v upx" }.ok then
+    -- Built beside the target and moved onto it, rather than written over it. A rename
+    -- replaces the name while whatever is already running keeps the file it started from, so
+    -- `drop serve` staying up does not turn a rebuild into "text file busy".
+    local staging = BIN .. ".new"
+
+    sh.cp(RAW, staging)
+
+    if oslo.run{ "sh", "-c", "command -v upx" }.ok then
+      sh.upx("-9", "-q", staging)
+    else
       print(oslo.ui.style("upx not found; shipping the binary uncompressed", { fg = "yellow" }))
-      sh.cp(RAW, BIN)
-      return
     end
 
-    sh.cp(RAW, BIN)
-    sh.upx("-9", "-q", BIN)
+    sh.mv("-f", staging, BIN)
   end,
 }
-
-make.alias("b", "build")
 
 make.recipe{
   name = "clean",
   desc = "remove every build output",
   run = function()
-    sh.rm("-rf", BIN, "target", "dist", "coverage.out")
+    sh.rm("-rf", BIN, BIN .. ".new", "target", "dist", "coverage.out")
     oslo.run{ "go", "clean", capture = true }
   end,
 }
