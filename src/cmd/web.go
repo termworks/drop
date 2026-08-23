@@ -251,3 +251,13 @@ func (b *bridge) Spaces(ctx context.Context, to book.Entry) ([]web.Space, error)
 	}
 	return out, nil
 }
+
+// Self is who this node is, for the page to show.
+func (b *bridge) Self(ctx context.Context) (web.Identity, error) {
+	who := web.Identity{Name: node.DisplayName(), ID: b.node.ID().String()}
+
+	for _, at := range discovery.LocalAddrs(b.node) {
+		who.Addrs = append(who.Addrs, at.String())
+	}
+	return who, nil
+}

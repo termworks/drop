@@ -31,6 +31,7 @@ type Sender interface {
 	SendFile(ctx context.Context, to book.Entry, path, name string, size int64, body io.Reader) error
 	Watch(ctx context.Context, to book.Entry, path string, into Terminal) error
 	Spaces(ctx context.Context, to book.Entry) ([]Space, error)
+	Self(ctx context.Context) (Identity, error)
 }
 
 // Server is the bridge.
@@ -66,6 +67,7 @@ func (s *Server) Arrived(m convo.Message) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("GET /api/self", s.self)
 	mux.HandleFunc("GET /api/peers", s.peers)
 	mux.HandleFunc("GET /api/log/{peer}", s.log)
 	mux.HandleFunc("POST /api/say", s.say)

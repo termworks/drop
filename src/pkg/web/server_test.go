@@ -410,3 +410,7 @@ func (s *stub) Watch(ctx context.Context, to book.Entry, path string, into Termi
 	}
 	return nil
 }
+
+func (s *stub) Self(ctx context.Context) (Identity, error) {
+	return Identity{Name: "here", ID: "abc123", Addrs: []string{"192.168.1.10:47777"}}, nil
+}

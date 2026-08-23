@@ -6,8 +6,18 @@
 
 <div class="shell">
   <aside>
+    <!-- Whose device this page is. Two pages side by side are two machines. -->
+    <div id="me">
+      <span class="who">
+        <span class="name">…</span>
+        <span class="label">this device</span>
+      </span>
+      <span class="id"></span>
+      <span class="addr"></span>
+    </div>
+
     <header>
-      <h1>drop</h1>
+      <h1>paired devices</h1>
       <button id="refresh" title="Reload the device list">↻</button>
     </header>
 
@@ -37,7 +47,7 @@
       <section class="view" id="view-chat" hidden>
         <ol id="log" aria-live="polite"></ol>
         <form id="compose" autocomplete="off">
-          <input id="body" placeholder="Write something, or paste a link" aria-label="Message">
+          <input id="body" class="field" placeholder="Write something, or paste a link" aria-label="Message">
           <button type="submit">Send</button>
         </form>
       </section>
@@ -45,7 +55,7 @@
       <section class="view" id="view-files" hidden>
         <div id="files-drop">
           <p><strong>Drop files here</strong></p>
-          <p class="note">or <button type="button" id="attach">choose a file</button></p>
+          <p class="note">or <button type="button" id="attach" class="btn">choose a file</button></p>
           <input type="file" id="file" multiple hidden>
         </div>
         <ol id="transfers"></ol>
@@ -54,15 +64,15 @@
       <section class="view" id="view-term" hidden>
         <header class="bar">
           <span id="term-state"></span>
-          <button type="button" id="term-go">Watch</button>
-          <button type="button" id="term-stop">Stop</button>
+          <button type="button" id="term-go" class="btn btn-primary">Watch</button>
+          <button type="button" id="term-stop" class="btn">Stop</button>
         </header>
         <div id="term" class="term"></div>
       </section>
 
       <section class="view" id="view-link" hidden>
         <form id="link-form" autocomplete="off">
-          <input id="link-url" placeholder="https://…" aria-label="Link to open over there">
+          <input id="link-url" class="field" placeholder="https://…" aria-label="Link to open over there">
           <button type="submit">Open there</button>
         </form>
         <p class="note">The far device opens this, or records it, depending on how it declared the namespace.</p>

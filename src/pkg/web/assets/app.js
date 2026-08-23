@@ -55,6 +55,10 @@ async function loadPeers() {
     const li = document.createElement("li");
     const button = document.createElement("button");
 
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    button.append(dot);
+
     const name = document.createElement("span");
     name.textContent = p.name;
     button.append(name);
@@ -339,6 +343,7 @@ function transferRow(name) {
   const li = document.createElement("li");
 
   const label = document.createElement("span");
+  label.className = "what";
   label.textContent = name;
 
   const outer = document.createElement("span");
@@ -525,3 +530,21 @@ function listen() {
 
 loadPeers();
 listen();
+
+// Who this page is acting as. Shown at the top of the sidebar, because two pages open side by side
+// are two different devices and there is otherwise nothing to tell them apart.
+async function loadSelf() {
+  const me = document.querySelector("#me");
+  try {
+    const who = await api("/api/self");
+    document.title = `${who.name} · drop`;
+    me.querySelector(".name").textContent = who.name;
+    me.querySelector(".id").textContent = who.id.slice(0, 24) + "…";
+    me.querySelector(".addr").textContent = who.addrs.join("  ");
+  } catch (err) {
+    me.querySelector(".name").textContent = "unknown";
+    me.querySelector(".id").textContent = err.message;
+  }
+}
+
+loadSelf();
