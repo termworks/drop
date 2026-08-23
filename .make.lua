@@ -230,6 +230,30 @@ make.recipe{
 
 make.alias("t", "test")
 
+-- The page walks a device's paths by rules worth getting wrong, and those are JavaScript, so
+-- `go test` cannot reach them. Run with whatever is installed; neither runtime is a dependency
+-- of drop, and the binary ships whether or not this was ever run.
+make.recipe{
+  name = "test-web",
+  desc = "the page rules, if bun or deno is installed",
+  run = function()
+    local suite = "src/pkg/web/paths.test.js"
+
+    for _, runner in ipairs{ "bun", "deno" } do
+      if oslo.run{ "sh", "-c", "command -v " .. runner }.ok then
+        if runner == "deno" then
+          sh.deno("run", "--allow-read", suite)
+        else
+          sh.bun(suite)
+        end
+        return
+      end
+    end
+
+    print(oslo.ui.style("neither bun nor deno is installed; skipping the page rules", { fg = "yellow" }))
+  end,
+}
+
 make.recipe{
   name = "test-all",
   desc = "the suite with the race detector",
@@ -292,7 +316,7 @@ make.recipe{
 make.recipe{
   name = "verify",
   desc = "the whole local gate",
-  deps = { "fmt-check", "check", "test", "build" },
+  deps = { "fmt-check", "check", "test", "test-web", "build" },
 }
 
 make.alias("v", "verify")

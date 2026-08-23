@@ -209,51 +209,6 @@ main { position: relative; display: flex; flex-direction: column; min-width: 0; 
   line-height: 1;
 }
 
-/* The namespaces a device serves. This is the whole navigation: what a path does was decided in
-   that device's config, so the page only shows what came back and opens the matching view. */
-#spaces {
-  display: flex;
-  gap: 8px;
-  padding: 0 var(--pad) var(--pad-y);
-  border-bottom: 1px solid var(--line);
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-#spaces::-webkit-scrollbar { display: none; }
-
-#spaces button {
-  min-height: var(--touch);
-  border: 1px solid var(--line);
-  background: var(--panel);
-  color: var(--ink);
-  border-radius: var(--r);
-  padding: 6px 14px;
-  cursor: pointer;
-  font: inherit;
-  font-size: 13px;
-  white-space: nowrap;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: none;
-}
-
-#spaces button:hover { border-color: var(--accent); color: var(--accent); }
-
-#spaces button[aria-current="true"] {
-  background: var(--grad);
-  border-color: transparent;
-  color: var(--on-accent);
-}
-
-#spaces .kind {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  opacity: 0.68;
-}
-
 .note { color: var(--dim); font-size: 13px; padding: var(--pad-y) var(--pad); margin: 0; }
 
 .view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -498,3 +453,72 @@ li.event .bubble { border: 0; background: none; color: var(--dim); font-size: 12
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* ---------------------------------------------------------------- walking the paths */
+
+/* Where you are, and every step back out of it. Each part is a button, because the way back from
+   four levels deep should not be four presses of one thing. */
+#crumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 0 var(--pad) var(--pad-y);
+  border-bottom: 1px solid var(--line);
+}
+
+.crumb {
+  border: 0;
+  background: none;
+  color: var(--dim);
+  padding: 4px 8px;
+  border-radius: var(--r);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+
+.crumb:hover { background: var(--soft); color: var(--accent); }
+.crumb.here { color: var(--ink); font-weight: 600; cursor: default; }
+.crumb.here:hover { background: none; }
+.crumb-sep { color: var(--line); font-size: 13px; }
+
+/* One row per thing at this level. Two lines: what it is, and what that kind is for — the second
+   line is what makes the list readable by someone who has not learnt the vocabulary. */
+#spaces { list-style: none; margin: 0; padding: var(--pad-y) var(--pad); overflow-y: auto; flex: 1; }
+
+.space {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 11px 14px;
+  margin-bottom: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+}
+
+.space:hover { border-color: var(--accent); }
+.space[disabled] { opacity: 0.5; cursor: default; }
+.space[disabled]:hover { border-color: var(--line); }
+
+.space-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.space-name { font-weight: 600; }
+
+.space-kind {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
+.space-may { font-size: 11px; color: var(--dim); margin-left: auto; }
+.space-about { font-size: 13px; color: var(--dim); }

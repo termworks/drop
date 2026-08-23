@@ -1,12 +1,17 @@
-// The page is organised the way drop is: pick a device, then pick one of the namespaces it serves.
-// What a namespace does was decided in that device's config, so nothing here guesses — the list
-// comes back from the device and each kind opens the view that fits it.
+import { levelAt, segments, openable } from "/paths.js";
+
+// The page is organised the way drop is: pick a device, then walk what it shares with you. Paths
+// nest, so this walks them rather than showing them flat — a branch is entered, a leaf is opened.
+//
+// What a path does was decided in that device's config, so nothing here guesses: the list comes back
+// from the device, already filtered to what you may reach, and each kind opens the view that fits.
 
 const peersList = document.querySelector("#peers");
 const noPeers = document.querySelector("#no-peers");
 const pick = document.querySelector("#pick");
 const device = document.querySelector("#device");
-const spacesNav = document.querySelector("#spaces");
+const crumbs = document.querySelector("#crumbs");
+const spacesList = document.querySelector("#spaces");
 const spacesNote = document.querySelector("#spaces-note");
 const logList = document.querySelector("#log");
 const compose = document.querySelector("#compose");
@@ -19,19 +24,33 @@ const termState = document.querySelector("#term-state");
 const linkForm = document.querySelector("#link-form");
 const linkURL = document.querySelector("#link-url");
 
-// Which kind of namespace each view belongs to. A kind with no view here is one the page cannot
-// show yet, and it says so rather than opening something misleading.
+// Which view each kind of path opens. A kind with no view here is one the page cannot show yet, and
+// it says so rather than opening something misleading.
 const VIEWS = {
   chat: "#view-chat",
   files: "#view-files",
   tty: "#view-term",
   stream: "#view-term",
   link: "#view-link",
+  bookmark: "#view-link",
+};
+
+// What each kind is for, so the list reads without having learnt the vocabulary.
+const ABOUT = {
+  chat: "messages, kept as a conversation",
+  files: "send and receive files",
+  tty: "a terminal, as it is being used",
+  stream: "output from a command, as it comes",
+  link: "open a link over there",
+  bookmark: "links you can come back to",
+  clipboard: "text pushed from another device",
+  branch: "holds other paths, serves nothing",
 };
 
 let current = null;   // the device
-let space = null;     // the namespace open on it
-let spaces = [];
+let here = "/";       // how deep into its paths we have walked
+let space = null;     // the leaf that is open, if any
+let spaces = [];      // everything it shares with us
 
 async function api(path, options) {
   const res = await fetch(path, options);
@@ -43,6 +62,7 @@ async function api(path, options) {
 function when(at) {
   return new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
+
 
 // ------------------------------------------------------------------ devices
 
@@ -85,11 +105,12 @@ async function loadPeers() {
 async function open(peer) {
   stopWatching();
   current = peer.name;
+  here = "/";
   space = null;
 
   pick.hidden = true;
-  document.body.classList.add("viewing");
   device.hidden = false;
+  document.body.classList.add("viewing");
   device.querySelector(".name").textContent = peer.name;
   device.querySelector(".id").textContent = peer.id.slice(0, 16) + "…";
 
@@ -98,9 +119,10 @@ async function open(peer) {
   }
 
   showView(null);
-  spacesNav.replaceChildren();
+  spacesList.replaceChildren();
+  crumbs.replaceChildren();
   spacesNote.hidden = false;
-  spacesNote.textContent = `asking ${peer.name} what it serves…`;
+  spacesNote.textContent = `asking ${peer.name} what it shares…`;
 
   try {
     spaces = await api(`/api/spaces/${encodeURIComponent(peer.name)}`);
@@ -111,48 +133,133 @@ async function open(peer) {
   }
 
   if (!spaces.length) {
-    spacesNote.textContent =
-      `${peer.name} did not offer anything. It may be an older version, or it has not paired with this device.`;
+    spacesNote.textContent = `${peer.name} shares nothing with you.`;
     return;
   }
 
   spacesNote.hidden = true;
-  drawSpaces();
-
-  // Open something sensible rather than leaving the pane blank: a conversation if there is one,
-  // otherwise whatever it listed first.
-  enter(spaces.find((s) => s.kind === "chat") || spaces[0]);
+  walk("/");
 }
 
-function drawSpaces() {
-  spacesNav.replaceChildren(...spaces.map((s) => {
-    const button = document.createElement("button");
+// ------------------------------------------------------------------ walking the paths
 
-    const path = document.createElement("span");
-    path.textContent = s.path;
+// walk shows what is directly at a level, and nothing deeper: a device with twenty paths under four
+// branches is four rows here, not twenty.
+function walk(prefix) {
+  stopWatching();
+  here = prefix;
+  space = null;
+  showView(null);
+  spacesNote.hidden = true;
 
-    const kind = document.createElement("span");
-    kind.className = "kind";
-    kind.textContent = s.kind;
+  drawCrumbs();
 
-    button.append(path, kind);
-    button.setAttribute("aria-current", String(space?.path === s.path));
-    button.addEventListener("click", () => enter(s));
-    return button;
-  }));
+  const rows = levelAt(spaces, prefix);
+
+  spacesList.replaceChildren(...rows.map(rowFor));
+
+  if (!rows.length) {
+    spacesNote.hidden = false;
+    spacesNote.textContent = "nothing here.";
+  }
 }
 
-// enter opens one namespace on the current device.
+// rowFor draws one line of the list: what it is, what kind, and what that kind is for.
+function rowFor(row) {
+  const li = document.createElement("li");
+  const button = document.createElement("button");
+  button.className = "space";
+
+  const head = document.createElement("span");
+  head.className = "space-head";
+
+  const name = document.createElement("span");
+  name.className = "space-name";
+  name.textContent = row.name;
+  head.append(name);
+
+  const tag = document.createElement("span");
+  tag.className = "space-kind";
+  tag.textContent = row.kind;
+  head.append(tag);
+
+  if (row.writable) {
+    const may = document.createElement("span");
+    may.className = "space-may";
+    may.textContent = "you may send";
+    head.append(may);
+  }
+
+  const about = document.createElement("span");
+  about.className = "space-about";
+  about.textContent = ABOUT[row.kind] || "";
+
+  button.append(head, about);
+
+  // A leaf is opened; a branch is walked into. Something that is both is opened, and the
+  // crumb is how you get further in.
+  button.addEventListener("click", () => {
+    if (openable(row)) {
+      const served = spaces.find((s) => s.path === row.path);
+      if (served) return enter(served);
+    }
+    if (row.deeper) return walk(row.path);
+  });
+
+  if (!openable(row) && !row.deeper) button.disabled = true;
+
+  li.append(button);
+  return li;
+}
+
+function drawCrumbs() {
+  const parts = segments(here);
+
+  const root = document.createElement("button");
+  root.className = "crumb";
+  root.textContent = current;
+  root.addEventListener("click", () => walk("/"));
+  crumbs.replaceChildren(root);
+
+  parts.forEach((part, i) => {
+    const at = "/" + parts.slice(0, i + 1).join("/");
+
+    const sep = document.createElement("span");
+    sep.className = "crumb-sep";
+    sep.textContent = "›";
+
+    const step = document.createElement("button");
+    step.className = "crumb";
+    step.textContent = part;
+    step.addEventListener("click", () => walk(at));
+
+    crumbs.append(sep, step);
+  });
+
+  if (space) {
+    const sep = document.createElement("span");
+    sep.className = "crumb-sep";
+    sep.textContent = "›";
+
+    const leaf = document.createElement("span");
+    leaf.className = "crumb here";
+    leaf.textContent = segments(space.path).pop() || space.path;
+
+    crumbs.append(sep, leaf);
+  }
+}
+
+// enter opens one path.
 function enter(s) {
   stopWatching();
   space = s;
-  drawSpaces();
+  drawCrumbs();
 
   const view = VIEWS[s.kind];
   if (!view) {
     showView(null);
     spacesNote.hidden = false;
-    spacesNote.textContent = `${s.path} is a ${s.kind} namespace, which this page cannot show yet.`;
+    spacesNote.textContent = `${s.path} is a ${s.kind} path, which this page cannot show yet.`;
     return;
   }
 
@@ -165,6 +272,7 @@ function enter(s) {
 
 function showView(which) {
   for (const el of device.querySelectorAll(".view")) el.hidden = true;
+  spacesList.hidden = which !== null;
   if (which) document.querySelector(which).hidden = false;
 }
 
@@ -555,5 +663,7 @@ loadSelf();
 document.querySelector("#back").addEventListener("click", () => {
   stopWatching();
   document.body.classList.remove("viewing");
+  here = "/";
+  space = null;
   loadPeers();
 });

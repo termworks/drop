@@ -41,7 +41,8 @@
 
       <!-- What the device serves. Each one is a namespace it declared in its config, and what it
            does is decided over there, not here. -->
-      <nav id="spaces" aria-label="What this device serves"></nav>
+      <nav id="crumbs" aria-label="Where you are"></nav>
+      <ul id="spaces" aria-label="What this device serves"></ul>
       <p class="note" id="spaces-note" hidden></p>
 
       <!-- One view per kind of namespace. Only the one matching the open namespace is shown. -->
@@ -84,4 +85,4 @@
   </main>
 </div>
 
-<script src="/app.js"></script>
+<script type="module" src="/app.js"></script>
