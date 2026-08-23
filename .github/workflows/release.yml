@@ -100,7 +100,8 @@ jobs:
           # share sheet, which is the one thing a Gio activity cannot declare for itself.
           go install gioui.org/cmd/gogio@v0.10.0
           mkdir -p android/libs
-          "$(go env GOPATH)/bin/gogio" -target android -arch arm64,arm,amd64 \
+          "$(go env GOPATH)/bin/gogio" -target android -buildmode archive -minsdk 26 \
+            -arch arm64,arm,amd64 \
             -appid dev.bresilla.drop -o android/libs/drop.aar ./phone
 
       - name: Package
