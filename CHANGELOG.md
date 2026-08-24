@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.0] - 2026-08-24
+
+### <!-- 0 -->⛰️  Features
+
+- Send files and links, and fix live views
+
+### <!-- 2 -->🚜 Refactor
+
+- Drop the browser and phone interfaces
+
 ## [0.2.4] - 2026-08-24
 
 ### <!-- 0 -->⛰️  Features
