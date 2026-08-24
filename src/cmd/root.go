@@ -50,6 +50,7 @@ func Execute(v string, exit func(int), args []string) {
 		newLogCmd(),
 		newChatCmd(),
 		newIDCmd(),
+		newUserCmd(),
 		newNamespacesCmd(),
 		newPasswdCmd(),
 		newListCmd(),
