@@ -55,6 +55,17 @@ func (b Badge) Bytes() []byte {
 // Expired reports whether a badge has run out.
 func (b Badge) Expired(now time.Time) bool { return now.After(b.Until) }
 
+// SignBy makes a badge and has a command sign it, for a key drop cannot sign with itself.
+func SignBy(command string, who ssh.PublicKey, device, name string, now time.Time) (Badge, []byte, error) {
+	badge := Badge{User: who, Device: device, Name: name, Until: now.Add(Lasts)}
+
+	sig, err := signVia(command, badge.Bytes())
+	if err != nil {
+		return Badge{}, nil, err
+	}
+	return badge, sig, nil
+}
+
 // Sign makes a badge and signs it.
 func Sign(by ssh.Signer, device, name string, now time.Time) (Badge, []byte, error) {
 	badge := Badge{

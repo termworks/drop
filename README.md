@@ -286,9 +286,20 @@ drop.user_key = "~/.ssh/id_ed25519"         -- a key you already have
 drop.user_key = "~/.ssh/id_ed25519_sk.pub"  -- a YubiKey, signed through ssh-agent
 ```
 
-The public half is enough when an agent holds the private one, which is how a hardware key takes
-part without ever being read. A key drop was *pointed at* and cannot find is an error — it will not
-answer a typo by inventing a second identity. Without the setting, drop keeps a key of its own.
+The public half is enough when the private one is in hardware: drop cannot talk to a security key —
+that is CTAP, PIV or a vendor's protocol, none of which belongs in here — so signing a badge is a
+**command**, which reads what to sign on standard input and writes the signature on standard output.
+
+```lua
+drop.user_sign = "ssh-keygen -Y sign -f ~/.ssh/id_yubi -n drop"   -- the default, spelt out
+drop.user_sign = "my-signer --whatever"                           -- anything that can reach the key
+```
+
+Unset, drop works it out: a key it can read is signed in process, with no command and no touch; a
+key it cannot is signed by `ssh-keygen -Y sign`, which every machine with SSH already has and which
+drives a security key directly — **no ssh-agent involved**. A key drop was *pointed at* and cannot
+find is an error: it will not answer a typo by inventing a second identity. Without `user_key` at
+all, drop keeps a key of its own.
 
 ### another person, same machine
 

@@ -21,6 +21,10 @@ type Config struct {
 	// UserKey is the key this person signs badges with: an SSH private key, or the public half of
 	// one an agent holds. Empty leaves drop keeping a key of its own.
 	UserKey string
+	// UserSign is the command that signs badges, for a key drop cannot read: it takes the thing to
+	// sign on standard input and writes the signature on standard output. Empty lets drop work it
+	// out, which means ssh-keygen for a key held in hardware or an agent.
+	UserSign string
 	// Vault is who the data key is wrapped to: age recipients, or a path to a key file. Empty is a
 	// node that keeps its history in the clear, which is the default and a decision.
 	Vault []string
@@ -136,6 +140,9 @@ func (c *Config) Apply() {
 	}
 	if c.UserKey != "" {
 		user.Use(expand(c.UserKey))
+	}
+	if c.UserSign != "" {
+		user.SignWith(c.UserSign)
 	}
 }
 

@@ -234,6 +234,9 @@ func readSettings(cfg *Config, module *rt.Table) {
 	if key, ok := optString(module, "user_key"); ok {
 		cfg.UserKey = key
 	}
+	if command, ok := optString(module, "user_sign"); ok {
+		cfg.UserSign = command
+	}
 	if list, ok := optStrings(module, "vault"); ok {
 		cfg.Vault = list
 	}
