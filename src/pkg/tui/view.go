@@ -498,76 +498,72 @@ func (m Model) chatView() string {
 	return body + "\n" + faintStyle.Render("press ") + keyStyle.Render("i") + faintStyle.Render(" to write")
 }
 
-// bubble draws one message, as the lines it occupies.
+// bubble draws one message: a coloured bar down the side of it, and what was said on a shaded
+// ground beside the bar.
+//
+// The bar is what tells the two apart at a glance — theirs down the left, mine down the right —
+// and it runs the height of the message so a long one still reads as one thing.
 func (m Model) bubble(msg convo.Message) []string {
 	width := m.viewWidth()
 
 	// Three quarters, so the two sides cannot meet in the middle and a long message still has a
-	// margin to be read against.
-	block := width * 3 / 4
+	// margin to be read against. Two of that is the bar and the space beside it.
+	block := width*3/4 - 2
 	if block < 12 {
-		block = width
+		block = width - 2
 	}
 
 	mine := msg.Dir == convo.Out
-	who := faintStyle.Render(m.speaker(mine) + "  " + time.UnixMilli(msg.At).Format("15:04"))
+	when := time.UnixMilli(msg.At).Format("15:04")
 
-	body := lipgloss.NewStyle().
-		Background(rowBgAlt).
-		Foreground(plain).
-		Width(block).
-		Padding(0, 1).
-		Render(msg.Body)
+	shade := lipgloss.NewStyle().Background(rowBgAlt).Width(block).Padding(0, 1)
 
-	// A link is worth marking as one, and a file is a thing that happened rather than a thing
-	// somebody said.
+	// Who at one end of the top line and when at the other, spaced by hand: two styled columns
+	// would each be padded to their own width and the line would wrap onto a second.
+	inside := block - 2
+	who := m.speaker(mine)
+
+	gap := inside - lipgloss.Width(who) - lipgloss.Width(when)
+	if gap < 1 {
+		gap = 1
+		who = fit(who, inside-lipgloss.Width(when)-1)
+	}
+
+	label := lipgloss.NewStyle().Background(rowBgAlt).Foreground(muted)
+	head := shade.Render(label.Render(who) + label.Render(strings.Repeat(" ", gap)) + label.Render(when))
+
+	said := shade.Foreground(plain).Render(msg.Body)
 	switch msg.Kind {
 	case convo.KindLink:
-		body = lipgloss.NewStyle().Background(rowBgAlt).Foreground(second).Width(block).Padding(0, 1).Render(msg.Body)
+		said = shade.Foreground(second).Render(msg.Body)
 	case convo.KindFile:
-		body = lipgloss.NewStyle().Background(rowBgAlt).Foreground(plain).Width(block).Padding(0, 1).
-			Render("▣ " + msg.Body + faintStyle.Render("  "+msg.Extra))
+		said = shade.Foreground(plain).Render("▣ " + msg.Body + "  " + msg.Extra)
 	}
 
-	rule := faintStyle.Render(strings.Repeat("─", block))
-
-	side := lipgloss.Left
+	colour := second
 	if mine {
-		side = lipgloss.Right
+		colour = accent
 	}
-	place := lipgloss.NewStyle().Width(width).Align(side)
+	bar := lipgloss.NewStyle().Foreground(colour).Render("┃")
 
 	var out []string
-	for _, line := range strings.Split(rule+"\n"+who+"\n"+body, "\n") {
-		out = append(out, place.Render(line))
+	for _, line := range strings.Split(head+"\n"+said, "\n") {
+		beside := bar + " " + line
+		if mine {
+			beside = line + " " + bar
+		}
+		out = append(out, lipgloss.NewStyle().Width(width).Align(sideOf(mine)).Render(beside))
 	}
+
 	return append(out, "")
 }
 
-// canvas is what a terminal from another machine is drawn on.
-//
-// Black, whatever this terminal's own background is. What arrives is a screen somebody else's
-// programs painted, with their own idea of what the background should be, and letting this page
-// show through the gaps makes two screens out of one.
-func (m Model) canvas(drawn string) string {
-	ground := lipgloss.NewStyle().Background(lipgloss.Color("0")).Width(m.viewWidth())
-
-	// The far end's own escapes reset the background to whatever this terminal calls default, so
-	// the black has to be asserted again after each one. Without this the canvas is black only up
-	// to the first colour the other machine chose.
-	drawn = strings.ReplaceAll(drawn, "\x1b[0m", "\x1b[0m\x1b[40m")
-
-	rows := strings.Split(drawn, "\n")
-	for i, row := range rows {
-		rows[i] = ground.Render(row)
+// sideOf is which edge a message sits against.
+func sideOf(mine bool) lipgloss.Position {
+	if mine {
+		return lipgloss.Right
 	}
-
-	// Filled to the bottom, so the canvas is a rectangle rather than a ragged edge where the far
-	// end happened to stop writing.
-	for len(rows) < m.viewHeight() {
-		rows = append(rows, ground.Render(""))
-	}
-	return strings.Join(rows, "\n")
+	return lipgloss.Left
 }
 
 // speaker is whose message this is, by name.
@@ -654,4 +650,30 @@ func (m Model) pairingView() string {
 	out.WriteString(goodStyle.Render("◐ waiting for it to answer…"))
 
 	return m.middle(panel("show a code", width, 0, out.String()))
+}
+
+// canvas is what a terminal from another machine is drawn on.
+//
+// Black, whatever this terminal's own background is. What arrives is a screen somebody else's
+// programs painted, with their own idea of what the background should be, and letting this page
+// show through the gaps makes two screens out of one.
+func (m Model) canvas(drawn string) string {
+	ground := lipgloss.NewStyle().Background(lipgloss.Color("0")).Width(m.viewWidth())
+
+	// The far end's own escapes reset the background to whatever this terminal calls default, so
+	// the black has to be asserted again after each one. Without this the canvas is black only up
+	// to the first colour the other machine chose.
+	drawn = strings.ReplaceAll(drawn, "\x1b[0m", "\x1b[0m\x1b[40m")
+
+	rows := strings.Split(drawn, "\n")
+	for i, row := range rows {
+		rows[i] = ground.Render(row)
+	}
+
+	// Filled to the bottom, so the canvas is a rectangle rather than a ragged edge where the far
+	// end happened to stop writing.
+	for len(rows) < m.viewHeight() {
+		rows = append(rows, ground.Render(""))
+	}
+	return strings.Join(rows, "\n")
 }
