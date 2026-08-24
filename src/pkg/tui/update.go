@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"os"
 	"strings"
@@ -118,7 +119,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pathsLoaded:
 		m.loading = false
-		if at, ok := m.peer(); !ok || at.Name != msg.peer {
+
+		// An answer is for whichever device is open. This device answers under no name, because it
+		// is not in the address book and does not need to be.
+		if m.onSelf {
+			if msg.peer != "" {
+				return m, nil
+			}
+		} else if at, ok := m.peer(); !ok || at.Name != msg.peer {
 			return m, nil // a stale answer for a device we have moved off
 		}
 		if msg.err != nil {
@@ -132,6 +140,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.known = map[string][]proto.Served{}
 		}
 		m.known[msg.peer] = msg.paths
+
 		m.paths, m.trouble = msg.paths, ""
 		if m.at == levelPaths {
 			m.showPaths()
@@ -356,10 +365,23 @@ func (m Model) typeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) enter() (tea.Model, tea.Cmd) {
 	switch m.at {
 	case levelDevices:
+		// The first row is this device. Everything a peer's list does, it does — except that what
+		// it shares is read from this machine's own config instead of asked for over a wire.
+		if m.list.Index() == 0 {
+			m.onSelf = true
+			m.at = levelPaths
+			m.paths, m.loading = nil, true
+			m.atPath, m.under = 0, "/"
+			m.showPaths()
+
+			return m, loadMine(m.back)
+		}
+
 		if len(m.peers) == 0 {
 			return m, nil
 		}
-		m.atPeer = m.list.Index()
+		m.onSelf = false
+		m.atPeer = m.list.Index() - 1
 		m.at = levelPaths
 
 		with, _ := m.peer()
@@ -368,15 +390,30 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 		// has not been visited shows nothing and says it is asking.
 		m.paths = m.known[with.Name]
 		m.loading = len(m.paths) == 0
-		m.atPath = 0
+		m.atPath, m.under = 0, "/"
 		m.showPaths()
 
 		return m, loadPaths(m.back, with)
 
 	case levelPaths:
-		if len(m.paths) == 0 {
+		if len(m.steps) == 0 {
 			return m, nil
 		}
+
+		at := m.steps[m.list.Index()]
+
+		// A way down is walked into rather than opened. One that is also a namespace opens only
+		// when there is nothing under it to go to, because getting at what is inside is the
+		// harder thing to do by accident.
+		if at.below > 0 {
+			m.under, m.atPath = at.at, 0
+			m.showPaths()
+			return m, nil
+		}
+		if !at.is {
+			return m, nil
+		}
+
 		m.atPath = m.list.Index()
 		m.at = levelOpen
 		return m, m.openPath()
@@ -395,7 +432,15 @@ func (m Model) back_() (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case levelPaths:
-		m.at = levelDevices
+		// Out of a folder before out of the device: walking in three levels and being thrown all
+		// the way out is not what going back means anywhere else.
+		if m.under != "/" && m.under != "" {
+			m.under, m.atPath = up(m.under), 0
+			m.showPaths()
+			return m, nil
+		}
+
+		m.at, m.onSelf = levelDevices, false
 		m.paths, m.trouble = nil, ""
 		m.showDevices()
 		return m, nil
@@ -405,22 +450,36 @@ func (m Model) back_() (tea.Model, tea.Cmd) {
 
 // showDevices puts the address book in the list.
 func (m *Model) showDevices() {
-	items := make([]list.Item, 0, len(m.peers))
+	// This device first. What it shares is the thing a person most often wants to check and the
+	// only thing they cannot see from anywhere else, and a list of everybody except yourself is a
+	// strange list to be given.
+	items := make([]list.Item, 0, len(m.peers)+1)
+	items = append(items, deviceItem{
+		entry: book.Entry{Name: m.me.Name, ID: idOf(m.me.ID)},
+		addr:  "this device",
+		self:  true,
+	})
+
 	for _, p := range m.peers {
 		items = append(items, deviceItem{entry: p, addr: strings.Join(p.Addrs, "  ")})
 	}
 	m.list.SetItems(items)
-	m.list.Select(m.atPeer)
+	m.list.Select(m.atPeer + 1)
 	m.list.SetSize(m.listWidth(), m.listHeight())
 }
 
 // showPaths puts what the open device shares in the list.
 func (m *Model) showPaths() {
 	with, _ := m.peer()
+	if m.onSelf {
+		with = book.Entry{Name: m.me.Name}
+	}
 
-	items := make([]list.Item, 0, len(m.paths))
-	for _, s := range m.paths {
-		items = append(items, pathItem{served: s, on: with.Name})
+	m.steps = walk(m.paths, m.under)
+
+	items := make([]list.Item, 0, len(m.steps))
+	for _, at := range m.steps {
+		items = append(items, pathItem{step: at, on: with.Name})
 	}
 	m.list.SetItems(items)
 	m.list.Select(m.atPath)

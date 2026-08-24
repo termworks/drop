@@ -17,6 +17,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/dial"
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"github.com/bresilla/drop/src/pkg/tui"
 	"io"
@@ -176,6 +177,19 @@ func (l *live) Waiting(with book.Entry) (map[string]bool, error) {
 		out[m.ID] = true
 	}
 	return out, nil
+}
+
+// Mine is what this device serves. No network: it is this machine's own config, and asking the
+// wire what this machine shares would be asking somebody else what is in your own pocket.
+func (l *live) Mine() ([]proto.Served, error) {
+	cfg, err := conf.Load()
+	if err != nil {
+		return nil, err
+	}
+
+	// Described as they would be to somebody paired, which is what the list is for: seeing what a
+	// device you have paired with would be offered.
+	return proto.Describe(cfg.Mounts, ns.Caller{ID: l.node.ID().String(), Paired: true}), nil
 }
 
 // Send copies files to a path on the far device.

@@ -90,6 +90,8 @@ drop                  a full-screen interface: enter a device, then a path
 drop ls [device[/path]]        what a device shares with you
 drop to <device>/<path> [args] open a path; what is there decides what happens
 drop                           all of it, in a full-screen terminal
+                               the first device in the list is this one
+                               paths nest: enter walks in, esc walks out
                                p shows a pairing code, t takes one
                                a conversation scrolls with the wheel, ↑↓, pgup/pgdn
 

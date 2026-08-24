@@ -115,13 +115,25 @@ func (m Model) emptyList() string {
 
 // listTitle names what is being listed, in the panel's top edge.
 func (m Model) listTitle() string {
-	if m.at == levelPaths {
-		if with, ok := m.peer(); ok {
-			return with.Name + " shares"
-		}
-		return "shares"
+	if m.at != levelPaths {
+		return "devices"
 	}
-	return "devices"
+
+	name := "shares"
+	switch {
+	case m.onSelf:
+		name = "this device shares"
+	default:
+		if with, ok := m.peer(); ok {
+			name = with.Name + " shares"
+		}
+	}
+
+	// Where in the tree, so walking three folders deep still says where you are.
+	if m.under != "/" && m.under != "" {
+		return name + "  ·  " + m.under
+	}
+	return name
 }
 
 // header is where you are and which device you are.
@@ -178,6 +190,15 @@ func (m Model) where() string {
 	}
 	if m.joining {
 		return crumb("pairing")
+	}
+	if m.onSelf && m.at >= levelPaths {
+		parts = append(parts, m.me.Name)
+		if m.at == levelOpen {
+			if on, ok := m.path(); ok {
+				parts = append(parts, on.Path)
+			}
+		}
+		return crumb(parts...)
 	}
 	if m.at >= levelPaths {
 		if with, ok := m.peer(); ok {

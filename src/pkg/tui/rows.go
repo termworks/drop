@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/bresilla/drop/src/pkg/book"
-	"github.com/bresilla/drop/src/pkg/proto"
 )
 
 // Three lines per item: what it is, what is known about it, and where it goes. One line would fit
@@ -20,6 +19,8 @@ const rowHeight = 3
 
 // deviceItem is one paired device.
 type deviceItem struct {
+	// self marks the row for this machine, which is not a peer and is not paired with itself.
+	self  bool
 	entry book.Entry
 	addr  string
 }
@@ -28,11 +29,11 @@ func (d deviceItem) FilterValue() string { return d.entry.Name }
 
 // pathItem is one path a device shares with us.
 type pathItem struct {
-	served proto.Served
-	on     string
+	step step
+	on   string
 }
 
-func (p pathItem) FilterValue() string { return p.served.Path }
+func (p pathItem) FilterValue() string { return p.step.at }
 
 // rows draws whichever kind of item the list is holding.
 type rows struct{}
@@ -71,7 +72,12 @@ func device(it deviceItem, width, index int, selected bool) string {
 
 	dot, dotColour := "●", green
 	state := "paired"
-	if !it.entry.Paired() {
+	switch {
+	case it.self:
+		// Not a peer and not paired with itself: what this row offers is a look at what this
+		// machine hands out.
+		dot, dotColour, state = "◈", second, "you"
+	case !it.entry.Paired():
 		dot, dotColour, state = "○", muted, "not paired"
 	}
 
@@ -104,26 +110,48 @@ func path(it pathItem, width, index int, selected bool) string {
 	fill := func(s string) string { return base.Width(width).Render(s) }
 	inner := width - 2
 
-	kind := it.served.Kind.String()
-
 	var name lipgloss.TerminalColor = plain
 	if selected {
 		name = accent
 	}
 
+	// A way down reads as one: a folder glyph, how much is under it, and how to get there.
+	if it.step.below > 0 && !it.step.is {
+		first := fill(stripe(base, selected) +
+			cell(base, second, 2, "▸", false, false) +
+			cell(base, name, inner-2-16, it.step.name+"/", false, true) +
+			cell(base, muted, 16, count(it.step.below), true, false))
+
+		rest := fill(stripe(base, selected) +
+			cell(base, second, 10, "under", false, false) +
+			cell(base, muted, inner-10, "namespaces below this one", false, false))
+
+		last := fill(stripe(base, selected) +
+			cell(base, muted, inner, "enter to go in", false, false))
+
+		return first + "\n" + rest + "\n" + last
+	}
+
+	kind := it.step.served.Kind.String()
+
 	send := "read only"
 	sendColour := muted
-	if it.served.Writable {
+	if it.step.served.Writable {
 		send, sendColour = "you may send", green
 	}
 	if kind == "branch" {
 		send, sendColour = "", muted
 	}
 
+	shown := it.step.name
+	if it.step.below > 0 {
+		shown += "/  " + count(it.step.below)
+	}
+
 	sendCol := 16
 	first := fill(stripe(base, selected) +
 		cell(base, second, 2, glyph(kind), false, false) +
-		cell(base, name, inner-2-sendCol, it.served.Path, false, true) +
+		cell(base, name, inner-2-sendCol, shown, false, true) +
 		cell(base, sendColour, sendCol, send, true, false))
 
 	rest := fill(stripe(base, selected) +
@@ -131,9 +159,17 @@ func path(it pathItem, width, index int, selected bool) string {
 		cell(base, muted, inner-10, describe(kind), false, false))
 
 	last := fill(stripe(base, selected) +
-		cell(base, muted, inner, "drop to "+it.on+it.served.Path, false, false))
+		cell(base, muted, inner, "drop to "+it.on+it.step.at, false, false))
 
 	return first + "\n" + rest + "\n" + last
+}
+
+// count says how much is under a way down, in words rather than a bare number.
+func count(n int) string {
+	if n == 1 {
+		return "1 below"
+	}
+	return fmt.Sprintf("%d below", n)
 }
 
 // describe says what a kind of path is for, so the list is readable by someone who has not learnt

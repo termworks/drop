@@ -13,6 +13,7 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/convo"
+	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/proto"
 	tickets "github.com/bresilla/drop/src/pkg/ticket"
 	"io"
@@ -27,6 +28,8 @@ type Backend interface {
 	Peers() ([]book.Entry, error)
 	// Serves asks a device what it shares with us.
 	Serves(ctx context.Context, with book.Entry) ([]proto.Served, error)
+	// Mine is what this device serves, read from its own config rather than asked over a wire.
+	Mine() ([]proto.Served, error)
 	// History is a conversation as it stands.
 	History(with book.Entry) ([]convo.Message, error)
 	// Compose writes a message into the conversation without sending it. It returns as fast as a
@@ -83,7 +86,13 @@ type Model struct {
 	linking *pairing
 	peers   []book.Entry
 	atPeer  int
-	paths   []proto.Served
+	// onSelf is true while the list is showing what this device serves rather than a peer's.
+	onSelf bool
+	paths  []proto.Served
+	// under is where in a device's paths the list is standing, "/" being the top.
+	under string
+	// steps is what is at that level: namespaces, and the ways further down.
+	steps []step
 	// known is what each device said it shares, kept from last time.
 	//
 	// Asking takes a round trip over somebody else's network. Without this the list empties the
@@ -213,11 +222,17 @@ func (m Model) peer() (book.Entry, bool) {
 	return m.peers[m.atPeer], true
 }
 
+// path is the namespace that is open, which is whichever step of the tree was entered.
 func (m Model) path() (proto.Served, bool) {
-	if m.atPath < 0 || m.atPath >= len(m.paths) {
+	if m.atPath < 0 || m.atPath >= len(m.steps) {
 		return proto.Served{}, false
 	}
-	return m.paths[m.atPath], true
+
+	at := m.steps[m.atPath]
+	if !at.is {
+		return proto.Served{}, false
+	}
+	return at.served, true
 }
 
 // stop ends whatever is being watched, so moving away from a terminal does not leave one being read
@@ -354,6 +369,23 @@ type Identity struct {
 	ID   string
 	// How this device is reachable while the interface is open.
 	Reach Reach
+}
+
+// loadMine reads what this device serves, from its own config.
+func loadMine(back Backend) tea.Cmd {
+	return func() tea.Msg {
+		mine, err := back.Mine()
+		return pathsLoaded{peer: "", paths: mine, err: err}
+	}
+}
+
+// idOf turns a printed identity back into one, for the rows that show this device.
+func idOf(text string) node.ID {
+	id, err := node.ParseID(text)
+	if err != nil {
+		return node.ID{}
+	}
+	return id
 }
 
 type selfLoaded struct {

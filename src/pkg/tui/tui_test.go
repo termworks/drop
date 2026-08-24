@@ -43,6 +43,7 @@ type fake struct {
 	took      string
 	arriving  chan struct{}
 	queued    map[string]bool
+	mine      []proto.Served
 	slow      bool
 	sentFiles []string
 	posted    []string
@@ -71,6 +72,13 @@ func (f *fake) History(with book.Entry) ([]convo.Message, error) {
 	defer f.mu.Unlock()
 
 	return append([]convo.Message(nil), f.log...), nil
+}
+
+func (f *fake) Mine() ([]proto.Served, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.mine, nil
 }
 
 func (f *fake) Compose(to book.Entry, body string) error {
@@ -289,7 +297,7 @@ func TestEnteringADeviceAsksWhatItShares(t *testing.T) {
 }
 
 func TestEnteringAPathOpensIt(t *testing.T) {
-	m := enter(t, enter(t, start(t, withOne())))
+	m := openPath(t, withOne(), "/friends/chat")
 
 	if m.at != levelOpen {
 		t.Fatalf("at level %d", m.at)
@@ -301,11 +309,17 @@ func TestEnteringAPathOpensIt(t *testing.T) {
 
 // Going back has to undo the level, not the program.
 func TestGoingBackWalksOutOneLevelAtATime(t *testing.T) {
-	m := enter(t, enter(t, start(t, withOne())))
+	m := openPath(t, withOne(), "/friends/chat")
 
 	m = back(t, m)
 	if m.at != levelPaths {
 		t.Fatalf("back from a path left level %d", m.at)
+	}
+
+	// The folder it was in is a level of its own.
+	m = back(t, m)
+	if m.at != levelPaths || m.under != "/" {
+		t.Fatalf("back from a folder left level %d under %q", m.at, m.under)
 	}
 
 	m = back(t, m)
@@ -336,7 +350,7 @@ func TestAWatchLastsAsLongAsThePathIsOpen(t *testing.T) {
 
 func TestWritingAMessageSendsIt(t *testing.T) {
 	back := withOne()
-	m := enter(t, enter(t, start(t, back)))
+	m := openPath(t, back, "/friends/chat")
 
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
 	if !m.writing {
@@ -357,7 +371,7 @@ func TestWritingAMessageSendsIt(t *testing.T) {
 
 // While composing, q is a letter and not a way out.
 func TestQIsALetterWhileWriting(t *testing.T) {
-	m := enter(t, enter(t, start(t, withOne())))
+	m := openPath(t, withOne(), "/friends/chat")
 
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
@@ -367,18 +381,32 @@ func TestQIsALetterWhileWriting(t *testing.T) {
 	}
 }
 
-// q leaves the level rather than the program, until there is nowhere left to go.
+// q leaves the level rather than the program, until there is nowhere left to go. A folder is a
+// level like any other: walking three deep and being thrown out of the device is not what going
+// back means anywhere else.
 func TestQClimbsOutBeforeItQuits(t *testing.T) {
-	m := enter(t, enter(t, start(t, withOne())))
+	m := openPath(t, withOne(), "/friends/chat")
 
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	if m.at != levelPaths {
-		t.Fatalf("q at a path left level %d", m.at)
+	if m.under != "/friends" {
+		t.Fatalf("opening /friends/chat left the list at %q", m.under)
 	}
 
+	// Out of the conversation, into the folder it was in.
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if m.at != levelPaths || m.under != "/friends" {
+		t.Fatalf("q at a path left level %d under %q", m.at, m.under)
+	}
+
+	// Out of the folder, to the top of what the device shares.
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if m.at != levelPaths || m.under != "/" {
+		t.Fatalf("q in a folder left level %d under %q", m.at, m.under)
+	}
+
+	// And out of the device.
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	if m.at != levelDevices {
-		t.Fatalf("q at a device left level %d", m.at)
+		t.Fatalf("q at the top of a device left level %d", m.at)
 	}
 }
 
@@ -691,9 +719,9 @@ func TestTabCompletesAPath(t *testing.T) {
 	}
 }
 
-// openPath walks the interface to a path on the one paired device, the way a person would.
-// openPath walks the interface to a path on the one paired device, the way a person would.
-func openPath(t *testing.T, back *fake, path string) Model {
+// openPath walks the interface to a path on the one paired device, the way a person would: into
+// each folder along the way, then into the namespace itself.
+func openPath(t *testing.T, back *fake, want string) Model {
 	t.Helper()
 
 	m := settle(t, start(t, back), tea.KeyMsg{Type: tea.KeyEnter})
@@ -702,20 +730,30 @@ func openPath(t *testing.T, back *fake, path string) Model {
 	}
 
 	for range 8 {
-		// Opened, not merely highlighted: the highlight is where the cursor is, and a test that
-		// stopped there would be checking a list rather than a screen.
-		if at, ok := m.path(); ok && m.at == levelOpen && at.Path == path {
+		if at, ok := m.path(); ok && m.at == levelOpen && at.Path == want {
 			return m
 		}
-
-		if m.at == levelOpen {
-			m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-			m = settle(t, m, tea.KeyMsg{Type: tea.KeyDown})
+		if m.at != levelPaths {
+			t.Fatalf("ended up at level %v looking for %s", m.at, want)
 		}
+
+		// The step that leads towards it: the one it is at, or the folder it is under.
+		found := -1
+		for i, step := range m.steps {
+			if step.at == want || within(folder(step.at), want) {
+				found = i
+				break
+			}
+		}
+		if found < 0 {
+			t.Fatalf("nothing on the way to %s in %+v", want, m.steps)
+		}
+
+		m.list.Select(found)
 		m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	}
 
-	t.Fatalf("never opened %s", path)
+	t.Fatalf("never opened %s", want)
 	return m
 }
 
@@ -808,8 +846,8 @@ func TestEnteringADeviceTwiceKeepsWhatItShares(t *testing.T) {
 	if m.loading {
 		t.Error("it says it is asking when it already has something to show")
 	}
-	if now := m.View(); now == "" || len(m.paths) != strings.Count(before, "drop to ") {
-		t.Errorf("what is shown changed while asking again")
+	if now := m.View(); now != before {
+		t.Errorf("what is shown changed while asking again:\nwas:\n%s\nnow:\n%s", before, now)
 	}
 }
 
@@ -998,5 +1036,50 @@ func TestArrivingMessagesDoNotDragTheReader(t *testing.T) {
 
 	if m = settle(t, m, arrived{}); m.View() != reading {
 		t.Errorf("an arriving message moved what was being read:\nwas:\n%s\nnow:\n%s", reading, m.View())
+	}
+}
+
+// What this device shares is the one thing you cannot see from anywhere else, and a list of every
+// device except your own is a strange list to be handed.
+func TestThisDeviceIsInTheList(t *testing.T) {
+	back := withOne()
+
+	back.mu.Lock()
+	back.mine = []proto.Served{{Path: "/inbox", Kind: ns.KindFiles}, {Path: "/chat", Kind: ns.KindChat}}
+	back.mu.Unlock()
+
+	m := start(t, back)
+
+	// First, before anybody else.
+	if !strings.Contains(m.View(), "this device") {
+		t.Fatalf("this device is not in the list:\n%s", m.View())
+	}
+
+	m.list.Select(0)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if !m.onSelf {
+		t.Fatal("entering the first row did not open this device")
+	}
+	for _, want := range []string{"inbox", "chat"} {
+		if !strings.Contains(m.View(), want) {
+			t.Errorf("what this device serves does not include %s:\n%s", want, m.View())
+		}
+	}
+}
+
+// And a peer is still a peer: entering the second row opens the device it names, not this one.
+func TestAPeerIsStillEnteredByName(t *testing.T) {
+	back := withOne()
+	m := start(t, back)
+
+	m.list.Select(1)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.onSelf {
+		t.Fatal("entering a peer opened this device instead")
+	}
+	if with, ok := m.peer(); !ok || with.Name != "beta" {
+		t.Fatalf("entered %+v, want beta", with)
 	}
 }
