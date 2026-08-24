@@ -13,7 +13,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.list.SetSize(m.width, m.listHeight())
+		m.list.SetSize(m.listWidth(), m.listHeight())
 		if m.screen != nil {
 			m.screen.Resize(m.viewWidth(), m.viewHeight())
 		}
@@ -37,6 +37,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.trouble = ""
 		return m, loadPeers(m.back)
+
+	case arrived:
+		// Whatever is on screen is rebuilt from what is now stored, and the wait starts again.
+		next := []tea.Cmd{listenFor(m.back.Arrivals()), loadPeers(m.back)}
+		if with, ok := m.peer(); ok && m.at == levelOpen {
+			next = append(next, loadHistory(m.back, with))
+		}
+		return m, tea.Batch(next...)
 
 	case tick:
 		if m.offering == nil {
@@ -320,7 +328,7 @@ func (m *Model) showDevices() {
 	}
 	m.list.SetItems(items)
 	m.list.Select(m.atPeer)
-	m.list.SetSize(m.width, m.listHeight())
+	m.list.SetSize(m.listWidth(), m.listHeight())
 }
 
 // showPaths puts what the open device shares in the list.
@@ -333,7 +341,7 @@ func (m *Model) showPaths() {
 	}
 	m.list.SetItems(items)
 	m.list.Select(m.atPath)
-	m.list.SetSize(m.width, m.listHeight())
+	m.list.SetSize(m.listWidth(), m.listHeight())
 }
 
 // openPath does whatever the path is: reads a conversation, or starts watching.

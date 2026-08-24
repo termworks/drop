@@ -59,81 +59,81 @@ func (d rows) Render(w io.Writer, m list.Model, index int, item list.Item) {
 // stripe is the accent bar down the left of the row the cursor is on.
 func stripe(base lipgloss.Style, selected bool) string {
 	if selected {
-		return base.Foreground(violet).Render("┃ ")
+		return base.Foreground(accent).Render("┃ ")
 	}
 	return base.Render("  ")
 }
 
 func device(it deviceItem, width, index int, selected bool) string {
 	base := row(index, selected)
-	line := func(s string) string { return base.Width(width).Render(s) }
+	fill := func(s string) string { return base.Width(width).Render(s) }
 	inner := width - 2
 
-	dot, dotColour := "●", good
+	dot, dotColour := "●", green
 	state := "paired"
 	if !it.entry.Paired() {
-		dot, dotColour, state = "○", faint, "not paired"
+		dot, dotColour, state = "○", muted, "not paired"
 	}
 
-	name := ink
+	var name lipgloss.TerminalColor = plain
 	if selected {
-		name = violet
+		name = accent
 	}
 
 	stateCol := 14
-	first := line(stripe(base, selected) +
+	first := fill(stripe(base, selected) +
 		cell(base, dotColour, 2, dot, false, false) +
 		cell(base, name, inner-2-stateCol, it.entry.Name, false, true) +
-		cell(base, dim, stateCol, state, true, false))
+		cell(base, subtext, stateCol, state, true, false))
 
-	second := line(stripe(base, selected) +
-		cell(base, faint, inner, it.entry.ID.String(), false, false))
+	rest := fill(stripe(base, selected) +
+		cell(base, muted, inner, it.entry.ID.String(), false, false))
 
 	where := it.addr
 	if where == "" {
 		where = "last seen address unknown"
 	}
-	third := line(stripe(base, selected) +
-		cell(base, faint, inner, where, false, false))
+	last := fill(stripe(base, selected) +
+		cell(base, muted, inner, where, false, false))
 
-	return first + "\n" + second + "\n" + third
+	return first + "\n" + rest + "\n" + last
 }
 
 func path(it pathItem, width, index int, selected bool) string {
 	base := row(index, selected)
-	line := func(s string) string { return base.Width(width).Render(s) }
+	fill := func(s string) string { return base.Width(width).Render(s) }
 	inner := width - 2
 
 	kind := it.served.Kind.String()
 
-	name := ink
+	var name lipgloss.TerminalColor = plain
 	if selected {
-		name = violet
+		name = accent
 	}
 
 	send := "read only"
-	sendColour := faint
+	sendColour := muted
 	if it.served.Writable {
-		send, sendColour = "you may send", good
+		send, sendColour = "you may send", green
 	}
 	if kind == "branch" {
-		send, sendColour = "", faint
+		send, sendColour = "", muted
 	}
 
 	sendCol := 16
-	first := line(stripe(base, selected) +
-		cell(base, plum, 2, glyph(kind), false, false) +
+	first := fill(stripe(base, selected) +
+		cell(base, second, 2, glyph(kind), false, false) +
 		cell(base, name, inner-2-sendCol, it.served.Path, false, true) +
 		cell(base, sendColour, sendCol, send, true, false))
 
-	second := line(stripe(base, selected) +
-		cell(base, plum, 10, kind, false, false) +
-		cell(base, faint, inner-10, describe(kind), false, false))
+	rest := fill(stripe(base, selected) +
+		cell(base, second, 10, kind, false, false) +
+		cell(base, muted, inner-10, describe(kind), false, false))
 
-	third := line(stripe(base, selected) +
-		cell(base, faint, inner, "drop to "+it.on+it.served.Path, false, false))
+	last := fill(stripe(base, selected) +
+		cell(base, muted, inner, "drop to "+it.on+it.served.Path, false, false))
 
-	return first + "\n" + second + "\n" + third
+	return first + "\n" + rest + "\n" + last
 }
 
 // describe says what a kind of path is for, so the list is readable by someone who has not learnt

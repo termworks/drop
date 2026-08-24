@@ -27,6 +27,13 @@ func Execute(v string, exit func(int), args []string) {
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+
+		// With nothing to do, drop shows you your devices. Every other way in is a subcommand, and
+		// the interface is what you want often enough that it should not need naming.
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runTUI(cmd.Context())
+		},
 	}
 
 	// Settings before any command runs, so one that only dials still knows what it is allowed
@@ -46,7 +53,6 @@ func Execute(v string, exit func(int), args []string) {
 		newNamespacesCmd(),
 		newPasswdCmd(),
 		newListCmd(),
-		newTUICmd(),
 	)
 
 	if err := root.Execute(); err != nil {

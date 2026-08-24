@@ -44,6 +44,10 @@ type Backend interface {
 	// Post sends one message to a path: a line of text to a chat, a URL to a link.
 	Post(ctx context.Context, to book.Entry, path string, kind byte, body string) error
 
+	// Arrivals reports when something lands from another device, so what is on screen is what
+	// has happened rather than what had happened when it was last drawn.
+	Arrivals() <-chan struct{}
+
 	// Watch reads a live path, writing what arrives into screen until ctx ends.
 	Watch(ctx context.Context, on book.Entry, path string, into io.Writer, resize func(cols, rows int)) error
 }
@@ -114,7 +118,9 @@ func New(back Backend) Model {
 	return Model{back: back, at: levelDevices, list: shown}
 }
 
-func (m Model) Init() tea.Cmd { return tea.Batch(loadSelf(m.back), loadPeers(m.back)) }
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(loadSelf(m.back), loadPeers(m.back), listenFor(m.back.Arrivals()))
+}
 
 // ---------------------------------------------------------------- what arrives
 
@@ -257,19 +263,33 @@ func waitForFrame(nudge chan struct{}) tea.Cmd {
 }
 
 // The list is the page: full width, with room left for the header and the keys.
+// The room a list has, inside the panel it is drawn in: the header and its rule, the footer, and
+// the panel's own top and bottom edges.
 func (m Model) listHeight() int {
-	got := m.height - 3
+	got := m.height - 5
 	if got < rowHeight {
 		return rowHeight
 	}
 	return got
 }
 
-func (m Model) viewWidth() int {
-	if m.width < 20 {
+// listWidth is the same for columns: the panel's borders and the padding inside them.
+func (m Model) listWidth() int {
+	got := m.width - 4
+	if got < 20 {
 		return 20
 	}
-	return m.width - 2
+	return got
+}
+
+// The room a live screen has, inside the panel it is drawn in: the two borders and the padding
+// either side. Two columns too many and every line of a terminal wraps.
+func (m Model) viewWidth() int {
+	got := m.width - 4
+	if got < 20 {
+		return 20
+	}
+	return got
 }
 
 func (m Model) viewHeight() int {
@@ -362,5 +382,25 @@ func join(back Backend, ticket string) tea.Cmd {
 
 		with, err := back.Join(ctx, ticket)
 		return joined{with: with, err: err}
+	}
+}
+
+// arrived says something came in from another device.
+type arrived struct{}
+
+// waitForArrival blocks until the far end says something, so an open conversation shows a message
+// as it lands rather than when a key is next pressed.
+//
+// One at a time, re-armed after each: a channel read is what a Bubble Tea command is for, and
+// polling on a timer would either be late or wake a laptop for nothing.
+func listenFor(from <-chan struct{}) tea.Cmd {
+	if from == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		if _, ok := <-from; !ok {
+			return nil
+		}
+		return arrived{}
 	}
 }

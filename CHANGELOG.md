@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.2] - 2026-08-24
+
+### <!-- 0 -->⛰️  Features
+
+- Show what arrives while you are watching
+- One frame, keys at the bottom, drop opens it
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- A live screen fits its panel
+
+### <!-- 5 -->🎨 Styling
+
+- The terminal's own sixteen colours
+
 ## [0.3.1] - 2026-08-24
 
 ### <!-- 1 -->🐛 Bug Fixes
