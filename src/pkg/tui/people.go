@@ -34,11 +34,13 @@ type grouped struct {
 	row []int
 	// peer is which peer a row is, for the rows that are one.
 	peer map[int]int
+	// reaching is which devices a connection is being held to.
+	reaching map[string]bool
 }
 
 // group sorts the address book into what the list shows.
-func group(self Identity, peers []book.Entry) grouped {
-	out := grouped{peer: map[int]int{}, row: make([]int, len(peers))}
+func group(self Identity, peers []book.Entry, reaching map[string]bool) grouped {
+	out := grouped{peer: map[int]int{}, row: make([]int, len(peers)), reaching: reaching}
 	for i := range out.row {
 		out.row[i] = -1
 	}
@@ -77,7 +79,12 @@ func (g *grouped) take(which []int, peers []book.Entry, under bool) {
 	for _, at := range which {
 		g.row[at] = len(g.items)
 		g.peer[len(g.items)] = at
-		g.items = append(g.items, deviceItem{entry: peers[at], addr: addrsOf(peers[at]), under: under})
+		g.items = append(g.items, deviceItem{
+			entry:    peers[at],
+			addr:     addrsOf(peers[at]),
+			under:    under,
+			reaching: g.reaching[peers[at].Name],
+		})
 	}
 }
 

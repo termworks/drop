@@ -2,6 +2,7 @@ package dial
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/tmc/go-iroh/iroh"
@@ -104,3 +105,20 @@ func (k *Kept) Close() {
 }
 
 func key(id node.ID, alpn string) string { return id.String() + "\x00" + alpn }
+
+// Reaching reports whether a connection to a device is being held.
+//
+// Not a probe: this says a connection exists and was good the last time it was used, which is what
+// makes it worth showing. Dialling everybody in the address book to draw a list would spend a
+// handshake per device per redraw.
+func (k *Kept) Reaching(id node.ID) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	for at := range k.open {
+		if strings.HasPrefix(at, id.String()+"\x00") {
+			return true
+		}
+	}
+	return false
+}

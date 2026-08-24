@@ -52,6 +52,10 @@ type fake struct {
 	stream    string
 	self      Identity
 	rules     map[string]Rule
+	// remembered is what a device said last time, handed back when it cannot be reached.
+	remembered   map[string][]proto.Served
+	refuseServes error
+	reaching     map[string]bool
 }
 
 func (f *fake) Peers() ([]book.Entry, error) { return f.peers, nil }
@@ -66,6 +70,9 @@ func (f *fake) Serves(ctx context.Context, with book.Entry) ([]proto.Served, err
 		return nil, ctx.Err()
 	}
 
+	if f.refuseServes != nil {
+		return f.remembered[with.Name], f.refuseServes
+	}
 	return f.serves[with.Name], nil
 }
 
@@ -1337,4 +1344,54 @@ func standingFor(m Model, name string) Standing {
 		}
 	}
 	return NotNamed
+}
+
+// A device that is off still has a conversation sitting on this disk, and the way in to it is the
+// list of paths — which comes from the device. What it last shared is what makes that reachable.
+func TestADeviceThatIsOffStillOpens(t *testing.T) {
+	back := withOne()
+	back.refuseServes = errors.New("could not reach beta")
+	back.remembered = map[string][]proto.Served{
+		"beta": {{Path: "/chat", Kind: ns.KindChat}},
+	}
+
+	m := start(t, back)
+	m.list.Select(m.rowFor(0))
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.at != levelPaths {
+		t.Fatalf("entering an unreachable device went to level %d", m.at)
+	}
+	if len(m.paths) != 1 || m.paths[0].Path != "/chat" {
+		t.Fatalf("nothing to enter: %+v", m.paths)
+	}
+
+	// And it says the list is from memory rather than from the device, because a stale list shown
+	// as current is a lie about what is there now.
+	if !strings.Contains(m.View(), "last shared") {
+		t.Errorf("the list does not say it is from memory:\n%s", m.View())
+	}
+}
+
+func (f *fake) Reaching() map[string]bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.reaching
+}
+
+// The daemon holds a connection to every device it has reached, so it knows who is answering. The
+// list is worth nothing if it does not say.
+func TestTheListSaysWhoIsReachable(t *testing.T) {
+	back := withOne()
+	back.reaching = map[string]bool{"beta": true}
+
+	if shown := start(t, back).View(); !strings.Contains(shown, "reachable") {
+		t.Errorf("the list does not say beta is reachable:\n%s", shown)
+	}
+
+	back.reaching = nil
+	if shown := start(t, back).View(); strings.Contains(shown, "reachable") {
+		t.Errorf("a device nothing is held to came out reachable:\n%s", shown)
+	}
 }

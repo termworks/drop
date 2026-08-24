@@ -19,6 +19,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
+	"github.com/bresilla/drop/src/pkg/shares"
 	"github.com/bresilla/drop/src/pkg/tui"
 	"io"
 )
@@ -125,6 +126,26 @@ func knock(at chan struct{}) {
 	}
 }
 
+// Reaching is which devices this interface is holding a connection to.
+//
+// What is held, not what could be reached: dialling the whole address book to draw a list would
+// spend a handshake per device per redraw, and a device that answered a moment ago is the useful
+// thing to say anyway.
+func (l *live) Reaching() map[string]bool {
+	pinned, err := book.Load()
+	if err != nil {
+		return nil
+	}
+
+	out := map[string]bool{}
+	for _, entry := range pinned.All() {
+		if l.held.Reaching(entry.ID) {
+			out[entry.Name] = true
+		}
+	}
+	return out
+}
+
 func (l *live) Peers() ([]book.Entry, error) {
 	pinned, err := book.Load()
 	if err != nil {
@@ -133,7 +154,27 @@ func (l *live) Peers() ([]book.Entry, error) {
 	return pinned.All(), nil
 }
 
+// Serves asks a device what it shares, and falls back to what it last said.
+//
+// A device that is off is the ordinary case, not a failure to report as one. What it last shared is
+// still the best guess at what it shares, and without it there is no way into a conversation that
+// is sitting on this disk. The error comes back as well, so the interface can say the list is from
+// memory rather than from the device.
 func (l *live) Serves(ctx context.Context, with book.Entry) ([]proto.Served, error) {
+	asked, err := l.askShares(ctx, with)
+	if err == nil {
+		_ = shares.Remember(with.ID, asked)
+		return asked, nil
+	}
+
+	remembered, kept := shares.Recall(with.ID)
+	if kept != nil || len(remembered) == 0 {
+		return nil, err
+	}
+	return remembered, err
+}
+
+func (l *live) askShares(ctx context.Context, with book.Entry) ([]proto.Served, error) {
 	s, err := l.held.To(ctx, with, node.ALPNHello)
 	if err != nil {
 		return nil, err

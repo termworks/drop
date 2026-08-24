@@ -51,8 +51,10 @@ type deviceItem struct {
 	// under marks a machine that sits beneath a person's name, and is drawn indented so that the
 	// list reads as a person with machines rather than as a flat list with a heading in it.
 	under bool
-	entry book.Entry
-	addr  string
+	// reaching marks a device a connection is being held to right now.
+	reaching bool
+	entry    book.Entry
+	addr     string
 }
 
 func (d deviceItem) FilterValue() string { return d.entry.Name }
@@ -115,6 +117,10 @@ func device(it deviceItem, width, index int, selected bool) string {
 		dot, dotColour, state = "◈", second, "you"
 	case !it.entry.Paired():
 		dot, dotColour, state = "○", muted, "not paired"
+	case it.reaching:
+		// Held right now, which is worth saying: everything else in this list is a device that
+		// might answer, and this one is answering.
+		state = "reachable"
 	}
 
 	var name lipgloss.TerminalColor = plain

@@ -130,7 +130,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.trouble = msg.err.Error()
 			return m, nil
 		}
-		m.peers, m.trouble = msg.peers, ""
+		m.peers, m.reaching, m.trouble = msg.peers, msg.reaching, ""
 		if m.at == levelDevices {
 			m.showDevices()
 		}
@@ -152,7 +152,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// What it last said is still the best guess at what it shares. Emptying the list
 			// because one answer went missing throws away the only thing worth showing.
 			m.trouble = msg.err.Error()
-			return m, nil
+
+			// A list may come back with the failure: what the device said the last time anybody
+			// asked. It is worth showing, because a conversation with a device that is off is
+			// still on this disk and there is no other way in to it.
+			if len(msg.paths) == 0 {
+				return m, nil
+			}
+			m.trouble = "not reachable — showing what it last shared"
 		}
 
 		if m.known == nil {
@@ -160,7 +167,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.known[msg.peer] = msg.paths
 
-		m.paths, m.trouble = msg.paths, ""
+		m.paths = msg.paths
+		if msg.err == nil {
+			m.trouble = ""
+		}
 		if m.at == levelPaths {
 			m.showPaths()
 		}
@@ -510,7 +520,7 @@ func (m Model) back_() (tea.Model, tea.Cmd) {
 
 // showDevices puts the address book in the list, grouped.
 func (m *Model) showDevices() {
-	m.rows = group(m.me, m.peers)
+	m.rows = group(m.me, m.peers, m.reaching)
 	m.list.SetItems(m.rows.items)
 	m.list.Select(m.rowFor(m.atPeer))
 	m.list.SetSize(m.listWidth(), m.listHeight())

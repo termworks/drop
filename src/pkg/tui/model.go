@@ -26,6 +26,10 @@ type Backend interface {
 	Self() (Identity, error)
 	// Peers is the address book.
 	Peers() ([]book.Entry, error)
+	// Reaching is which devices a connection is being held to, by the name they are filed under.
+	// Not a probe: it reports what is open, because dialling everybody to draw a list would spend
+	// a handshake per device per redraw.
+	Reaching() map[string]bool
 	// Serves asks a device what it shares with us.
 	Serves(ctx context.Context, with book.Entry) ([]proto.Served, error)
 	// Mine is what this device serves, read from its own config rather than asked over a wire.
@@ -102,6 +106,8 @@ type Model struct {
 	paths  []proto.Served
 	// rows is how the address book was arranged into the list: which row is which device.
 	rows grouped
+	// reaching is which devices a connection is being held to, by name.
+	reaching map[string]bool
 	// rule is who may reach the path whose access is being looked at.
 	rule Rule
 	// under is where in a device's paths the list is standing, "/" being the top.
@@ -166,7 +172,9 @@ func (m Model) Init() tea.Cmd {
 
 type peersLoaded struct {
 	peers []book.Entry
-	err   error
+	// reaching is which of them a connection is being held to.
+	reaching map[string]bool
+	err      error
 }
 
 type pathsLoaded struct {
@@ -193,7 +201,7 @@ type saidIt struct{ err error }
 func loadPeers(back Backend) tea.Cmd {
 	return func() tea.Msg {
 		peers, err := back.Peers()
-		return peersLoaded{peers: peers, err: err}
+		return peersLoaded{peers: peers, reaching: back.Reaching(), err: err}
 	}
 }
 
