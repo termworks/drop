@@ -13,8 +13,8 @@ import (
 	"github.com/bresilla/drop/src/pkg/proto"
 )
 
-// Three lines per item: what it is, what is known about it, and where it goes. One surface would fit
-// more on screen, but the things worth knowing about a device do not fit on one surface, and putting
+// Three lines per item: what it is, what is known about it, and where it goes. One line would fit
+// more on screen, but the things worth knowing about a device do not fit on one line, and putting
 // them in a second column instead is what forces a layout to be read left to right rather than down.
 const rowHeight = 3
 
@@ -59,14 +59,14 @@ func (d rows) Render(w io.Writer, m list.Model, index int, item list.Item) {
 // stripe is the accent bar down the left of the row the cursor is on.
 func stripe(base lipgloss.Style, selected bool) string {
 	if selected {
-		return base.Foreground(mauve).Render("┃ ")
+		return base.Foreground(accent).Render("┃ ")
 	}
 	return base.Render("  ")
 }
 
 func device(it deviceItem, width, index int, selected bool) string {
 	base := row(index, selected)
-	surface := func(s string) string { return base.Width(width).Render(s) }
+	fill := func(s string) string { return base.Width(width).Render(s) }
 	inner := width - 2
 
 	dot, dotColour := "●", green
@@ -75,40 +75,40 @@ func device(it deviceItem, width, index int, selected bool) string {
 		dot, dotColour, state = "○", muted, "not paired"
 	}
 
-	name := text
+	var name lipgloss.TerminalColor = plain
 	if selected {
-		name = mauve
+		name = accent
 	}
 
 	stateCol := 14
-	first := surface(stripe(base, selected) +
+	first := fill(stripe(base, selected) +
 		cell(base, dotColour, 2, dot, false, false) +
 		cell(base, name, inner-2-stateCol, it.entry.Name, false, true) +
 		cell(base, subtext, stateCol, state, true, false))
 
-	second := surface(stripe(base, selected) +
+	rest := fill(stripe(base, selected) +
 		cell(base, muted, inner, it.entry.ID.String(), false, false))
 
 	where := it.addr
 	if where == "" {
 		where = "last seen address unknown"
 	}
-	third := surface(stripe(base, selected) +
+	last := fill(stripe(base, selected) +
 		cell(base, muted, inner, where, false, false))
 
-	return first + "\n" + second + "\n" + third
+	return first + "\n" + rest + "\n" + last
 }
 
 func path(it pathItem, width, index int, selected bool) string {
 	base := row(index, selected)
-	surface := func(s string) string { return base.Width(width).Render(s) }
+	fill := func(s string) string { return base.Width(width).Render(s) }
 	inner := width - 2
 
 	kind := it.served.Kind.String()
 
-	name := text
+	var name lipgloss.TerminalColor = plain
 	if selected {
-		name = mauve
+		name = accent
 	}
 
 	send := "read only"
@@ -121,19 +121,19 @@ func path(it pathItem, width, index int, selected bool) string {
 	}
 
 	sendCol := 16
-	first := surface(stripe(base, selected) +
-		cell(base, pink, 2, glyph(kind), false, false) +
+	first := fill(stripe(base, selected) +
+		cell(base, second, 2, glyph(kind), false, false) +
 		cell(base, name, inner-2-sendCol, it.served.Path, false, true) +
 		cell(base, sendColour, sendCol, send, true, false))
 
-	second := surface(stripe(base, selected) +
-		cell(base, pink, 10, kind, false, false) +
+	rest := fill(stripe(base, selected) +
+		cell(base, second, 10, kind, false, false) +
 		cell(base, muted, inner-10, describe(kind), false, false))
 
-	third := surface(stripe(base, selected) +
+	last := fill(stripe(base, selected) +
 		cell(base, muted, inner, "drop to "+it.on+it.served.Path, false, false))
 
-	return first + "\n" + second + "\n" + third
+	return first + "\n" + rest + "\n" + last
 }
 
 // describe says what a kind of path is for, so the list is readable by someone who has not learnt

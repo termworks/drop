@@ -11,40 +11,41 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// The palette is Catppuccin Mocha, on whatever background the terminal already has.
+// The palette is the terminal's own sixteen colours, and nothing else.
 //
-// Taken rather than invented, and taken from the one the rest of these tools use, so drop does not
-// arrive with its own idea of what a terminal should look like. Nothing paints a background over
-// the whole screen: a terminal already has one, usually chosen on purpose.
+// Not a scheme of its own. Whoever is reading this has already chosen what red and grey mean on
+// their screen — in a theme, over ssh, in whatever terminal they happen to be sitting at — and a
+// program that ships its own idea of violet is a program that looks wrong everywhere except the
+// machine it was written on. Sixteen colours also survive a terminal that has no more than that.
+//
+// Plain text has no colour at all: it is the terminal's foreground, whatever that is.
 var (
-	text    = lipgloss.Color("#cdd6f4")
-	subtext = lipgloss.Color("#a6adc8")
-	muted   = lipgloss.Color("#6c7086")
-	surface = lipgloss.Color("#313244")
-	sunken  = lipgloss.Color("#242534")
-
-	mauve = lipgloss.Color("#cba6f7")
-	pink  = lipgloss.Color("#f5c2e7")
-	green = lipgloss.Color("#a6e3a1")
-	red   = lipgloss.Color("#f38ba8")
-	peach = lipgloss.Color("#fab387")
-	blue  = lipgloss.Color("#89b4fa")
+	plain   = lipgloss.NoColor{}  // whatever the terminal writes in
+	subtext = lipgloss.Color("7") // white
+	muted   = lipgloss.Color("8") // bright black, the one grey there is
+	surface = lipgloss.Color("8") // borders, and the ground under what is selected
+	sunken  = lipgloss.Color("0") // black, for text on top of an accent
+	accent  = lipgloss.Color("5") // magenta: this program, and the keys it answers to
+	second  = lipgloss.Color("6") // cyan: paths, tickets, and things to be typed
+	green   = lipgloss.Color("2") // it worked
+	red     = lipgloss.Color("1") // it did not
+	peach   = lipgloss.Color("3") // yellow: it is happening
 )
 
 var (
-	brandStyle = lipgloss.NewStyle().Foreground(mauve).Bold(true)
-	nameStyle  = lipgloss.NewStyle().Foreground(text).Bold(true)
+	brandStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
+	nameStyle  = lipgloss.NewStyle().Foreground(plain).Bold(true)
 	dimStyle   = lipgloss.NewStyle().Foreground(subtext)
 	faintStyle = lipgloss.NewStyle().Foreground(muted)
 	goodStyle  = lipgloss.NewStyle().Foreground(green)
 	badStyle   = lipgloss.NewStyle().Foreground(red)
-	kindStyle  = lipgloss.NewStyle().Foreground(pink)
-	pickStyle  = lipgloss.NewStyle().Foreground(mauve).Bold(true)
+	kindStyle  = lipgloss.NewStyle().Foreground(second)
+	pickStyle  = lipgloss.NewStyle().Foreground(accent).Bold(true)
 	sayStyle   = lipgloss.NewStyle().Foreground(muted)
 	peachStyle = lipgloss.NewStyle().Foreground(peach)
 
 	// A key named inside a sentence, as opposed to one in the footer, which gets a chip.
-	keyStyle = lipgloss.NewStyle().Foreground(mauve).Bold(true)
+	keyStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
 )
 
 // chip is one key in the footer: the key itself reversed out of the accent, then what it does.
@@ -52,7 +53,7 @@ var (
 // Reversed rather than merely coloured, because a footer of coloured words is a sentence nobody
 // reads. A block of background says "this is a thing you press" before any of it is read.
 func chip(key, does string) string {
-	return lipgloss.NewStyle().Foreground(sunken).Background(mauve).Bold(true).Render(" "+key+" ") +
+	return lipgloss.NewStyle().Foreground(sunken).Background(accent).Bold(true).Render(" "+key+" ") +
 		sayStyle.Render(" "+does)
 }
 
