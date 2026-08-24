@@ -231,3 +231,7 @@ func whyNot(err js.Value, instead string) string {
 	}
 	return instead
 }
+
+// scanFrame is nothing in a browser: the preview is a video element the page composites itself,
+// rather than pixels this has to carry.
+func scanFrame() image.Image { return nil }

@@ -142,3 +142,32 @@ func rule(gtx layout.Context) layout.Dimensions {
 
 	return layout.Dimensions{Size: at.Max}
 }
+
+// viewfinder draws what the camera sees, cropped to a square and rounded like everything else.
+//
+// The frame is uploaded every time it changes, which is what an image op does: Gio caches on the
+// image's identity, and a camera hands over a new one several times a second.
+func (a *App) viewfinder(gtx layout.Context, frame image.Image) layout.Dimensions {
+	side := gtx.Constraints.Max.X
+	if tall := gtx.Constraints.Max.Y * 2 / 5; tall > 0 && tall < side {
+		side = tall
+	}
+
+	at := frame.Bounds()
+	if at.Dx() == 0 || at.Dy() == 0 {
+		return layout.Dimensions{}
+	}
+
+	shape := clip.RRect{Rect: image.Rect(0, 0, side, side), SE: gtx.Dp(bigger), SW: gtx.Dp(bigger), NE: gtx.Dp(bigger), NW: gtx.Dp(bigger)}
+	defer shape.Push(gtx.Ops).Pop()
+
+	// Filled rather than fitted: a viewfinder with bars down the side tells you less about what the
+	// camera can see than one that is cropped.
+	by := float32(side) / float32(min(at.Dx(), at.Dy()))
+	defer op.Affine(f32.Affine2D{}.Scale(f32.Pt(0, 0), f32.Pt(by, by))).Push(gtx.Ops).Pop()
+
+	paint.NewImageOp(frame).Add(gtx.Ops)
+	paint.PaintOp{}.Add(gtx.Ops)
+
+	return layout.Dimensions{Size: image.Pt(side, side)}
+}

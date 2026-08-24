@@ -5,6 +5,7 @@ package gui
 import (
 	"gioui.org/font"
 	"gioui.org/layout"
+	"gioui.org/op"
 	"gioui.org/unit"
 	"strings"
 
@@ -25,6 +26,10 @@ func (a *App) pairing(gtx layout.Context, at *linking) layout.Dimensions {
 	}
 	if a.scanGo.Clicked(gtx) {
 		a.scanForATicket()
+	}
+	// A viewfinder is only live if something asks for the next frame.
+	if scanFrame() != nil {
+		gtx.Execute(op.InvalidateCmd{})
 	}
 	for {
 		event, ok := a.joinField.Update(gtx)
@@ -51,12 +56,30 @@ func (a *App) pairing(gtx layout.Context, at *linking) layout.Dimensions {
 						return layout.Inset{Bottom: gap}.Layout(gtx, a.small(at.err, bad).Layout)
 					}),
 
+					// What the camera is looking at, while it is looking. It takes the place of the
+					// code rather than sitting beside it: on a phone there is room for one large
+					// thing, and while scanning that thing is the viewfinder.
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						frame := scanFrame()
+						if frame == nil {
+							return layout.Dimensions{}
+						}
+						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return a.viewfinder(gtx, frame)
+							}),
+							layout.Rigid(layout.Spacer{Height: gap}.Layout),
+							layout.Rigid(a.small("Looking for a code…", dim).Layout),
+							layout.Rigid(layout.Spacer{Height: pad}.Layout),
+						)
+					}),
+
 					// The code, on a white card so a camera has the contrast it wants whatever the
 					// surrounding page is doing.
 					// Given room rather than whatever is left over. A code shrunk to fit is one a camera
 					// cannot resolve, and the rest of this screen can scroll instead.
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						if at.code == nil {
+						if at.code == nil || scanFrame() != nil {
 							return layout.Dimensions{}
 						}
 						// A third of the shorter side, so it is generous on a phone held upright and does not
