@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.3] - 2026-08-24
+
+### <!-- 0 -->⛰️  Features
+
+- A maskable icon for an installed page
+- The logo as the launcher icon
+- The real mark, and a dial that survives resumption
+- Take a code, not only show one
+- Pair both ways, drop's own mark, a better page
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- One accept loop, pair from either side
+
 ## [0.2.2] - 2026-08-23
 
 ### <!-- 0 -->⛰️  Features

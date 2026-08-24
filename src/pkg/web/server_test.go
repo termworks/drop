@@ -50,6 +50,7 @@ type stub struct {
 	watchBody string
 	serves    []Space
 	offered   chan string
+	joined    string
 	spacesErr error
 	asked     *book.Entry
 	watchCols int
@@ -420,4 +421,9 @@ func (s *stub) Offer(ctx context.Context) (string, <-chan string, error) {
 	done := make(chan string, 1)
 	s.offered = done
 	return "7b9773d9#code#192.168.1.1:47777", done, nil
+}
+
+func (s *stub) Join(ctx context.Context, ticket string) (string, error) {
+	s.joined = ticket
+	return "beta", nil
 }

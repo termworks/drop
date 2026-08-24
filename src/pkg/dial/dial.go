@@ -7,9 +7,11 @@ package dial
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 
+	"github.com/quic-go/quic-go"
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/netaddr"
 
@@ -56,15 +58,42 @@ func At(ctx context.Context, n *node.Node, lan *discovery.LAN, moved Finder, ent
 		}
 	}
 
-	conn, err := n.Dial(ctx, at, alpn)
+	conn, s, err := open(ctx, n, at, alpn)
+
+	// A dial resumes a cached TLS session when it has one, and a peer that has restarted since
+	// rejects it. That is not a failure, it is the handshake saying to start over: the ticket is
+	// spent, so a second dial is a plain one. Once, because a second rejection is a real fault.
+	if errors.Is(err, quic.Err0RTTRejected) {
+		conn, s, err = open(ctx, n, at, alpn)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("reaching %s: %w", entry.Name, err)
+	}
+	return conn, s, nil
+}
+
+// open dials and takes a stream, waiting for the handshake first.
+//
+// The wait is what makes a rejected session show up here rather than halfway through somebody's
+// conversation: until the handshake finishes, a stream opened on a resumed connection looks fine
+// and fails on the first read.
+func open(ctx context.Context, n *node.Node, at netaddr.EndpointAddr, alpn string) (*iroh.Conn, *iroh.Stream, error) {
+	conn, err := n.Dial(ctx, at, alpn)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	select {
+	case <-conn.HandshakeComplete():
+	case <-ctx.Done():
+		conn.Close()
+		return nil, nil, ctx.Err()
 	}
 
 	s, err := conn.OpenStreamSync(ctx)
 	if err != nil {
 		conn.Close()
-		return nil, nil, fmt.Errorf("opening a stream to %s: %w", entry.Name, err)
+		return nil, nil, err
 	}
 	return conn, s, nil
 }

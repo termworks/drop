@@ -3,6 +3,9 @@
 package gui
 
 import (
+	"strings"
+
+	"gioui.org/font"
 	"gioui.org/layout"
 	"gioui.org/unit"
 	"gioui.org/widget"
@@ -11,9 +14,9 @@ import (
 
 // Layout draws one frame.
 //
-// The same three screens everywhere: the devices you know, what one of them shares with you, and
-// whatever is at the path. Entering rather than tabbing, because what a path is depends on the
-// device it is on.
+// Three screens, entered rather than tabbed between: the devices you know, what one of them shares
+// with you, and whatever is at the path. What a path is depends on the device it is on, so the two
+// are a sequence and not two columns to compare.
 func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 	a.mu.Lock()
 	me, peers, paths := a.me, a.peers, a.paths
@@ -24,6 +27,9 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 	if a.back.Clicked(gtx) {
 		a.goBack()
 	}
+	if a.pairNow.Clicked(gtx) || a.joinNow.Clicked(gtx) {
+		go a.startPairing()
+	}
 	if a.refresh.Clicked(gtx) {
 		go a.loadPeers()
 	}
@@ -32,23 +38,26 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return a.header(gtx, me, busy)
 		}),
+		layout.Rigid(rule),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			if pending == nil {
 				return layout.Dimensions{}
 			}
-			return a.banner(gtx, pending)
+			return layout.Inset{Top: gap, Left: pad, Right: pad}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return a.shared(gtx, pending)
+			})
 		}),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			if linking != nil {
-				return a.pairingView(gtx, linking)
-			}
-			if trouble != "" && a.at != atOpen {
+			switch {
+			case linking != nil:
+				return a.pairing(gtx, linking)
+			case trouble != "" && a.at != atOpen:
 				return a.note(gtx, trouble, bad)
-			}
-			switch a.at {
-			case atDevices:
+			case a.at == atDevices && len(peers) == 0:
+				return a.welcome(gtx)
+			case a.at == atDevices:
 				return a.devices(gtx, peers)
-			case atPaths:
+			case a.at == atPaths:
 				return a.pathList(gtx, paths, busy)
 			default:
 				return a.open(gtx, history, trouble)
@@ -57,48 +66,53 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 	)
 }
 
-// header names where you are and which device this is.
+// header is where you are and which device this is. The mark is a wordmark rather than the logo:
+// Gio draws shapes, not files, and a badly redrawn mark is worse than a well set word.
 func (a *App) header(gtx layout.Context, me Identity, busy bool) layout.Dimensions {
 	return layout.Inset{Top: pad, Bottom: gap, Left: pad, Right: pad}.Layout(gtx,
 		func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					if a.at == atDevices {
+					if a.at == atDevices && a.linking == nil {
 						return layout.Dimensions{}
 					}
-					b := material.Button(a.theme, &a.back, "‹")
-					b.Background = soft
-					b.Color = ink
-					b.CornerRadius = round
-					b.Inset = layout.UniformInset(unit.Dp(10))
-					return b.Layout(gtx)
+					return layout.Inset{Right: gap}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return a.button(gtx, &a.back, "‹", false)
+					})
 				}),
-				layout.Rigid(layout.Spacer{Width: gap}.Layout),
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					title := material.H6(a.theme, a.where())
-					title.Color = ink
-					return title.Layout(gtx)
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+						layout.Rigid(a.title(a.where()).Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							if a.at != atDevices || me.Name == "" || a.linking != nil {
+								return layout.Dimensions{}
+							}
+							return a.tiny("this device is "+me.Name, faint).Layout(gtx)
+						}),
+					)
 				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					said := me.Name
 					if busy {
-						said = "asking…"
+						return a.small("asking…", faint).Layout(gtx)
 					}
-					who := material.Caption(a.theme, said)
-					who.Color = faint
-					return who.Layout(gtx)
+					if a.at == atDevices && a.linking == nil {
+						return a.button(gtx, &a.pairNow, "Pair", true)
+					}
+					return layout.Dimensions{}
 				}),
 			)
 		})
 }
 
 func (a *App) where() string {
-	switch a.at {
-	case atPaths:
+	switch {
+	case a.linking != nil:
+		return "Pair a device"
+	case a.at == atPaths:
 		if with, ok := a.peer(); ok {
 			return with.Name
 		}
-	case atOpen:
+	case a.at == atOpen:
 		if on, ok := a.path(); ok {
 			return on.Path
 		}
@@ -106,26 +120,65 @@ func (a *App) where() string {
 	return "drop"
 }
 
-// devices is the address book, one three-line card each.
-func (a *App) devices(gtx layout.Context, peers []Peer) layout.Dimensions {
-	if len(peers) == 0 {
-		return a.nothingPaired(gtx)
-	}
+// welcome is the first thing anyone sees, so it offers the way forward rather than naming a command
+// they would have to find a terminal for.
+func (a *App) welcome(gtx layout.Context) layout.Dimensions {
+	// Centred in what is left rather than pinned under the header: on a phone the buttons are
+	// then within a thumb of the bottom instead of stranded halfway up an empty screen.
+	return layout.Inset{Left: pad, Right: pad}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		// Spacers either side rather than a centring wrapper: centring shrinks the column to its
+		// widest child, and the buttons below want the whole width.
+		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+			layout.Flexed(1, layout.Spacer{}.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return a.mark(gtx, gtx.Dp(unit.Dp(88)))
+					}),
+					layout.Rigid(layout.Spacer{Height: roomy}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Center.Layout(gtx, a.label("No devices yet", unit.Sp(20), font.Bold, ink).Layout)
+					}),
+					layout.Rigid(layout.Spacer{Height: tight}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Center.Layout(gtx, a.small("Pair one to send it files, messages, or a terminal.", dim).Layout)
+					}),
+					layout.Rigid(layout.Spacer{Height: roomy}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return a.button(gtx, &a.pairNow, "Show a code", true)
+					}),
+					layout.Rigid(layout.Spacer{Height: gap}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return a.button(gtx, &a.joinNow, "Enter a ticket", false)
+					}),
+				)
+			}),
+			layout.Flexed(1, layout.Spacer{}.Layout),
+		)
+	})
+}
 
+// devices is the address book.
+func (a *App) devices(gtx layout.Context, peers []Peer) layout.Dimensions {
 	a.fitRows(len(peers))
 
-	return a.list.Layout(gtx, len(peers), func(gtx layout.Context, i int) layout.Dimensions {
-		p := peers[i]
+	return layout.Inset{Top: gap, Left: pad, Right: pad}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return a.list.Layout(gtx, len(peers), func(gtx layout.Context, i int) layout.Dimensions {
+			p := peers[i]
 
-		if a.rows[i].Clicked(gtx) {
-			a.enter(i)
-		}
+			if a.rows[i].Clicked(gtx) {
+				a.enter(i)
+			}
 
-		state := "paired"
-		if !p.Paired {
-			state = "not paired"
-		}
-		return a.card(gtx, &a.rows[i], p.Name, state, short(p.ID))
+			state, colour := "paired", good
+			if !p.Paired {
+				state, colour = "not paired", faint
+			}
+
+			return a.row(gtx, &a.rows[i],
+				func(gtx layout.Context) layout.Dimensions { return dot(gtx, colour) },
+				p.Name, state, short(p.ID), colour)
+		})
 	})
 }
 
@@ -140,21 +193,15 @@ func (a *App) pathList(gtx layout.Context, paths []Space, busy bool) layout.Dime
 
 	a.fitRows(len(paths))
 
-	return a.list.Layout(gtx, len(paths), func(gtx layout.Context, i int) layout.Dimensions {
-		s := paths[i]
+	return layout.Inset{Top: gap, Left: pad, Right: pad}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return a.list.Layout(gtx, len(paths), func(gtx layout.Context, i int) layout.Dimensions {
+			s := paths[i]
 
-		if a.rows[i].Clicked(gtx) {
-			a.enter(i)
-		}
-
-		may := "read only"
-		if s.Writable {
-			may = "you may send"
-		}
-		if s.Kind == "branch" {
-			may = "holds other paths"
-		}
-		return a.card(gtx, &a.rows[i], s.Path, s.Kind, may+" · "+about(s.Kind))
+			if a.rows[i].Clicked(gtx) {
+				a.enter(i)
+			}
+			return a.row(gtx, &a.rows[i], nil, s.Path, s.Kind, about(s.Kind), violet)
+		})
 	})
 }
 
@@ -168,13 +215,19 @@ func (a *App) open(gtx layout.Context, history []Message, trouble string) layout
 	switch on.Kind {
 	case "chat":
 		return a.chat(gtx, history, trouble)
-	case "files":
-		return a.note(gtx, "A place to send files. Use `drop to` or the share sheet.", dim)
+
 	case "tty", "stream":
 		if a.live == nil {
 			return a.note(gtx, "not watching.", faint)
 		}
-		return a.terminal(gtx, a.live)
+		return layout.Inset{Left: pad, Right: pad, Bottom: pad}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return a.terminal(gtx, a.live)
+		})
+
+	case "files":
+		with, _ := a.peer()
+		return a.note(gtx, "Send files here with  drop to "+with.Name+on.Path+"  <file>", dim)
+
 	default:
 		return a.note(gtx, "A "+on.Kind+" path.", dim)
 	}
@@ -199,15 +252,18 @@ func about(kind string) string {
 	case "link", "bookmark":
 		return "open a link over there"
 	case "branch":
-		return "serves nothing itself"
+		return "holds other paths"
 	default:
 		return ""
 	}
 }
 
 func short(id string) string {
-	if len(id) > 24 {
-		return id[:24] + "…"
+	if len(id) > 28 {
+		return id[:28] + "…"
 	}
 	return id
 }
+
+var _ = strings.TrimSpace
+var _ = material.H6

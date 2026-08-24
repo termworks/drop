@@ -230,3 +230,8 @@ func (l *live) Offer(ctx context.Context) (string, <-chan string, error) {
 
 	return invite, done, nil
 }
+
+// Join takes a ticket another device is showing.
+func (l *live) Join(ctx context.Context, ticket string) (string, error) {
+	return joinWith(ctx, l.node, l.lan, ticket, "")
+}

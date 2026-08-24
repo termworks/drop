@@ -25,6 +25,13 @@ type Direct struct {
 	Node *node.Node
 	LAN  *discovery.LAN
 
+	// The pairing acts, supplied by whatever built this: they need a listener and an address book,
+	// which belong to the program rather than to the screens.
+	OfferPairing func() (ticket string, err error)
+	PairingState func() (ticket, with string, err error)
+	StopPairing  func() error
+	JoinPairing  func(ticket string) (with string, err error)
+
 	// Reach is how a peer is turned into a connection. Supplied rather than built here, so the
 	// resolution ladder stays in one place instead of being written twice.
 	Reach func(ctx context.Context, to book.Entry, alpn string) (io.Closer, proto.Stream, error)
@@ -203,10 +210,35 @@ func (d *Direct) Watch(peer, path string, into io.Writer, resize func(cols, rows
 	return err
 }
 
-// Offer, Pairing and Unpair are not wired on a phone yet: pairing there wants a camera, which is a
-// different piece of work. Saying so beats a button that does nothing.
-func (d *Direct) Offer() (string, error)           { return "", errNotYet }
-func (d *Direct) Pairing() (string, string, error) { return "", "", nil }
-func (d *Direct) Unpair() error                    { return nil }
+// Pairing on a phone, both halves of it.
+//
+// Offer and Join are the same two acts every other build of drop has: this device shows a code, or
+// reads one somebody else is showing. A phone is a node like any other, so there is no reason for it
+// to be able to do only half.
+func (d *Direct) Offer() (string, error) {
+	if d.OfferPairing == nil {
+		return "", errors.New("this build cannot offer a pairing")
+	}
+	return d.OfferPairing()
+}
 
-var errNotYet = errors.New("pairing from the phone is not built yet; pair from the other device")
+func (d *Direct) Pairing() (string, string, error) {
+	if d.PairingState == nil {
+		return "", "", nil
+	}
+	return d.PairingState()
+}
+
+func (d *Direct) Unpair() error {
+	if d.StopPairing == nil {
+		return nil
+	}
+	return d.StopPairing()
+}
+
+func (d *Direct) Join(ticket string) (string, error) {
+	if d.JoinPairing == nil {
+		return "", errors.New("this build cannot join a pairing")
+	}
+	return d.JoinPairing(ticket)
+}

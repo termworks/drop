@@ -59,6 +59,9 @@ type Source interface {
 	Pairing() (ticket, with string, err error)
 	Unpair() error
 
+	// Join takes a ticket another device is showing, which is the other half of pairing.
+	Join(ticket string) (with string, err error)
+
 	// Watch reads a live path until the reader is closed. Writes land on the interface's goroutine
 	// through a screen that takes its own lock.
 	Watch(peer, path string, into io.Writer, resize func(cols, rows int), done <-chan struct{}) error

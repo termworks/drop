@@ -17,6 +17,7 @@ import (
 	"github.com/tmc/go-iroh/iroh"
 
 	"github.com/bresilla/drop/src/pkg/book"
+	"github.com/bresilla/drop/src/pkg/dial"
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/proto"
@@ -314,4 +315,46 @@ func written(addrs []netip.AddrPort) []string {
 		out = append(out, a.String())
 	}
 	return out
+}
+
+// joinWith pairs with whoever is showing a ticket, using a node that is already running.
+//
+// The command builds its own node and tears it down; an interface already has one, and starting a
+// second would mean two endpoints on one identity fighting over a port.
+func joinWith(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as string) (string, error) {
+	id, code, addrs, err := readTicket(tickets.FromLink(ticket))
+	if err != nil {
+		return "", err
+	}
+	if id == n.ID() {
+		return "", fmt.Errorf("that is this device's own ticket")
+	}
+
+	conn, s, err := dial.At(ctx, n, lan, nil, book.Entry{Name: node.Brief(id), ID: id}, node.ALPNPair, addrs)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	defer s.Close()
+
+	p, err := proto.Pair(s, n.ID(), node.DisplayName(), codeProof(code, n.ID(), id), written(discovery.LocalAddrs(n)))
+	if err != nil {
+		return "", err
+	}
+
+	name := as
+	if name == "" {
+		name = p.Name
+	}
+	if name == "" {
+		name = node.Brief(id)
+	}
+
+	pinned, err := book.Load()
+	if err != nil {
+		return "", err
+	}
+	pinned.Pair(name, id, p.Secret, p.Addrs...)
+
+	return name, pinned.Save()
 }
