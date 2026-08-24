@@ -142,7 +142,7 @@ func (a *App) welcome(gtx layout.Context) layout.Dimensions {
 					}),
 					layout.Rigid(layout.Spacer{Height: roomy}.Layout),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return layout.Center.Layout(gtx, a.label("No devices yet", unit.Sp(20), font.Bold, ink).Layout)
+						return layout.Center.Layout(gtx, a.label("No devices yet", sizeStrong, font.Bold, ink).Layout)
 					}),
 					layout.Rigid(layout.Spacer{Height: tight}.Layout),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -205,7 +205,7 @@ func (a *App) pathList(gtx layout.Context, paths []Space, busy bool) layout.Dime
 			if a.rows[i].Clicked(gtx) {
 				a.enter(i)
 			}
-			return a.row(gtx, &a.rows[i], nil, s.Path, s.Kind, about(s.Kind), violet)
+			return a.row(gtx, &a.rows[i], nil, s.Path, s.Kind, about(s.Kind), violetOn)
 		})
 	})
 }

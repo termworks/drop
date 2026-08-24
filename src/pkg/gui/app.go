@@ -72,6 +72,7 @@ type App struct {
 	pairStop   widget.Clickable
 	joinNow    widget.Clickable
 	joinGo     widget.Clickable
+	scanGo     widget.Clickable
 	joinField  widget.Editor
 	pairScroll layout.List
 	invalidate func()
@@ -401,6 +402,9 @@ func (a *App) awaitPairing() {
 
 // stopPairing takes the offer down, so a code shown by mistake stops being one.
 func (a *App) stopPairing() {
+	// A camera left running is a camera left running.
+	stopScan()
+
 	a.mu.Lock()
 	a.linking = nil
 	a.mu.Unlock()

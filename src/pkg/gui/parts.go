@@ -22,19 +22,19 @@ func (a *App) label(text string, size unit.Sp, weight font.Weight, c color.NRGBA
 }
 
 func (a *App) title(text string) material.LabelStyle {
-	return a.label(text, unit.Sp(22), font.Bold, ink)
+	return a.label(text, sizeTitle, font.Bold, ink)
 }
 
 func (a *App) body(text string) material.LabelStyle {
-	return a.label(text, unit.Sp(15), font.Normal, ink)
+	return a.label(text, sizeBody, font.Normal, ink)
 }
 
 func (a *App) small(text string, c color.NRGBA) material.LabelStyle {
-	return a.label(text, unit.Sp(13), font.Normal, c)
+	return a.label(text, sizeSmall, font.Normal, c)
 }
 
 func (a *App) tiny(text string, c color.NRGBA) material.LabelStyle {
-	return a.label(text, unit.Sp(11), font.Normal, c)
+	return a.label(text, sizeTiny, font.Normal, c)
 }
 
 // button is the one button shape: filled for the thing to do, outlined for everything else.
@@ -45,11 +45,11 @@ func (a *App) button(gtx layout.Context, click *widget.Clickable, text string, p
 
 			return layout.Inset{Left: pad, Right: pad}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					colour := violet
+					colour := violetOn
 					if primary {
 						colour = onDark
 					}
-					return a.label(text, unit.Sp(15), font.Bold, colour).Layout(gtx)
+					return a.label(text, sizeBody, font.Bold, colour).Layout(gtx)
 				})
 			})
 		}
@@ -89,7 +89,7 @@ func (a *App) row(gtx layout.Context, click *widget.Clickable, lead layout.Widge
 						}),
 						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-								layout.Rigid(a.label(title, unit.Sp(16), font.Bold, ink).Layout),
+								layout.Rigid(a.label(title, sizeStrong, font.Bold, ink).Layout),
 								layout.Rigid(layout.Spacer{Height: tight}.Layout),
 								layout.Rigid(a.small(about, dim).Layout),
 							)
