@@ -91,6 +91,7 @@ drop web              a page in a browser, on this machine or from your phone
 drop ls [device[/path]]        what a device shares with you
 drop to <device>/<path> [args] open a path; what is there decides what happens
 drop ui                        all of it, in a full-screen terminal
+                               p shows a pairing code, t takes one
 drop web [--addr]              all of it, in a browser
 
 drop pair [ticket]             link a device to this one; --qr to show a code

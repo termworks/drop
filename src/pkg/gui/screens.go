@@ -123,27 +123,37 @@ func (a *App) where() string {
 // welcome is the first thing anyone sees, so it offers the way forward rather than naming a command
 // they would have to find a terminal for.
 func (a *App) welcome(gtx layout.Context) layout.Dimensions {
-	return layout.Inset{Top: roomy, Left: pad, Right: pad}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	// Centred in what is left rather than pinned under the header: on a phone the buttons are
+	// then within a thumb of the bottom instead of stranded halfway up an empty screen.
+	return layout.Inset{Left: pad, Right: pad}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		// Spacers either side rather than a centring wrapper: centring shrinks the column to its
+		// widest child, and the buttons below want the whole width.
 		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+			layout.Flexed(1, layout.Spacer{}.Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return a.mark(gtx, gtx.Dp(unit.Dp(88)))
+				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return a.mark(gtx, gtx.Dp(unit.Dp(88)))
+					}),
+					layout.Rigid(layout.Spacer{Height: roomy}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Center.Layout(gtx, a.label("No devices yet", unit.Sp(20), font.Bold, ink).Layout)
+					}),
+					layout.Rigid(layout.Spacer{Height: tight}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Center.Layout(gtx, a.small("Pair one to send it files, messages, or a terminal.", dim).Layout)
+					}),
+					layout.Rigid(layout.Spacer{Height: roomy}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return a.button(gtx, &a.pairNow, "Show a code", true)
+					}),
+					layout.Rigid(layout.Spacer{Height: gap}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return a.button(gtx, &a.joinNow, "Enter a ticket", false)
+					}),
+				)
 			}),
-			layout.Rigid(layout.Spacer{Height: roomy}.Layout),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Center.Layout(gtx, a.label("No devices yet", unit.Sp(20), font.Bold, ink).Layout)
-			}),
-			layout.Rigid(layout.Spacer{Height: tight}.Layout),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Center.Layout(gtx, a.small("Pair one to send it files, messages, or a terminal.", dim).Layout)
-			}),
-			layout.Rigid(layout.Spacer{Height: roomy}.Layout),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return a.button(gtx, &a.pairNow, "Show a code", true)
-			}),
-			layout.Rigid(layout.Spacer{Height: gap}.Layout),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return a.button(gtx, &a.joinNow, "Enter a ticket", false)
-			}),
+			layout.Flexed(1, layout.Spacer{}.Layout),
 		)
 	})
 }
