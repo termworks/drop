@@ -85,6 +85,7 @@ func runTUI(parent context.Context) error {
 	program := tea.NewProgram(
 		tui.New(&live{node: n, lan: lan, ears: ears, arriving: arriving, held: held}),
 		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
 		tea.WithContext(ctx),
 	)
 

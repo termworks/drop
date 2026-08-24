@@ -20,6 +20,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case tea.MouseMsg:
+		// The wheel scrolls the conversation. Everywhere else the list widget has its own idea of
+		// what a wheel means, and it is a better one than anything invented here.
+		if !m.reading() {
+			var cmd tea.Cmd
+			m.list, cmd = m.list.Update(msg)
+			return m, cmd
+		}
+
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			return m.scrollBy(3), nil
+		case tea.MouseButtonWheelDown:
+			return m.scrollBy(-3), nil
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.key(msg)
 
@@ -131,6 +148,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// The conversation loading says nothing about whatever else went wrong. Clearing the
 		// notice here wipes the one from the message that has not gone out yet.
+		// Somebody reading back stays where they were. The window counts lines from the newest, so
+		// without this every arriving message drags what is being read one message further away.
+		if m.scroll > 0 {
+			was := len(m.chatLines())
+			m.history, m.waiting = msg.log, msg.waiting
+			m.scroll += len(m.chatLines()) - was
+			return m, nil
+		}
+
 		m.history, m.waiting = msg.log, msg.waiting
 		return m, nil
 
@@ -208,6 +234,25 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(msg)
 		return m, cmd
+	}
+
+	// Reading back through a conversation, where the arrows are the conversation's rather than a
+	// list's. Everything else on this screen is one key.
+	if m.reading() {
+		switch msg.String() {
+		case "up", "k":
+			return m.scrollBy(1), nil
+		case "down", "j":
+			return m.scrollBy(-1), nil
+		case "pgup":
+			return m.scrollBy(m.viewHeight() - 2), nil
+		case "pgdown":
+			return m.scrollBy(-(m.viewHeight() - 2)), nil
+		case "home":
+			return m.scrollBy(len(m.chatLines())), nil
+		case "end":
+			return m.scrollBy(-len(m.chatLines())), nil
+		}
 	}
 
 	switch msg.String() {
@@ -387,8 +432,8 @@ func (m *Model) openPath() tea.Cmd {
 	m.stop()
 	m.history = nil
 
-	// A new screen starts without the last one's complaint on it.
-	m.trouble, m.said = "", ""
+	// A new screen starts at the newest, without the last one's complaint on it.
+	m.trouble, m.said, m.scroll = "", "", 0
 
 	at, okPath := m.path()
 	with, okPeer := m.peer()
@@ -523,4 +568,33 @@ func (m Model) putKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // putsInto reports whether a path is somewhere you can send something.
 func putsInto(kind string) bool {
 	return kind == "files" || kind == "link" || kind == "bookmark"
+}
+
+// reading reports whether a conversation is open and being read rather than written.
+func (m Model) reading() bool {
+	if m.at != levelOpen || m.writing || m.putting {
+		return false
+	}
+
+	at, ok := m.path()
+	return ok && kindOf(at) == "chat"
+}
+
+// scrollBy moves back through the conversation, or forward again. Positive is towards older.
+func (m Model) scrollBy(lines int) Model {
+	room := m.viewHeight() - 3
+
+	most := len(m.chatLines()) - room
+	if most < 0 {
+		most = 0
+	}
+
+	m.scroll += lines
+	if m.scroll > most {
+		m.scroll = most
+	}
+	if m.scroll < 0 {
+		m.scroll = 0
+	}
+	return m
 }

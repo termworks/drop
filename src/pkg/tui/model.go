@@ -98,6 +98,9 @@ type Model struct {
 	history []convo.Message
 	// waiting is which of those have not been acknowledged yet, by id.
 	waiting map[string]bool
+	// scroll is how many lines back from the newest the conversation is being read, so a person
+	// looking at something older is not dragged to the bottom every time somebody says a word.
+	scroll int
 	// screen is the far end's terminal, when the open path is live.
 	screen  *screen
 	live    bool

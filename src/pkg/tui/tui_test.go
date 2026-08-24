@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -897,5 +898,105 @@ func TestAWaitingMessageIsMarked(t *testing.T) {
 
 	if m = settle(t, m, arrived{}); !strings.Contains(m.View(), "✓") {
 		t.Errorf("a delivered message is not marked as delivered:\n%s", m.View())
+	}
+}
+
+// A long conversation has to be readable back through, and what is on screen has to change when it
+// is scrolled. Nothing else here is worth calling scrolling.
+func TestAConversationScrollsBack(t *testing.T) {
+	back := withOne()
+
+	var many []convo.Message
+	for i := range 40 {
+		many = append(many, convo.Message{
+			ID:   fmt.Sprint(i),
+			Kind: convo.KindText,
+			Body: fmt.Sprintf("message number %d", i),
+			At:   int64(i),
+		})
+	}
+
+	back.mu.Lock()
+	back.log = many
+	back.mu.Unlock()
+
+	m := openPath(t, back, "/friends/chat")
+
+	// The newest is on screen, the oldest is not.
+	if !strings.Contains(m.View(), "message number 39") {
+		t.Fatalf("the newest message is not on screen:\n%s", m.View())
+	}
+	if strings.Contains(m.View(), "message number 0\n") {
+		t.Fatal("the whole conversation is on screen, so there is nothing to scroll")
+	}
+
+	// Wheel up, far enough to leave the bottom behind.
+	for range 20 {
+		m = m.scrollBy(3)
+	}
+
+	if strings.Contains(m.View(), "message number 39") {
+		t.Errorf("scrolling back did not move the window:\n%s", m.View())
+	}
+	if !strings.Contains(m.View(), "more line(s) above") {
+		t.Errorf("it does not say there is more above:\n%s", m.View())
+	}
+
+	// And back down to the newest.
+	m = m.scrollBy(-len(m.chatLines()))
+	if !strings.Contains(m.View(), "message number 39") {
+		t.Errorf("scrolling forward did not return to the newest:\n%s", m.View())
+	}
+}
+
+// Scrolling stops at the ends rather than running off into blank screens.
+func TestScrollingStopsAtBothEnds(t *testing.T) {
+	back := withOne()
+
+	back.mu.Lock()
+	back.log = []convo.Message{{ID: "1", Kind: convo.KindText, Body: "the only thing said", At: 1}}
+	back.mu.Unlock()
+
+	m := openPath(t, back, "/friends/chat")
+
+	if m = m.scrollBy(500); m.scroll != 0 {
+		t.Errorf("scrolled %d past a conversation that fits on one screen", m.scroll)
+	}
+	if m = m.scrollBy(-500); m.scroll != 0 {
+		t.Errorf("scrolled to %d, want the newest", m.scroll)
+	}
+	if !strings.Contains(m.View(), "the only thing said") {
+		t.Errorf("scrolling lost the conversation:\n%s", m.View())
+	}
+}
+
+// Reading back through a conversation while it is still going must not be dragged along by it.
+// The window counts from the newest, so an arriving message moves the ground under the reader.
+func TestArrivingMessagesDoNotDragTheReader(t *testing.T) {
+	back := withOne()
+
+	var many []convo.Message
+	for i := range 40 {
+		many = append(many, convo.Message{ID: fmt.Sprint(i), Kind: convo.KindText, Body: fmt.Sprintf("message number %d", i), At: int64(i)})
+	}
+
+	back.mu.Lock()
+	back.log = many
+	back.mu.Unlock()
+
+	m := openPath(t, back, "/friends/chat")
+	for range 10 {
+		m = m.scrollBy(3)
+	}
+
+	reading := m.View()
+
+	// The far end says something more while it is being read.
+	back.mu.Lock()
+	back.log = append(back.log, convo.Message{ID: "new", Kind: convo.KindText, Body: "said while reading", At: 99})
+	back.mu.Unlock()
+
+	if m = settle(t, m, arrived{}); m.View() != reading {
+		t.Errorf("an arriving message moved what was being read:\nwas:\n%s\nnow:\n%s", reading, m.View())
 	}
 }

@@ -91,6 +91,7 @@ drop ls [device[/path]]        what a device shares with you
 drop to <device>/<path> [args] open a path; what is there decides what happens
 drop                           all of it, in a full-screen terminal
                                p shows a pairing code, t takes one
+                               a conversation scrolls with the wheel, ↑↓, pgup/pgdn
 
 drop pair [ticket]             link a device to this one; --qr to show a code
 drop passwd                    hash a password, to guard a path with

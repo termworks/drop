@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/bresilla/drop/src/pkg/proto"
@@ -480,6 +481,41 @@ func (m Model) chatView() string {
 		room = 1
 	}
 
+	said := m.chatLines()
+
+	// The window ends wherever it has been scrolled back to, and at the newest line otherwise.
+	end := len(said) - m.scrolledBy(room)
+	if end < 0 {
+		end = 0
+	}
+
+	start := end - room
+	if start < 0 {
+		start = 0
+	}
+	shown := said[start:end]
+
+	// Pushed to the bottom: a conversation grows downwards, and half a screen of it should sit
+	// above what is being typed rather than hanging from the top.
+	for len(shown) < room {
+		shown = append([]string{""}, shown...)
+	}
+
+	view := strings.Join(shown, "\n")
+
+	// Only while reading back. At the newest there is always more above in any long conversation,
+	// and saying so costs a line of what somebody came to read.
+	if m.scroll > 0 && start > 0 {
+		view = m.olderAbove(view, start)
+	}
+	return view + "\n" + compose
+}
+
+// chatLines is the whole conversation, as the lines it occupies.
+//
+// Rendered rather than measured: a message is as many lines as its text wraps to, and the only way
+// to know is to lay it out. Scrolling counts these, so both this and the scrolling agree.
+func (m Model) chatLines() []string {
 	var said []string
 	for _, msg := range m.history {
 		said = append(said, m.bubble(msg)...)
@@ -488,14 +524,31 @@ func (m Model) chatView() string {
 	if len(said) == 0 {
 		said = []string{faintStyle.Render("nothing said yet.")}
 	}
+	return said
+}
 
-	// The newest sits just above what is being typed, whatever the older ones did.
-	said = lastOf(said, room)
-	for len(said) < room {
-		said = append([]string{""}, said...)
+// scrolledBy is how far back the conversation is being read, never past its own start.
+func (m Model) scrolledBy(room int) int {
+	most := len(m.chatLines()) - room
+	if most < 0 {
+		most = 0
+	}
+	if m.scroll > most {
+		return most
+	}
+	return m.scroll
+}
+
+// olderAbove marks that there is more above what is on screen, so scrolled-back is never mistaken
+// for the start of the conversation.
+func (m Model) olderAbove(view string, above int) string {
+	rows := strings.Split(view, "\n")
+	if len(rows) == 0 {
+		return view
 	}
 
-	return strings.Join(said, "\n") + "\n" + compose
+	rows[0] = faintStyle.Render(fmt.Sprintf("↑ %d more line(s) above", above))
+	return strings.Join(rows, "\n")
 }
 
 // compose is the line to write on, on the same ground as what has been said.
