@@ -38,7 +38,6 @@ func Execute(v string, exit func(int), args []string) {
 		newToCmd(),
 		newServeCmd(),
 		newCastCmd(),
-		newWebCmd(),
 		newPairCmd(),
 		newPeersCmd(),
 		newLogCmd(),

@@ -23,22 +23,16 @@ assert(VERSION, "src/main.go is missing its version line")
 local BIN = NAME
 -- What the compiler produces, before packing. Kept so `_compile` has an output of its own.
 local RAW = "target/" .. NAME
--- The interface, as the browser gets it. Written into the assets the binary embeds.
-local WASM = "src/pkg/web/assets/drop.wasm"
 local ENTRY = "./src"
 local PREFIX = os.getenv("PREFIX") or (os.getenv("HOME") .. "/.local")
 
 -- What the binary is built from. `**` matches one directory level, not any depth, so each
 -- level is listed: without the third pattern nothing under src/pkg/<name>/ counts as a source
 -- and `build` reports up to date while shipping the previous binary.
---
--- The web assets are here because go:embed bakes them into the binary. They are not Go, but
--- changing one changes what `drop web` serves.
 local SOURCES = {
   "src/*.go",
   "src/**/*.go",
   "src/**/**/*.go",
-  "src/pkg/web/assets/*",
   "go.mod",
   "go.sum",
 }
@@ -141,38 +135,9 @@ make.recipe{
 -- build sees the file present, calls itself up to date, and leaves a packed binary to be tested
 -- and installed as though it were the compiler's.
 make.recipe{
-  name = "_wasm",
-  desc = "compile the interface to webassembly",
-  -- Everything the interface links, not just the files that draw it: the browser build pulls in
-  -- the ticket, the terminal, the address book. Watching only the drawing meant a change to any
-  -- of those left a stale interface embedded in the binary, built from code nobody had run.
-  inputs = { "src/pkg/**/*.go", "browser/*.go", "go.mod", "go.sum" },
-  outputs = { WASM },
-  stale = "content",
-  run = function()
-    -- The interface is Go, and the browser gets it as WebAssembly. It is written into the
-    -- assets the binary embeds, so `_compile` picks it up on the next step.
-    oslo.env.set("CGO_ENABLED", "0")
-    oslo.env.set("GOOS", "js")
-    oslo.env.set("GOARCH", "wasm")
-
-    -- Built beside the target and moved onto it: `go build -o` refuses to overwrite a file it
-    -- did not produce, and what sits there in a fresh checkout is a placeholder.
-    local staging = WASM .. ".new"
-
-    sh.go("build", "-trimpath", "-ldflags", "-s -w", "-o", staging, "./browser")
-    sh.mv("-f", staging, WASM)
-
-    oslo.env.set("GOOS", "")
-    oslo.env.set("GOARCH", "")
-  end,
-}
-
-make.recipe{
   name = "_compile",
   desc = "compile the release binary",
   inputs = SOURCES,
-  deps = { "_wasm" },
   outputs = { RAW },
   stale = "content",
   run = function()

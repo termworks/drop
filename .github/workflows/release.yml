@@ -62,68 +62,8 @@ jobs:
             drop-${{ matrix.goos }}-${{ matrix.goarch }}
             drop-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
 
-  # The phone is a node in its own right: its own keypair, its own address book, dialling other
-  # devices over QUIC. Interface and node are both Go — the Gradle project beside it adds only a
-  # manifest.
-  apk:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - uses: android-actions/setup-android@v3
-
-      - name: NDK
-        run: |
-          set -eu
-          # gogio cross-compiles the Go for the phone's processors, which needs the NDK's
-          # toolchain rather than the runner's own compiler.
-          sdkmanager --install "ndk;27.2.12479018" >/dev/null
-          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
-
-      - name: Build the interface
-        run: |
-          set -eu
-          # gogio compiles the Go — interface and node both — into an Android library. The
-          # Gradle project beside it adds nothing but a manifest saying drop belongs in the
-          # share sheet, which is the one thing a Gio activity cannot declare for itself.
-          go install gioui.org/cmd/gogio@v0.10.0
-          mkdir -p android/libs
-          "$(go env GOPATH)/bin/gogio" -target android -buildmode archive -minsdk 26 \
-            -arch arm64,arm,amd64 \
-            -appid dev.bresilla.drop -o android/libs/drop.aar ./phone
-
-      - name: Package
-        working-directory: android
-        run: |
-          set -eu
-          gradle wrapper --gradle-version 8.11.1
-          ./gradlew --no-daemon assembleRelease
-          mv app/build/outputs/apk/release/app-release.apk ../drop.apk
-
-      - name: Checksum
-        run: sha256sum drop.apk > drop.apk.sha256
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: drop-apk
-          path: |
-            drop.apk
-            drop.apk.sha256
-
   release:
-    needs: [binaries, apk]
+    needs: [binaries]
     runs-on: ubuntu-latest
     # Only a tag makes a release. A manual run builds everything and leaves the artifacts, which is
     # how you check a change without publishing it.
@@ -139,5 +79,3 @@ jobs:
           generate_release_notes: true
           files: |
             drop-*
-            drop.apk
-            drop.apk.sha256

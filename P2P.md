@@ -420,7 +420,7 @@ croc's model, not "pair once and reach forever". With `drop.rendezvous = true`
 the same process republishes its address every 5 minutes, because a record
 that stops being refreshed stops being findable.
 
-`drop web` also serves, so a browser open on this machine keeps the node
+`drop ui` also holds the node open, so a terminal on this machine keeps it
 reachable for as long as the page is.
 
 ---
@@ -452,7 +452,6 @@ src/pkg/proto/session.go        what a connection can be asked to do
 src/pkg/ns/                     paths, kinds, and the mount table
 src/pkg/term/screen.go          the terminal grid another device is drawing on
 src/pkg/term/frame.go           what changed since a watcher was last told
-src/pkg/web/watch.go            that screen, streamed to a browser on this machine
 src/cmd/dial.go                 the ladder itself, in twenty lines
 ```
 
