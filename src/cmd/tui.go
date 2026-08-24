@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"syscall"
 
 	"crypto/hmac"
@@ -394,4 +396,47 @@ func (l *live) Offer(ctx context.Context) (string, <-chan string, error) {
 // Join takes a ticket another device is showing.
 func (l *live) Join(ctx context.Context, ticket string) (string, error) {
 	return joinWith(ctx, l.node, l.lan, ticket, "")
+}
+
+// Holding is what is in one of this machine's own files namespaces.
+//
+// Read from the config rather than asked over a wire: this is a directory on this disk, and asking
+// a peer what is in your own pocket would be a strange way to find out. Only files -- a directory
+// under a files namespace is not something drop serves, so listing it would promise something that
+// is not there.
+func (l *live) Holding(path string) ([]tui.Held, error) {
+	cfg, err := conf.Load()
+	if err != nil {
+		return nil, err
+	}
+	defer cfg.Close()
+
+	mount, _, ok := cfg.Mounts.Lookup(path)
+	if !ok || mount.Kind != ns.KindFiles {
+		return nil, fmt.Errorf("%s is not a files namespace of this machine's", path)
+	}
+
+	entries, err := os.ReadDir(mount.Dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", mount.Dir, err)
+	}
+
+	var out []tui.Held
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		at, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, tui.Held{Name: entry.Name(), Size: at.Size(), At: at.ModTime()})
+	}
+
+	// Newest last, the way everything else in this interface reads.
+	sort.Slice(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
+	return out, nil
 }

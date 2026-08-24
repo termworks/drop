@@ -176,6 +176,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case heldLoaded:
+		m.loading = false
+		if at, ok := m.path(); !ok || at.Path != msg.path {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.trouble = msg.err.Error()
+			return m, nil
+		}
+		m.held, m.trouble = msg.held, ""
+		return m, nil
+
 	case historyLoaded:
 		if at, ok := m.peer(); !ok || at.Name != msg.peer {
 			return m, nil
@@ -553,13 +565,30 @@ func (m *Model) openPath() tea.Cmd {
 	m.trouble, m.said, m.scroll = "", "", 0
 
 	at, okPath := m.path()
+	if !okPath {
+		return nil
+	}
+
+	// This machine's own paths come first, because there is no peer behind them: a files namespace
+	// of your own is a directory on this disk, not a conversation with anybody.
+	if m.onSelf {
+		if kindOf(at) == "files" {
+			m.held, m.loading = nil, true
+			return loadHeld(m.back, at.Path)
+		}
+		return nil
+	}
+
 	with, okPeer := m.peer()
-	if !okPath || !okPeer {
+	if !okPeer {
 		return nil
 	}
 
 	switch kindOf(at) {
-	case "chat", "files", "link", "bookmark":
+	case "files":
+		return loadHistory(m.back, with)
+
+	case "chat", "link", "bookmark":
 		// All three read the same conversation: what was said, what changed hands, and what was
 		// opened are one record, and a files path is a view onto part of it.
 		return loadHistory(m.back, with)

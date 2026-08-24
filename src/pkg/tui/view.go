@@ -233,6 +233,13 @@ func (m Model) openView() string {
 
 // inside is what the open path shows, without the box around it.
 func (m Model) inside(at proto.Served) string {
+	// One of this machine's own paths is not a conversation with anybody: it is what other devices
+	// reach. Only a files namespace has something of its own to show.
+	if m.onSelf && kindOf(at) != "files" {
+		return dimStyle.Render("this is what other devices reach.") + "\n\n" +
+			faintStyle.Render("what passed over it is in the conversation with whoever it was.")
+	}
+
 	switch kindOf(at) {
 	case "chat":
 		return m.chatView()
@@ -244,6 +251,11 @@ func (m Model) inside(at proto.Served) string {
 		return m.canvas(lines(m.screen.Draw(), m.viewHeight()))
 
 	case "files":
+		// Your own is a directory: say what is in it. Somebody else's is a place to send things,
+		// and the record of what has been sent there is the useful thing to show.
+		if m.onSelf {
+			return m.heldView()
+		}
 		return m.putView("a file", "files", m.transfers())
 
 	case "link", "bookmark":
@@ -823,4 +835,46 @@ func (m Model) canvas(drawn string) string {
 		rows = append(rows, ground.Render(""))
 	}
 	return strings.Join(rows, "\n")
+}
+
+// heldView is what is in one of this machine's own files namespaces.
+//
+// A directory rather than a conversation. Offering to send a file to your own disk is not what this
+// screen is for -- what somebody wants here is to see what has landed, and where.
+func (m Model) heldView() string {
+	if m.loading {
+		return faintStyle.Render("reading…")
+	}
+	if len(m.held) == 0 {
+		return dimStyle.Render("nothing here yet.") + "\n\n" +
+			faintStyle.Render("what a paired device sends to this path lands in it.")
+	}
+
+	name := m.viewWidth() - 26
+	if name < 12 {
+		name = 12
+	}
+
+	var out []string
+	for _, at := range m.held {
+		out = append(out,
+			nameStyle.Render(fit(at.Name, name))+
+				"  "+dimStyle.Render(fmt.Sprintf("%9s", bytesOf(at.Size)))+
+				"  "+faintStyle.Render(at.At.Format("2 Jan 15:04")))
+	}
+	return strings.Join(lastOf(out, m.viewHeight()-1), "\n")
+}
+
+// bytesOf is a size as somebody reads it rather than as a machine counts it.
+func bytesOf(n int64) string {
+	switch {
+	case n < 1024:
+		return fmt.Sprintf("%d B", n)
+	case n < 1024*1024:
+		return fmt.Sprintf("%.1f kB", float64(n)/1024)
+	case n < 1024*1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1024*1024))
+	default:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1024*1024*1024))
+	}
 }

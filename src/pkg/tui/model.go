@@ -34,6 +34,9 @@ type Backend interface {
 	Serves(ctx context.Context, with book.Entry) ([]proto.Served, error)
 	// Mine is what this device serves, read from its own config rather than asked over a wire.
 	Mine() ([]proto.Served, error)
+	// Holding is what is in one of this machine's own files namespaces. Offering to send a file
+	// to your own disk is not what that screen is for; saying what is in it is.
+	Holding(path string) ([]Held, error)
 	// Access is who may reach one of this machine's own paths: what the config says, and what
 	// has been granted here.
 	Access(path string) (Rule, error)
@@ -124,6 +127,8 @@ type Model struct {
 	loading bool
 	trouble string
 
+	// held is what is in one of this machine's own files namespaces, when one is open.
+	held []Held
 	// history is the conversation being shown, when the open path is a chat.
 	history []convo.Message
 	// waiting is which of those have not been acknowledged yet, by id.
@@ -510,5 +515,28 @@ func listenFor(from <-chan struct{}) tea.Cmd {
 			return nil
 		}
 		return arrived{}
+	}
+}
+
+// Held is one thing in a files namespace of this machine's own.
+type Held struct {
+	Name string
+	Size int64
+	// At is when it was last written, for a list that reads newest first.
+	At time.Time
+}
+
+// heldLoaded carries a directory listing back.
+type heldLoaded struct {
+	path string
+	held []Held
+	err  error
+}
+
+// loadHeld reads what is in one of this machine's own files namespaces.
+func loadHeld(back Backend, path string) tea.Cmd {
+	return func() tea.Msg {
+		held, err := back.Holding(path)
+		return heldLoaded{path: path, held: held, err: err}
 	}
 }

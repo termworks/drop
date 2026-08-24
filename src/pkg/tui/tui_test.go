@@ -56,6 +56,7 @@ type fake struct {
 	remembered   map[string][]proto.Served
 	refuseServes error
 	reaching     map[string]bool
+	holding      map[string][]Held
 }
 
 func (f *fake) Peers() ([]book.Entry, error) { return f.peers, nil }
@@ -1393,5 +1394,62 @@ func TestTheListSaysWhoIsReachable(t *testing.T) {
 	back.reaching = nil
 	if shown := start(t, back).View(); strings.Contains(shown, "reachable") {
 		t.Errorf("a device nothing is held to came out reachable:\n%s", shown)
+	}
+}
+
+func (f *fake) Holding(path string) ([]Held, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.holding[path], nil
+}
+
+// Your own files namespace is a directory. Offering to send a file to your own disk is not what
+// that screen is for; saying what is in it is.
+func TestYourOwnFilesNamespaceListsWhatIsInIt(t *testing.T) {
+	back := &fake{
+		mine: []proto.Served{{Path: "/inbox", Kind: ns.KindFiles}},
+		holding: map[string][]Held{
+			"/inbox": {
+				{Name: "report.txt", Size: 4096, At: time.Date(2026, 8, 24, 21, 5, 0, 0, time.UTC)},
+				{Name: "holiday.jpg", Size: 3 << 20, At: time.Date(2026, 8, 25, 9, 30, 0, 0, time.UTC)},
+			},
+		},
+	}
+
+	m := start(t, back)
+	m.list.Select(m.rows.me)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	shown := m.View()
+	for _, want := range []string{"report.txt", "holiday.jpg", "4.0 kB", "3.0 MB"} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("the listing is missing %q:\n%s", want, shown)
+		}
+	}
+	if strings.Contains(shown, "send a file") {
+		t.Errorf("it offered to send a file to this machine's own disk:\n%s", shown)
+	}
+}
+
+// Somebody else's is still a place to send things.
+func TestSomebodyElsesFilesNamespaceStillSends(t *testing.T) {
+	back := withOne()
+
+	m := start(t, back)
+	m.list.Select(m.rowFor(0))
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	// Onto /inbox, which is what beta shares.
+	for i, item := range m.list.Items() {
+		if it, ok := item.(pathItem); ok && it.step.at == "/inbox" {
+			m.list.Select(i)
+		}
+	}
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if !strings.Contains(m.View(), "send") {
+		t.Errorf("a peer's files namespace does not offer to send:\n%s", m.View())
 	}
 }
