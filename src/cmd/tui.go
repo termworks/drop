@@ -153,9 +153,9 @@ func (l *live) Compose(to book.Entry, body string) error {
 	return err
 }
 
-// Deliver sends whatever is queued for a device.
+// Deliver sends whatever is queued for a device, over the connection this interface is holding.
 func (l *live) Deliver(ctx context.Context, to book.Entry) error {
-	_, err := deliver(ctx, l.node, l.lan, to)
+	_, err := deliverOver(ctx, kept{held: l.held}, to, "/chat")
 	return err
 }
 

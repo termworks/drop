@@ -59,7 +59,9 @@ func (m Model) bodyHeight() int {
 func (m Model) notice() string {
 	switch {
 	case m.trouble != "":
-		return " " + badStyle.Render("✗ ") + fit(m.trouble, m.width-4)
+		// Cut from the end: what went wrong is said first, and the tail of a failure is usually a
+		// node id nobody can act on.
+		return " " + badStyle.Render("✗ ") + clip(m.trouble, m.width-4)
 	case m.said != "":
 		return " " + goodStyle.Render("✓ ") + fit(m.said, m.width-4)
 	}
@@ -97,6 +99,11 @@ func (m Model) emptyList() string {
 	switch {
 	case m.loading:
 		return faintStyle.Render("asking…")
+	case m.trouble != "":
+		// Saying a device shares nothing when the question never got there is a lie about the
+		// device rather than a report about the network.
+		return dimStyle.Render("could not ask this device.") + "\n\n" +
+			faintStyle.Render("what it shares is unknown, not empty.")
 	case m.at == levelPaths:
 		return dimStyle.Render("this device shares nothing with you.") + "\n\n" +
 			faintStyle.Render("what appears here was decided over there, not here.")

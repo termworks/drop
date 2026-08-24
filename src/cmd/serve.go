@@ -15,6 +15,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/conf"
 	"github.com/bresilla/drop/src/pkg/convo"
+	"github.com/bresilla/drop/src/pkg/dial"
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
@@ -71,7 +72,13 @@ func runServe(parent context.Context, quiet bool) error {
 		fmt.Fprintf(os.Stderr, "drop: mDNS unavailable: %v\n", err)
 	}
 
-	go backlog(ctx, n, lan, pinned)
+	// Connections to every paired device, held for as long as this runs, so nothing anybody sends
+	// has to wait for a device to be found first.
+	held := dial.Hold(n, lan, finder(n))
+	defer held.Close()
+
+	go keepConnected(ctx, held, pinned)
+	go backlog(ctx, n, lan, pinned, held)
 
 	// A cast feeds this node over a local socket rather than standing up a second one, so a
 	// terminal can be shared while the daemon is running.
@@ -214,7 +221,7 @@ func detail(m ns.Mount) string {
 // A message to a device that was off is kept rather than lost, and the thing that notices it coming
 // back has to be the thing that is always running. Until this, a backlog only moved while somebody
 // had `drop chat` open, which is the one moment they do not need it to.
-func backlog(ctx context.Context, n *node.Node, lan *discovery.LAN, pinned *book.Book) {
+func backlog(ctx context.Context, n *node.Node, lan *discovery.LAN, pinned *book.Book, held *dial.Kept) {
 	tick := time.NewTicker(flushEvery)
 	defer tick.Stop()
 
@@ -234,7 +241,7 @@ func backlog(ctx context.Context, n *node.Node, lan *discovery.LAN, pinned *book
 				return
 			default:
 			}
-			_, _ = deliver(ctx, n, lan, entry)
+			_, _ = deliverOver(ctx, kept{held: held}, entry, "/chat")
 		}
 	}
 }

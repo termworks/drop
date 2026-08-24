@@ -19,6 +19,15 @@ import (
 // Undelivered messages stay queued rather than being dropped, which is what makes sending to a
 // device that is asleep work: it goes out when the device comes back.
 func deliverTo(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.Entry, path string) (int, error) {
+	return deliverOver(ctx, fresh{node: n, lan: lan}, entry, path)
+}
+
+// deliverOver sends what is queued over whatever connection the caller has.
+//
+// A held one where there is one. Finding a device and standing up a relay session is five seconds;
+// a message on a connection that already exists is eight milliseconds. Dialling again for every
+// line somebody types throws that away.
+func deliverOver(ctx context.Context, over reaches, entry book.Entry, path string) (int, error) {
 	store, err := convo.Open(entry.ID)
 	if err != nil {
 		return 0, err
@@ -32,11 +41,11 @@ func deliverTo(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book
 		return 0, nil
 	}
 
-	conn, s, err := reach(ctx, n, lan, entry, node.ALPNSession)
+	done, s, err := over.To(ctx, entry, node.ALPNSession)
 	if err != nil {
 		return 0, err
 	}
-	defer conn.Close()
+	defer done.Close()
 	defer s.Close()
 
 	stored, err := proto.SendMessages(ctx, s, path, waiting, node.DisplayName())
