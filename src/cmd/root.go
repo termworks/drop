@@ -41,6 +41,7 @@ func Execute(v string, exit func(int), args []string) {
 	root.PersistentPreRun = func(*cobra.Command, []string) {
 		conf.ApplySettings()
 		wearBadge()
+		unlocking()
 	}
 
 	root.SetArgs(args)

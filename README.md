@@ -109,6 +109,7 @@ drop user                      who this machine belongs to
 drop grant <path> <who>        let somebody reach a path
 drop revoke <path> <who>       stop them
 drop grants                    what has been allowed and refused
+drop vault                     whether what is kept on this disk is encrypted
 ```
 
 ## namespaces
@@ -392,6 +393,54 @@ tail and appear in the wrong order; a clock that steps backwards is handled the 
 id smaller than the last one has the same effect. Ids are also how a resend is told from a first
 delivery, so a reconnect does not duplicate the backlog.
 
+## what is kept on disk
+
+Conversations are written to `$XDG_DATA_HOME/drop/convo/<peer id>/`. Without a vault they are
+written in the clear, and `0600` under `0700` stops another account on the same machine and nothing
+else:
+
+```console
+$ strings ~/.local/share/drop/convo/d04c…/history
+hey, this is from the terminal
+```
+
+A **vault** changes that. One data key — thirty-two random bytes — encrypts every record; the data
+key itself is written once, encrypted to whoever you name, and unwrapped once at startup. A touch
+per message would be unusable; a touch per start is not.
+
+```lua
+drop.vault = "~/.config/drop/vault.key"            -- protects a backup, not a live disk
+drop.vault = { "age1yubikey1…", "age1…backup…" }   -- unreadable without the key
+```
+
+Always name more than one when you name hardware: a data key wrapped only to a YubiKey is a history
+that dies with the YubiKey.
+
+```console
+drop vault           what it is doing, creating nothing
+drop vault seal      encrypt what is already on this disk
+drop vault clear     put it back in the clear
+```
+
+Both walks read every record and write it back — sealed or not — so turning a vault on does not
+hide what came before it, and turning one off is not a loss. Stop drop first: a message that lands
+during the walk is in neither file afterwards.
+
+**What it protects:** a machine that is off. A stolen laptop, a pulled disk, a leaked backup. That
+is the ordinary way private things escape.
+
+**What it does not:** a machine that is running. drop has to read the data to show it to you, so
+anything with your session can ask drop. No design at this level changes that.
+
+**What still leaks** even sealed: directory names are peer ids, and their sizes are visible — who
+you talk to, and roughly how much. Files that arrived are left alone; somebody asked for them, in a
+directory they chose. `peers.json` is in the clear, and whoever takes it can *be* you to every
+device you have paired with.
+
+A locked device — the key unplugged, the file gone — is a locked device, not an empty one. drop
+says so rather than reporting a conversation that is there as missing.
+
+
 ## the wire
 
 Binary, varint-based. No JSON, no reflection, no codegen.
@@ -524,6 +573,7 @@ src/pkg/passwd/        argon2id, for the secrets that guard a path
 src/pkg/proto/         pairing, hello, transfer, and the framing under them
 src/pkg/book/          the address book, including pairing secrets
 src/pkg/grant/         who has been let in and shut out from the interface
+src/pkg/vault/         the key everything on this disk is encrypted with
 src/pkg/user/          a person, and the badge each of their machines carries
 src/pkg/convo/         the durable conversation log and outbox
 src/pkg/term/          a terminal screen, rebuilt from what a device sends

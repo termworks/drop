@@ -342,3 +342,128 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		return strings.Contains(one.must("log", "two"), "again")
 	})
 }
+
+// A vaulted node keeps its history unreadable on disk, and reads it back itself.
+//
+// The wire is not the point here: what a peer sees is the same either way. The point is the disk —
+// a stolen laptop, a pulled disk, a leaked backup — and the test for that is `strings`.
+func TestAVaultedHistoryIsNotReadableOnDisk(t *testing.T) {
+	one, two := newNode(t, "one", "45051"), newNode(t, "two", "45052")
+
+	one.serves(`
+local drop = require("drop")
+drop.vault = "` + filepath.Join(one.home, "config", "drop", "vault.key") + `"
+drop.mount("/chat", { type = "chat", access = "paired" })
+`)
+	two.serves(`
+local drop = require("drop")
+drop.mount("/chat", { type = "chat", access = "paired" })
+`)
+
+	pair(t, one, two)
+
+	_, _, stop := one.background("serve")
+	defer stop()
+
+	two.must("to", "one/chat", "the eagle has landed")
+	waitFor(t, "the message to arrive", 30*time.Second, func() bool {
+		return strings.Contains(one.must("log", "two"), "the eagle has landed")
+	})
+
+	// Written, read back by drop, and not there for anybody with the disk.
+	convo := filepath.Join(one.home, "data", "drop", "convo")
+	found := false
+	err := filepath.Walk(convo, func(at string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		raw, err := os.ReadFile(at)
+		if err != nil {
+			return err
+		}
+		found = true
+		if strings.Contains(string(raw), "the eagle has landed") {
+			t.Errorf("%s holds the message in the clear", at)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("nothing was written to disk at all")
+	}
+
+	// And the vault says what it is doing.
+	if said := one.must("vault"); !strings.Contains(said, "open") {
+		t.Errorf("the vault does not report itself open:\n%s", said)
+	}
+}
+
+// A conversation written in the clear can be sealed afterwards, and put back.
+func TestWhatIsAlreadyOnDiskCanBeSealed(t *testing.T) {
+	one, two := newNode(t, "one", "45061"), newNode(t, "two", "45062")
+
+	plain := `
+local drop = require("drop")
+drop.mount("/chat", { type = "chat", access = "paired" })
+`
+	one.serves(plain)
+	two.serves(plain)
+
+	pair(t, one, two)
+
+	stopped := func() {}
+	_, _, stopped = one.background("serve")
+
+	two.must("to", "one/chat", "written in the clear")
+	waitFor(t, "the message to arrive", 30*time.Second, func() bool {
+		return strings.Contains(one.must("log", "two"), "written in the clear")
+	})
+
+	// The daemon has to be out of the way: a message landing during the walk is in neither file.
+	stopped()
+
+	onDisk := func() string {
+		t.Helper()
+
+		var all strings.Builder
+		err := filepath.Walk(filepath.Join(one.home, "data", "drop", "convo"),
+			func(at string, info os.FileInfo, err error) error {
+				if err != nil || info.IsDir() {
+					return err
+				}
+				raw, err := os.ReadFile(at)
+				all.Write(raw)
+				return err
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return all.String()
+	}
+	if !strings.Contains(onDisk(), "written in the clear") {
+		t.Fatal("the message was not on disk in the clear to begin with")
+	}
+
+	// A vault, and then the walk.
+	one.serves(plain + `
+drop.vault = "` + filepath.Join(one.home, "config", "drop", "vault.key") + `"
+`)
+	if said := one.must("vault", "seal"); !strings.Contains(said, "conversation") {
+		t.Errorf("sealing said nothing useful:\n%s", said)
+	}
+
+	if strings.Contains(onDisk(), "written in the clear") {
+		t.Error("the message is still on disk in the clear")
+	}
+	if got := one.must("log", "two"); !strings.Contains(got, "written in the clear") {
+		t.Errorf("drop cannot read its own sealed history:\n%s", got)
+	}
+
+	// And back again.
+	one.must("vault", "clear")
+	if !strings.Contains(onDisk(), "written in the clear") {
+		t.Error("clearing did not put the message back")
+	}
+}

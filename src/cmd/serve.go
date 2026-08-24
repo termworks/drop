@@ -50,6 +50,9 @@ func runServe(parent context.Context, quiet bool) error {
 	if _, err := cfg.Grants(); err != nil {
 		return err
 	}
+	if err := unlock(cfg); err != nil {
+		return err
+	}
 	// Settings take effect before the endpoint starts, because the name is read while it comes up.
 	cfg.Apply()
 	defer cfg.Close()

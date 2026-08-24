@@ -63,15 +63,53 @@ func (s *Store) Peer() node.ID {
 	return s.peer
 }
 
-// record is one entry as stored: the direction, then the message.
-func record(m Message) []byte {
+// record is one entry as stored: the direction, then the message, sealed if there is a key.
+func record(m Message, peer string) ([]byte, error) {
+	key, err := keyed()
+	if err != nil {
+		// A key that exists and cannot be reached must not turn into plaintext appended to a
+		// sealed history. Refusing to write is the only safe answer.
+		return nil, err
+	}
+	return recordWith(m, peer, key)
+}
+
+// recordWith is the same, under a key given rather than held -- which is what rewriting a log to
+// turn a vault on or off needs, because that reads under one key and writes under another.
+func recordWith(m Message, peer string, key []byte) ([]byte, error) {
 	w := wire.NewWriter()
 	w.Byte(m.Dir)
 	w.Bytes(m.Encode())
-	return w.Body()
+	body := w.Body()
+
+	if len(key) == 0 {
+		return body, nil
+	}
+	return seal(key, body, peer, m.ID)
 }
 
-func unrecord(body []byte) (Message, error) {
+func unrecord(body []byte, peer string) (Message, error) {
+	// Both forms are readable: a log written before a vault existed, and one written since. A
+	// vault that could not read what came before it would be a vault nobody could turn on.
+	if isSealed(body) {
+		key, err := keyed()
+		if err != nil {
+			return Message{}, err
+		}
+		if len(key) == 0 {
+			return Message{}, ErrLocked
+		}
+		opened, err := unseal(key, body, peer)
+		if err != nil {
+			return Message{}, err
+		}
+		body = opened
+	}
+	return plain(body)
+}
+
+// plain reads a record that is not sealed.
+func plain(body []byte) (Message, error) {
 	r := wire.NewReader(body)
 	dir, err := r.Byte()
 	if err != nil {
@@ -108,7 +146,7 @@ func appendTo(path string, body []byte) error {
 
 // readAll walks a log. A truncated tail — a crash mid-write — ends the walk rather than failing
 // it, because the records before it are still good and losing them would be the worse outcome.
-func readAll(path string) ([]Message, error) {
+func readAll(path, peer string) ([]Message, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -124,7 +162,12 @@ func readAll(path string) ([]Message, error) {
 			break
 		}
 		at += used
-		m, err := unrecord(raw[at : at+int(size)])
+		m, err := unrecord(raw[at:at+int(size)], peer)
+		if errors.Is(err, ErrLocked) {
+			// Not a truncated tail: the records are whole and the key is not here. Reporting an
+			// empty conversation would be a lie about the disk rather than a report about the key.
+			return nil, err
+		}
 		if err != nil {
 			break
 		}
@@ -140,7 +183,7 @@ func (s *Store) Add(m Message) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	known, err := readAll(s.history)
+	known, err := readAll(s.history, s.peer.String())
 	if err != nil {
 		return false, err
 	}
@@ -149,7 +192,11 @@ func (s *Store) Add(m Message) (bool, error) {
 			return false, nil
 		}
 	}
-	if err := appendTo(s.history, record(m)); err != nil {
+	body, err := record(m, s.peer.String())
+	if err != nil {
+		return false, err
+	}
+	if err := appendTo(s.history, body); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -160,7 +207,7 @@ func (s *Store) History() ([]Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	out, err := readAll(s.history)
+	out, err := readAll(s.history, s.peer.String())
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +230,11 @@ func (s *Store) Queue(m Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return appendTo(s.outbox, record(m))
+	body, err := record(m, s.peer.String())
+	if err != nil {
+		return err
+	}
+	return appendTo(s.outbox, body)
 }
 
 // Pending is what has not been delivered, oldest first.
@@ -191,7 +242,7 @@ func (s *Store) Pending() ([]Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	out, err := readAll(s.outbox)
+	out, err := readAll(s.outbox, s.peer.String())
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +267,7 @@ func (s *Store) Delivered(ids ...string) error {
 		gone[id] = true
 	}
 
-	waiting, err := readAll(s.outbox)
+	waiting, err := readAll(s.outbox, s.peer.String())
 	if err != nil {
 		return err
 	}
@@ -226,7 +277,10 @@ func (s *Store) Delivered(ids ...string) error {
 		if gone[m.ID] {
 			continue
 		}
-		body := record(m)
+		body, err := record(m, s.peer.String())
+		if err != nil {
+			return err
+		}
 		var head [binary.MaxVarintLen64]byte
 		n := binary.PutUvarint(head[:], uint64(len(body)))
 		keep = append(keep, head[:n]...)
@@ -287,4 +341,50 @@ func Peers() ([]node.ID, error) {
 		out = append(out, id)
 	}
 	return out, nil
+}
+
+// Rewrite writes both logs again under a key given: what is there now is read with the key this
+// process holds, and written back under `to`. Nothing at all writes them in the clear.
+//
+// This is what turning a vault on does to what is already there, and what turning one off undoes.
+// Both directions are the same walk: every record is read -- sealed or not -- and written back the
+// way the current key says it should be.
+//
+// Each log goes through a temporary file and a rename, so an interruption leaves either the old one
+// or the new one. It is not safe to run while a daemon is appending: an append that lands during
+// the walk is in neither file afterwards, which is why the command that calls this says so.
+func (s *Store) Rewrite(to []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, at := range []string{s.history, s.outbox} {
+		all, err := readAll(at, s.peer.String())
+		if err != nil {
+			return err
+		}
+		if len(all) == 0 {
+			continue
+		}
+
+		var out []byte
+		for _, m := range all {
+			body, err := recordWith(m, s.peer.String(), to)
+			if err != nil {
+				return err
+			}
+			var head [binary.MaxVarintLen64]byte
+			n := binary.PutUvarint(head[:], uint64(len(body)))
+			out = append(out, head[:n]...)
+			out = append(out, body...)
+		}
+
+		scratch := at + ".new"
+		if err := os.WriteFile(scratch, out, 0o600); err != nil {
+			return fmt.Errorf("writing %s: %w", scratch, err)
+		}
+		if err := os.Rename(scratch, at); err != nil {
+			return fmt.Errorf("replacing %s: %w", at, err)
+		}
+	}
+	return nil
 }

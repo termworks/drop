@@ -28,11 +28,12 @@ func runTUI(parent context.Context) error {
 	if err != nil {
 		return err
 	}
-	grants, err := cfg.Grants()
-	if err != nil {
+	if _, err := cfg.Grants(); err != nil {
 		return err
 	}
-	_ = grants
+	if err := unlock(cfg); err != nil {
+		return err
+	}
 	cfg.Apply()
 	defer cfg.Close()
 

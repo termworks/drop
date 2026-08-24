@@ -6,11 +6,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/bresilla/drop/src/pkg/conf"
+	"github.com/bresilla/drop/src/pkg/convo"
+	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/vault"
 )
 
 func newVaultCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "vault",
 		Short: "Whether what is kept on this disk is encrypted",
 		Long: "Conversations are written to disk. Without a vault they are written in the clear,\n" +
@@ -24,6 +26,9 @@ func newVaultCmd() *cobra.Command {
 			return showVault()
 		},
 	}
+
+	cmd.AddCommand(newVaultSealCmd(), newVaultClearCmd())
+	return cmd
 }
 
 // showVault reports, and creates nothing. Asking what a vault is doing must not be what sets one
@@ -64,5 +69,121 @@ func showVault() error {
 	default:
 		fmt.Printf("\n  open — the data key is held while drop runs\n\n")
 	}
+	return nil
+}
+
+// unlock opens the vault this config names and hands the data key to whatever keeps things on
+// disk, for as long as this process runs.
+//
+// Done by everything that serves. A locked device is an error here rather than a node that comes
+// up and quietly reads nothing: the history is there, and the only useful thing to do is say the
+// key is missing before anybody asks for a conversation.
+func unlock(cfg *conf.Config) error {
+	held, err := cfg.Vaulted()
+	if err != nil {
+		return err
+	}
+
+	convo.Unlock(held.Key())
+	return nil
+}
+
+// unlocking says how to reach the data key, without reaching it.
+//
+// Every command goes through here, and most of them never touch a conversation. Opening a vault
+// means parsing a config and unwrapping a key, which is real work to do for `drop id`.
+func unlocking() {
+	convo.Unlocking(func() ([]byte, error) {
+		cfg, err := conf.Load()
+		if err != nil {
+			return nil, err
+		}
+		defer cfg.Close()
+
+		held, err := cfg.Vaulted()
+		if err != nil {
+			return nil, err
+		}
+		return held.Key(), nil
+	})
+}
+
+func newVaultSealCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "seal",
+		Short: "Encrypt the conversations that are already on this disk",
+		Long: "Turning a vault on encrypts what is written from then on. This is what does the\n" +
+			"same to what is already there.\n\n" +
+			"Stop drop first. Each log is rewritten through a temporary file and renamed, so an\n" +
+			"interruption leaves the old one or the new one — but a message that arrives while\n" +
+			"the walk is running lands in neither.",
+		Args: cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return reseal(true)
+		},
+	}
+}
+
+func newVaultClearCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "clear",
+		Short: "Put the conversations back in the clear",
+		Long: "The other direction: read with the key, write without it. The data key itself is\n" +
+			"left alone, so this can be undone by sealing again.\n\n" +
+			"Stop drop first, for the same reason.",
+		Args: cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return reseal(false)
+		},
+	}
+}
+
+// reseal walks every conversation on this disk and writes it back, sealed or not.
+func reseal(seal bool) error {
+	cfg, err := conf.Load()
+	if err != nil {
+		return err
+	}
+	defer cfg.Close()
+
+	if seal && len(cfg.Vault) == 0 {
+		return fmt.Errorf("no vault: set drop.vault in %s first", cfg.Path)
+	}
+
+	held, err := cfg.Vaulted()
+	if err != nil {
+		return err
+	}
+
+	// Read under whatever is on disk now, which is the key this vault holds either way.
+	convo.Unlock(held.Key())
+
+	to := held.Key()
+	if !seal {
+		to = nil
+	}
+
+	peers, err := convo.Peers()
+	if err != nil {
+		return err
+	}
+
+	done := 0
+	for _, peer := range peers {
+		store, err := convo.Open(peer)
+		if err != nil {
+			return err
+		}
+		if err := store.Rewrite(to); err != nil {
+			return fmt.Errorf("%s: %w", node.Brief(peer), err)
+		}
+		done++
+	}
+
+	what := "sealed"
+	if !seal {
+		what = "put back in the clear"
+	}
+	fmt.Printf("%d conversation(s) %s\n", done, what)
 	return nil
 }
