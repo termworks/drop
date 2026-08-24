@@ -276,11 +276,14 @@ func (m Model) listWidth() int {
 	return got
 }
 
+// The room a live screen has, inside the panel it is drawn in: the two borders and the padding
+// either side. Two columns too many and every line of a terminal wraps.
 func (m Model) viewWidth() int {
-	if m.width < 20 {
+	got := m.width - 4
+	if got < 20 {
 		return 20
 	}
-	return m.width - 2
+	return got
 }
 
 func (m Model) viewHeight() int {
