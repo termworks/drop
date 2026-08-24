@@ -88,9 +88,7 @@ func Recall(peer node.ID) ([]proto.Served, error) {
 	for _, s := range onDisk {
 		kind, err := ns.ParseKind(s.Kind)
 		if err != nil {
-			// A kind this version does not know is a path it could not open anyway. Skipping it
-			// beats refusing to read the rest of what a device shares.
-			continue
+			return nil, fmt.Errorf("%s: %w", file, err)
 		}
 		out = append(out, proto.Served{Path: s.Path, Kind: kind, Writable: s.Writable})
 	}

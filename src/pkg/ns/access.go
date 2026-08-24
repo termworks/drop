@@ -15,12 +15,11 @@ import (
 type Access struct {
 	// AnyPaired admits any device in the address book.
 	AnyPaired bool
-	// Named admits those devices, by the name they are filed under.
+	// Named admits people and machines, by the name they are filed under.
 	//
 	// A name on its own means a person: any machine of theirs. A name with a machine after it —
-	// "bob@laptop" — means that machine and no other. A device paired before users existed is
-	// filed under a name of its own and matches the plain form, which is how every rule written
-	// so far keeps working.
+	// "bob@laptop" — means that machine and no other. A device paired with --machine belongs to
+	// nobody here and answers to its own name, which is the plain form again.
 	Named []string
 	// Anyone admits any caller at all, whether or not it has ever paired. A public path: whoever
 	// learns this device's id can reach it.
@@ -45,8 +44,9 @@ func (a Access) Declared() bool {
 // named decides whether a caller is one of the names a rule lists.
 //
 // A name on its own is a person: "bob" admits any machine bob has signed a badge for. A name with a
-// machine after it is that machine: "bob@laptop" admits one of them. And a device with no user is
-// admitted by its own name, which is how every rule written before users existed keeps working.
+// machine after it is that machine: "bob@laptop" admits one of them. A device paired with --machine
+// has no person on this side, and is named on its own — the only way to write a rule for a build
+// server or anything else that is nobody's personal identity.
 func named(names []string, c Caller) bool {
 	if !c.Paired {
 		return false
@@ -64,7 +64,7 @@ func named(names []string, c Caller) bool {
 			}
 
 		default:
-			// A person, or a device that has none and answers to its own name.
+			// A person, or a machine paired on its own.
 			if c.UserName != "" && c.UserName == want {
 				return true
 			}
@@ -92,8 +92,8 @@ type Caller struct {
 	Paired bool
 	// Password is what was offered, empty if nothing was.
 	Password string
-	// User is who owns this machine, as their user key is written down. Empty when the caller
-	// carried no badge, which is every device paired before users existed.
+	// User is who owns this machine, as their user key is written down. Empty when the badge did
+	// not check out.
 	User string
 	// UserName is what that person is filed under, empty if they are not in the book.
 	UserName string

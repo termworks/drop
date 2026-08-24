@@ -82,15 +82,11 @@ func TestRubbishIsNotABadge(t *testing.T) {
 	}
 }
 
-// The hello ask carries a badge in a frame that used to be empty. A node with nothing to show sends
-// an empty one, which is also what every node did before badges existed.
+// The hello ask carries the badge, because what a node is willing to say it serves depends on who
+// is asking.
 func TestABadgeRidesInTheHelloAsk(t *testing.T) {
 	device := idFrom(1)
 	signer, badge, sig := badgeFor(t, device, "laptop")
-
-	if shown := showing(device, nil); shown.Shown() {
-		t.Fatal("an empty ask carried a badge")
-	}
 
 	Carry(badge, sig)
 	defer Carry(nil, nil)
@@ -99,11 +95,15 @@ func TestABadgeRidesInTheHelloAsk(t *testing.T) {
 	if shown.Key != user.Text(signer.PublicKey()) {
 		t.Fatalf("the badge did not survive the ask: %+v", shown)
 	}
+
+	// An ask with no badge in it is not an ask this node knows how to answer for anybody.
+	if shown := showing(device, nil); shown.Shown() {
+		t.Error("an empty ask carried a badge")
+	}
 }
 
-// Pairing carries the badge too, and it is appended after everything a node from before badges
-// knows how to read.
-func TestPairingCarriesABadgeAndStaysReadable(t *testing.T) {
+// Pairing carries the badge too.
+func TestPairingCarriesABadge(t *testing.T) {
 	_, badge, sig := badgeFor(t, idFrom(1), "laptop")
 
 	sent := pairMsg{
@@ -125,10 +125,5 @@ func TestPairingCarriesABadgeAndStaysReadable(t *testing.T) {
 	}
 	if got.Name != "laptop" || len(got.Addrs) != 1 {
 		t.Error("the badge disturbed what was already there")
-	}
-
-	sent.Badge, sent.Signed = nil, nil
-	if got, err = decodePairMsg(sent.encode()); err != nil || got.Name != "laptop" {
-		t.Errorf("a message with no badge no longer reads: %v", err)
 	}
 }

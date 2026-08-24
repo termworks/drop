@@ -13,8 +13,8 @@ import (
 //
 // Your own machines are not peers in any useful sense -- reaching one is reaching your own disk
 // from another chair. Somebody else's machines belong under that person, because that is the unit
-// access is granted to. And a machine with no person behind it is neither: a build server, or a
-// device paired before any of this existed, which still works exactly as it did.
+// access is granted to. And a machine with no person behind it is neither: a build server, or
+// anything else paired with --machine.
 const (
 	groupMe       = "me"
 	groupPeople   = "people"
@@ -121,11 +121,7 @@ func byPerson(self Identity, peers []book.Entry) (map[string][]int, []string) {
 		if !p.Owned() || p.User == self.User {
 			continue
 		}
-		who := p.Person
-		if who == "" {
-			who = p.Name
-		}
-		out[who] = append(out[who], i)
+		out[p.Person] = append(out[p.Person], i)
 	}
 
 	names := make([]string, 0, len(out))

@@ -272,13 +272,13 @@ func TestANameWithAMachineAdmitsOnlyThatOne(t *testing.T) {
 	}
 }
 
-// Every rule written before users existed names a device. Those devices have no user and must keep
-// working, or upgrading drop quietly closes every path somebody had opened.
-func TestADeviceWithNoUserIsStillAdmittedByName(t *testing.T) {
+// A device paired with --machine belongs to nobody here and answers to its own name. It is the only
+// way to write a rule for a build server, or anything else that is not somebody's identity.
+func TestAMachinePairedOnItsOwnIsNamedByItself(t *testing.T) {
 	rule := Access{Named: []string{"buildbox"}}
 
 	if ok, why := rule.Admits(Caller{ID: "abc", Name: "buildbox", Paired: true}); !ok {
-		t.Errorf("a device with no user was refused by its own name: %s", why)
+		t.Errorf("a machine paired on its own was refused by its own name: %s", why)
 	}
 }
 

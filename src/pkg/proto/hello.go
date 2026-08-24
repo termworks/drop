@@ -61,12 +61,6 @@ func decodeHello(body []byte) (Hello, error) {
 	}
 	out.Name, out.Version = name, version
 
-	// An older node stops here, and that is a node with nothing to say about what it serves rather
-	// than a broken one.
-	if r.Done() {
-		return out, nil
-	}
-
 	count, err := r.Uint()
 	if err != nil {
 		return out, err

@@ -123,28 +123,17 @@ func virtual(ip netip.Addr) bool {
 	return false
 }
 
-func readTicket(text string) (node.ID, string, []netip.AddrPort, error) {
-	parts := strings.Split(strings.TrimSpace(text), "#")
-	if len(parts) < 2 {
-		return node.ID{}, "", nil, fmt.Errorf("that is not a ticket: it should look like <address>#<code>")
+func readTicket(text string) (node.ID, string, error) {
+	id, code, found := strings.Cut(strings.TrimSpace(text), "#")
+	if !found {
+		return node.ID{}, "", fmt.Errorf("that is not a ticket: it should look like <address>#<code>")
 	}
 
-	id, err := node.ParseID(parts[0])
+	at, err := node.ParseID(id)
 	if err != nil {
-		return node.ID{}, "", nil, fmt.Errorf("the address in that ticket is not readable: %w", err)
+		return node.ID{}, "", fmt.Errorf("the address in that ticket is not readable: %w", err)
 	}
-
-	var addrs []netip.AddrPort
-	if len(parts) > 2 && parts[2] != "" {
-		for _, written := range strings.Split(parts[2], ",") {
-			ap, err := netip.ParseAddrPort(written)
-			if err != nil {
-				continue
-			}
-			addrs = append(addrs, ap)
-		}
-	}
-	return id, parts[1], addrs, nil
+	return at, code, nil
 }
 
 // codeProof binds an attempt to the code, so a device that was not invited cannot complete one.
@@ -224,7 +213,7 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, s
 
 func joinPairing(parent context.Context, ticket, as string, wait time.Duration, machine bool) error {
 	trace("start")
-	id, code, addrs, err := readTicket(tickets.FromLink(ticket))
+	id, code, err := readTicket(tickets.FromLink(ticket))
 	trace("ticket read")
 	if err != nil {
 		return err
@@ -249,7 +238,7 @@ func joinPairing(parent context.Context, ticket, as string, wait time.Duration, 
 	trace("LAN up; reaching")
 	fmt.Printf("reaching %s...\n", node.Brief(id))
 
-	conn, s, err := reachAt(ctx, n, lan, book.Entry{Name: node.Brief(id), ID: id}, node.ALPNPair, addrs)
+	conn, s, err := reachAt(ctx, n, lan, book.Entry{Name: node.Brief(id), ID: id}, node.ALPNPair, nil)
 	if err != nil {
 		return err
 	}
@@ -323,7 +312,7 @@ func written(addrs []netip.AddrPort) []string {
 // The command builds its own node and tears it down; an interface already has one, and starting a
 // second would mean two endpoints on one identity fighting over a port.
 func joinWith(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as string) (string, error) {
-	id, code, addrs, err := readTicket(tickets.FromLink(ticket))
+	id, code, err := readTicket(tickets.FromLink(ticket))
 	if err != nil {
 		return "", err
 	}
@@ -331,7 +320,7 @@ func joinWith(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as 
 		return "", fmt.Errorf("that is this device's own ticket")
 	}
 
-	conn, s, err := dial.At(ctx, n, lan, nil, book.Entry{Name: node.Brief(id), ID: id}, node.ALPNPair, addrs)
+	conn, s, err := dial.At(ctx, n, lan, nil, book.Entry{Name: node.Brief(id), ID: id}, node.ALPNPair, nil)
 	if err != nil {
 		return "", err
 	}
@@ -379,15 +368,16 @@ func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration
 		return err
 	}
 
+	// A dash for a name that was not given, and always a kind, so the line is three fields.
 	name := as
 	if name == "" {
 		name = "-"
 	}
-	kind := ""
+	kind := "person"
 	if machine {
-		kind = " machine"
+		kind = "machine"
 	}
-	if _, err := fmt.Fprintf(conn, "pair %s %s%s\n", code, name, kind); err != nil {
+	if _, err := fmt.Fprintf(conn, "pair %s %s %s\n", code, name, kind); err != nil {
 		return err
 	}
 

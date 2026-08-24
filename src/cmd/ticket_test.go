@@ -37,7 +37,7 @@ func TestATicketRoundTrips(t *testing.T) {
 	want := idFor(7)
 	invite := ticketFor(want, "abcd-efgh-ijkl")
 
-	id, code, addrs, err := readTicket(invite)
+	id, code, err := readTicket(invite)
 	if err != nil {
 		t.Fatalf("reading: %v", err)
 	}
@@ -47,23 +47,18 @@ func TestATicketRoundTrips(t *testing.T) {
 	if code != "abcd-efgh-ijkl" {
 		t.Fatalf("code = %q", code)
 	}
-	if len(addrs) != 0 {
-		t.Fatalf("addrs = %v, want none", addrs)
-	}
 }
 
-// Tickets written by an older version still carry addresses, and still have to pair.
-func TestAnOlderTicketWithAddressesStillReads(t *testing.T) {
-	invite := idFor(7).String() + "#abcd-efgh-ijkl#192.168.1.157:47777,10.0.0.2:47777"
+// A ticket is an id and a code. Anything after that is not a ticket with extras in it, and reading
+// one has to say so rather than quietly taking the part it recognises.
+func TestATicketWithAnythingElseInItIsRefused(t *testing.T) {
+	invite := idFor(7).String() + "#abcd-efgh-ijkl#192.168.1.157:47777"
 
-	id, code, addrs, err := readTicket(invite)
+	_, code, err := readTicket(invite)
 	if err != nil {
 		t.Fatalf("reading: %v", err)
 	}
-	if id != idFor(7) || code != "abcd-efgh-ijkl" {
-		t.Fatalf("id = %s, code = %q", id, code)
-	}
-	if len(addrs) != 2 || addrs[0] != at("192.168.1.157:47777") {
-		t.Fatalf("addrs = %v", addrs)
+	if code == "abcd-efgh-ijkl" {
+		t.Fatal("trailing rubbish was read as though it were not there")
 	}
 }

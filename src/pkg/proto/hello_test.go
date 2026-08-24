@@ -38,7 +38,7 @@ func TestHelloRoundTrip(t *testing.T) {
 }
 
 // A hello with nothing to say about namespaces has to decode, because that is what a node answers
-// an unpaired caller with, and what an older node sends.
+// a caller that may reach nothing at all.
 func TestHelloWithoutNamespaces(t *testing.T) {
 	got, err := decodeHello(Hello{Name: "laptop", Version: "0.1.0"}.encode())
 	if err != nil {

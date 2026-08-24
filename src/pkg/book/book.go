@@ -27,10 +27,10 @@ type Entry struct {
 	// Addrs is where this peer was last known to be, learned at pairing.
 	Addrs []string
 	// User is the person this machine belongs to, written the way authorized_keys writes a key.
-	// Empty for a machine paired on its own, and for every entry made before people existed.
+	// Empty for a machine paired on its own, with --machine.
 	User string
-	// Person is what that person is called here. A machine has a name and its owner has one, and
-	// they are not the same name once somebody has more than one machine.
+	// Person is what that person is called here, set whenever User is. A machine has a name and
+	// its owner has one, and they are not the same name once somebody has more than one machine.
 	Person string
 }
 

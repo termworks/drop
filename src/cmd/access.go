@@ -92,9 +92,6 @@ func everybody(pinned *book.Book) []tui.Who {
 		}
 
 		who := entry.Person
-		if who == "" {
-			who = entry.Name
-		}
 		if at, ok := seen[who]; ok {
 			out[at].Machines++
 			continue

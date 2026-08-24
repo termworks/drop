@@ -110,9 +110,6 @@ func whoIs(pinned *book.Book) func(node.ID, proto.Badged) ns.Caller {
 			return who
 		}
 		who.UserName = owner.Person
-		if who.UserName == "" {
-			who.UserName = owner.Name
-		}
 		who.Paired = who.Paired || owner.Paired()
 		if who.Name == "" {
 			who.Name = badge.As

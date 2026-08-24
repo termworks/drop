@@ -29,8 +29,8 @@ type pairMsg struct {
 	Addrs []string
 	Name  string
 	Nonce []byte
-	// Badge and Signed say who this machine belongs to. Empty from a version of drop that had no
-	// notion of people, and then pairing is with the machine alone, as it always was.
+	// Badge and Signed say who this machine belongs to, so that pairing is with a person rather
+	// than only with the device in front of you.
 	Badge  []byte
 	Signed []byte
 }
@@ -45,8 +45,6 @@ func (m pairMsg) encode() []byte {
 		w.String(a)
 	}
 	w.Bytes(m.Nonce)
-
-	// Last, so a node that stops reading here reads everything before it correctly.
 	w.Bytes(m.Badge)
 	w.Bytes(m.Signed)
 	return w.Body()
@@ -92,9 +90,6 @@ func decodePairMsg(body []byte) (pairMsg, error) {
 	}
 	out.Nonce = append([]byte(nil), nonce...)
 
-	if r.Done() {
-		return out, nil
-	}
 	badge, err := r.Bytes(wire.MaxString)
 	if err != nil {
 		return out, err
