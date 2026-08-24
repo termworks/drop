@@ -7,7 +7,6 @@ import (
 
 	"gioui.org/font"
 	"gioui.org/layout"
-	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 )
@@ -106,7 +105,7 @@ func (a *App) bubble(gtx layout.Context, m Message) layout.Dimensions {
 			return layout.E.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				gtx.Constraints.Max.X = wide
 				return filled(gtx, round, inner(
-					a.label(body, unit.Sp(15), font.Normal, onDark),
+					a.label(body, sizeBody, font.Normal, onDark),
 					a.tiny(when(m.At), mix(onDark, plum, 0.35)),
 				))
 			})
@@ -114,7 +113,7 @@ func (a *App) bubble(gtx layout.Context, m Message) layout.Dimensions {
 		return layout.W.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			gtx.Constraints.Max.X = wide
 			return card(gtx, round, inner(
-				a.label(body, unit.Sp(15), font.Normal, ink),
+				a.label(body, sizeBody, font.Normal, ink),
 				a.tiny(when(m.At), faint),
 			))
 		})

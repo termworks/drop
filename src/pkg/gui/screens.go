@@ -3,6 +3,7 @@
 package gui
 
 import (
+	"image"
 	"strings"
 
 	"gioui.org/font"
@@ -133,11 +134,15 @@ func (a *App) welcome(gtx layout.Context) layout.Dimensions {
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return a.mark(gtx, gtx.Dp(unit.Dp(88)))
+						// The mark sits in a pool of its own colour, which is the one piece of depth
+						// on a screen that is otherwise flat panels.
+						size := gtx.Dp(unit.Dp(104))
+						glow(gtx, image.Rect(size/4, size/4, size*3/4, size*3/4), violet, unit.Dp(64))
+						return a.mark(gtx, size)
 					}),
 					layout.Rigid(layout.Spacer{Height: roomy}.Layout),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return layout.Center.Layout(gtx, a.label("No devices yet", unit.Sp(20), font.Bold, ink).Layout)
+						return layout.Center.Layout(gtx, a.label("No devices yet", sizeStrong, font.Bold, ink).Layout)
 					}),
 					layout.Rigid(layout.Spacer{Height: tight}.Layout),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -200,7 +205,7 @@ func (a *App) pathList(gtx layout.Context, paths []Space, busy bool) layout.Dime
 			if a.rows[i].Clicked(gtx) {
 				a.enter(i)
 			}
-			return a.row(gtx, &a.rows[i], nil, s.Path, s.Kind, about(s.Kind), violet)
+			return a.row(gtx, &a.rows[i], nil, s.Path, s.Kind, about(s.Kind), violetOn)
 		})
 	})
 }

@@ -4,13 +4,14 @@
 <title>drop</title>
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
-<meta name="theme-color" content="#4c1d95">
+<meta name="theme-color" content="#0e0b14">
 
 <!-- The interface is Go, compiled to WebAssembly, and the same code the phone runs. This page is the
-     loader: everything a person sees is drawn onto the canvas Gio takes over. -->
+     loader: everything a person sees is drawn onto the canvas Gio takes over. It is painted dark
+     from the first byte, because a white flash before a dark interface is the one thing a person
+     always notices. -->
 <style>
-  html, body { margin: 0; height: 100%; background: #faf9fb; overflow: hidden; }
-  @media (prefers-color-scheme: dark) { html, body { background: #121016; } }
+  html, body { margin: 0; height: 100%; background: #0e0b14; overflow: hidden; }
 
   #loading {
     position: fixed;
@@ -18,15 +19,19 @@
     display: grid;
     place-items: center;
     font: 15px/1.5 system-ui, sans-serif;
-    color: #6b6376;
+    color: #736988;
     text-align: center;
     padding: 24px;
   }
 
-  #loading b { display: block; color: #4c1d95; font-size: 17px; margin-bottom: 6px; }
-  @media (prefers-color-scheme: dark) {
-    #loading { color: #8f8799; }
-    #loading b { color: #a583e8; }
+  #loading b {
+    display: block;
+    font-size: 19px;
+    margin-bottom: 8px;
+    background: linear-gradient(120deg, #7c3aed, #e0459b);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
   }
 </style>
 

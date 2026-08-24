@@ -3,6 +3,11 @@
 
     <!-- The app is the Go library next to this. All this declares is the one thing a Gio activity
          cannot declare for itself: that drop belongs in the share sheet. -->
+    <!-- The camera reads a pairing code off another device's screen. Declared here as well as by
+         the Gio permission package, because this manifest is the one a person reads. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/icon"

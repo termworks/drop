@@ -31,6 +31,11 @@ func Run(from Source) {
 				}
 				os.Exit(0)
 
+			case app.ViewEvent:
+				// Android hands over the view here and nowhere else, and the camera needs it: a
+				// dangerous permission is asked for by an Activity, not by a process.
+				noteView(e)
+
 			case app.FrameEvent:
 				gtx := app.NewContext(&ops, e)
 

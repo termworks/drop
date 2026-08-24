@@ -5,6 +5,7 @@ package gui
 import (
 	"gioui.org/font"
 	"gioui.org/layout"
+	"gioui.org/op"
 	"gioui.org/unit"
 	"strings"
 
@@ -22,6 +23,13 @@ func (a *App) pairing(gtx layout.Context, at *linking) layout.Dimensions {
 	}
 	if a.joinGo.Clicked(gtx) {
 		a.joinWhatIsTyped()
+	}
+	if a.scanGo.Clicked(gtx) {
+		a.scanForATicket()
+	}
+	// A viewfinder is only live if something asks for the next frame.
+	if scanFrame() != nil {
+		gtx.Execute(op.InvalidateCmd{})
 	}
 	for {
 		event, ok := a.joinField.Update(gtx)
@@ -48,12 +56,30 @@ func (a *App) pairing(gtx layout.Context, at *linking) layout.Dimensions {
 						return layout.Inset{Bottom: gap}.Layout(gtx, a.small(at.err, bad).Layout)
 					}),
 
+					// What the camera is looking at, while it is looking. It takes the place of the
+					// code rather than sitting beside it: on a phone there is room for one large
+					// thing, and while scanning that thing is the viewfinder.
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						frame := scanFrame()
+						if frame == nil {
+							return layout.Dimensions{}
+						}
+						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return a.viewfinder(gtx, frame)
+							}),
+							layout.Rigid(layout.Spacer{Height: gap}.Layout),
+							layout.Rigid(a.small("Looking for a code…", dim).Layout),
+							layout.Rigid(layout.Spacer{Height: pad}.Layout),
+						)
+					}),
+
 					// The code, on a white card so a camera has the contrast it wants whatever the
 					// surrounding page is doing.
 					// Given room rather than whatever is left over. A code shrunk to fit is one a camera
 					// cannot resolve, and the rest of this screen can scroll instead.
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						if at.code == nil {
+						if at.code == nil || scanFrame() != nil {
 							return layout.Dimensions{}
 						}
 						// A third of the shorter side, so it is generous on a phone held upright and does not
@@ -65,9 +91,9 @@ func (a *App) pairing(gtx layout.Context, at *linking) layout.Dimensions {
 						gtx.Constraints.Max.X = want
 
 						return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							return card(gtx, round, func(gtx layout.Context) layout.Dimensions {
+							return raised(gtx, round, sheet, func(gtx layout.Context) layout.Dimensions {
 								return layout.UniformInset(pad).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-									return qrCode(gtx, at.code, ink)
+									return qrCode(gtx, at.code, black)
 								})
 							})
 						})
@@ -85,7 +111,7 @@ func (a *App) pairing(gtx layout.Context, at *linking) layout.Dimensions {
 								return tinted(gtx, wash, round, func(gtx layout.Context) layout.Dimensions {
 									gtx.Constraints.Min.X = gtx.Constraints.Max.X
 									return layout.UniformInset(gap).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-										cmd := a.tiny("drop pair "+at.ticket, violet)
+										cmd := a.tiny("drop pair "+at.ticket, violetOn)
 										cmd.Font.Typeface = "Go Mono"
 										return cmd.Layout(gtx)
 									})
@@ -98,8 +124,22 @@ func (a *App) pairing(gtx layout.Context, at *linking) layout.Dimensions {
 					layout.Rigid(rule),
 					layout.Rigid(layout.Spacer{Height: pad}.Layout),
 
-					// The other half: reading a code somebody else is showing.
-					layout.Rigid(a.label("Or enter theirs", unit.Sp(15), font.Bold, ink).Layout),
+					// The other half: reading a code somebody else is showing. With a camera that is
+					// pointing at it rather than typing a hundred characters off another screen.
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						if !canScan() {
+							return layout.Dimensions{}
+						}
+						return a.button(gtx, &a.scanGo, "Scan their code", true)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						if !canScan() {
+							return layout.Dimensions{}
+						}
+						return layout.Spacer{Height: pad}.Layout(gtx)
+					}),
+
+					layout.Rigid(a.label("Or enter theirs", sizeBody, font.Bold, ink).Layout),
 					layout.Rigid(layout.Spacer{Height: tight}.Layout),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -133,11 +173,34 @@ func (a *App) field(gtx layout.Context, editor *widget.Editor, hint string) layo
 				e := material.Editor(a.theme, editor, hint)
 				e.Color = ink
 				e.HintColor = faint
-				e.TextSize = unit.Sp(14)
+				e.TextSize = sizeBody
 				return e.Layout(gtx)
 			})
 		})
 	})
+}
+
+// scanForATicket opens the camera and pairs with whatever it reads.
+//
+// A code on another screen is a ticket, so what comes back goes down the same path as a pasted one:
+// there is nothing about a scanned ticket that makes it more trustworthy than a typed one.
+func (a *App) scanForATicket() {
+	err := startScan(scanning{
+		found:  a.joinTicket,
+		failed: a.pairingWentWrong,
+	})
+	if err != nil {
+		a.pairingWentWrong(err)
+	}
+}
+
+func (a *App) pairingWentWrong(err error) {
+	a.mu.Lock()
+	if a.linking != nil {
+		a.linking.err = err.Error()
+	}
+	a.mu.Unlock()
+	a.redraw()
 }
 
 // joinWhatIsTyped pairs with whoever is showing the ticket in the box.
@@ -148,14 +211,14 @@ func (a *App) joinWhatIsTyped() {
 	}
 	a.joinField.SetText("")
 
+	a.joinTicket(ticket)
+}
+
+// joinTicket pairs with whoever is showing this ticket, however it arrived.
+func (a *App) joinTicket(ticket string) {
 	go func() {
 		if _, err := a.from.Join(ticket); err != nil {
-			a.mu.Lock()
-			if a.linking != nil {
-				a.linking.err = err.Error()
-			}
-			a.mu.Unlock()
-			a.redraw()
+			a.pairingWentWrong(err)
 			return
 		}
 
