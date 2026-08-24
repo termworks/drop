@@ -504,7 +504,9 @@ func (m Model) chatView() string {
 func (m Model) compose() string {
 	width := m.viewWidth()
 
-	box := lipgloss.NewStyle().Background(saidBg).Width(width).Padding(0, 2)
+	// The same box a message sits in, padding and all: a blank line of its own colour above and
+	// below, so it reads as part of the conversation rather than a strip under it.
+	box := lipgloss.NewStyle().Background(saidBg).Width(width).Padding(1, 2)
 
 	if !m.writing {
 		return box.Foreground(muted).Render("press i to write")
