@@ -99,7 +99,8 @@ func (a *App) row(gtx layout.Context, click *widget.Clickable, lead layout.Widge
 								return layout.Dimensions{}
 							}
 							return layout.Inset{Left: gap}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								return tinted(gtx, wash, pill, func(gtx layout.Context) layout.Dimensions {
+								// A chip sits on a card, so it is a step lighter than one.
+								return tinted(gtx, press, pill, func(gtx layout.Context) layout.Dimensions {
 									return layout.Inset{
 										Top: tight, Bottom: tight, Left: gap, Right: gap,
 									}.Layout(gtx, a.tiny(tag, tagColour).Layout)

@@ -22,8 +22,8 @@ import (
 var (
 	// mauve: everything that is not an accent.
 	ground = color.NRGBA{R: 0x12, G: 0x11, B: 0x13, A: 0xff} // 1  the page
-	panel  = color.NRGBA{R: 0x1a, G: 0x19, B: 0x1b, A: 0xff} // 2  a card
-	wash   = color.NRGBA{R: 0x23, G: 0x22, B: 0x25, A: 0xff} // 3  a field, a chip, a quiet button
+	panel  = color.NRGBA{R: 0x23, G: 0x22, B: 0x25, A: 0xff} // 3  a card, a component at rest
+	wash   = color.NRGBA{R: 0x1a, G: 0x19, B: 0x1b, A: 0xff} // 2  a quiet button, a field on the page
 	press  = color.NRGBA{R: 0x32, G: 0x30, B: 0x35, A: 0xff} // 5  held down
 	line   = color.NRGBA{R: 0x3c, G: 0x39, B: 0x3f, A: 0xff} // 6  a separator
 	edge   = color.NRGBA{R: 0x49, G: 0x47, B: 0x4e, A: 0xff} // 7  the edge of a card

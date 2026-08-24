@@ -38,7 +38,7 @@ func raised(gtx layout.Context, radius unit.Dp, surface color.NRGBA, w layout.Wi
 	rounded(gtx, under, radius, shadow)
 
 	whole := image.Rectangle{Max: dims.Size}
-	rounded(gtx, whole, radius, edge)
+	rounded(gtx, whole, radius, line)
 
 	hair := gtx.Dp(unit.Dp(1))
 	inside := image.Rectangle{
