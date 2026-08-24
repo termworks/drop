@@ -44,6 +44,10 @@ type Backend interface {
 	// Post sends one message to a path: a line of text to a chat, a URL to a link.
 	Post(ctx context.Context, to book.Entry, path string, kind byte, body string) error
 
+	// Arrivals reports when something lands from another device, so what is on screen is what
+	// has happened rather than what had happened when it was last drawn.
+	Arrivals() <-chan struct{}
+
 	// Watch reads a live path, writing what arrives into screen until ctx ends.
 	Watch(ctx context.Context, on book.Entry, path string, into io.Writer, resize func(cols, rows int)) error
 }
@@ -114,7 +118,9 @@ func New(back Backend) Model {
 	return Model{back: back, at: levelDevices, list: shown}
 }
 
-func (m Model) Init() tea.Cmd { return tea.Batch(loadSelf(m.back), loadPeers(m.back)) }
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(loadSelf(m.back), loadPeers(m.back), listenFor(m.back.Arrivals()))
+}
 
 // ---------------------------------------------------------------- what arrives
 
@@ -376,5 +382,25 @@ func join(back Backend, ticket string) tea.Cmd {
 
 		with, err := back.Join(ctx, ticket)
 		return joined{with: with, err: err}
+	}
+}
+
+// arrived says something came in from another device.
+type arrived struct{}
+
+// waitForArrival blocks until the far end says something, so an open conversation shows a message
+// as it lands rather than when a key is next pressed.
+//
+// One at a time, re-armed after each: a channel read is what a Bubble Tea command is for, and
+// polling on a timer would either be late or wake a laptop for nothing.
+func listenFor(from <-chan struct{}) tea.Cmd {
+	if from == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		if _, ok := <-from; !ok {
+			return nil
+		}
+		return arrived{}
 	}
 }

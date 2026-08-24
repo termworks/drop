@@ -38,6 +38,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.trouble = ""
 		return m, loadPeers(m.back)
 
+	case arrived:
+		// Whatever is on screen is rebuilt from what is now stored, and the wait starts again.
+		next := []tea.Cmd{listenFor(m.back.Arrivals()), loadPeers(m.back)}
+		if with, ok := m.peer(); ok && m.at == levelOpen {
+			next = append(next, loadHistory(m.back, with))
+		}
+		return m, tea.Batch(next...)
+
 	case tick:
 		if m.offering == nil {
 			return m, nil

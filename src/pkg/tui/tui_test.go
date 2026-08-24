@@ -40,6 +40,7 @@ type fake struct {
 	watched   string
 	offered   bool
 	took      string
+	arriving  chan struct{}
 	sentFiles []string
 	posted    []string
 	refuse    error
@@ -53,7 +54,12 @@ func (f *fake) Serves(ctx context.Context, with book.Entry) ([]proto.Served, err
 	return f.serves[with.Name], nil
 }
 
-func (f *fake) History(with book.Entry) ([]convo.Message, error) { return f.log, nil }
+func (f *fake) History(with book.Entry) ([]convo.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]convo.Message(nil), f.log...), nil
+}
 
 func (f *fake) Say(ctx context.Context, to book.Entry, body string) error {
 	f.mu.Lock()
@@ -440,6 +446,27 @@ func (f *fake) Post(ctx context.Context, to book.Entry, path string, kind byte, 
 	return nil
 }
 
+func (f *fake) Arrivals() <-chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.arriving == nil {
+		f.arriving = make(chan struct{}, 1)
+	}
+	return f.arriving
+}
+
+// lands is another device saying something while the interface is sitting there.
+func (f *fake) lands() {
+	f.mu.Lock()
+	at := f.arriving
+	f.mu.Unlock()
+
+	if at != nil {
+		at <- struct{}{}
+	}
+}
+
 func (f *fake) Join(ctx context.Context, ticket string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -638,26 +665,89 @@ func TestTabCompletesAPath(t *testing.T) {
 }
 
 // openPath walks the interface to a path on the one paired device, the way a person would.
+// openPath walks the interface to a path on the one paired device, the way a person would.
 func openPath(t *testing.T, back *fake, path string) Model {
 	t.Helper()
 
 	m := settle(t, start(t, back), tea.KeyMsg{Type: tea.KeyEnter})
-	for i := 0; i < 6; i++ {
-		if at, ok := m.path(); ok && at.Path == path {
+	if m.at != levelPaths {
+		t.Fatalf("did not reach the path list, at %v", m.at)
+	}
+
+	for range 8 {
+		// Opened, not merely highlighted: the highlight is where the cursor is, and a test that
+		// stopped there would be checking a list rather than a screen.
+		if at, ok := m.path(); ok && m.at == levelOpen && at.Path == path {
 			return m
 		}
-		if m.at != levelPaths {
-			t.Fatalf("did not reach the path list, at %v", m.at)
-		}
-		m = settle(t, m, tea.KeyMsg{Type: tea.KeyDown})
-		m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
 		if m.at == levelOpen {
-			if at, ok := m.path(); ok && at.Path == path {
-				return m
-			}
 			m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+			m = settle(t, m, tea.KeyMsg{Type: tea.KeyDown})
 		}
+		m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	}
+
 	t.Fatalf("never opened %s", path)
 	return m
+}
+
+// A conversation left open has to show what arrives while it is open. Waiting for a keypress to
+// find out somebody answered is the one thing a full-screen interface is for.
+func TestAnArrivingMessageIsShownWithoutAKeypress(t *testing.T) {
+	back := withOne()
+	m := openPath(t, back, "/friends/chat")
+
+	if strings.Contains(m.View(), "landed while watching") {
+		t.Fatal("the message was there before it was sent")
+	}
+
+	// The far end says something, and the node tells the interface so. Nobody touches a key.
+	back.mu.Lock()
+	back.log = append(back.log, convo.Message{Kind: convo.KindText, Body: "landed while watching", At: 1})
+	back.mu.Unlock()
+
+	if m = settle(t, m, arrived{}); !strings.Contains(m.View(), "landed while watching") {
+		t.Fatalf("what arrived is not on screen:\n%s", m.View())
+	}
+}
+
+// And the thing that turns a knock from the node into that message has to actually wait for one.
+func TestTheInterfaceWaitsForTheNodeToKnock(t *testing.T) {
+	knocks := make(chan struct{}, 1)
+
+	wait := listenFor(knocks)
+	if wait == nil {
+		t.Fatal("nothing waits for an arrival")
+	}
+
+	got := make(chan tea.Msg, 1)
+	go func() { got <- wait() }()
+
+	select {
+	case msg := <-got:
+		t.Fatalf("it answered %T before anything arrived", msg)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	knocks <- struct{}{}
+
+	select {
+	case msg := <-got:
+		if _, ok := msg.(arrived); !ok {
+			t.Fatalf("a knock produced %T", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a knock produced nothing")
+	}
+}
+
+// A closed channel means the node is gone, and waiting on it must not spin.
+func TestWaitingEndsWhenTheNodeDoes(t *testing.T) {
+	knocks := make(chan struct{})
+	close(knocks)
+
+	if msg := listenFor(knocks)(); msg != nil {
+		t.Fatalf("a closed channel produced %T", msg)
+	}
 }

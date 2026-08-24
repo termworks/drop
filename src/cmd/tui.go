@@ -46,16 +46,29 @@ func runTUI(parent context.Context) error {
 	lan, _ := discovery.StartLAN(ctx, n)
 	startRendezvous(ctx, n)
 
+	// Depth one, and a full channel is left alone: the signal carries nothing, so one pending
+	// knock means the same as ten, and a device that says a great deal at once still redraws once.
+	arriving := make(chan struct{}, 1)
+
 	// The interface serves while it is open, so a device that pairs with it can reach it — and
 	// so what arrives lands in a conversation rather than being refused.
 	ears := listenOn(ctx, n, map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
 			_ = proto.Handle(s, from, proto.Policy{
-				Mounts:  cfg.Mounts,
-				Allow:   accepting(pinned, false),
-				Who:     whoIs(pinned),
-				Message: receiving(pinned, cfg.OpenLinks, nil),
+				Mounts: cfg.Mounts,
+				Allow:  accepting(pinned, false),
+				Who:    whoIs(pinned),
+				Message: receiving(pinned, cfg.OpenLinks, func(node.ID, convo.Message) {
+					knock(arriving)
+				}),
+				// A file that lands while the interface is open belongs in the conversation the
+				// same way it would with the daemon running.
+				Done: func(from node.ID, name string, size int64) {
+					noteFile(from, convo.In, name, size)
+					cfg.FireFile(conf.File{From: nameFor(pinned, from), Name: name, Size: size})
+					knock(arriving)
+				},
 			})
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
@@ -65,7 +78,7 @@ func runTUI(parent context.Context) error {
 	})
 
 	program := tea.NewProgram(
-		tui.New(&live{node: n, lan: lan, ears: ears}),
+		tui.New(&live{node: n, lan: lan, ears: ears, arriving: arriving}),
 		tea.WithAltScreen(),
 		tea.WithContext(ctx),
 	)
@@ -76,9 +89,22 @@ func runTUI(parent context.Context) error {
 
 // live is the interface's view of a running node.
 type live struct {
-	ears *listener
-	node *node.Node
-	lan  *discovery.LAN
+	ears     *listener
+	node     *node.Node
+	lan      *discovery.LAN
+	arriving chan struct{}
+}
+
+// Arrivals is how the interface learns that something landed while it was sitting there.
+func (l *live) Arrivals() <-chan struct{} { return l.arriving }
+
+// knock says something happened, without ever waiting for anybody to be listening: a device
+// sending a file must not be held up because nothing is on screen to care.
+func knock(at chan struct{}) {
+	select {
+	case at <- struct{}{}:
+	default:
+	}
 }
 
 func (l *live) Peers() ([]book.Entry, error) {
