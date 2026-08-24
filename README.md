@@ -6,8 +6,8 @@ Pair two devices once, by key. After that either can reach the other from anywhe
 across networks, through address changes — with no account and no server holding your data.
 
 ```
-drop pair                      # on one device: prints a code
-drop pair qxwo-e62y-bzfs       # on the other: done, forever
+drop pair                      # on one device: prints a ticket
+drop pair 9363f77d…#qxwo-e62y  # on the other: done, forever
 ```
 
 ## how it addresses things

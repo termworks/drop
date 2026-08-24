@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"os/signal"
@@ -56,32 +59,14 @@ func newPairCmd() *cobra.Command {
 	return cmd
 }
 
-// ticketFor is what one device shows and the other types.
+// ticketFor is what one device shows and the other types: who, and a code proving they were told.
 //
-// It carries where as well as who: an id alone is not dialable until something has resolved
-// it, and on a network with no mDNS and no relay there is nothing to do that.
-// MaxTicketAddrs caps how many addresses an invitation carries.
-//
-// Every one of them is twenty characters somebody may have to type, and it is the length of
-// the ticket that decides how big its QR code comes out — four addresses makes one too large
-// to draw in an ordinary terminal window. The ones left out are not lost: this wire and the
-// rendezvous both find a device that moved.
-const MaxTicketAddrs = 2
-
-func ticketFor(id node.ID, code string, addrs []netip.AddrPort) string {
-	written := make([]string, 0, MaxTicketAddrs)
-	for _, a := range likeliest(addrs) {
-		if len(written) == MaxTicketAddrs {
-			break
-		}
-		written = append(written, a.String())
-	}
-
-	ticket := id.String() + "#" + code
-	if len(written) > 0 {
-		ticket += "#" + strings.Join(written, ",")
-	}
-	return ticket
+// Who, and nothing else. An address is drop's business, not a person's — this wire, a relay, and a
+// rendezvous all know how to turn an identity into somewhere to dial, and any address written into
+// a ticket is a guess that goes stale the moment a laptop moves to another network. It also made
+// the ticket twice as long to type and its code too big to draw.
+func ticketFor(id node.ID, code string) string {
+	return id.String() + "#" + code
 }
 
 // likeliest sorts addresses by how likely they are to reach this machine from another one.
@@ -180,6 +165,14 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, s
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 
+	// Through the daemon when one is running: it holds this identity's address, so it is the one
+	// anybody dialling the ticket will reach, and only it can answer them.
+	if err := offerThroughDaemon(ctx, as, code, wait, showQR); err == nil {
+		return nil
+	} else if !errors.Is(err, errNoDaemon) {
+		return err
+	}
+
 	trace("node.Start")
 	n, err := node.Start(ctx)
 	if err != nil {
@@ -191,19 +184,9 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, s
 		fmt.Fprintf(os.Stderr, "drop: mDNS unavailable: %v\n", err)
 	}
 
-	invite := ticketFor(n.ID(), code, discovery.LocalAddrs(n))
+	invite := ticketFor(n.ID(), code)
 
-	if showQR {
-		if qrCode, err := tickets.Code(invite); err == nil {
-			fmt.Printf("\n%s", tickets.Render(qrCode))
-		} else {
-			fmt.Fprintf(os.Stderr, "drop: could not draw a code: %v\n", err)
-		}
-	}
-
-	fmt.Printf("\n  ticket:  %s\n", invite)
-	fmt.Printf("  link:    %s\n\n", tickets.Link(invite))
-	fmt.Printf("run this on the other device, within %s:\n\n  drop pair %s\n\nwaiting...\n", wait, invite)
+	showTicket(invite, wait, showQR)
 
 	paired := make(chan proto.Pairing, 1)
 	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){
@@ -357,4 +340,76 @@ func joinWith(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as 
 	pinned.Pair(name, id, p.Secret, p.Addrs...)
 
 	return name, pinned.Save()
+}
+
+// offerThroughDaemon asks the running node to show a code, and waits for somebody to take it.
+func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration, showQR bool) error {
+	path, err := castSocket()
+	if err != nil {
+		return errNoDaemon
+	}
+
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		return errNoDaemon
+	}
+	defer conn.Close()
+
+	id, err := node.LocalID()
+	if err != nil {
+		return err
+	}
+
+	if _, err := fmt.Fprintf(conn, "pair %s %s\n", code, as); err != nil {
+		return err
+	}
+
+	showTicket(ticketFor(id, code), wait, showQR)
+
+	// The daemon answers with one line: who paired, or why nobody did. Closing this connection is
+	// what takes the code back down, so a cancelled command does not leave one live.
+	said := make(chan string, 1)
+	go func() {
+		line, err := bufio.NewReader(conn).ReadString('\n')
+		if err != nil {
+			close(said)
+			return
+		}
+		said <- strings.TrimSpace(line)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("nobody paired within %s", wait)
+	case line, ok := <-said:
+		if !ok {
+			return errors.New("the node stopped listening")
+		}
+
+		what, rest, _ := strings.Cut(line, " ")
+		switch what {
+		case "paired":
+			name, id, _ := strings.Cut(rest, " ")
+			fmt.Printf("\npaired with %s\n  %s\n\neither device can now reach the other by name.\n", name, id)
+			return nil
+		case "busy":
+			return errors.New(rest)
+		}
+		return fmt.Errorf("the node said %q", line)
+	}
+}
+
+// showTicket prints an invitation the same way whoever is answering it happens to be arranged.
+func showTicket(invite string, wait time.Duration, showQR bool) {
+	if showQR {
+		if qrCode, err := tickets.Code(invite); err == nil {
+			fmt.Printf("\n%s", tickets.Render(qrCode))
+		} else {
+			fmt.Fprintf(os.Stderr, "drop: could not draw a code: %v\n", err)
+		}
+	}
+
+	fmt.Printf("\n  ticket:  %s\n", invite)
+	fmt.Printf("  link:    %s\n\n", tickets.Link(invite))
+	fmt.Printf("run this on the other device, within %s:\n\n  drop pair %s\n\nwaiting...\n", wait, invite)
 }

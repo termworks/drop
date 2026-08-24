@@ -79,6 +79,12 @@ type Model struct {
 	peers   []book.Entry
 	atPeer  int
 	paths   []proto.Served
+	// known is what each device said it shares, kept from last time.
+	//
+	// Asking takes a round trip over somebody else's network. Without this the list empties the
+	// moment a device is entered and fills again when the answer comes, which reads as the screen
+	// losing its mind rather than as waiting.
+	known   map[string][]proto.Served
 	atPath  int
 	loading bool
 	trouble string
@@ -301,9 +307,21 @@ func (m Model) viewHeight() int {
 }
 
 // Identity is this device, as the header shows it.
+// Reach says how this device is reachable while the interface is open.
+type Reach byte
+
+const (
+	// ReachServing: this process holds the address, so it is the node.
+	ReachServing Reach = iota
+	// ReachDaemon: another process on this machine holds it and is answering for this identity.
+	ReachDaemon
+)
+
 type Identity struct {
 	Name string
 	ID   string
+	// How this device is reachable while the interface is open.
+	Reach Reach
 }
 
 type selfLoaded struct {

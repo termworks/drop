@@ -41,6 +41,7 @@ type fake struct {
 	offered   bool
 	took      string
 	arriving  chan struct{}
+	slow      bool
 	sentFiles []string
 	posted    []string
 	refuse    error
@@ -51,6 +52,15 @@ type fake struct {
 func (f *fake) Peers() ([]book.Entry, error) { return f.peers, nil }
 
 func (f *fake) Serves(ctx context.Context, with book.Entry) ([]proto.Served, error) {
+	f.mu.Lock()
+	slow := f.slow
+	f.mu.Unlock()
+
+	if slow {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
 	return f.serves[with.Name], nil
 }
 
@@ -749,5 +759,60 @@ func TestWaitingEndsWhenTheNodeDoes(t *testing.T) {
 
 	if msg := listenFor(knocks)(); msg != nil {
 		t.Fatalf("a closed channel produced %T", msg)
+	}
+}
+
+// Entering a device must show what it said last time rather than emptying the list while it is
+// asked again. A list that blanks for the length of a round trip reads as the screen losing its
+// place, not as waiting.
+func TestEnteringADeviceTwiceKeepsWhatItShares(t *testing.T) {
+	back := withOne()
+	m := settle(t, start(t, back), tea.KeyMsg{Type: tea.KeyEnter})
+
+	if len(m.paths) == 0 {
+		t.Fatal("entering a device the first time showed nothing")
+	}
+	before := m.View()
+
+	// Back out, and in again. The far end is now slow to answer.
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+
+	back.mu.Lock()
+	back.slow = true
+	back.mu.Unlock()
+
+	// Entered, before any answer has had a chance to arrive.
+	shown, _ := m.enter()
+	m = shown.(Model)
+
+	if len(m.paths) == 0 {
+		t.Fatalf("entering a device again emptied what it shares:\n%s", m.View())
+	}
+	if m.loading {
+		t.Error("it says it is asking when it already has something to show")
+	}
+	if now := m.View(); now == "" || len(m.paths) != strings.Count(before, "drop to ") {
+		t.Errorf("what is shown changed while asking again")
+	}
+}
+
+// A device that fails to answer keeps whatever it said before, because that is still the best
+// guess at what it shares.
+func TestAFailedRefreshKeepsTheLastAnswer(t *testing.T) {
+	back := withOne()
+	m := settle(t, start(t, back), tea.KeyMsg{Type: tea.KeyEnter})
+
+	had := len(m.paths)
+	if had == 0 {
+		t.Fatal("nothing was listed to begin with")
+	}
+
+	m = settle(t, m, pathsLoaded{peer: "beta", err: errors.New("the network went away")})
+
+	if len(m.paths) != had {
+		t.Errorf("a failed refresh emptied the list: %d paths, was %d", len(m.paths), had)
+	}
+	if !strings.Contains(m.View(), "went away") {
+		t.Errorf("the failure was not reported:\n%s", m.View())
 	}
 }

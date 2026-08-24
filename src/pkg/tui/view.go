@@ -27,16 +27,42 @@ func (m Model) View() string {
 // the terminal rather than wherever the content happened to stop. A footer that floats halfway up
 // the screen reads as part of the content.
 func (m Model) frame(body string) string {
-	head, foot := m.header(), m.footer()
+	head, foot, said := m.header(), m.footer(), m.notice()
 
-	room := m.height - lipgloss.Height(head) - lipgloss.Height(foot)
+	room := m.bodyHeight()
+	middle := lipgloss.NewStyle().Height(room).MaxHeight(room).Render(body)
+
+	out := head + "\n" + middle
+	if said != "" {
+		out += "\n" + said
+	}
+	return out + "\n" + foot
+}
+
+// bodyHeight is the room a screen has: everything the header, the footer and any notice leave.
+func (m Model) bodyHeight() int {
+	room := m.height - 3
+	if m.notice() != "" {
+		room--
+	}
 	if room < 1 {
 		room = 1
 	}
+	return room
+}
 
-	middle := lipgloss.NewStyle().Height(room).MaxHeight(room).Render(body)
-
-	return head + "\n" + middle + "\n" + foot
+// notice is the one line above the keys, for whatever went wrong or just went right.
+//
+// A line of its own rather than something appended to the screen: a list fills the height it is
+// given, so anything written after it falls off the bottom and is never seen.
+func (m Model) notice() string {
+	switch {
+	case m.trouble != "":
+		return " " + badStyle.Render("✗ ") + fit(m.trouble, m.width-4)
+	case m.said != "":
+		return " " + goodStyle.Render("✓ ") + fit(m.said, m.width-4)
+	}
+	return ""
 }
 
 // body is whatever screen is open.
@@ -57,13 +83,26 @@ func (m Model) body() string {
 
 	shown := m.list.View()
 
-	// Trouble at a list level has nowhere else to go: without this a mistyped ticket is
-	// indistinguishable from a key that did nothing.
-	if m.trouble != "" {
-		shown += "\n\n" + badStyle.Render("✗ ") + m.trouble
+	// The toolkit's own words for an empty list say nothing about why it is empty.
+	if len(m.list.Items()) == 0 {
+		shown = m.emptyList()
 	}
 
-	return panel(m.listTitle(), m.width, m.height-3, shown)
+	return panel(m.listTitle(), m.width, m.bodyHeight(), shown)
+}
+
+// emptyList says why there is nothing to show, which is never the same reason twice.
+func (m Model) emptyList() string {
+	switch {
+	case m.loading:
+		return faintStyle.Render("asking…")
+	case m.at == levelPaths:
+		return dimStyle.Render("this device shares nothing with you.") + "\n\n" +
+			faintStyle.Render("what appears here was decided over there, not here.")
+	case m.list.FilterState() != 0:
+		return faintStyle.Render("nothing matches.")
+	}
+	return faintStyle.Render("nothing here.")
 }
 
 // listTitle names what is being listed, in the panel's top edge.
@@ -84,14 +123,14 @@ func (m Model) header() string {
 		left += faintStyle.Render("  ›  ") + trail
 	}
 
-	right := badge(true, m.me.Name, m.me.Name)
+	// What this device is doing, then what it is called. Reachability first, because it is the
+	// thing that changes: the name never does.
+	right := m.reach() + "   " + faintStyle.Render(m.me.Name)
 	switch {
 	case m.live:
 		right = goodStyle.Render("● live") + "   " + faintStyle.Render(m.me.Name)
 	case m.loading:
 		right = peachStyle.Render("◐ asking") + "   " + faintStyle.Render(m.me.Name)
-	default:
-		right = faintStyle.Render(m.me.Name)
 	}
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
@@ -107,6 +146,22 @@ func (m Model) header() string {
 
 // where is the trail of what has been entered, without the program's own name: the name is already
 // on the line, in the accent, and saying it twice is how a header stops being read.
+// reach says whether this device can be reached, and by whose doing.
+//
+// A daemon keeps answering after the interface is closed. This process answering means the address
+// is only up while somebody is looking at it, which is worth knowing before walking away.
+func (m Model) reach() string {
+	switch m.me.Reach {
+	case ReachDaemon:
+		return kindStyle.Render("◆ daemon")
+	default:
+		if m.me.ID == "" {
+			return faintStyle.Render("○ starting")
+		}
+		return goodStyle.Render("● serving")
+	}
+}
+
 func (m Model) where() string {
 	var parts []string
 
@@ -141,15 +196,11 @@ func (m Model) openView() string {
 		title = at.Path + " · live"
 	}
 
-	return panel(title, m.width, m.height-3, m.inside(at))
+	return panel(title, m.width, m.bodyHeight(), m.inside(at))
 }
 
 // inside is what the open path shows, without the box around it.
 func (m Model) inside(at proto.Served) string {
-	if m.trouble != "" && !m.putting && m.offering == nil {
-		return badStyle.Render("✗ ") + m.trouble
-	}
-
 	switch kindOf(at) {
 	case "chat":
 		return m.chatView()
@@ -204,13 +255,6 @@ func (m Model) putView(what, kind string, before []string) string {
 		out.WriteString("\n " + bar(done, size, m.width-4) + "\n")
 		out.WriteString(" " + faintStyle.Render(sizeOf(done)+" of "+sizeOf(size)))
 		return out.String()
-	}
-
-	if m.said != "" {
-		out.WriteString("\n " + goodStyle.Render("✓ ") + dimStyle.Render(m.said) + "\n")
-	}
-	if m.trouble != "" {
-		out.WriteString("\n " + badStyle.Render("✗ ") + m.trouble + "\n")
 	}
 
 	if len(before) == 0 {
@@ -336,10 +380,6 @@ func (m Model) joiningView() string {
 
 	out.WriteString("\n" + faintStyle.Render("press ") + keyStyle.Render("enter") +
 		faintStyle.Render(" to pair, ") + keyStyle.Render("esc") + faintStyle.Render(" to go back"))
-
-	if m.trouble != "" {
-		out.WriteString("\n\n" + badStyle.Render("✗ ") + m.trouble)
-	}
 
 	return m.middle(panel("take a code", m.panelWidth(), 0, out.String()))
 }

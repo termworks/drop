@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"github.com/bresilla/drop/src/pkg/proto"
 	"os"
 	"strings"
 
@@ -39,10 +40,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loadPeers(m.back)
 
 	case arrived:
-		// Whatever is on screen is rebuilt from what is now stored, and the wait starts again.
-		next := []tea.Cmd{listenFor(m.back.Arrivals()), loadPeers(m.back)}
-		if with, ok := m.peer(); ok && m.at == levelOpen {
-			next = append(next, loadHistory(m.back, with))
+		// Only what is being looked at is asked for again. Rebuilding the device list while
+		// somebody is reading a conversation moves the ground under them for no reason.
+		next := []tea.Cmd{listenFor(m.back.Arrivals())}
+
+		switch {
+		case m.at == levelDevices:
+			next = append(next, loadPeers(m.back))
+		case m.at == levelOpen:
+			if with, ok := m.peer(); ok {
+				next = append(next, loadHistory(m.back, with))
+			}
 		}
 		return m, tea.Batch(next...)
 
@@ -97,9 +105,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // a stale answer for a device we have moved off
 		}
 		if msg.err != nil {
-			m.paths, m.trouble = nil, msg.err.Error()
+			// What it last said is still the best guess at what it shares. Emptying the list
+			// because one answer went missing throws away the only thing worth showing.
+			m.trouble = msg.err.Error()
 			return m, nil
 		}
+
+		if m.known == nil {
+			m.known = map[string][]proto.Served{}
+		}
+		m.known[msg.peer] = msg.paths
 		m.paths, m.trouble = msg.paths, ""
 		if m.at == levelPaths {
 			m.showPaths()
@@ -283,11 +298,16 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 		}
 		m.atPeer = m.list.Index()
 		m.at = levelPaths
-		m.paths = nil
-		m.loading = true
-		m.showPaths()
 
 		with, _ := m.peer()
+
+		// What it said last time, straight away, and the question asked underneath. A device that
+		// has not been visited shows nothing and says it is asking.
+		m.paths = m.known[with.Name]
+		m.loading = len(m.paths) == 0
+		m.atPath = 0
+		m.showPaths()
+
 		return m, loadPaths(m.back, with)
 
 	case levelPaths:

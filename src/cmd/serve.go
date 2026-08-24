@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"crypto/hmac"
 	"fmt"
 	"os"
 	"os/signal"
@@ -75,8 +76,9 @@ func runServe(parent context.Context, quiet bool) error {
 	// A cast feeds this node over a local socket rather than standing up a second one, so a
 	// terminal can be shared while the daemon is running.
 	casts := newCastHost(cfg.Mounts)
+	offers := newPairHost()
 	go func() {
-		if err := hostCasts(ctx, casts); err != nil {
+		if err := hostLocal(ctx, casts, offers); err != nil {
 			fmt.Fprintf(os.Stderr, "drop: casts unavailable: %v\n", err)
 		}
 	}()
@@ -118,6 +120,26 @@ func runServe(parent context.Context, quiet bool) error {
 			defer s.Close()
 			_ = pinned.Refresh()
 			_ = proto.AnswerHello(s, greeting(pinned, cfg.Mounts, from))
+		},
+		// Pairing is answered by whoever holds the address, which is this. A separate `drop pair`
+		// process on this machine asks for a code to be shown; it cannot answer for the node.
+		node.ALPNPair: func(from node.ID, s *iroh.Stream) {
+			defer s.Close()
+
+			code, _ := offers.asking()
+			if code == "" {
+				return
+			}
+
+			p, err := proto.AnswerPairing(s, n.ID(), node.DisplayName(), written(discovery.LocalAddrs(n)))
+			if err != nil {
+				return
+			}
+			if !hmac.Equal(p.Proof, codeProof(code, from, n.ID())) {
+				fmt.Fprintf(os.Stderr, "drop: %s tried to pair without the code\n", node.Brief(from))
+				return
+			}
+			offers.answered(p)
 		},
 	})
 

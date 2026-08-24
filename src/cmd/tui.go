@@ -223,11 +223,14 @@ func (l *live) Watch(ctx context.Context, on book.Entry, path string, into io.Wr
 var _ = fmt.Sprintf
 
 func (l *live) Self() (tui.Identity, error) {
-	id := l.node.ID().String()
-	if len(id) > 12 {
-		id = id[:12] + "…"
+	// Which process is the node matters to whoever is reading: if the daemon holds the address,
+	// this is a view onto something that goes on running after the interface is closed.
+	reach := tui.ReachServing
+	if !l.node.Own() {
+		reach = tui.ReachDaemon
 	}
-	return tui.Identity{Name: node.DisplayName(), ID: id}, nil
+
+	return tui.Identity{Name: node.DisplayName(), ID: l.node.ID().String(), Reach: reach}, nil
 }
 
 // Offer puts this device up for pairing and reports the name it paired with.
@@ -240,7 +243,7 @@ func (l *live) Offer(ctx context.Context) (string, <-chan string, error) {
 		return "", nil, err
 	}
 
-	invite := ticketFor(l.node.ID(), code, discovery.LocalAddrs(l.node))
+	invite := ticketFor(l.node.ID(), code)
 	done := make(chan string, 1)
 
 	pinned, err := book.Load()

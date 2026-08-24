@@ -151,16 +151,25 @@ func fit(text string, width int) string {
 // A row carries a solid background across its whole width, so three lines read as one block and
 // columns line up down the list. Alternating shades separate neighbours without a rule between them.
 //
-// Only what is selected carries one: banding every other row competes with the selection, and the
-// terminal's own background is what the rest should be.
-var rowBgOn = surface
+// From the grayscale ramp rather than the sixteen, because this is the one place a colour must be
+// a known distance from the one beside it: bright black is wherever a theme put it, and next to a
+// dark background it can be lighter than the text.
+var (
+	rowBg    = lipgloss.Color("232")
+	rowBgAlt = lipgloss.Color("235")
+	rowBgOn  = lipgloss.Color("237")
+)
 
 // row is the background a line of an item is drawn on.
-func row(_ int, selected bool) lipgloss.Style {
-	if selected {
+func row(index int, selected bool) lipgloss.Style {
+	switch {
+	case selected:
 		return lipgloss.NewStyle().Background(rowBgOn)
+	case index%2 == 1:
+		return lipgloss.NewStyle().Background(rowBgAlt)
+	default:
+		return lipgloss.NewStyle().Background(rowBg)
 	}
-	return lipgloss.NewStyle()
 }
 
 // cell draws text in a fixed-width column carrying the row's background, which is what keeps the

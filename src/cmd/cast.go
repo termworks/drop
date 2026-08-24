@@ -255,6 +255,11 @@ func castThroughDaemon(ctx context.Context, addressFile string) error {
 	}
 	defer os.Remove(addressFile)
 
+	// The first line says what this connection is for; the rest is the recording.
+	if _, err := io.WriteString(conn, "cast\n"); err != nil {
+		return err
+	}
+
 	fmt.Println(address)
 	fmt.Fprintf(os.Stderr, "drop: casting through this node; watch with `drop to %s%s`\n",
 		node.Brief(id), CastPath)

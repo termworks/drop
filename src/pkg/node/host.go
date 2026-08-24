@@ -26,7 +26,15 @@ var ALPNs = []string{ALPNSession, ALPNHello, ALPNPair}
 // Node is this machine on the drop network.
 type Node struct {
 	Endpoint *iroh.Endpoint
+
+	// borrowed is true when this node could not take the port its identity is reached on, because
+	// another process on this machine already has it. That process is the node as far as anybody
+	// dialling is concerned; this one can still ask questions, but nobody can reach it.
+	borrowed bool
 }
+
+// Own reports whether this process holds the address its identity is reached on.
+func (n *Node) Own() bool { return !n.borrowed }
 
 // Start brings up the endpoint under this node's persisted identity.
 func Start(ctx context.Context) (*Node, error) {
@@ -51,19 +59,21 @@ func Start(ctx context.Context) (*Node, error) {
 		opts = append(opts, iroh.WithRelayMode(relayMode()), iroh.WithNetReport())
 	}
 
+	borrowed := false
+
 	ep, err := iroh.Bind(ctx, opts...)
 	if err != nil && Port() != 0 {
 		// The preferred port is taken. An address others wrote down will not reach this node
 		// until it is free again, but refusing to start would be worse: everything that does not
 		// depend on a remembered address still works.
-		fmt.Fprintf(os.Stderr, "drop: port %d is in use; listening on any port\n", Port())
+		borrowed = true
 		opts[0] = iroh.WithBindAddr(netip.AddrPortFrom(netip.IPv4Unspecified(), 0))
 		ep, err = iroh.Bind(ctx, opts...)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("starting the endpoint: %w", err)
 	}
-	return &Node{Endpoint: ep}, nil
+	return &Node{Endpoint: ep, borrowed: borrowed}, nil
 }
 
 // ID is this node's address.
