@@ -66,7 +66,7 @@ func At(ctx context.Context, n *node.Node, lan *discovery.LAN, moved Finder, ent
 	// guess is wrong, the whole set is still tried below.
 	for _, best := range worthTrying(at, entry) {
 		quick, stop := context.WithTimeout(ctx, straightAway)
-		conn, s, err := open(quick, n, node.AddrFor(entry.ID, best), alpn)
+		conn, s, err := openFresh(quick, n, node.AddrFor(entry.ID, best), alpn)
 		stop()
 
 		if err == nil {
@@ -75,18 +75,34 @@ func At(ctx context.Context, n *node.Node, lan *discovery.LAN, moved Finder, ent
 		}
 	}
 
-	conn, s, err := open(ctx, n, at, alpn)
-
-	// A dial resumes a cached TLS session when it has one, and a peer that has restarted since
-	// rejects it. That is not a failure, it is the handshake saying to start over: the ticket is
-	// spent, so a second dial is a plain one. Once, because a second rejection is a real fault.
-	if errors.Is(err, quic.Err0RTTRejected) {
-		conn, s, err = open(ctx, n, at, alpn)
-	}
+	conn, s, err := openFresh(ctx, n, at, alpn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reaching %s: %w", entry.Name, err)
 	}
 	return conn, s, nil
+}
+
+// openFresh dials, starting over when the far end refuses a resumed session.
+//
+// A dial reuses a cached TLS session when it has one, and a device that has restarted since rejects
+// it. That is not a failure: it is the handshake saying to start again without the ticket. It says
+// so once per spent ticket, and there can be more than one cached, so this tries a few times rather
+// than handing somebody the words "0-RTT rejected" — which describe a detail of the transport and
+// nothing they can act on.
+func openFresh(ctx context.Context, n *node.Node, at netaddr.EndpointAddr, alpn string) (*iroh.Conn, *iroh.Stream, error) {
+	const spentTickets = 3
+
+	var conn *iroh.Conn
+	var s *iroh.Stream
+	var err error
+
+	for range spentTickets {
+		conn, s, err = open(ctx, n, at, alpn)
+		if !errors.Is(err, quic.Err0RTTRejected) {
+			return conn, s, err
+		}
+	}
+	return conn, s, err
 }
 
 // straightAway is how long the nearest address gets on its own.

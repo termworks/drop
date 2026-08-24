@@ -112,11 +112,11 @@ func sendTo(parent context.Context, entry book.Entry, path string, sources []pro
 
 	lan, _ := discovery.StartLAN(ctx, n)
 
-	conn, s, err := reach(ctx, n, lan, entry, node.ALPNSession)
+	done, s, err := best(n, lan).To(ctx, entry, node.ALPNSession)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer done.Close()
 	defer s.Close()
 
 	bar := &progress{}
@@ -183,11 +183,11 @@ func readFrom(parent context.Context, entry book.Entry, addr ns.Address, wait ti
 
 	lan, _ := discovery.StartLAN(ctx, n)
 
-	conn, s, err := reach(find, n, lan, entry, node.ALPNSession)
+	over, s, err := best(n, lan).To(find, entry, node.ALPNSession)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer over.Close()
 
 	d, err := proto.OpenDuplex(ctx, s, addr.Path, addr.Path, node.DisplayName())
 	if err != nil {

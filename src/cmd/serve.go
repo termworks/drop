@@ -85,7 +85,7 @@ func runServe(parent context.Context, quiet bool) error {
 	casts := newCastHost(cfg.Mounts)
 	offers := newPairHost()
 	go func() {
-		if err := hostLocal(ctx, casts, offers); err != nil {
+		if err := hostLocal(ctx, casts, offers, held); err != nil {
 			fmt.Fprintf(os.Stderr, "drop: casts unavailable: %v\n", err)
 		}
 	}()

@@ -19,7 +19,7 @@ import (
 // Undelivered messages stay queued rather than being dropped, which is what makes sending to a
 // device that is asleep work: it goes out when the device comes back.
 func deliverTo(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.Entry, path string) (int, error) {
-	return deliverOver(ctx, fresh{node: n, lan: lan}, entry, path)
+	return deliverOver(ctx, best(n, lan), entry, path)
 }
 
 // deliverOver sends what is queued over whatever connection the caller has.

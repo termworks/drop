@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"bufio"
+
 	"context"
 	"errors"
 	"fmt"
+	"github.com/tmc/go-iroh/iroh"
 	"io"
 	"net"
 	"os"
@@ -13,7 +15,9 @@ import (
 	"sync"
 
 	"github.com/bresilla/drop/src/pkg/asciicast"
+	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/cast"
+	"github.com/bresilla/drop/src/pkg/dial"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
@@ -27,7 +31,7 @@ import (
 // over a socket on this machine, and there stays one node, one listener, and one address that
 // always means the same thing.
 //
-// The first line says which it is: "cast", or "pair <code> <name>".
+// The first line says which it is: "cast", "pair <code> <name>", or "via <device> <protocol>".
 
 // pairHost is the pairing offer open on this node, if any.
 //
@@ -160,7 +164,7 @@ func castSocket() (string, error) {
 }
 
 // hostLocal listens for whatever on this machine wants to act as this node.
-func hostLocal(ctx context.Context, casts *castHost, offers *pairHost) error {
+func hostLocal(ctx context.Context, casts *castHost, offers *pairHost, held *dial.Kept) error {
 	path, err := castSocket()
 	if err != nil {
 		return err
@@ -191,7 +195,7 @@ func hostLocal(ctx context.Context, casts *castHost, offers *pairHost) error {
 		}
 		go func() {
 			defer conn.Close()
-			if err := takeLocal(ctx, casts, offers, conn); err != nil {
+			if err := takeLocal(ctx, casts, offers, held, conn); err != nil {
 				fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 			}
 		}()
@@ -215,7 +219,7 @@ func takeCast(ctx context.Context, host *castHost, from io.Reader) error {
 }
 
 // takeLocal reads what this connection is for and does it.
-func takeLocal(ctx context.Context, casts *castHost, offers *pairHost, conn net.Conn) error {
+func takeLocal(ctx context.Context, casts *castHost, offers *pairHost, held *dial.Kept, conn net.Conn) error {
 	reading := bufio.NewReader(conn)
 
 	first, err := reading.ReadString('\n')
@@ -231,6 +235,10 @@ func takeLocal(ctx context.Context, casts *castHost, offers *pairHost, conn net.
 	case "pair":
 		code, as, _ := strings.Cut(rest, " ")
 		return takeOffer(ctx, offers, conn, code, as)
+
+	case "via":
+		name, alpn, _ := strings.Cut(rest, " ")
+		return takeVia(ctx, held, conn, name, alpn)
 	}
 	return fmt.Errorf("a local connection asked for %q, which is nothing", what)
 }
@@ -283,4 +291,81 @@ func nameOf(p proto.Pairing, as string) string {
 		return p.Name
 	}
 	return node.Brief(p.Peer)
+}
+
+// takeVia lends a command this node's connection to a device.
+//
+// The stream is spliced to the socket rather than wrapped in a protocol of its own: what a command
+// wants is a stream to somebody, and it already knows what to say over one. So it says it over
+// this, and the daemon is a length of pipe rather than a translator that has to be kept in step
+// with every protocol drop grows.
+func takeVia(ctx context.Context, held *dial.Kept, conn net.Conn, name, alpn string) error {
+	if held == nil {
+		fmt.Fprintln(conn, "no connections are being held")
+		return nil
+	}
+
+	pinned, err := book.Load()
+	if err != nil {
+		fmt.Fprintf(conn, "no %v\n", err)
+		return nil
+	}
+
+	entry, ok := lookUp(pinned, name)
+	if !ok {
+		fmt.Fprintf(conn, "no %q is neither a known name nor a peer id\n", name)
+		return nil
+	}
+
+	s, err := held.To(ctx, entry, alpn)
+	if err != nil {
+		fmt.Fprintf(conn, "no %v\n", err)
+		return nil
+	}
+	defer s.Close()
+
+	if _, err := fmt.Fprintln(conn, "ok"); err != nil {
+		return err
+	}
+	return splice(conn, s)
+}
+
+// splice copies a socket and a stream into each other until both directions have finished.
+//
+// Each direction ends by closing the write side of the other, so a half-close on either end means
+// the same thing it would have meant without a daemon in the middle: no more from me, carry on.
+func splice(conn net.Conn, s *iroh.Stream) error {
+	done := make(chan error, 2)
+
+	go func() {
+		_, err := io.Copy(s, conn)
+		s.Close()
+		done <- err
+	}()
+	go func() {
+		_, err := io.Copy(conn, s)
+		if half, ok := conn.(interface{ CloseWrite() error }); ok {
+			_ = half.CloseWrite()
+		}
+		done <- err
+	}()
+
+	first, second := <-done, <-done
+	if first != nil {
+		return first
+	}
+	return second
+}
+
+// lookUp finds a device by the name it is filed under, or by its id.
+func lookUp(pinned *book.Book, name string) (book.Entry, bool) {
+	if entry, ok := pinned.Lookup(name); ok {
+		return entry, true
+	}
+
+	id, err := node.ParseID(name)
+	if err != nil {
+		return book.Entry{}, false
+	}
+	return pinned.ByID(id)
 }

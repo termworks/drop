@@ -62,11 +62,11 @@ func listThere(parent context.Context, peer, under string, wait time.Duration) e
 
 	lan, _ := discovery.StartLAN(ctx, n)
 
-	conn, s, err := reach(find, n, lan, entry, node.ALPNHello)
+	done, s, err := best(n, lan).To(find, entry, node.ALPNHello)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer done.Close()
 	defer s.Close()
 
 	hello, err := proto.AskHello(s)

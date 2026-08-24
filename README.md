@@ -456,6 +456,23 @@ src/pkg/conf/          the Lua configuration
 misc/                  the systemd user unit
 ```
 
+## one node, however many commands
+
+`drop serve` holds a connection to every device you have paired with, and every command borrows
+them over a socket on this machine rather than standing up a node of its own.
+
+The difference is the whole cost of reaching somebody: a rendezvous lookup, a relay session and a
+handshake — seconds — against a stream on a connection that already exists.
+
+```
+drop ls laptop        55ms with a daemon running, seconds without
+```
+
+The same socket carries `drop cast` and the pairing offer, for the same reason: two processes
+cannot share one address, so the one holding it does the work.
+
+With nothing running, every command dials for itself, exactly as before.
+
 ## testing it
 
 `make test` is the unit suite. `make e2e` is two real nodes on this machine, driven from the
