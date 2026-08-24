@@ -233,8 +233,8 @@ func takeLocal(ctx context.Context, casts *castHost, offers *pairHost, held *dia
 		return takeCast(ctx, casts, reading)
 
 	case "pair":
-		code, as, _ := strings.Cut(rest, " ")
-		return takeOffer(ctx, offers, conn, code, as)
+		code, as, machine := offerAsked(rest)
+		return takeOffer(ctx, offers, conn, code, as, machine)
 
 	case "via":
 		name, alpn, _ := strings.Cut(rest, " ")
@@ -243,8 +243,27 @@ func takeLocal(ctx context.Context, casts *castHost, offers *pairHost, held *dia
 	return fmt.Errorf("a local connection asked for %q, which is nothing", what)
 }
 
+// offerAsked reads what a local `drop pair` asked for: a code, a name to file the far end under,
+// and whether to keep the device alone rather than the person who owns it.
+//
+// A dash stands for a name that was not given, so the third field cannot be mistaken for one. A
+// line with only two fields is the older form, and it means a person.
+func offerAsked(rest string) (code, as string, machine bool) {
+	parts := strings.SplitN(strings.TrimSpace(rest), " ", 3)
+	if len(parts) > 0 {
+		code = parts[0]
+	}
+	if len(parts) > 1 && parts[1] != "-" {
+		as = parts[1]
+	}
+	if len(parts) > 2 {
+		machine = strings.TrimSpace(parts[2]) == "machine"
+	}
+	return code, as, machine
+}
+
 // takeOffer holds a pairing offer open for as long as whoever asked for it stays connected.
-func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as string) error {
+func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as string, machine bool) error {
 	if code == "" {
 		return errors.New("a pairing offer with no code")
 	}
@@ -273,7 +292,7 @@ func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as st
 	case <-gone:
 		return nil
 	case p := <-waiting:
-		if err := record(p, as); err != nil {
+		if err := record(p, as, machine); err != nil {
 			fmt.Fprintf(conn, "failed %v\n", err)
 			return err
 		}

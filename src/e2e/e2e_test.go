@@ -188,7 +188,10 @@ func waitFor(t *testing.T, what string, within time.Duration, ready func() bool)
 }
 
 // pair links two nodes the way the documentation says to: one shows a ticket, the other takes it.
-func pair(t *testing.T, showing, taking *node) {
+func pair(t *testing.T, showing, taking *node) { pairing(t, showing, taking) }
+
+// pairing is the same, with whatever flags the far side should use.
+func pairing(t *testing.T, showing, taking *node, flags ...string) {
 	t.Helper()
 
 	_, said, stop := showing.background("pair", "--code", "e2e-test-code", "--wait", "3m")
@@ -200,7 +203,7 @@ func pair(t *testing.T, showing, taking *node) {
 		return ticket != ""
 	})
 
-	out := taking.must("pair", ticket)
+	out := taking.must(append([]string{"pair", ticket}, flags...)...)
 	if !strings.Contains(out, "reach the other") {
 		t.Fatalf("pairing did not finish:\n%s", out)
 	}

@@ -264,6 +264,14 @@ not.
 user key. A machine of theirs you have never met then presents its own badge and is recognised
 without pairing again: *pair once per person, not once per pair of machines*.
 
+```console
+drop pair <ticket>             the user key is learnt; their other machines work later
+drop pair <ticket> --machine   this device and no other
+```
+
+`--machine` is for a build server, a box that is nobody's personal identity, or a deliberate
+refusal of transitive trust.
+
 **Recognising somebody is not letting them in.** Pairing with bob grants his machines nothing at
 all — it means his phone arrives as `bob@phone` rather than as a stranger. What it may then reach
 is whatever the rules on each path say, and the default is nothing.

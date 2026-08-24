@@ -467,3 +467,32 @@ drop.vault = "` + filepath.Join(one.home, "config", "drop", "vault.key") + `"
 		t.Error("clearing did not put the message back")
 	}
 }
+
+// Pairing with a machine rather than a person is a deliberate refusal of transitive trust: the
+// device key is kept and the user key is not, so the rest of that person's machines stay strangers
+// however many badges they sign.
+func TestPairingWithAMachineLearnsNoPerson(t *testing.T) {
+	one, two := newNode(t, "one", "45071"), newNode(t, "two", "45072")
+	one.serves(`local drop = require("drop")`)
+	two.serves(`local drop = require("drop")`)
+
+	pairing(t, one, two, "--machine")
+
+	// The side that asked for a machine kept no user key.
+	raw, err := os.ReadFile(filepath.Join(two.home, "config", "drop", "peers.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "\"user\"") {
+		t.Errorf("a machine-level pairing learnt a person:\n%s", raw)
+	}
+
+	// And the other side, which was not asked anything, still did.
+	raw, err = os.ReadFile(filepath.Join(one.home, "config", "drop", "peers.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "\"user\"") {
+		t.Errorf("the other side lost its person too:\n%s", raw)
+	}
+}
