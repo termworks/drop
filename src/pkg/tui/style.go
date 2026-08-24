@@ -158,6 +158,10 @@ var (
 	rowBg    = lipgloss.Color("232")
 	rowBgAlt = lipgloss.Color("235")
 	rowBgOn  = lipgloss.Color("237")
+
+	// A message sits on something you can see the edges of, a step further from the page than a
+	// list row: a box whose ground is almost the page is a box nobody can find the sides of.
+	saidBg = lipgloss.Color("238")
 )
 
 // row is the background a line of an item is drawn on.

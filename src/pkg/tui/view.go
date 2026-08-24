@@ -516,11 +516,13 @@ func (m Model) bubble(msg convo.Message) []string {
 	mine := msg.Dir == convo.Out
 	when := time.UnixMilli(msg.At).Format("15:04")
 
-	shade := lipgloss.NewStyle().Background(rowBgAlt).Width(block).Padding(0, 1)
+	// A blank line of the box's own colour above and below what was said, so the words sit inside
+	// something rather than against its edge.
+	shade := lipgloss.NewStyle().Background(saidBg).Width(block).Padding(1, 2)
 
 	// Who at one end of the top line and when at the other, spaced by hand: two styled columns
 	// would each be padded to their own width and the line would wrap onto a second.
-	inside := block - 2
+	inside := block - 4
 	who := m.speaker(mine)
 
 	gap := inside - lipgloss.Width(who) - lipgloss.Width(when)
@@ -529,15 +531,21 @@ func (m Model) bubble(msg convo.Message) []string {
 		who = fit(who, inside-lipgloss.Width(when)-1)
 	}
 
-	label := lipgloss.NewStyle().Background(rowBgAlt).Foreground(muted)
-	head := shade.Render(label.Render(who) + label.Render(strings.Repeat(" ", gap)) + label.Render(when))
+	label := lipgloss.NewStyle().Background(saidBg).Foreground(muted)
 
-	said := shade.Foreground(plain).Render(msg.Body)
+	// The head takes the top padding and the body the bottom, so the two together are one box
+	// rather than two with a seam across the middle.
+	head := shade.Padding(1, 2, 0, 2).
+		Render(label.Render(who) + label.Render(strings.Repeat(" ", gap)) + label.Render(when))
+
+	body := shade.Padding(0, 2, 1, 2)
+
+	said := body.Foreground(plain).Render(msg.Body)
 	switch msg.Kind {
 	case convo.KindLink:
-		said = shade.Foreground(second).Render(msg.Body)
+		said = body.Foreground(second).Render(msg.Body)
 	case convo.KindFile:
-		said = shade.Foreground(plain).Render("▣ " + msg.Body + "  " + msg.Extra)
+		said = body.Foreground(plain).Render("▣ " + msg.Body + "  " + msg.Extra)
 	}
 
 	colour := second
