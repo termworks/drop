@@ -150,9 +150,17 @@ func pump(ctx context.Context, reader *asciicast.Reader, stage *cast.Caster) err
 }
 
 // castMounts is the one namespace a cast serves while it is running.
+// castMounts is the one namespace a cast serves.
+//
+// Open to any paired device, and said so rather than left out: access is denied unless a rule
+// grants it, and a mount with no rule is one nobody can ever watch.
 func castMounts() *ns.Table {
 	table := ns.NewTable()
-	_ = table.Add(ns.Mount{Path: CastPath, Kind: ns.KindTTY})
+	_ = table.Add(ns.Mount{
+		Path:   CastPath,
+		Kind:   ns.KindTTY,
+		Access: ns.Access{AnyPaired: true},
+	})
 	return table
 }
 

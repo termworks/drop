@@ -425,6 +425,19 @@ src/pkg/conf/          the Lua configuration
 misc/                  the systemd user unit
 ```
 
+## testing it
+
+`make test` is the unit suite. `make e2e` is two real nodes on this machine, driven from the
+command line over QUIC: pairing, a message each way, a file each way, standard input as a file, a
+link, a stream, a shell, a cast, and a message queued for a device that was switched off.
+
+It is behind a build tag and not part of `make test`, because it builds the binary, starts daemons
+and takes a minute.
+
+```
+make e2e
+```
+
 ## environment
 
 ```

@@ -232,6 +232,17 @@ make.alias("t", "test")
 
 
 make.recipe{
+  name = "e2e",
+  desc = "two real nodes, driven from the command line",
+  run = function()
+    -- Behind a tag, and not part of `test`: it builds the binary, starts daemons, opens sockets
+    -- and takes half a minute. That belongs in a decision, not in every run of the unit tests.
+    oslo.env.set("CGO_ENABLED", "0")
+    sh.go("test", "-tags", "e2e", "-count=1", "-timeout", "15m", "-v", "./src/e2e/")
+  end,
+}
+
+make.recipe{
   name = "test-all",
   desc = "the suite with the race detector",
   run = function()
