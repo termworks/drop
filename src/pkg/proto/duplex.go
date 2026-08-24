@@ -187,7 +187,7 @@ func OpenDuplex(ctx context.Context, s Stream, path, name, from string) (*Duplex
 		if derr != nil {
 			return nil, derr
 		}
-		return nil, fmt.Errorf("declined: %s", reject.Reason)
+		return nil, Declined{Reason: reject.Reason}
 	default:
 		_ = s.Close()
 		return nil, fmt.Errorf("expected an answer, got frame kind %d", kind)

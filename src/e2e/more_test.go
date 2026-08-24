@@ -289,3 +289,56 @@ func between(t *testing.T, said, from, to string) string {
 	}
 	return strings.TrimSpace(out)
 }
+
+// Revoking somebody takes effect on the next connection, against a rule that was written by hand.
+//
+// This is the half of revocation that has an answer: this machine stops trusting them now. The
+// other half — telling anybody else — has none without a server, and drop does not pretend it does.
+func TestRevokingShutsAPeerOutOfAPath(t *testing.T) {
+	one, two := newNode(t, "one", "45041"), newNode(t, "two", "45042")
+	one.serves(`
+local drop = require("drop")
+drop.mount("/chat", { type = "chat", access = "paired" })
+`)
+	two.serves(`
+local drop = require("drop")
+drop.mount("/chat", { type = "chat", access = "paired" })
+`)
+
+	// Paired before anything is serving: `drop pair` starts an endpoint of its own, and it cannot
+	// have the port while a daemon on the same node is holding it.
+	pair(t, one, two)
+
+	_, _, stop := one.background("serve")
+	defer stop()
+
+	// A message gets through while nothing has been revoked.
+	two.must("to", "one/chat", "before")
+	waitFor(t, "the first message", 30*time.Second, func() bool {
+		return strings.Contains(one.must("log", "two"), "before")
+	})
+
+	one.must("revoke", "/chat", "two")
+
+	// The far end refuses it now, and says so rather than swallowing it.
+	said, err := two.run("to", "one/chat", "after")
+	if err == nil {
+		t.Fatalf("a revoked device was still admitted:\n%s", said)
+	}
+	if !strings.Contains(said, "refused") {
+		t.Errorf("the refusal was not explained:\n%s", said)
+	}
+	if strings.Contains(said, "queued") {
+		t.Errorf("a refused message was queued to be retried forever:\n%s", said)
+	}
+	if got := one.must("log", "two"); strings.Contains(got, "after") {
+		t.Errorf("a message from a revoked device was stored:\n%s", got)
+	}
+
+	// And lifting it lets them back in, without restarting anything.
+	one.must("revoke", "/chat", "two", "--forget")
+	two.must("to", "one/chat", "again")
+	waitFor(t, "the message after the refusal was lifted", 30*time.Second, func() bool {
+		return strings.Contains(one.must("log", "two"), "again")
+	})
+}

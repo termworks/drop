@@ -1,6 +1,7 @@
 package proto
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/bresilla/drop/src/pkg/wire"
@@ -282,4 +283,21 @@ func decodeResize(body []byte) (Resize, error) {
 	}
 	out.Cols, out.Rows = uint16(cols), uint16(rows)
 	return out, nil
+}
+
+// Declined is a far end that answered and said no.
+//
+// Worth telling apart from a far end that could not be reached: one is a device that is off, which
+// is what a queue is for, and the other is an answer. Queueing an answer means retrying forever
+// against a decision somebody made.
+type Declined struct {
+	Reason string
+}
+
+func (d Declined) Error() string { return "declined: " + d.Reason }
+
+// WasDeclined reports whether an error is a refusal rather than a failure to reach anybody.
+func WasDeclined(err error) bool {
+	var declined Declined
+	return errors.As(err, &declined)
 }

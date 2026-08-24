@@ -155,6 +155,11 @@ func sendMessageTo(parent context.Context, entry book.Entry, path string, kind b
 	lan, _ := discovery.StartLAN(ctx, n)
 
 	sent, err := deliverTo(ctx, n, lan, entry, path)
+	if proto.WasDeclined(err) {
+		// An answer, not a device that is off. Queueing it would mean retrying forever against a
+		// decision somebody made, and telling the sender their message is on its way.
+		return err
+	}
 	if err != nil {
 		// Queued is not lost. A device that is off is the normal case, not a failure to report as
 		// one, so this says where the message is rather than only what went wrong.

@@ -31,6 +31,10 @@ type Access struct {
 	Password string
 	// All requires every rule declared here, rather than any one of them.
 	All bool
+	// Refused is who may not reach this path whatever else says otherwise. It is not written in
+	// the config: it is what revoking from the interface leaves behind, and it beats every rule
+	// above, which is what makes it take effect on the next connection rather than in ninety days.
+	Refused []string
 }
 
 // Declared reports whether this says anything at all. One that says nothing admits nobody.
@@ -102,6 +106,11 @@ type Caller struct {
 func (a Access) Admits(c Caller) (bool, string) {
 	if c.ID == "" {
 		return false, "the connection proved no identity"
+	}
+
+	// Before anything else, and against everything else.
+	if refused(a.Refused, c) {
+		return false, "this device has been refused here"
 	}
 	if !a.Declared() {
 		return false, "nothing here is shared with anyone"
@@ -200,7 +209,7 @@ func (t *Table) AccessFor(path string) (Access, bool) {
 			best, bestLen, found = m.Access, len(at), true
 		}
 	}
-	return best, found
+	return t.merge(path, best, found)
 }
 
 // Admits is the whole question, asked of a path.

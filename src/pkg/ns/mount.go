@@ -81,6 +81,9 @@ type Table struct {
 	// arriving or ending adds and removes a path while they do.
 	mu     sync.RWMutex
 	mounts map[string]Mount
+	// granted is what the interface has allowed and refused, kept apart from the config so that
+	// editing one never rewrites the other.
+	granted Granting
 }
 
 func NewTable() *Table {

@@ -28,6 +28,11 @@ func runTUI(parent context.Context) error {
 	if err != nil {
 		return err
 	}
+	grants, err := cfg.Grants()
+	if err != nil {
+		return err
+	}
+	_ = grants
 	cfg.Apply()
 	defer cfg.Close()
 
@@ -186,6 +191,9 @@ func (l *live) Waiting(with book.Entry) (map[string]bool, error) {
 func (l *live) Mine() ([]proto.Served, error) {
 	cfg, err := conf.Load()
 	if err != nil {
+		return nil, err
+	}
+	if _, err := cfg.Grants(); err != nil {
 		return nil, err
 	}
 

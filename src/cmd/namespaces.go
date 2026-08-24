@@ -32,6 +32,9 @@ func showOwnTable() error {
 	if err != nil {
 		return err
 	}
+	if _, err := cfg.Grants(); err != nil {
+		return err
+	}
 
 	if cfg.Path == "" {
 		fmt.Printf("no config file; serving the defaults\n\n")
@@ -47,22 +50,27 @@ func showOwnTable() error {
 
 // shared says who a path is open to, so a config can be read back rather than reasoned about.
 func shared(table *ns.Table, m ns.Mount) string {
-	a := m.Access
-	if !a.Declared() {
-		// Nothing here, so say what it actually resolves to rather than "inherited" — a path with
-		// nothing above it inherits nothing, and reads as reachable when it is not.
-		if rule, found := table.AccessFor(m.Path); found {
-			return "↑ " + describeRule(rule)
-		}
+	// Asked of the table rather than read off the mount, so that what is printed is what a caller
+	// is actually judged against -- a rule somebody wrote plus whatever has been granted since.
+	rule, found := table.AccessFor(m.Path)
+	if !found {
 		return "nobody"
 	}
-	return describeRule(a)
+	if !m.Access.Declared() {
+		// Nothing here, so say what it resolves to rather than "inherited" — a path with nothing
+		// above it inherits nothing, and reads as reachable when it is not.
+		return "↑ " + describeRule(rule)
+	}
+	return describeRule(rule)
 }
 
 // describeRule says who a rule admits, so a config can be read back rather than reasoned about.
 func describeRule(a ns.Access) string {
 
 	var parts []string
+	if a.Anyone {
+		parts = append(parts, "anyone at all")
+	}
 	if a.AnyPaired {
 		parts = append(parts, "anyone paired")
 	}
@@ -78,7 +86,10 @@ func describeRule(a ns.Access) string {
 
 	joined := strings.Join(parts, " + ")
 	if a.All && len(parts) > 1 {
-		return "all of: " + joined
+		joined = "all of: " + joined
+	}
+	if len(a.Refused) > 0 {
+		joined += ", not " + strings.Join(a.Refused, ", ")
 	}
 	return joined
 }

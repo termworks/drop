@@ -41,7 +41,7 @@ func SendMessages(ctx context.Context, s io.ReadWriteCloser, path string, batch 
 		if derr != nil {
 			return nil, derr
 		}
-		return nil, fmt.Errorf("declined: %s", reject.Reason)
+		return nil, Declined{Reason: reject.Reason}
 	}
 	if kind != wire.KindAccept {
 		return nil, fmt.Errorf("expected an answer, got frame kind %d", kind)

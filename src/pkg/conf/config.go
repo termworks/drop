@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/bresilla/drop/src/pkg/grant"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 )
@@ -141,4 +142,19 @@ func ApplySettings() {
 	defer cfg.Close()
 
 	cfg.Apply()
+}
+
+// Grants attaches what the interface has allowed and refused to the namespaces this config
+// declares, and hands the store back so the interface can write to the same one.
+//
+// It is done here because every command that serves anything loads a config, and a node that
+// forgot to do it would honour a revocation everywhere except the one place it matters.
+func (c *Config) Grants() (*grant.Store, error) {
+	store, err := grant.Load()
+	if err != nil {
+		return nil, err
+	}
+
+	c.Mounts.Granted(store)
+	return store, nil
 }

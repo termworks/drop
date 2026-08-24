@@ -106,6 +106,9 @@ drop log [device]              a conversation, or all of them
 drop cast                      serve a terminal read from stdin as asciicast
 drop id                        this node's identity
 drop user                      who this machine belongs to
+drop grant <path> <who>        let somebody reach a path
+drop revoke <path> <who>       stop them
+drop grants                    what has been allowed and refused
 ```
 
 ## namespaces
@@ -172,6 +175,24 @@ A password is the weak one: the other two bind to a key nobody else holds, and a
 binds to knowledge, which spreads. It earns its place because it is the only one that works
 before you know who is coming. `drop passwd` prints the hash to put in the config — the
 plaintext never goes in a file, so a leaked config is not a leaked password.
+
+### granting and revoking
+
+The config is structure, written by hand. Who has been let in since is data, and drop owns it —
+the same split as `sshd_config` and `authorized_keys`, so that a program editing one never mangles
+the other.
+
+```console
+$ drop grant  /work carol@laptop     # on top of whatever the config says
+$ drop revoke /work bob@phone        # against it
+$ drop revoke /work bob@phone --forget
+$ drop grants
+```
+
+A refusal beats every rule there is, including one you wrote, and takes effect on the **next
+connection** rather than when a badge expires. It is local: this machine stops trusting them, and
+nobody else is told. Grants live in `$XDG_CONFIG_HOME/drop/grants.json` and cover everything under
+the path they are written at, so refusing somebody at `/` refuses them everywhere.
 
 ### listings are filtered, not refused
 
@@ -499,6 +520,8 @@ src/pkg/ns/            paths, kinds, and the access rules on them
 src/pkg/passwd/        argon2id, for the secrets that guard a path
 src/pkg/proto/         pairing, hello, transfer, and the framing under them
 src/pkg/book/          the address book, including pairing secrets
+src/pkg/grant/         who has been let in and shut out from the interface
+src/pkg/user/          a person, and the badge each of their machines carries
 src/pkg/convo/         the durable conversation log and outbox
 src/pkg/term/          a terminal screen, rebuilt from what a device sends
 src/pkg/cast/          one terminal fanned out to many watchers
@@ -548,7 +571,7 @@ DROP_RELAYS        relay urls to use instead of the defaults, when a rendezvous 
 DROP_CONFIG        the config file; defaults to $XDG_CONFIG_HOME/drop/init.lua
 DROP_USER_KEY      the user key to sign badges with; defaults to $XDG_CONFIG_HOME/drop/user
 DROP_OPENER        what opens an arriving link; defaults to xdg-open
-XDG_CONFIG_HOME    where identity and peers.json live; defaults to ~/.config
+XDG_CONFIG_HOME    where identity, peers.json and grants.json live; defaults to ~/.config
 XDG_DATA_HOME      where conversations live; defaults to ~/.local/share
 ```
 

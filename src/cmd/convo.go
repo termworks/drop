@@ -49,6 +49,14 @@ func deliverOver(ctx context.Context, over reaches, entry book.Entry, path strin
 	defer s.Close()
 
 	stored, err := proto.SendMessages(ctx, s, path, waiting, node.DisplayName())
+	if proto.WasDeclined(err) {
+		// A refusal is an answer. Leaving these queued would retry them against a decision on
+		// every connection from now on, and go on telling the sender they are on their way.
+		if done := ids(waiting); len(done) > 0 {
+			_ = store.Delivered(done...)
+		}
+		return 0, err
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -172,4 +180,13 @@ func kindName(kind byte) string {
 	default:
 		return "text"
 	}
+}
+
+// ids is what a batch of messages is called, for taking them off the queue.
+func ids(all []convo.Message) []string {
+	out := make([]string, 0, len(all))
+	for _, m := range all {
+		out = append(out, m.ID)
+	}
+	return out
 }

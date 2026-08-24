@@ -86,7 +86,7 @@ func SendFiles(ctx context.Context, s io.ReadWriteCloser, path string, sources [
 		if err != nil {
 			return err
 		}
-		return fmt.Errorf("declined: %s", reject.Reason)
+		return Declined{Reason: reject.Reason}
 	default:
 		return fmt.Errorf("expected an answer, got frame kind %d", kind)
 	}
