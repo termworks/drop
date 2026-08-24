@@ -37,3 +37,6 @@ src/pkg/web/assets/drop.wasm
 
 # built by gogio
 android/libs/
+
+# PLAN.md is scratch in most projects and ignored globally. Here it is the plan.
+!PLAN.md
