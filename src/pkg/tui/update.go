@@ -129,7 +129,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.trouble = msg.err.Error()
 			return m, nil
 		}
-		m.history, m.trouble = msg.log, ""
+		// The conversation loading says nothing about whatever else went wrong. Clearing the
+		// notice here wipes the one from the message that has not gone out yet.
+		m.history = msg.log
 		return m, nil
 
 	case framePainted:
@@ -146,11 +148,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case saidIt:
-		if msg.err != nil {
-			m.trouble = msg.err.Error()
-			return m, nil
-		}
+		// The conversation is reloaded either way. A message that could not be delivered is not a
+		// message that was not said: it is written down and goes out when the far end appears, and
+		// leaving it off the screen until then makes it look lost.
 		m.trouble = ""
+		if msg.err != nil {
+			m.trouble = "not delivered yet: " + msg.err.Error()
+		}
+
 		if at, ok := m.peer(); ok {
 			return m, loadHistory(m.back, at)
 		}
@@ -368,6 +373,9 @@ func (m *Model) showPaths() {
 func (m *Model) openPath() tea.Cmd {
 	m.stop()
 	m.history = nil
+
+	// A new screen starts without the last one's complaint on it.
+	m.trouble, m.said = "", ""
 
 	at, okPath := m.path()
 	with, okPeer := m.peer()

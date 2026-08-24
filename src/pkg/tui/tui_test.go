@@ -816,3 +816,25 @@ func TestAFailedRefreshKeepsTheLastAnswer(t *testing.T) {
 		t.Errorf("the failure was not reported:\n%s", m.View())
 	}
 }
+
+// A message to a device that is switched off is written down and goes out later. It has to appear
+// straight away all the same: a conversation that hides what you just said until the far end wakes
+// up looks like it lost it.
+func TestAMessageThatCouldNotBeDeliveredStillShows(t *testing.T) {
+	back := withOne()
+	m := openPath(t, back, "/friends/chat")
+
+	back.mu.Lock()
+	back.refuse = errors.New("nobody answered")
+	back.log = append(back.log, convo.Message{Kind: convo.KindText, Body: "said into the void", At: 1, Dir: convo.Out})
+	back.mu.Unlock()
+
+	m = settle(t, m, saidIt{err: errors.New("nobody answered")})
+
+	if !strings.Contains(m.View(), "said into the void") {
+		t.Errorf("an undelivered message is not on screen:\n%s", m.View())
+	}
+	if !strings.Contains(m.View(), "not delivered yet") {
+		t.Errorf("it does not say the message is still waiting:\n%s", m.View())
+	}
+}

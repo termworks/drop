@@ -471,7 +471,11 @@ func fold(text string, width int) []string {
 // the left, and neither running the full width — a block that reaches both edges is a paragraph,
 // not a message.
 func (m Model) chatView() string {
-	room := m.viewHeight() - 1
+	// The line to write on is always there, whether or not anything is being written: it is the
+	// one part of this screen that does not move, so it should not appear and disappear either.
+	compose := m.compose()
+
+	room := m.viewHeight() - lipgloss.Height(compose)
 	if room < 1 {
 		room = 1
 	}
@@ -491,11 +495,23 @@ func (m Model) chatView() string {
 		said = append([]string{""}, said...)
 	}
 
-	body := strings.Join(said, "\n")
-	if m.writing {
-		return body + "\n" + pickStyle.Render("›") + " " + m.typing + pickStyle.Render("▏")
+	return strings.Join(said, "\n") + "\n" + compose
+}
+
+// compose is the line to write on, on the same ground as what has been said.
+//
+// No bar beside it: a bar says whose message this is, and nothing has been said yet.
+func (m Model) compose() string {
+	width := m.viewWidth()
+
+	box := lipgloss.NewStyle().Background(saidBg).Width(width).Padding(0, 2)
+
+	if !m.writing {
+		return box.Foreground(muted).Render("press i to write")
 	}
-	return body + "\n" + faintStyle.Render("press ") + keyStyle.Render("i") + faintStyle.Render(" to write")
+
+	typed := tailOf(m.typing, width-6)
+	return box.Foreground(plain).Render(pickStyle.Render("› ") + typed + pickStyle.Render("▏"))
 }
 
 // bubble draws one message: a coloured bar down the side of it, and what was said on a shaded
@@ -507,8 +523,8 @@ func (m Model) bubble(msg convo.Message) []string {
 	width := m.viewWidth()
 
 	// Three quarters, so the two sides cannot meet in the middle and a long message still has a
-	// margin to be read against. Two of that is the bar and the space beside it.
-	block := width*3/4 - 2
+	// margin to be read against. One of that is the bar.
+	block := width*3/4 - 1
 	if block < 12 {
 		block = width - 2
 	}
@@ -559,11 +575,13 @@ func (m Model) bubble(msg convo.Message) []string {
 
 	bar := lipgloss.NewStyle().Foreground(colour).Render("┃")
 
+	// Against the box, not a column away from it: the bar glyph is already inset in its own cell,
+	// which is all the gap there is room for.
 	var out []string
 	for _, line := range strings.Split(head+"\n"+said, "\n") {
-		beside := bar + " " + line
+		beside := bar + line
 		if mine {
-			beside = line + " " + bar
+			beside = line + bar
 		}
 		out = append(out, lipgloss.NewStyle().Width(width).Align(sideOf(mine)).Render(beside))
 	}
