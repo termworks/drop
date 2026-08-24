@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Kind is what lives at a path, and therefore what happens when someone opens it.
@@ -76,6 +77,9 @@ type Mount struct {
 // Keyed by path, so declaring the same path twice replaces rather than duplicates: a config that
 // is re-read, or that loops over a list, cannot silently grow the table.
 type Table struct {
+	// One lock, because a serving node reads this from every connection it answers, and a cast
+	// arriving or ending adds and removes a path while they do.
+	mu     sync.RWMutex
 	mounts map[string]Mount
 }
 
@@ -100,8 +104,30 @@ func (t *Table) Add(m Mount) error {
 	}
 
 	m.Path = path
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	t.mounts[path] = m
 	return nil
+}
+
+// Drop removes a namespace, reporting whether it was there.
+//
+// For the ones that come and go: a cast is served only while somebody is casting, and a path that
+// answers when there is nothing behind it is worse than one that is absent.
+func (t *Table) Drop(path string) bool {
+	path, err := Clean(path)
+	if err != nil {
+		return false
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	_, had := t.mounts[path]
+	delete(t.mounts, path)
+	return had
 }
 
 // Lookup finds who serves a path, and what is left of it.
@@ -110,6 +136,9 @@ func (t *Table) Add(m Mount) error {
 // `/stream` serve `/stream/of/one/specific/namespace` without declaring every one of them, while a
 // more specific mount still takes precedence over a general one.
 func (t *Table) Lookup(path string) (Mount, string, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	path, err := Clean(path)
 	if err != nil {
 		return Mount{}, "", false
@@ -152,6 +181,9 @@ func covers(at, path string) bool {
 
 // All lists the namespaces, path order.
 func (t *Table) All() []Mount {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	out := make([]Mount, 0, len(t.mounts))
 	for _, m := range t.mounts {
 		out = append(out, m)
@@ -162,5 +194,8 @@ func (t *Table) All() []Mount {
 
 // Len is how many namespaces are declared.
 func (t *Table) Len() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	return len(t.mounts)
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -58,6 +59,14 @@ func defaultAddressFile() string {
 }
 
 func runCast(parent context.Context, addressFile string) error {
+	// Through the node that is already running, when there is one: two listeners on one identity
+	// means a watcher dialling the address it has can reach the wrong one.
+	if err := castThroughDaemon(parent, addressFile); err == nil {
+		return nil
+	} else if !errors.Is(err, errNoDaemon) {
+		return err
+	}
+
 	reader, head, err := asciicast.NewReader(os.Stdin)
 	if err != nil {
 		return err
@@ -213,4 +222,57 @@ func publishAddress(path, address string) error {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 	return nil
+}
+
+// errNoDaemon says there is nothing listening locally, so a cast has to be its own node.
+var errNoDaemon = errors.New("no daemon is running")
+
+// castThroughDaemon hands standard input to the running node and lets it do the serving.
+//
+// The bytes go over untouched: what arrives is asciicast, and the daemon reads it exactly as this
+// command would have. Nothing here interprets it, so there is one parser rather than two that can
+// come to disagree.
+func castThroughDaemon(ctx context.Context, addressFile string) error {
+	path, err := castSocket()
+	if err != nil {
+		return errNoDaemon
+	}
+
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		return errNoDaemon
+	}
+	defer conn.Close()
+
+	id, err := node.LocalID()
+	if err != nil {
+		return err
+	}
+
+	address := id.String()
+	if err := publishAddress(addressFile, address); err != nil {
+		fmt.Fprintf(os.Stderr, "drop: %v\n", err)
+	}
+	defer os.Remove(addressFile)
+
+	fmt.Println(address)
+	fmt.Fprintf(os.Stderr, "drop: casting through this node; watch with `drop to %s%s`\n",
+		node.Brief(id), CastPath)
+
+	// Closed when standard input runs out, which is what tells the daemon the cast is over.
+	done := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(conn, os.Stdin)
+		if closer, ok := conn.(interface{ CloseWrite() error }); ok {
+			_ = closer.CloseWrite()
+		}
+		done <- err
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-done:
+		return err
+	}
 }

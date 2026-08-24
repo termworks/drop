@@ -55,24 +55,25 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	})
 }
 
-// A terminal shared with `drop cast` is watched at <peer>/cast. It runs as its own node rather than
-// through the daemon, which is how a program being recorded hands its output over.
+// A terminal shared with `drop cast` is watched at <peer>/cast, while the daemon is running.
+//
+// That last part is the whole test. A cast used to stand up a node of its own, which cannot have
+// the address the daemon already holds, so a watcher dialling the address in its address book
+// reached the daemon and was told there was nothing there.
 func TestATerminalIsCastAndWatched(t *testing.T) {
 	watcher := newNode(t, "watcher", "47821")
 	casting := newNode(t, "casting", "47822")
 
-	watcher.serves(`
+	shared := `
 local drop = require("drop")
 
 drop.mount("/chat", { type = "chat", access = "paired" })
-`)
-	casting.serves(`
-local drop = require("drop")
+`
+	watcher.serves(shared)
+	casting.serves(shared)
 
-drop.mount("/chat", { type = "chat", access = "paired" })
-`)
-
-	_, castingSaid, stopServe := casting.background("serve")
+	_, castingSaid, stopCasting := casting.background("serve")
+	defer stopCasting()
 	_, watcherSaid, stopWatcher := watcher.background("serve")
 	defer stopWatcher()
 
@@ -81,19 +82,21 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	})
 	pair(t, casting, watcher)
 
-	// The daemon is stopped so the cast owns the node's port: a cast is its own listener, and two
-	// on one identity is a race for whoever dials.
-	stopServe()
+	// Nothing is being cast yet, so there is nothing to watch and it says so.
+	early, stopEarly := context.WithTimeout(context.Background(), 30*time.Second)
+	said, _ := watcher.runIn(early, "", "to", "casting/cast", "--wait", "10s")
+	stopEarly()
+	if strings.Contains(said, "hello from a recorded terminal") {
+		t.Fatalf("something was watchable before anything was cast:\n%s", said)
+	}
 
 	// asciicast v2: a header, then timed writes. Standard input is held open, because a cast lasts
 	// exactly as long as whatever is being recorded.
-	into, castSaid, stopCast := casting.backgroundWriting("cast", "--address-file", casting.home+"/cast-address")
+	into, _, stopCast := casting.backgroundWriting("cast", "--address-file", casting.home+"/cast-address")
 	defer stopCast()
 
-	if _, err := io.WriteString(into, `{"version": 2, "width": 80, "height": 24}`+"\n"); err != nil {
-		t.Fatal(err)
-	}
 	for _, line := range []string{
+		`{"version": 2, "width": 80, "height": 24}`,
 		`[0.1, "o", "hello from a recorded terminal\r\n"]`,
 		`[0.2, "o", "second line\r\n"]`,
 	} {
@@ -102,11 +105,10 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		}
 	}
 
-	waitFor(t, "the cast to start", 30*time.Second, func() bool {
-		return strings.Contains(castSaid.String(), casting.home) || strings.Contains(castSaid.String(), "watch")
+	waitFor(t, "the daemon to take the cast", 30*time.Second, func() bool {
+		return strings.Contains(castingSaid.String(), "being cast")
 	})
 
-	// The watcher reads it as any other live path.
 	var out string
 	waitFor(t, "the cast to be watchable", 60*time.Second, func() bool {
 		read, stopRead := context.WithTimeout(context.Background(), 15*time.Second)
@@ -122,4 +124,69 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	if !strings.Contains(out, "second line") {
 		t.Errorf("a watcher did not get what was written before it arrived:\n%q", out)
 	}
+
+	// And the daemon goes on being a daemon while all this happens.
+	if out := watcher.must("ls", "casting"); !strings.Contains(out, "/chat") {
+		t.Errorf("the node stopped serving its own namespaces while casting:\n%s", out)
+	}
+
+	// When the cast ends, the path goes with it rather than answering with nothing behind it.
+	stopCast()
+	waitFor(t, "the cast to end", 30*time.Second, func() bool {
+		return strings.Contains(castingSaid.String(), "ended")
+	})
+
+	if out := watcher.must("ls", "casting"); strings.Contains(out, "/cast") {
+		t.Errorf("the cast path outlived the cast:\n%s", out)
+	}
+}
+
+// With no daemon running there is nothing to hand the cast to, so it stands up a node of its own.
+// That is how a machine that only ever shares a terminal works, and it has to keep working.
+func TestACastWithoutADaemonServesItself(t *testing.T) {
+	watcher := newNode(t, "watcher", "47831")
+	casting := newNode(t, "casting", "47832")
+
+	shared := `
+local drop = require("drop")
+
+drop.mount("/chat", { type = "chat", access = "paired" })
+`
+	watcher.serves(shared)
+	casting.serves(shared)
+
+	// Paired with both up, then the casting node's daemon goes away for good.
+	_, castingSaid, stopCasting := casting.background("serve")
+	_, watcherSaid, stopWatcher := watcher.background("serve")
+	defer stopWatcher()
+
+	waitFor(t, "both nodes to be ready", 30*time.Second, func() bool {
+		return strings.Contains(castingSaid.String(), "ready") && strings.Contains(watcherSaid.String(), "ready")
+	})
+	pair(t, casting, watcher)
+	stopCasting()
+
+	into, castSaid, stopCast := casting.backgroundWriting("cast", "--address-file", casting.home+"/cast-address")
+	defer stopCast()
+
+	for _, line := range []string{
+		`{"version": 2, "width": 80, "height": 24}`,
+		`[0.1, "o", "cast on its own\r\n"]`,
+	} {
+		if _, err := io.WriteString(into, line+"\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	waitFor(t, "the cast to start", 30*time.Second, func() bool {
+		return strings.Contains(castSaid.String(), "casting")
+	})
+
+	waitFor(t, "the cast to be watchable", 60*time.Second, func() bool {
+		read, stopRead := context.WithTimeout(context.Background(), 15*time.Second)
+		defer stopRead()
+
+		said, _ := watcher.runIn(read, "", "to", "casting/cast", "--wait", "10s")
+		return strings.Contains(said, "cast on its own")
+	})
 }

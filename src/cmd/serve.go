@@ -72,6 +72,15 @@ func runServe(parent context.Context, quiet bool) error {
 
 	go backlog(ctx, n, lan, pinned)
 
+	// A cast feeds this node over a local socket rather than standing up a second one, so a
+	// terminal can be shared while the daemon is running.
+	casts := newCastHost(cfg.Mounts)
+	go func() {
+		if err := hostCasts(ctx, casts); err != nil {
+			fmt.Fprintf(os.Stderr, "drop: casts unavailable: %v\n", err)
+		}
+	}()
+
 	shells := newTerminals()
 	defer shells.stop()
 
@@ -92,7 +101,7 @@ func runServe(parent context.Context, quiet bool) error {
 				From: nameFor(pinned, from), Kind: kindName(m.Kind), Body: m.Body, Path: "/chat",
 			})
 		}),
-		Duplex: serveDuplex(pinned, shells),
+		Duplex: serveDuplex(pinned, shells, casts),
 	}
 
 	// The address book is re-read before answering anybody, because `drop pair` is a separate

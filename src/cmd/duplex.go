@@ -11,9 +11,18 @@ import (
 )
 
 // serveDuplex answers a live stream according to what the namespace says it is.
-func serveDuplex(pinned *book.Book, shells *terminals) func(proto.Resolved, *proto.Duplex) error {
+func serveDuplex(pinned *book.Book, shells *terminals, host *castHost) func(proto.Resolved, *proto.Duplex) error {
 	return func(at proto.Resolved, d *proto.Duplex) error {
 		who := nameFor(pinned, at.From)
+
+		// A cast is a terminal like any other, but it is somebody's screen being shown rather than
+		// a shell being started, so it is answered before the kind is looked at.
+		if at.Mount.Path == CastPath {
+			if stage := host.live(); stage != nil {
+				return watchCast(pinned, stage)(at, d)
+			}
+			return fmt.Errorf("nothing is being cast")
+		}
 
 		switch at.Mount.Kind {
 		case ns.KindStream:
