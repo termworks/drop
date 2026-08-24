@@ -520,23 +520,32 @@ func (m Model) bubble(msg convo.Message) []string {
 	// something rather than against its edge.
 	shade := lipgloss.NewStyle().Background(saidBg).Width(block).Padding(1, 2)
 
+	colour := second
+	if mine {
+		colour = accent
+	}
+
 	// Who at one end of the top line and when at the other, spaced by hand: two styled columns
 	// would each be padded to their own width and the line would wrap onto a second.
 	inside := block - 4
 	who := m.speaker(mine)
 
-	gap := inside - lipgloss.Width(who) - lipgloss.Width(when)
+	gap := inside - lipgloss.Width(who) - 2 - lipgloss.Width(when)
 	if gap < 1 {
 		gap = 1
-		who = fit(who, inside-lipgloss.Width(when)-1)
+		who = fit(who, inside-lipgloss.Width(when)-3)
 	}
+
+	// The name is a tag in the same colour as the bar, written in the terminal's own background:
+	// the two together say whose message this is twice, in the same glance.
+	tag := lipgloss.NewStyle().Background(colour).Foreground(sunken).Bold(true).Render(" " + who + " ")
 
 	label := lipgloss.NewStyle().Background(saidBg).Foreground(muted)
 
 	// The head takes the top padding and the body the bottom, so the two together are one box
 	// rather than two with a seam across the middle.
 	head := shade.Padding(1, 2, 0, 2).
-		Render(label.Render(who) + label.Render(strings.Repeat(" ", gap)) + label.Render(when))
+		Render(tag + label.Render(strings.Repeat(" ", gap)) + label.Render(when))
 
 	body := shade.Padding(0, 2, 1, 2)
 
@@ -548,10 +557,6 @@ func (m Model) bubble(msg convo.Message) []string {
 		said = body.Foreground(plain).Render("▣ " + msg.Body + "  " + msg.Extra)
 	}
 
-	colour := second
-	if mine {
-		colour = accent
-	}
 	bar := lipgloss.NewStyle().Foreground(colour).Render("┃")
 
 	var out []string
