@@ -376,7 +376,9 @@ func (m *Model) openPath() tea.Cmd {
 	}
 
 	switch kindOf(at) {
-	case "chat":
+	case "chat", "files", "link", "bookmark":
+		// All three read the same conversation: what was said, what changed hands, and what was
+		// opened are one record, and a files path is a view onto part of it.
 		return loadHistory(m.back, with)
 
 	case "tty", "stream":

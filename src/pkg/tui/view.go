@@ -209,7 +209,7 @@ func (m Model) inside(at proto.Served) string {
 		if m.screen == nil {
 			return faintStyle.Render("not watching.")
 		}
-		return lines(m.screen.Draw(), m.viewHeight())
+		return m.canvas(lines(m.screen.Draw(), m.viewHeight()))
 
 	case "files":
 		return m.putView("a file", "files", m.transfers())
@@ -258,50 +258,75 @@ func (m Model) putView(what, kind string, before []string) string {
 	}
 
 	if len(before) == 0 {
-		out.WriteString("\n " + dimStyle.Render("nothing here yet."))
+		out.WriteString(dimStyle.Render("nothing here yet.") + "\n")
 	}
 	for _, line := range before {
-		out.WriteString("\n " + line)
+		out.WriteString(line + "\n")
 	}
 
-	out.WriteString("\n\n " + faintStyle.Render("press ") + keyStyle.Render("s") + faintStyle.Render(" to send "+what))
+	out.WriteString("\n" + faintStyle.Render("press ") + keyStyle.Render("s") + faintStyle.Render(" to send "+what))
 	return out.String()
 }
 
 // transfers is what has changed hands on this conversation, newest last.
+//
+// Two lines each, the way every other list here is: the name is what you look for, and when it
+// happened and how big it was are what you look at once you have found it.
 func (m Model) transfers() []string {
 	var out []string
 
-	for _, at := range m.history {
+	for i, at := range m.history {
 		if at.Kind != convo.KindFile {
 			continue
 		}
-
-		arrow := dimStyle.Render("→")
-		if at.Dir == convo.In {
-			arrow = goodStyle.Render("←")
-		}
-		out = append(out, arrow+" "+kindStyle.Render(at.Body)+"  "+faintStyle.Render(at.Extra))
+		out = append(out, m.item(i, at.Dir == convo.In, at.Body, at.Extra, at.At)...)
 	}
-	return lastOf(out, m.viewHeight()-6)
+	return lastOf(out, m.viewHeight()-4)
 }
 
 // links is what has been sent to a link path, newest last.
 func (m Model) links() []string {
 	var out []string
 
-	for _, at := range m.history {
+	for i, at := range m.history {
 		if at.Kind != convo.KindLink {
 			continue
 		}
-
-		arrow := dimStyle.Render("→")
-		if at.Dir == convo.In {
-			arrow = goodStyle.Render("←")
-		}
-		out = append(out, arrow+" "+kindStyle.Render(at.Body))
+		out = append(out, m.item(i, at.Dir == convo.In, at.Body, "", at.At)...)
 	}
-	return lastOf(out, m.viewHeight()-6)
+	return lastOf(out, m.viewHeight()-4)
+}
+
+// item is one thing that changed hands, as the two lines it occupies.
+func (m Model) item(index int, incoming bool, name, about string, at int64) []string {
+	width := m.viewWidth()
+	base := row(index, false)
+
+	arrow := "→"
+	var colour lipgloss.TerminalColor = plain
+	if incoming {
+		arrow, colour = "←", green
+	}
+
+	// Where it went, then what it was, then when — one column each, so a list of them reads down
+	// rather than across.
+	first := base.Width(width).Render(
+		cell(base, colour, 2, arrow, false, false) +
+			cell(base, plain, width-2-8, fit(name, width-10), false, true) +
+			cell(base, muted, 8, time.UnixMilli(at).Format("15:04"), true, false))
+
+	said := about
+	if said == "" {
+		said = "a link"
+		if !incoming {
+			said = "sent from here"
+		}
+	}
+	second := base.Width(width).Render(
+		cell(base, muted, 2, "", false, false) +
+			cell(base, muted, width-2, said, false, false))
+
+	return []string{first, second}
 }
 
 // bar draws how far along a transfer is. A size nobody knows yet gets a moving mark rather than a
@@ -439,29 +464,29 @@ func fold(text string, width int) []string {
 	return append(out, text)
 }
 
+// chatView is the conversation, as a conversation looks.
+//
+// Each message is a block rather than a line: a rule to separate it from the one before, who said
+// it and when, then what they said on a ground a shade off the page. Mine on the right, theirs on
+// the left, and neither running the full width — a block that reaches both edges is a paragraph,
+// not a message.
 func (m Model) chatView() string {
+	room := m.viewHeight() - 1
+	if room < 1 {
+		room = 1
+	}
+
 	var said []string
-
 	for _, msg := range m.history {
-		when := faintStyle.Render(time.UnixMilli(msg.At).Format("15:04"))
-
-		arrow := kindStyle.Render("←")
-		if msg.Dir == convo.Out {
-			arrow = pickStyle.Render("→")
-		}
-		said = append(said, when+" "+arrow+" "+msg.Body)
+		said = append(said, m.bubble(msg)...)
 	}
 
 	if len(said) == 0 {
 		said = []string{faintStyle.Render("nothing said yet.")}
 	}
 
-	// Room for the conversation: everything the panel has, less the line to write on.
-	room := m.viewHeight() - 1
+	// The newest sits just above what is being typed, whatever the older ones did.
 	said = lastOf(said, room)
-
-	// Pushed to the bottom, because that is where a conversation is: the newest line sits just
-	// above what you are typing, wherever the older ones happen to have got to.
 	for len(said) < room {
 		said = append([]string{""}, said...)
 	}
@@ -471,6 +496,89 @@ func (m Model) chatView() string {
 		return body + "\n" + pickStyle.Render("›") + " " + m.typing + pickStyle.Render("▏")
 	}
 	return body + "\n" + faintStyle.Render("press ") + keyStyle.Render("i") + faintStyle.Render(" to write")
+}
+
+// bubble draws one message, as the lines it occupies.
+func (m Model) bubble(msg convo.Message) []string {
+	width := m.viewWidth()
+
+	// Three quarters, so the two sides cannot meet in the middle and a long message still has a
+	// margin to be read against.
+	block := width * 3 / 4
+	if block < 12 {
+		block = width
+	}
+
+	mine := msg.Dir == convo.Out
+	who := faintStyle.Render(m.speaker(mine) + "  " + time.UnixMilli(msg.At).Format("15:04"))
+
+	body := lipgloss.NewStyle().
+		Background(rowBgAlt).
+		Foreground(plain).
+		Width(block).
+		Padding(0, 1).
+		Render(msg.Body)
+
+	// A link is worth marking as one, and a file is a thing that happened rather than a thing
+	// somebody said.
+	switch msg.Kind {
+	case convo.KindLink:
+		body = lipgloss.NewStyle().Background(rowBgAlt).Foreground(second).Width(block).Padding(0, 1).Render(msg.Body)
+	case convo.KindFile:
+		body = lipgloss.NewStyle().Background(rowBgAlt).Foreground(plain).Width(block).Padding(0, 1).
+			Render("▣ " + msg.Body + faintStyle.Render("  "+msg.Extra))
+	}
+
+	rule := faintStyle.Render(strings.Repeat("─", block))
+
+	side := lipgloss.Left
+	if mine {
+		side = lipgloss.Right
+	}
+	place := lipgloss.NewStyle().Width(width).Align(side)
+
+	var out []string
+	for _, line := range strings.Split(rule+"\n"+who+"\n"+body, "\n") {
+		out = append(out, place.Render(line))
+	}
+	return append(out, "")
+}
+
+// canvas is what a terminal from another machine is drawn on.
+//
+// Black, whatever this terminal's own background is. What arrives is a screen somebody else's
+// programs painted, with their own idea of what the background should be, and letting this page
+// show through the gaps makes two screens out of one.
+func (m Model) canvas(drawn string) string {
+	ground := lipgloss.NewStyle().Background(lipgloss.Color("0")).Width(m.viewWidth())
+
+	// The far end's own escapes reset the background to whatever this terminal calls default, so
+	// the black has to be asserted again after each one. Without this the canvas is black only up
+	// to the first colour the other machine chose.
+	drawn = strings.ReplaceAll(drawn, "\x1b[0m", "\x1b[0m\x1b[40m")
+
+	rows := strings.Split(drawn, "\n")
+	for i, row := range rows {
+		rows[i] = ground.Render(row)
+	}
+
+	// Filled to the bottom, so the canvas is a rectangle rather than a ragged edge where the far
+	// end happened to stop writing.
+	for len(rows) < m.viewHeight() {
+		rows = append(rows, ground.Render(""))
+	}
+	return strings.Join(rows, "\n")
+}
+
+// speaker is whose message this is, by name.
+func (m Model) speaker(mine bool) string {
+	if mine {
+		return m.me.Name
+	}
+	if with, ok := m.peer(); ok {
+		return with.Name
+	}
+	return "them"
 }
 
 // middle puts something in the centre of the room a screen has, for the screens that are one thing
