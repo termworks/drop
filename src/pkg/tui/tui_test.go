@@ -51,6 +51,7 @@ type fake struct {
 	paired    chan string
 	stream    string
 	self      Identity
+	rules     map[string]Rule
 }
 
 func (f *fake) Peers() ([]book.Entry, error) { return f.peers, nil }
@@ -1207,4 +1208,133 @@ func TestAPersonIsNotADeviceToEnter(t *testing.T) {
 	if m.at != levelDevices {
 		t.Errorf("entering a person went somewhere, to level %d", m.at)
 	}
+}
+
+func (f *fake) Access(path string) (Rule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	rule := f.rules[path]
+	rule.Path = path
+	return rule, nil
+}
+
+func (f *fake) Grant(path, who string) error  { return f.stand(path, who, Allowed) }
+func (f *fake) Refuse(path, who string) error { return f.stand(path, who, Refused) }
+func (f *fake) Unset(path, who string) error  { return f.stand(path, who, NotNamed) }
+
+// stand is the fake's whole grant store: it moves one name to one standing.
+func (f *fake) stand(path, who string, to Standing) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.rules == nil {
+		f.rules = map[string]Rule{}
+	}
+
+	rule := f.rules[path]
+	rule.Path = path
+	for i := range rule.Who {
+		if rule.Who[i].Name == who {
+			rule.Who[i].At = to
+			f.rules[path] = rule
+			return nil
+		}
+	}
+	rule.Who = append(rule.Who, Who{Name: who, At: to})
+	f.rules[path] = rule
+	return nil
+}
+
+// Who may reach one of your own paths is a thing you look at and change from here, because the
+// alternative is editing a config by hand every time somebody gets a new laptop.
+func TestWhoMayReachAPathIsShownAndChanged(t *testing.T) {
+	back := &fake{
+		self:  Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
+		peers: []book.Entry{{Name: "beta", ID: idFor(2), Secret: make([]byte, book.SecretBytes)}},
+		mine:  []proto.Served{{Path: "/work", Kind: ns.KindChat}},
+		rules: map[string]Rule{
+			"/work": {Who: []Who{
+				{Name: "bob", Person: true, Machines: 2},
+				{Name: "carol", Person: true, Machines: 1, At: Allowed, InConfig: true},
+			}},
+		},
+	}
+
+	m := start(t, back)
+
+	// Into this machine's own paths, then onto /work.
+	m.list.Select(m.rows.me)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+
+	if m.at != levelAccess {
+		t.Fatalf("w did not open the access list, at level %d", m.at)
+	}
+	shown := m.View()
+	for _, want := range []string{"who may reach it", "bob", "carol", "ANYONE"} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("the access list is missing %q:\n%s", want, shown)
+		}
+	}
+
+	// Allowing bob, from the list.
+	onto(t, &m, "bob")
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+
+	if got := standingFor(m, "bob"); got != Allowed {
+		t.Errorf("bob stands at %d after being allowed", got)
+	}
+
+	// And refusing him again, which is what revocation is from here.
+	onto(t, &m, "bob")
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+
+	if got := standingFor(m, "bob"); got != Refused {
+		t.Errorf("bob stands at %d after being refused", got)
+	}
+}
+
+// The rules that name nobody are shown but not toggled: making a path public is a decision that
+// belongs in the config, where it can be read back, rather than behind one keystroke.
+func TestThePublicRungIsNotAKeystroke(t *testing.T) {
+	back := &fake{
+		mine:  []proto.Served{{Path: "/work", Kind: ns.KindChat}},
+		rules: map[string]Rule{"/work": {}},
+	}
+
+	m := start(t, back)
+	m.list.Select(m.rows.me)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+
+	onto(t, &m, "anyone with the id")
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+
+	if rule, _ := back.Access("/work"); rule.Anyone {
+		t.Error("a keystroke made a path public")
+	}
+}
+
+// onto puts the cursor on the access row for one name.
+func onto(t *testing.T, m *Model, name string) {
+	t.Helper()
+
+	for i, item := range m.list.Items() {
+		if it, ok := item.(accessItem); ok && it.who.Name == name {
+			m.list.Select(i)
+			return
+		}
+	}
+	t.Fatalf("no row for %q in:\n%s", name, m.View())
+}
+
+// standingFor is how somebody stands, as the list has it.
+func standingFor(m Model, name string) Standing {
+	for _, who := range m.rule.Who {
+		if who.Name == name {
+			return who.At
+		}
+	}
+	return NotNamed
 }

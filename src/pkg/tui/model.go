@@ -30,6 +30,15 @@ type Backend interface {
 	Serves(ctx context.Context, with book.Entry) ([]proto.Served, error)
 	// Mine is what this device serves, read from its own config rather than asked over a wire.
 	Mine() ([]proto.Served, error)
+	// Access is who may reach one of this machine's own paths: what the config says, and what
+	// has been granted here.
+	Access(path string) (Rule, error)
+	// Grant lets somebody reach a path, Refuse stops them whatever else says otherwise, and
+	// Unset leaves them to whatever the config says. All three write drop's own file, never the
+	// config.
+	Grant(path, who string) error
+	Refuse(path, who string) error
+	Unset(path, who string) error
 	// History is a conversation as it stands.
 	History(with book.Entry) ([]convo.Message, error)
 	// Compose writes a message into the conversation without sending it. It returns as fast as a
@@ -68,6 +77,8 @@ const (
 	levelDevices level = iota
 	levelPaths
 	levelOpen
+	// levelAccess is who may reach one of this machine's own paths, and where that is changed.
+	levelAccess
 )
 
 // Model is the whole interface.
@@ -91,6 +102,8 @@ type Model struct {
 	paths  []proto.Served
 	// rows is how the address book was arranged into the list: which row is which device.
 	rows grouped
+	// rule is who may reach the path whose access is being looked at.
+	rule Rule
 	// under is where in a device's paths the list is standing, "/" being the top.
 	under string
 	// steps is what is at that level: namespaces, and the ways further down.

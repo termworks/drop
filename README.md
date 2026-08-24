@@ -189,6 +189,9 @@ $ drop revoke /work bob@phone --forget
 $ drop grants
 ```
 
+The interface does the same thing: on one of your own paths, `w` opens **who may reach it** --
+people, machines, and the rules that name nobody -- and `a` and `x` allow and refuse from there.
+
 A refusal beats every rule there is, including one you wrote, and takes effect on the **next
 connection** rather than when a badge expires. It is local: this machine stops trusting them, and
 nobody else is told. Grants live in `$XDG_CONFIG_HOME/drop/grants.json` and cover everything under

@@ -41,6 +41,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.key(msg)
 
+	case ruleLoaded:
+		m.loading = false
+		if msg.err != nil {
+			m.trouble = msg.err.Error()
+			return m, nil
+		}
+		m.rule, m.trouble = msg.rule, ""
+		m.showAccess()
+		return m, nil
+
+	case changed:
+		if msg.err != nil {
+			m.trouble = msg.err.Error()
+			return m, nil
+		}
+		// Read back rather than believed: what is on screen has to be what a caller will be
+		// judged against, and that is on disk.
+		return m, loadRule(m.back, msg.path)
+
 	case pairStarted:
 		if msg.err != nil {
 			m.trouble = msg.err.Error()
@@ -316,6 +335,35 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, loadPeers(m.back)
+
+	case "w":
+		// Who may reach it. Only for your own paths: what somebody else shares and with whom is
+		// their business, and nothing here could change it anyway.
+		if at, ok := m.path(); ok && m.at == levelPaths && m.onSelf {
+			m.at, m.loading, m.trouble = levelAccess, true, ""
+			m.rule = Rule{Path: at.Path}
+			m.showAccess()
+			return m, loadRule(m.back, at.Path)
+		}
+		return m, nil
+
+	case "a", "x", "d":
+		if m.at != levelAccess {
+			return m, nil
+		}
+		it, ok := m.standingOf()
+		if !ok {
+			return m, nil
+		}
+
+		to := Allowed
+		switch msg.String() {
+		case "x":
+			to = Refused
+		case "d":
+			to = NotNamed
+		}
+		return m, change(m.back, m.rule.Path, it.who.Name, to)
 	}
 
 	if m.at != levelOpen {
@@ -431,6 +479,11 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 // back_ comes out one level, stopping whatever the level was doing.
 func (m Model) back_() (tea.Model, tea.Cmd) {
 	switch m.at {
+	case levelAccess:
+		m.at, m.trouble = levelPaths, ""
+		m.showPaths()
+		return m, nil
+
 	case levelOpen:
 		m.stop()
 		m.history = nil

@@ -115,6 +115,9 @@ func (m Model) emptyList() string {
 
 // listTitle names what is being listed, in the panel's top edge.
 func (m Model) listTitle() string {
+	if m.at == levelAccess {
+		return m.rule.Path + "  ·  who may reach it"
+	}
 	if m.at != levelPaths {
 		return "devices"
 	}
@@ -457,6 +460,12 @@ func (m Model) footer() string {
 
 	case m.at == levelPaths:
 		keys = []hint{{"↑↓", "move"}, {"enter", "open"}, {"esc", "devices"}, {"r", "reload"}}
+		if m.onSelf {
+			keys = append([]hint{{"w", "who may reach it"}}, keys...)
+		}
+
+	case m.at == levelAccess:
+		keys = []hint{{"↑↓", "move"}, {"a", "allow"}, {"x", "refuse"}, {"d", "config decides"}, {"esc", "back"}}
 
 	default:
 		keys = []hint{{"esc", "back"}}

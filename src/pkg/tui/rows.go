@@ -88,6 +88,8 @@ func (d rows) Render(w io.Writer, m list.Model, index int, item list.Item) {
 		fmt.Fprint(w, device(it, width, index, selected))
 	case pathItem:
 		fmt.Fprint(w, path(it, width, index, selected))
+	case accessItem:
+		fmt.Fprint(w, access(it, width, index, selected))
 	}
 }
 
@@ -297,4 +299,70 @@ func person(it personItem, width, index int, selected bool) string {
 		cell(base, muted, inner, fmt.Sprintf("access = { %q }", it.name), false, false))
 
 	return first + "\n" + rule + "\n" + fill("")
+}
+
+// access draws one row of the access pane: somebody, and whether they get in.
+func access(it accessItem, width, index int, selected bool) string {
+	base := row(index, selected)
+	fill := func(s string) string { return base.Width(width).Render(s) }
+	inner := width - 2
+
+	var name lipgloss.TerminalColor = plain
+	if selected {
+		name = accent
+	}
+
+	mark, markColour, state := "·", muted, "not named"
+	if it.group == groupAnyone {
+		state = "off"
+	}
+
+	switch it.who.At {
+	case Allowed:
+		mark, markColour, state = "✓", green, "may reach it"
+		if it.group == groupAnyone {
+			state = "on"
+		}
+	case Refused:
+		mark, markColour, state = "✗", red, "refused"
+	}
+
+	stateCol := 16
+	first := fill(stripe(base, selected) +
+		cell(base, markColour, 2, mark, false, false) +
+		cell(base, name, inner-2-stateCol, it.who.Name, false, true) +
+		cell(base, subtext, stateCol, state, true, false))
+
+	rest := fill(stripe(base, selected) +
+		cell(base, muted, inner, whatKind(it), false, false))
+
+	return first + "\n" + rest + "\n" + fill("")
+}
+
+// whatKind says what a row names, and where the answer came from.
+func whatKind(it accessItem) string {
+	switch {
+	case it.group == groupAnyone:
+		return rung(it.who.Name)
+	case it.who.InConfig:
+		return "named in the config; refusable here, not removable"
+	case it.who.Person && it.who.Machines == 1:
+		return "a person, with one machine"
+	case it.who.Person:
+		return fmt.Sprintf("a person, with %d machines", it.who.Machines)
+	default:
+		return "one machine"
+	}
+}
+
+// rung says what one of the rules that names nobody actually admits.
+func rung(name string) string {
+	switch name {
+	case "anyone with the id":
+		return "a public path: whoever learns this device's id"
+	case "anyone paired":
+		return "every device in the address book"
+	default:
+		return "knowledge rather than a key, so it spreads"
+	}
 }
