@@ -81,7 +81,7 @@ whichever of these you are looking at.
 
 ```
 drop ls beta          the command line: what beta shares with you
-drop ui               a full-screen interface: enter a device, then a path
+drop                  a full-screen interface: enter a device, then a path
 ```
 
 ## commands
@@ -89,7 +89,7 @@ drop ui               a full-screen interface: enter a device, then a path
 ```
 drop ls [device[/path]]        what a device shares with you
 drop to <device>/<path> [args] open a path; what is there decides what happens
-drop ui                        all of it, in a full-screen terminal
+drop                           all of it, in a full-screen terminal
                                p shows a pairing code, t takes one
 
 drop pair [ticket]             link a device to this one; --qr to show a code

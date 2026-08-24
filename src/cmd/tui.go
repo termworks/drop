@@ -11,8 +11,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tmc/go-iroh/iroh"
 
-	"github.com/spf13/cobra"
-
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/conf"
 	"github.com/bresilla/drop/src/pkg/convo"
@@ -22,20 +20,6 @@ import (
 	"github.com/bresilla/drop/src/pkg/tui"
 	"io"
 )
-
-func newTUICmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "ui",
-		Short: "drop in a full-screen terminal interface",
-		Long: "ui shows your devices, what each one shares with you, and whatever is at a path.\n\n" +
-			"It is a view onto the same model as everything else: which paths appear was decided\n" +
-			"by the far device, not here.",
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTUI(cmd.Context())
-		},
-	}
-}
 
 func runTUI(parent context.Context) error {
 	cfg, err := conf.Load()

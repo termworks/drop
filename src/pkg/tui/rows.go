@@ -13,8 +13,8 @@ import (
 	"github.com/bresilla/drop/src/pkg/proto"
 )
 
-// Three lines per item: what it is, what is known about it, and where it goes. One line would fit
-// more on screen, but the things worth knowing about a device do not fit on one line, and putting
+// Three lines per item: what it is, what is known about it, and where it goes. One surface would fit
+// more on screen, but the things worth knowing about a device do not fit on one surface, and putting
 // them in a second column instead is what forces a layout to be read left to right rather than down.
 const rowHeight = 3
 
@@ -59,79 +59,79 @@ func (d rows) Render(w io.Writer, m list.Model, index int, item list.Item) {
 // stripe is the accent bar down the left of the row the cursor is on.
 func stripe(base lipgloss.Style, selected bool) string {
 	if selected {
-		return base.Foreground(violet).Render("┃ ")
+		return base.Foreground(mauve).Render("┃ ")
 	}
 	return base.Render("  ")
 }
 
 func device(it deviceItem, width, index int, selected bool) string {
 	base := row(index, selected)
-	line := func(s string) string { return base.Width(width).Render(s) }
+	surface := func(s string) string { return base.Width(width).Render(s) }
 	inner := width - 2
 
-	dot, dotColour := "●", good
+	dot, dotColour := "●", green
 	state := "paired"
 	if !it.entry.Paired() {
-		dot, dotColour, state = "○", faint, "not paired"
+		dot, dotColour, state = "○", muted, "not paired"
 	}
 
-	name := ink
+	name := text
 	if selected {
-		name = violet
+		name = mauve
 	}
 
 	stateCol := 14
-	first := line(stripe(base, selected) +
+	first := surface(stripe(base, selected) +
 		cell(base, dotColour, 2, dot, false, false) +
 		cell(base, name, inner-2-stateCol, it.entry.Name, false, true) +
-		cell(base, dim, stateCol, state, true, false))
+		cell(base, subtext, stateCol, state, true, false))
 
-	second := line(stripe(base, selected) +
-		cell(base, faint, inner, it.entry.ID.String(), false, false))
+	second := surface(stripe(base, selected) +
+		cell(base, muted, inner, it.entry.ID.String(), false, false))
 
 	where := it.addr
 	if where == "" {
 		where = "last seen address unknown"
 	}
-	third := line(stripe(base, selected) +
-		cell(base, faint, inner, where, false, false))
+	third := surface(stripe(base, selected) +
+		cell(base, muted, inner, where, false, false))
 
 	return first + "\n" + second + "\n" + third
 }
 
 func path(it pathItem, width, index int, selected bool) string {
 	base := row(index, selected)
-	line := func(s string) string { return base.Width(width).Render(s) }
+	surface := func(s string) string { return base.Width(width).Render(s) }
 	inner := width - 2
 
 	kind := it.served.Kind.String()
 
-	name := ink
+	name := text
 	if selected {
-		name = violet
+		name = mauve
 	}
 
 	send := "read only"
-	sendColour := faint
+	sendColour := muted
 	if it.served.Writable {
-		send, sendColour = "you may send", good
+		send, sendColour = "you may send", green
 	}
 	if kind == "branch" {
-		send, sendColour = "", faint
+		send, sendColour = "", muted
 	}
 
 	sendCol := 16
-	first := line(stripe(base, selected) +
-		cell(base, plum, 2, glyph(kind), false, false) +
+	first := surface(stripe(base, selected) +
+		cell(base, pink, 2, glyph(kind), false, false) +
 		cell(base, name, inner-2-sendCol, it.served.Path, false, true) +
 		cell(base, sendColour, sendCol, send, true, false))
 
-	second := line(stripe(base, selected) +
-		cell(base, plum, 10, kind, false, false) +
-		cell(base, faint, inner-10, describe(kind), false, false))
+	second := surface(stripe(base, selected) +
+		cell(base, pink, 10, kind, false, false) +
+		cell(base, muted, inner-10, describe(kind), false, false))
 
-	third := line(stripe(base, selected) +
-		cell(base, faint, inner, "drop to "+it.on+it.served.Path, false, false))
+	third := surface(stripe(base, selected) +
+		cell(base, muted, inner, "drop to "+it.on+it.served.Path, false, false))
 
 	return first + "\n" + second + "\n" + third
 }

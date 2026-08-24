@@ -257,10 +257,21 @@ func waitForFrame(nudge chan struct{}) tea.Cmd {
 }
 
 // The list is the page: full width, with room left for the header and the keys.
+// The room a list has, inside the panel it is drawn in: the header and its rule, the footer, and
+// the panel's own top and bottom edges.
 func (m Model) listHeight() int {
-	got := m.height - 3
+	got := m.height - 5
 	if got < rowHeight {
 		return rowHeight
+	}
+	return got
+}
+
+// listWidth is the same for columns: the panel's borders and the padding inside them.
+func (m Model) listWidth() int {
+	got := m.width - 4
+	if got < 20 {
+		return 20
 	}
 	return got
 }

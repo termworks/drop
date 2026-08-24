@@ -420,7 +420,7 @@ croc's model, not "pair once and reach forever". With `drop.rendezvous = true`
 the same process republishes its address every 5 minutes, because a record
 that stops being refreshed stops being findable.
 
-`drop ui` also holds the node open, so a terminal on this machine keeps it
+`drop` with no arguments also holds the node open, so a terminal on this machine keeps it
 reachable for as long as the page is.
 
 ---

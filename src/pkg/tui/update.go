@@ -13,7 +13,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.list.SetSize(m.width, m.listHeight())
+		m.list.SetSize(m.listWidth(), m.listHeight())
 		if m.screen != nil {
 			m.screen.Resize(m.viewWidth(), m.viewHeight())
 		}
@@ -320,7 +320,7 @@ func (m *Model) showDevices() {
 	}
 	m.list.SetItems(items)
 	m.list.Select(m.atPeer)
-	m.list.SetSize(m.width, m.listHeight())
+	m.list.SetSize(m.listWidth(), m.listHeight())
 }
 
 // showPaths puts what the open device shares in the list.
@@ -333,7 +333,7 @@ func (m *Model) showPaths() {
 	}
 	m.list.SetItems(items)
 	m.list.Select(m.atPath)
-	m.list.SetSize(m.width, m.listHeight())
+	m.list.SetSize(m.listWidth(), m.listHeight())
 }
 
 // openPath does whatever the path is: reads a conversation, or starts watching.
