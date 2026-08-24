@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -27,13 +28,43 @@ import (
 // login or a git commit signature, and neither of those can become a badge.
 const Namespace = "drop"
 
+// chosen is the key the config named, if it named one.
+//
+// Set before anything asks, because settings are applied before a badge is worn. A package-level
+// value rather than an argument threaded through every caller: there is exactly one user key per
+// running drop, and a caller that forgot to pass it would quietly sign as somebody else.
+var chosen struct {
+	sync.RWMutex
+	at string
+}
+
+// Use names the key drop should sign with, from the config. $DROP_USER_KEY still wins, so a profile
+// or a one-off command can point somewhere else without editing anything.
+func Use(at string) {
+	chosen.Lock()
+	defer chosen.Unlock()
+
+	chosen.at = at
+}
+
 // Where is the user key drop will use.
 //
-// $DROP_USER_KEY names a key to use — a private key file, or the public half of one held by an
-// agent, which is how a YubiKey takes part without its key ever being read. Otherwise drop keeps
-// one of its own.
+// Three places, narrowest first. $DROP_USER_KEY is for a profile or a one-off. `drop.user_key` in
+// the config is where somebody says, once, that their identity is the SSH key they already have.
+// Failing both, drop keeps a key of its own — identity is not optional, so something has to exist.
+//
+// Any of them may name a private key file, or the public half of one held by an agent, which is how
+// a YubiKey takes part without its key ever being read.
 func Where() (string, error) {
 	if named := os.Getenv("DROP_USER_KEY"); named != "" {
+		return named, nil
+	}
+
+	chosen.RLock()
+	named := chosen.at
+	chosen.RUnlock()
+
+	if named != "" {
 		return named, nil
 	}
 
@@ -42,6 +73,19 @@ func Where() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "user"), nil
+}
+
+// Named reports whether the key was pointed at rather than made up by drop. A key drop generated is
+// a fallback, and worth saying so when somebody asks what their identity is.
+func Named() bool {
+	if os.Getenv("DROP_USER_KEY") != "" {
+		return true
+	}
+
+	chosen.RLock()
+	defer chosen.RUnlock()
+
+	return chosen.at != ""
 }
 
 // Signer is the key this user signs with, making one if there is none.
@@ -58,7 +102,9 @@ func Signer() (ssh.Signer, error) {
 
 	raw, err := os.ReadFile(where)
 	if errors.Is(err, os.ErrNotExist) {
-		if os.Getenv("DROP_USER_KEY") != "" {
+		// A key that was pointed at and is not there is a mistake worth reporting. Generating one
+		// at that path would answer a typo by inventing a second identity.
+		if Named() {
 			return nil, fmt.Errorf("no key at %s", where)
 		}
 		return make(where)
@@ -93,7 +139,7 @@ func Public() (ssh.PublicKey, error) {
 
 	raw, err := os.ReadFile(where)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) && os.Getenv("DROP_USER_KEY") == "" {
+		if errors.Is(err, os.ErrNotExist) && !Named() {
 			signer, err := make(where)
 			if err != nil {
 				return nil, err

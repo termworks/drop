@@ -231,6 +231,9 @@ func readSettings(cfg *Config, module *rt.Table) {
 	// A vault is one recipient or several. A bare string is the common case -- a key file beside
 	// the config -- and writing it as a list of one is the sort of thing a config makes you do
 	// once and resent afterwards.
+	if key, ok := optString(module, "user_key"); ok {
+		cfg.UserKey = key
+	}
 	if list, ok := optStrings(module, "vault"); ok {
 		cfg.Vault = list
 	}

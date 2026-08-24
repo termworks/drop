@@ -31,13 +31,13 @@ type Store struct {
 // they do not live beside the config.
 func DataDir() (string, error) {
 	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
-		return filepath.Join(dir, "drop"), nil
+		return node.Under(filepath.Join(dir, "drop"))
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("locating home directory: %w", err)
 	}
-	return filepath.Join(home, ".local", "share", "drop"), nil
+	return node.Under(filepath.Join(home, ".local", "share", "drop"))
 }
 
 // Open prepares the conversation with one peer.

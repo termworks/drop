@@ -21,13 +21,13 @@ func ParseID(text string) (ID, error) {
 // ConfigDir is $XDG_CONFIG_HOME/drop, or ~/.config/drop.
 func ConfigDir() (string, error) {
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "drop"), nil
+		return profileDir(filepath.Join(dir, "drop"))
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("locating home directory: %w", err)
 	}
-	return filepath.Join(home, ".config", "drop"), nil
+	return profileDir(filepath.Join(home, ".config", "drop"))
 }
 
 // Identity loads this node's secret key, generating and persisting one on first run.

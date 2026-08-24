@@ -124,12 +124,13 @@ const DefaultPort = 47777
 func Port() uint16 {
 	written := os.Getenv("DROP_PORT")
 	if written == "" {
-		return DefaultPort
+		// A profile listens somewhere of its own, or two of them could not be up at once.
+		return profilePort()
 	}
 
 	chosen, err := strconv.ParseUint(written, 10, 16)
 	if err != nil {
-		return DefaultPort
+		return profilePort()
 	}
 	return uint16(chosen)
 }

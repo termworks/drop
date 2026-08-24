@@ -27,6 +27,9 @@ type node struct {
 	name string
 	home string
 	port string
+	// profile makes this a second person under the same home, reached with $DROP_PROFILE. Its
+	// port is derived from the name, so it does not need one of its own.
+	profile string
 }
 
 // binary is the drop under test, built once for the whole run.
@@ -60,6 +63,15 @@ func newNode(t *testing.T, name, port string) *node {
 }
 
 func (n *node) env() []string {
+	if n.profile != "" {
+		return append(os.Environ(),
+			"DROP_PROFILE="+n.profile,
+			"XDG_CONFIG_HOME="+filepath.Join(n.home, "config"),
+			"XDG_DATA_HOME="+filepath.Join(n.home, "data"),
+			"DROP_OPENER=/bin/true",
+		)
+	}
+
 	return append(os.Environ(),
 		"DROP_NAME="+n.name,
 		"DROP_PORT="+n.port,
@@ -77,6 +89,9 @@ func (n *node) serves(config string) {
 	n.t.Helper()
 
 	dir := filepath.Join(n.home, "config", "drop")
+	if n.profile != "" {
+		dir = filepath.Join(dir, "profiles", n.profile)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		n.t.Fatal(err)
 	}

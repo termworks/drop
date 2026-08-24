@@ -15,7 +15,14 @@ func DisplayName() string {
 	}
 	name, err := os.Hostname()
 	if err != nil || name == "" {
-		return "unknown"
+		name = "unknown"
+	}
+
+	// A profile is a different machine as far as the protocol is concerned, so it says so. Two
+	// rows both called "tron" in somebody's peer list would be unreadable, and the name is the
+	// thing an access rule is written against.
+	if at := Profile(); at != "" {
+		return name + "-" + at
 	}
 	return name
 }

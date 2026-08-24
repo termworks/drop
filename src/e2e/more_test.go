@@ -538,3 +538,51 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		t.Errorf("what it asked for was not written down:\n%s", raw)
 	}
 }
+
+// Two people on one machine.
+//
+// A profile is not a second name for the same identity: it gets its own device key, its own user
+// key, its own address book and its own conversations. That is what makes it possible to try a rule
+// that names somebody else without owning a second computer.
+func TestTwoProfilesOnOneMachineAreStrangers(t *testing.T) {
+	me := newNode(t, "me", "45091")
+
+	// Bob lives under the same home, reached only by setting DROP_PROFILE.
+	bob := &node{t: t, name: "bob", home: me.home, port: "", profile: "bob"}
+
+	shared := `
+local drop = require("drop")
+drop.mount("/chat",   { type = "chat", access = "paired" })
+drop.mount("/private", { type = "chat", access = { "me" } })
+`
+	me.serves(shared)
+	bob.serves(shared)
+
+	// Different user keys, so different people.
+	mine := between(t, me.must("user"), "identity ", "\n")
+	his := between(t, bob.must("user"), "identity ", "\n")
+	if mine == his {
+		t.Fatal("a profile shares the ordinary identity")
+	}
+
+	// Different devices too.
+	if strings.TrimSpace(me.must("id")) == strings.TrimSpace(bob.must("id")) {
+		t.Fatal("a profile shares the ordinary device key")
+	}
+
+	pair(t, me, bob)
+
+	_, _, stop := me.background("serve")
+	defer stop()
+
+	// Paired, so the shared path works.
+	bob.must("to", "me/chat", "hello from somebody else")
+	waitFor(t, "the message", 30*time.Second, func() bool {
+		return strings.Contains(me.must("log"), "hello from somebody else")
+	})
+
+	// But a path for my own machines refuses him, which is the whole point.
+	if said, err := bob.run("to", "me/private", "and this"); err == nil {
+		t.Fatalf("a different person reached a path meant for my own machines:\n%s", said)
+	}
+}

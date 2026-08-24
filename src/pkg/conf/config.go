@@ -10,6 +10,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/grant"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
+	"github.com/bresilla/drop/src/pkg/user"
 	"github.com/bresilla/drop/src/pkg/vault"
 )
 
@@ -17,6 +18,9 @@ import (
 type Config struct {
 	// Name is what this node calls itself; empty leaves the hostname.
 	Name string
+	// UserKey is the key this person signs badges with: an SSH private key, or the public half of
+	// one an agent holds. Empty leaves drop keeping a key of its own.
+	UserKey string
 	// Vault is who the data key is wrapped to: age recipients, or a path to a key file. Empty is a
 	// node that keeps its history in the clear, which is the default and a decision.
 	Vault []string
@@ -129,6 +133,9 @@ func (c *Config) Apply() {
 	}
 	if len(c.Relays) > 0 {
 		node.SetRelays(c.Relays)
+	}
+	if c.UserKey != "" {
+		user.Use(expand(c.UserKey))
 	}
 }
 

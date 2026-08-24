@@ -276,6 +276,38 @@ refusal of transitive trust.
 all — it means his phone arrives as `bob@phone` rather than as a stranger. What it may then reach
 is whatever the rules on each path say, and the default is nothing.
 
+### one key, every machine
+
+The user key is per **person**, not per machine. Put the same one on each machine you own and they
+all answer to `"me"`; let each generate its own and they are strangers to each other.
+
+```lua
+drop.user_key = "~/.ssh/id_ed25519"         -- a key you already have
+drop.user_key = "~/.ssh/id_ed25519_sk.pub"  -- a YubiKey, signed through ssh-agent
+```
+
+The public half is enough when an agent holds the private one, which is how a hardware key takes
+part without ever being read. A key drop was *pointed at* and cannot find is an error — it will not
+answer a typo by inventing a second identity. Without the setting, drop keeps a key of its own.
+
+### another person, same machine
+
+`$DROP_PROFILE` is a whole other identity: its own device key, user key, address book and
+conversations, under `…/drop/profiles/<name>/`, on a port derived from the name so two can run at
+once. Two profiles are strangers who must pair, which is how a rule that names somebody else gets
+tried without a second computer.
+
+```console
+$ DROP_PROFILE=bob drop user      # a different person, called tron-bob
+$ DROP_PROFILE=bob drop serve     # alongside your own, on its own port
+$ drop pair                       # then pair them, as you would two machines
+$ DROP_PROFILE=bob drop pair <ticket>
+```
+
+A profile that sets `drop.user_key` to the same key you use is *you* again — leave it out of a
+profile's config for a genuinely separate person.
+
+
 **Revocation** is expiry and a local refusal, and nothing more honest is possible without a server.
 A badge lasts ninety days, so a lost machine stops being trusted within ninety days rather than
 today; `drop peers rm bob@laptop` stops this machine trusting it immediately, and tells nobody
@@ -632,7 +664,8 @@ DROP_NAME          what this node calls itself; defaults to the hostname
 DROP_PORT          the port to listen on; defaults to 47777
 DROP_RELAYS        relay urls to use instead of the defaults, when a rendezvous is on
 DROP_CONFIG        the config file; defaults to $XDG_CONFIG_HOME/drop/init.lua
-DROP_USER_KEY      the user key to sign badges with; defaults to $XDG_CONFIG_HOME/drop/user
+DROP_USER_KEY      the user key to sign badges with; overrides drop.user_key
+DROP_PROFILE       run as another person on this machine, with its own keys and port
 DROP_OPENER        what opens an arriving link; defaults to xdg-open
 XDG_CONFIG_HOME    where identity, peers.json and grants.json live; defaults to ~/.config
 XDG_DATA_HOME      where conversations live; defaults to ~/.local/share
