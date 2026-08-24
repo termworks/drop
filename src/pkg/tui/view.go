@@ -554,6 +554,11 @@ func (m Model) bubble(msg convo.Message) []string {
 	inside := block - 4
 	who := m.speaker(mine)
 
+	// A mark beside the time on what this device said: still on its way, or acknowledged.
+	if mine {
+		when = m.mark(msg) + " " + when
+	}
+
 	gap := inside - lipgloss.Width(who) - 2 - lipgloss.Width(when)
 	if gap < 1 {
 		gap = 1
@@ -595,6 +600,19 @@ func (m Model) bubble(msg convo.Message) []string {
 	}
 
 	return append(out, "")
+}
+
+// mark says whether a message has been delivered.
+//
+// Only for what this device said: what arrived is here by definition, and marking that would be
+// telling somebody their own screen is working.
+func (m Model) mark(msg convo.Message) string {
+	on := lipgloss.NewStyle().Background(saidBg)
+
+	if m.waiting[msg.ID] {
+		return on.Foreground(peach).Render("◐")
+	}
+	return on.Foreground(green).Render("✓")
 }
 
 // sideOf is which edge a message sits against.

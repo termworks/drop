@@ -29,8 +29,13 @@ type Backend interface {
 	Serves(ctx context.Context, with book.Entry) ([]proto.Served, error)
 	// History is a conversation as it stands.
 	History(with book.Entry) ([]convo.Message, error)
-	// Say sends a message.
-	Say(ctx context.Context, to book.Entry, body string) error
+	// Compose writes a message into the conversation without sending it. It returns as fast as a
+	// disk write, because that is all it is.
+	Compose(to book.Entry, body string) error
+	// Deliver sends whatever is queued for a device.
+	Deliver(ctx context.Context, to book.Entry) error
+	// Waiting is which messages have not been acknowledged yet, by id.
+	Waiting(with book.Entry) (map[string]bool, error)
 	// Offer puts this device up for pairing and reports the name it paired with. The ticket comes
 	// back at once so it can be shown; the channel yields once the far end has finished.
 	Offer(ctx context.Context) (ticket string, done <-chan string, err error)
@@ -91,6 +96,8 @@ type Model struct {
 
 	// history is the conversation being shown, when the open path is a chat.
 	history []convo.Message
+	// waiting is which of those have not been acknowledged yet, by id.
+	waiting map[string]bool
 	// screen is the far end's terminal, when the open path is live.
 	screen  *screen
 	live    bool
@@ -142,9 +149,10 @@ type pathsLoaded struct {
 }
 
 type historyLoaded struct {
-	peer string
-	log  []convo.Message
-	err  error
+	peer    string
+	log     []convo.Message
+	waiting map[string]bool
+	err     error
 }
 
 // framePainted says the far end's terminal has changed and the view should be redrawn. The screen
@@ -182,7 +190,14 @@ func loadPaths(back Backend, with book.Entry) tea.Cmd {
 func loadHistory(back Backend, with book.Entry) tea.Cmd {
 	return func() tea.Msg {
 		log, err := back.History(with)
-		return historyLoaded{peer: with.Name, log: log, err: err}
+		if err != nil {
+			return historyLoaded{peer: with.Name, err: err}
+		}
+
+		// Which of them are still on their way, read at the same moment as the conversation: two
+		// reads a frame apart would show a message as both sent and waiting.
+		queued, err := back.Waiting(with)
+		return historyLoaded{peer: with.Name, log: log, waiting: queued, err: err}
 	}
 }
 
@@ -236,11 +251,25 @@ func joinPanes(width int, panes ...string) string {
 }
 
 // say puts a message on the wire.
+// say writes a message down. It does not send it: that happens next, and takes as long as somebody
+// else's network takes, which is not how long a person should watch an empty screen.
 func say(back Backend, to book.Entry, body string) tea.Cmd {
 	return func() tea.Msg {
-		return saidIt{err: back.Say(context.Background(), to, body)}
+		return saidIt{err: back.Compose(to, body)}
 	}
 }
+
+// deliver sends what is queued, and says how it went.
+func deliver(back Backend, to book.Entry) tea.Cmd {
+	return func() tea.Msg {
+		ctx, stop := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer stop()
+
+		return delivered{err: back.Deliver(ctx, to)}
+	}
+}
+
+type delivered struct{ err error }
 
 // watch reads a live path into a screen until the context ends.
 //

@@ -41,6 +41,7 @@ type fake struct {
 	offered   bool
 	took      string
 	arriving  chan struct{}
+	queued    map[string]bool
 	slow      bool
 	sentFiles []string
 	posted    []string
@@ -71,12 +72,27 @@ func (f *fake) History(with book.Entry) ([]convo.Message, error) {
 	return append([]convo.Message(nil), f.log...), nil
 }
 
-func (f *fake) Say(ctx context.Context, to book.Entry, body string) error {
+func (f *fake) Compose(to book.Entry, body string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.said = append(f.said, body)
+	f.log = append(f.log, convo.Message{Kind: convo.KindText, Body: body, Dir: convo.Out, At: 1})
 	return nil
+}
+
+func (f *fake) Deliver(ctx context.Context, to book.Entry) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.refuse
+}
+
+func (f *fake) Waiting(with book.Entry) (map[string]bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.queued, nil
 }
 
 func (f *fake) Watch(ctx context.Context, on book.Entry, path string, into io.Writer, resize func(int, int)) error {
@@ -829,12 +845,57 @@ func TestAMessageThatCouldNotBeDeliveredStillShows(t *testing.T) {
 	back.log = append(back.log, convo.Message{Kind: convo.KindText, Body: "said into the void", At: 1, Dir: convo.Out})
 	back.mu.Unlock()
 
-	m = settle(t, m, saidIt{err: errors.New("nobody answered")})
+	m = settle(t, m, delivered{err: errors.New("nobody answered")})
 
 	if !strings.Contains(m.View(), "said into the void") {
 		t.Errorf("an undelivered message is not on screen:\n%s", m.View())
 	}
-	if !strings.Contains(m.View(), "not delivered yet") {
+	if !strings.Contains(m.View(), "still on its way") {
 		t.Errorf("it does not say the message is still waiting:\n%s", m.View())
+	}
+}
+
+// What somebody types appears at the speed of a disk write, not at the speed of the far end's
+// network. Waiting for delivery to draw it is what makes a chat feel broken on a slow link.
+func TestAMessageIsShownBeforeItIsSent(t *testing.T) {
+	back := withOne()
+	m := openPath(t, back, "/friends/chat")
+
+	// Delivery never finishes while this runs.
+	back.mu.Lock()
+	back.slow = true
+	back.mu.Unlock()
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	for _, r := range "typed and shown" {
+		m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if !strings.Contains(m.View(), "typed and shown") {
+		t.Fatalf("what was typed is not on screen until it is delivered:\n%s", m.View())
+	}
+}
+
+// A message still in the outbox is marked as such, so a slow link looks slow rather than silent.
+func TestAWaitingMessageIsMarked(t *testing.T) {
+	back := withOne()
+
+	back.mu.Lock()
+	back.log = []convo.Message{{ID: "abc", Kind: convo.KindText, Body: "on its way", Dir: convo.Out, At: 1}}
+	back.queued = map[string]bool{"abc": true}
+	back.mu.Unlock()
+
+	m := openPath(t, back, "/friends/chat")
+	if !strings.Contains(m.View(), "◐") {
+		t.Errorf("a queued message is not marked as waiting:\n%s", m.View())
+	}
+
+	back.mu.Lock()
+	back.queued = nil
+	back.mu.Unlock()
+
+	if m = settle(t, m, arrived{}); !strings.Contains(m.View(), "✓") {
+		t.Errorf("a delivered message is not marked as delivered:\n%s", m.View())
 	}
 }

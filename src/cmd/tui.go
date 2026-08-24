@@ -14,6 +14,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/conf"
 	"github.com/bresilla/drop/src/pkg/convo"
+	"github.com/bresilla/drop/src/pkg/dial"
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/proto"
@@ -50,6 +51,10 @@ func runTUI(parent context.Context) error {
 	// knock means the same as ten, and a device that says a great deal at once still redraws once.
 	arriving := make(chan struct{}, 1)
 
+	// One connection per device, kept for as long as the interface is open.
+	held := dial.Hold(n, lan, rendezvousFor(n))
+	defer held.Close()
+
 	// The interface serves while it is open, so a device that pairs with it can reach it — and
 	// so what arrives lands in a conversation rather than being refused.
 	ears := listenOn(ctx, n, map[string]func(node.ID, *iroh.Stream){
@@ -78,7 +83,7 @@ func runTUI(parent context.Context) error {
 	})
 
 	program := tea.NewProgram(
-		tui.New(&live{node: n, lan: lan, ears: ears, arriving: arriving}),
+		tui.New(&live{node: n, lan: lan, ears: ears, arriving: arriving, held: held}),
 		tea.WithAltScreen(),
 		tea.WithContext(ctx),
 	)
@@ -93,6 +98,9 @@ type live struct {
 	node     *node.Node
 	lan      *discovery.LAN
 	arriving chan struct{}
+	// held keeps a connection per device, so a conversation costs one handshake rather than one
+	// for every line typed.
+	held *dial.Kept
 }
 
 // Arrivals is how the interface learns that something landed while it was sitting there.
@@ -116,11 +124,10 @@ func (l *live) Peers() ([]book.Entry, error) {
 }
 
 func (l *live) Serves(ctx context.Context, with book.Entry) ([]proto.Served, error) {
-	conn, s, err := reach(ctx, l.node, l.lan, with, node.ALPNHello)
+	s, err := l.held.To(ctx, with, node.ALPNHello)
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
 	defer s.Close()
 
 	hello, err := proto.AskHello(s)
@@ -138,12 +145,36 @@ func (l *live) History(with book.Entry) ([]convo.Message, error) {
 	return store.History()
 }
 
-func (l *live) Say(ctx context.Context, to book.Entry, body string) error {
-	if _, err := compose(to, convo.KindText, body, ""); err != nil {
-		return err
-	}
+// Compose writes a message into the conversation. Nothing is dialled: it is a disk write, and the
+// interface can draw it before anybody has been reached.
+func (l *live) Compose(to book.Entry, body string) error {
+	_, err := compose(to, convo.KindText, body, "")
+	return err
+}
+
+// Deliver sends whatever is queued for a device.
+func (l *live) Deliver(ctx context.Context, to book.Entry) error {
 	_, err := deliver(ctx, l.node, l.lan, to)
 	return err
+}
+
+// Waiting is which messages are still in the outbox, by id.
+func (l *live) Waiting(with book.Entry) (map[string]bool, error) {
+	store, err := convo.Open(with.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	queued, err := store.Pending()
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[string]bool, len(queued))
+	for _, m := range queued {
+		out[m.ID] = true
+	}
+	return out, nil
 }
 
 // Send copies files to a path on the far device.
@@ -156,11 +187,10 @@ func (l *live) Send(ctx context.Context, to book.Entry, path string, files []str
 		return err
 	}
 
-	conn, s, err := reach(ctx, l.node, l.lan, to, node.ALPNSession)
+	s, err := l.held.To(ctx, to, node.ALPNSession)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
 	defer s.Close()
 
 	if err := proto.SendFiles(ctx, s, path, sources, node.DisplayName(), progress); err != nil {
@@ -179,11 +209,10 @@ func (l *live) Post(ctx context.Context, to book.Entry, path string, kind byte, 
 		return err
 	}
 
-	conn, s, err := reach(ctx, l.node, l.lan, to, node.ALPNSession)
+	s, err := l.held.To(ctx, to, node.ALPNSession)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
 	defer s.Close()
 
 	_, err = proto.SendMessages(ctx, s, path, []convo.Message{m}, node.DisplayName())
@@ -192,11 +221,10 @@ func (l *live) Post(ctx context.Context, to book.Entry, path string, kind byte, 
 
 // Watch reads a live path into a screen, nudging the interface whenever the picture changes.
 func (l *live) Watch(ctx context.Context, on book.Entry, path string, into io.Writer, resize func(cols, rows int)) error {
-	conn, s, err := reach(ctx, l.node, l.lan, on, node.ALPNSession)
+	s, err := l.held.To(ctx, on, node.ALPNSession)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
 
 	d, err := proto.OpenDuplex(ctx, s, path, path, node.DisplayName())
 	if err != nil {
@@ -215,7 +243,9 @@ func (l *live) Watch(ctx context.Context, on book.Entry, path string, into io.Wr
 	case err := <-done:
 		return err
 	case <-ctx.Done():
-		conn.Close()
+		// The stream goes, the connection stays: it is shared with everything else this device is
+		// doing, and closing it here would drop a conversation to end a watch.
+		s.Close()
 		return ctx.Err()
 	}
 }

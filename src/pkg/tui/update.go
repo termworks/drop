@@ -131,7 +131,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// The conversation loading says nothing about whatever else went wrong. Clearing the
 		// notice here wipes the one from the message that has not gone out yet.
-		m.history = msg.log
+		m.history, m.waiting = msg.log, msg.waiting
 		return m, nil
 
 	case framePainted:
@@ -148,12 +148,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case saidIt:
-		// The conversation is reloaded either way. A message that could not be delivered is not a
-		// message that was not said: it is written down and goes out when the far end appears, and
-		// leaving it off the screen until then makes it look lost.
+		// Written down. On screen straight away, and sent underneath: what somebody typed should
+		// appear at the speed of a disk, not at the speed of the far end's network.
+		if msg.err != nil {
+			m.trouble = msg.err.Error()
+			return m, nil
+		}
+		m.trouble = ""
+
+		if at, ok := m.peer(); ok {
+			return m, tea.Batch(loadHistory(m.back, at), deliver(m.back, at))
+		}
+		return m, nil
+
+	case delivered:
+		// A failure is worth saying once, but it is not the message being lost: it stays in the
+		// conversation, marked as still on its way, and goes out when the far end appears.
 		m.trouble = ""
 		if msg.err != nil {
-			m.trouble = "not delivered yet: " + msg.err.Error()
+			m.trouble = "still on its way: " + msg.err.Error()
 		}
 
 		if at, ok := m.peer(); ok {

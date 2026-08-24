@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/tmc/go-iroh/iroh"
@@ -58,6 +59,20 @@ func At(ctx context.Context, n *node.Node, lan *discovery.LAN, moved Finder, ent
 		}
 	}
 
+	// The nearest address alone first, when there is one worth singling out. A transport handed
+	// every address a machine has does not race them: the one that would answer waits behind the
+	// ones that never will, and a device on the same wire takes ten seconds instead of five
+	// milliseconds. If that guess is wrong, everything is still tried below.
+	if best, ok := nearestOf(at); ok {
+		quick, stop := context.WithTimeout(ctx, straightAway)
+		conn, s, err := open(quick, n, best, alpn)
+		stop()
+
+		if err == nil {
+			return conn, s, nil
+		}
+	}
+
 	conn, s, err := open(ctx, n, at, alpn)
 
 	// A dial resumes a cached TLS session when it has one, and a peer that has restarted since
@@ -70,6 +85,23 @@ func At(ctx context.Context, n *node.Node, lan *discovery.LAN, moved Finder, ent
 		return nil, nil, fmt.Errorf("reaching %s: %w", entry.Name, err)
 	}
 	return conn, s, nil
+}
+
+// straightAway is how long the nearest address gets on its own.
+//
+// Long enough for a machine on the same wire, which answers in milliseconds, and short enough that
+// being wrong costs less than the full attempt saves.
+const straightAway = 3 * time.Second
+
+// nearestOf picks the one address worth trying by itself, if any is.
+func nearestOf(at netaddr.EndpointAddr) (netaddr.EndpointAddr, bool) {
+	ranked := Nearest(at.IPAddrs())
+	if len(ranked) < 2 || !onOurWire(ranked[0].Addr()) {
+		// One address is already the whole attempt, and nothing on our own wire means no guess
+		// worth making.
+		return netaddr.EndpointAddr{}, false
+	}
+	return node.AddrFor(at.ID, ranked[0]), true
 }
 
 // open dials and takes a stream, waiting for the handshake first.
