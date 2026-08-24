@@ -1055,7 +1055,7 @@ func TestThisDeviceIsInTheList(t *testing.T) {
 		t.Fatalf("this device is not in the list:\n%s", m.View())
 	}
 
-	m.list.Select(0)
+	m.list.Select(rowMine)
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	if !m.onSelf {
@@ -1073,7 +1073,7 @@ func TestAPeerIsStillEnteredByName(t *testing.T) {
 	back := withOne()
 	m := start(t, back)
 
-	m.list.Select(1)
+	m.list.Select(rowFirst)
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	if m.onSelf {
@@ -1103,5 +1103,35 @@ func TestAPathThatIsAlsoAFolderCanBeOpened(t *testing.T) {
 	}
 	if at, _ := m.path(); at.Path != "/one/two" {
 		t.Fatalf("opened %q", at.Path)
+	}
+}
+
+// The list is not one list: your own machines are not the same kind of thing as somebody else's,
+// and a label between them is what says so.
+func TestTheListSeparatesYoursFromEverybodyElses(t *testing.T) {
+	m := start(t, withOne())
+
+	shown := m.View()
+	for _, want := range []string{"ME", "PAIRED WITH"} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("the list has no %q divider:\n%s", want, shown)
+		}
+	}
+
+	// A label is not a thing to enter.
+	m.list.Select(0)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.at != levelDevices {
+		t.Errorf("entering a divider went somewhere, to level %d", m.at)
+	}
+}
+
+// With nobody paired there is nobody to label, so the second divider stays away.
+func TestTheSecondDividerNeedsSomebodyToPointAt(t *testing.T) {
+	m := start(t, &fake{})
+
+	if strings.Contains(m.View(), "PAIRED WITH") {
+		t.Errorf("a divider for nobody:\n%s", m.View())
 	}
 }

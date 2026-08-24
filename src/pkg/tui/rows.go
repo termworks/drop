@@ -20,6 +20,31 @@ import (
 const rowHeight = 3
 
 // deviceItem is one paired device.
+// dividerItem separates the machines that are yours from everybody else's.
+type dividerItem struct{ label string }
+
+func (d dividerItem) FilterValue() string { return "" }
+
+// divider draws a rule with a word in it, over the height every other row takes.
+func divider(it dividerItem, width, _ int, _ bool) string {
+	blank := lipgloss.NewStyle().Width(width).Render("")
+
+	name := " " + strings.ToUpper(it.label) + " "
+	rule := width - lipgloss.Width(name) - 2
+	if rule < 2 {
+		return blank + "\n" + lipgloss.NewStyle().Foreground(muted).Render(name) + "\n" + blank
+	}
+
+	left := rule / 2
+	dashes := func(n int) string { return strings.Repeat("╌", n) }
+
+	line := lipgloss.NewStyle().Foreground(surface).Render(dashes(left)) +
+		lipgloss.NewStyle().Foreground(muted).Bold(true).Render(name) +
+		lipgloss.NewStyle().Foreground(surface).Render(dashes(rule-left))
+
+	return blank + "\n" + lipgloss.NewStyle().Width(width).Render(line) + "\n" + blank
+}
+
 type deviceItem struct {
 	// self marks the row for this machine, which is not a peer and is not paired with itself.
 	self  bool
@@ -52,6 +77,8 @@ func (d rows) Render(w io.Writer, m list.Model, index int, item list.Item) {
 	selected := index == m.Index()
 
 	switch it := item.(type) {
+	case dividerItem:
+		fmt.Fprint(w, divider(it, width, index, selected))
 	case deviceItem:
 		fmt.Fprint(w, device(it, width, index, selected))
 	case pathItem:

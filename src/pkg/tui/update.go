@@ -365,9 +365,14 @@ func (m Model) typeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) enter() (tea.Model, tea.Cmd) {
 	switch m.at {
 	case levelDevices:
-		// The first row is this device. Everything a peer's list does, it does — except that what
-		// it shares is read from this machine's own config instead of asked for over a wire.
-		if m.list.Index() == 0 {
+		// A divider is a label, not a thing to enter.
+		if _, ok := m.list.SelectedItem().(dividerItem); ok {
+			return m, nil
+		}
+
+		// This machine's own row. Everything a peer's list does, it does — except that what it
+		// shares is read from this machine's own config instead of asked for over a wire.
+		if m.onSelfRow() {
 			m.onSelf = true
 			m.at = levelPaths
 			m.paths, m.loading = nil, true
@@ -381,7 +386,7 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.onSelf = false
-		m.atPeer = m.list.Index() - 1
+		m.atPeer = m.peerFor(m.list.Index())
 		m.at = levelPaths
 
 		with, _ := m.peer()
@@ -453,18 +458,24 @@ func (m *Model) showDevices() {
 	// This device first. What it shares is the thing a person most often wants to check and the
 	// only thing they cannot see from anywhere else, and a list of everybody except yourself is a
 	// strange list to be given.
-	items := make([]list.Item, 0, len(m.peers)+1)
+	items := make([]list.Item, 0, len(m.peers)+3)
+
+	items = append(items, dividerItem{label: "me"})
 	items = append(items, deviceItem{
 		entry: book.Entry{Name: m.me.Name, ID: idOf(m.me.ID)},
 		addr:  "this device",
 		self:  true,
 	})
 
+	if len(m.peers) > 0 {
+		items = append(items, dividerItem{label: "paired with"})
+	}
 	for _, p := range m.peers {
 		items = append(items, deviceItem{entry: p, addr: strings.Join(p.Addrs, "  ")})
 	}
+
 	m.list.SetItems(items)
-	m.list.Select(m.atPeer + 1)
+	m.list.Select(m.rowFor(m.atPeer))
 	m.list.SetSize(m.listWidth(), m.listHeight())
 }
 
@@ -656,4 +667,31 @@ func (m Model) scrollBy(lines int) Model {
 		m.scroll = 0
 	}
 	return m
+}
+
+// Where things sit in the device list, which is not a plain list of peers: a label, this machine,
+// a label, then everybody else.
+const (
+	rowMine  = 1 // this machine
+	rowFirst = 3 // the first peer
+)
+
+// onSelfRow reports whether the cursor is on this machine.
+func (m Model) onSelfRow() bool { return m.list.Index() == rowMine }
+
+// rowFor is where a peer sits in the list.
+func (m Model) rowFor(peer int) int {
+	if peer < 0 || len(m.peers) == 0 {
+		return rowMine
+	}
+	return rowFirst + peer
+}
+
+// peerFor is which peer a row is, and -1 for the rows that are not peers.
+func (m Model) peerFor(row int) int {
+	at := row - rowFirst
+	if at < 0 || at >= len(m.peers) {
+		return 0
+	}
+	return at
 }
