@@ -16,8 +16,12 @@ import (
 // Nothing is declared as a folder for this to work. A folder is what it means for two paths to
 // share a beginning, so the tree is read out of the paths themselves.
 
-// step is one line of a path listing: a namespace, or the way down to more of them.
+// step is one line of a path listing: a namespace, the way down to more of them, or both.
 type step struct {
+	// here marks the row standing for the path being looked at, which appears inside a path that
+	// is a namespace as well as a way down.
+	here bool
+
 	// name is the segment, without the path leading up to it.
 	name string
 	// at is the whole path this step stands for.
@@ -34,6 +38,8 @@ type step struct {
 func walk(paths []proto.Served, under string) []step {
 	under = folder(under)
 
+	var out []step
+
 	seen := map[string]*step{}
 	for _, s := range paths {
 		if !within(under, s.Path) {
@@ -41,8 +47,20 @@ func walk(paths []proto.Served, under string) []step {
 		}
 
 		rest := strings.TrimPrefix(strings.TrimPrefix(s.Path, strings.TrimSuffix(under, "/")), "/")
+
+		// The path being looked at is itself a namespace. A path can be both a place and a way
+		// down — /one/two serving something, with /one/two/three under it — and walking in has to
+		// leave a way to open the thing walked into. So it is listed inside itself, the way a
+		// directory listing has an entry for the directory.
 		if rest == "" {
-			continue // the path we are already looking at
+			out = append(out, step{
+				here:   true,
+				name:   lastPart(s.Path),
+				at:     s.Path,
+				served: s,
+				is:     true,
+			})
+			continue
 		}
 
 		name, deeper, isFolder := strings.Cut(rest, "/")
@@ -64,20 +82,31 @@ func walk(paths []proto.Served, under string) []step {
 		here.served, here.is = s, true
 	}
 
-	out := make([]step, 0, len(seen))
+	rest := make([]step, 0, len(seen))
 	for _, one := range seen {
-		out = append(out, *one)
+		rest = append(rest, *one)
 	}
 
 	// Ways down first, then namespaces, each in path order: the same arrangement every file
 	// browser has, because it is the one people already know.
-	sort.Slice(out, func(i, j int) bool {
-		if (out[i].below > 0) != (out[j].below > 0) {
-			return out[i].below > 0
+	sort.Slice(rest, func(i, j int) bool {
+		if (rest[i].below > 0) != (rest[j].below > 0) {
+			return rest[i].below > 0
 		}
-		return out[i].name < out[j].name
+		return rest[i].name < rest[j].name
 	})
-	return out
+
+	// The path itself first, because it is what was entered.
+	return append(out, rest...)
+}
+
+// lastPart is the final segment of a path.
+func lastPart(at string) string {
+	at = strings.TrimSuffix(at, "/")
+	if cut := strings.LastIndex(at, "/"); cut >= 0 {
+		return at[cut+1:]
+	}
+	return at
 }
 
 // within reports whether a path is at or below a folder.

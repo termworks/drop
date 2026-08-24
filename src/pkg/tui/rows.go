@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+
+	"github.com/bresilla/drop/src/pkg/proto"
 	"io"
 	"strings"
 
@@ -134,6 +136,24 @@ func path(it pathItem, width, index int, selected bool) string {
 
 	kind := it.step.served.Kind.String()
 
+	// The row standing for the path that was walked into, so a path with something under it can
+	// still be opened.
+	if it.step.here {
+		first := fill(stripe(base, selected) +
+			cell(base, second, 2, "◉", false, false) +
+			cell(base, name, inner-2-16, it.step.at, false, true) +
+			cell(base, green, 16, sendable(it.step.served), true, false))
+
+		rest := fill(stripe(base, selected) +
+			cell(base, second, 10, kind, false, false) +
+			cell(base, muted, inner-10, "this path itself", false, false))
+
+		last := fill(stripe(base, selected) +
+			cell(base, muted, inner, "drop to "+it.on+it.step.at, false, false))
+
+		return first + "\n" + rest + "\n" + last
+	}
+
 	send := "read only"
 	sendColour := muted
 	if it.step.served.Writable {
@@ -162,6 +182,14 @@ func path(it pathItem, width, index int, selected bool) string {
 		cell(base, muted, inner, "drop to "+it.on+it.step.at, false, false))
 
 	return first + "\n" + rest + "\n" + last
+}
+
+// sendable says whether the far end takes anything at a path.
+func sendable(s proto.Served) string {
+	if s.Writable {
+		return "you may send"
+	}
+	return "read only"
 }
 
 // count says how much is under a way down, in words rather than a bare number.

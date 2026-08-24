@@ -402,10 +402,10 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 
 		at := m.steps[m.list.Index()]
 
-		// A way down is walked into rather than opened. One that is also a namespace opens only
-		// when there is nothing under it to go to, because getting at what is inside is the
-		// harder thing to do by accident.
-		if at.below > 0 {
+		// A way down is walked into, whether or not it is also a namespace: what is inside is
+		// listed along with the path itself, so nothing becomes unreachable by having something
+		// underneath it.
+		if at.below > 0 && !at.here {
 			m.under, m.atPath = at.at, 0
 			m.showPaths()
 			return m, nil

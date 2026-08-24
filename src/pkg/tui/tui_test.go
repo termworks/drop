@@ -1083,3 +1083,25 @@ func TestAPeerIsStillEnteredByName(t *testing.T) {
 		t.Fatalf("entered %+v, want beta", with)
 	}
 }
+
+// Walking into a path that is also a namespace has to leave a way to open it. Otherwise declaring
+// anything underneath a path silently takes the path itself away.
+func TestAPathThatIsAlsoAFolderCanBeOpened(t *testing.T) {
+	back := withOne()
+
+	back.mu.Lock()
+	back.serves["beta"] = []proto.Served{
+		{Path: "/one/two", Kind: ns.KindChat},
+		{Path: "/one/two/three", Kind: ns.KindChat},
+	}
+	back.mu.Unlock()
+
+	m := openPath(t, back, "/one/two")
+
+	if m.at != levelOpen {
+		t.Fatalf("never opened it, at level %d under %q", m.at, m.under)
+	}
+	if at, _ := m.path(); at.Path != "/one/two" {
+		t.Fatalf("opened %q", at.Path)
+	}
+}

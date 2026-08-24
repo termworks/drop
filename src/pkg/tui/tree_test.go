@@ -82,3 +82,46 @@ func TestOneLevelUp(t *testing.T) {
 		}
 	}
 }
+
+// A path can be a namespace and have namespaces under it. /one/two serves something, and
+// /one/two/three serves something else. Walking into it must not make it unreachable.
+func TestAPathWithSomethingUnderItCanStillBeOpened(t *testing.T) {
+	paths := served("/one/two", "/one/two/three", "/one/two/four")
+
+	// From above, it is one row that is both.
+	above := walk(paths, "/one")
+	if len(above) != 1 {
+		t.Fatalf("under /one: %+v", above)
+	}
+	if !above[0].is || above[0].below != 2 {
+		t.Fatalf("%+v should be a namespace with two under it", above[0])
+	}
+
+	// Walking in lists what is inside, and the path itself, first.
+	inside := walk(paths, "/one/two")
+	if len(inside) != 3 {
+		t.Fatalf("inside /one/two: %+v", inside)
+	}
+	if !inside[0].here || inside[0].at != "/one/two" {
+		t.Fatalf("the first row inside is %+v, want the path itself", inside[0])
+	}
+	if !inside[0].is {
+		t.Error("the path itself is not openable from inside itself")
+	}
+
+	for _, one := range inside[1:] {
+		if one.here {
+			t.Errorf("%+v is marked as the path itself", one)
+		}
+	}
+}
+
+// A path with nothing under it does not list itself: there is nothing to walk into, so there is
+// nowhere for the extra row to appear.
+func TestAPlainNamespaceDoesNotListItself(t *testing.T) {
+	for _, one := range walk(served("/one/two", "/one/three"), "/one") {
+		if one.here {
+			t.Errorf("%+v lists itself when nothing is under it", one)
+		}
+	}
+}
