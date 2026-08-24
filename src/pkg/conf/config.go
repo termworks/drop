@@ -10,12 +10,16 @@ import (
 	"github.com/bresilla/drop/src/pkg/grant"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
+	"github.com/bresilla/drop/src/pkg/vault"
 )
 
 // Config is what a node was told to be.
 type Config struct {
 	// Name is what this node calls itself; empty leaves the hostname.
 	Name string
+	// Vault is who the data key is wrapped to: age recipients, or a path to a key file. Empty is a
+	// node that keeps its history in the clear, which is the default and a decision.
+	Vault []string
 	// Bootstrap and Relays override the defaults when set.
 	Bootstrap []string
 	Relays    []string
@@ -142,6 +146,15 @@ func ApplySettings() {
 	defer cfg.Close()
 
 	cfg.Apply()
+}
+
+// Vaulted opens the vault this config names, making a data key the first time.
+//
+// A locked device comes back as an error rather than as a node that quietly serves nothing: the
+// history is there and unreadable, and a peer asking for it has to be told that rather than handed
+// an empty answer that reads as the path being gone.
+func (c *Config) Vaulted() (*vault.Vault, error) {
+	return vault.Open(c.Vault)
 }
 
 // Grants attaches what the interface has allowed and refused to the namespaces this config

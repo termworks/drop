@@ -57,6 +57,7 @@ func Execute(v string, exit func(int), args []string) {
 		newGrantCmd(),
 		newRevokeCmd(),
 		newGrantsCmd(),
+		newVaultCmd(),
 		newNamespacesCmd(),
 		newPasswdCmd(),
 		newListCmd(),

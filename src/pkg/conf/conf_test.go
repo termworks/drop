@@ -397,3 +397,32 @@ func TestAPublicPathIsAskedForByName(t *testing.T) {
 		}
 	}
 }
+
+// A vault is one recipient or several, and both spellings mean the same thing.
+func TestAVaultIsOneRecipientOrSeveral(t *testing.T) {
+	one := load(t, `
+		local drop = require("drop")
+		drop.vault = "~/.config/drop/vault.key"
+		drop.mount("/chat", { type = "chat" })
+	`)
+	if len(one.Vault) != 1 || one.Vault[0] != "~/.config/drop/vault.key" {
+		t.Errorf("one recipient came out as %+v", one.Vault)
+	}
+
+	many := load(t, `
+		local drop = require("drop")
+		drop.vault = { "age1yubikey1abc", "age1def" }
+		drop.mount("/chat", { type = "chat" })
+	`)
+	if len(many.Vault) != 2 {
+		t.Errorf("two recipients came out as %+v", many.Vault)
+	}
+
+	none := load(t, `
+		local drop = require("drop")
+		drop.mount("/chat", { type = "chat" })
+	`)
+	if len(none.Vault) != 0 {
+		t.Errorf("a config with no vault came out as %+v", none.Vault)
+	}
+}
