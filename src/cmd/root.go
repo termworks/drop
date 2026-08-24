@@ -38,7 +38,10 @@ func Execute(v string, exit func(int), args []string) {
 
 	// Settings before any command runs, so one that only dials still knows what it is allowed
 	// to do. The commands that serve load the whole config themselves.
-	root.PersistentPreRun = func(*cobra.Command, []string) { conf.ApplySettings() }
+	root.PersistentPreRun = func(*cobra.Command, []string) {
+		conf.ApplySettings()
+		wearBadge()
+	}
 
 	root.SetArgs(args)
 	root.AddCommand(

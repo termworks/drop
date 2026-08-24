@@ -26,7 +26,13 @@ type Entry struct {
 	Secret []byte
 	// Addrs is where this peer was last known to be, learned at pairing.
 	Addrs []string
+	// User is the person this machine belongs to, written the way authorized_keys writes a key.
+	// Empty for a machine paired on its own, and for every entry made before people existed.
+	User string
 }
+
+// Person reports whether this entry is somebody, rather than a machine on its own.
+func (e Entry) Person() bool { return e.User != "" }
 
 // Paired reports whether this entry carries a shared secret.
 func (e Entry) Paired() bool {
@@ -93,6 +99,7 @@ type stored struct {
 	ID     string   `json:"id"`
 	Secret string   `json:"secret,omitempty"`
 	Addrs  []string `json:"addrs,omitempty"`
+	User   string   `json:"user,omitempty"`
 }
 
 func path() (string, error) {
@@ -142,7 +149,7 @@ func Load() (*Book, error) {
 				return nil, fmt.Errorf("%s: %s has an unreadable secret: %w", file, name, err)
 			}
 		}
-		b.entries[name] = Entry{Name: name, ID: id, Secret: secret, Addrs: entry.Addrs}
+		b.entries[name] = Entry{Name: name, ID: id, Secret: secret, Addrs: entry.Addrs, User: entry.User}
 	}
 	return b, nil
 }
@@ -159,7 +166,7 @@ func (b *Book) Save() error {
 
 	onDisk := make(map[string]stored, len(b.entries))
 	for name, entry := range b.entries {
-		out := stored{ID: entry.ID.String(), Addrs: entry.Addrs}
+		out := stored{ID: entry.ID.String(), Addrs: entry.Addrs, User: entry.User}
 		if entry.Paired() {
 			out.Secret = base64.StdEncoding.EncodeToString(entry.Secret)
 		}
@@ -193,6 +200,41 @@ func (b *Book) Pair(name string, id node.ID, secret []byte, addrs ...string) {
 	defer b.mu.Unlock()
 
 	b.entries[name] = Entry{Name: name, ID: id, Secret: secret, Addrs: addrs}
+}
+
+// Belongs records whose machine an entry is. Pairing learns the person from the ticket; this is
+// how that is kept, and it leaves everything else about the entry alone.
+func (b *Book) Belongs(name, key string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	entry, ok := b.entries[name]
+	if !ok {
+		return
+	}
+	entry.User = key
+	b.entries[name] = entry
+}
+
+// ByUser finds who a user key belongs to: the name this machine files that person under.
+//
+// This is the whole of person-level recognition. A machine nobody has ever paired with presents a
+// badge signed by a key that is already in here, and it is that person's machine from then on --
+// which is the point of pairing once per person instead of once per pair of machines.
+func (b *Book) ByUser(key string) (Entry, bool) {
+	if key == "" {
+		return Entry{}, false
+	}
+
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	for _, entry := range b.entries {
+		if entry.User == key {
+			return entry, true
+		}
+	}
+	return Entry{}, false
 }
 
 // Remove drops a name, reporting whether it was there.
@@ -242,9 +284,6 @@ func (b *Book) All() []Entry {
 
 // Paired lists only the peers a secret was derived with.
 func (b *Book) Paired() []Entry {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
 	var out []Entry
 	for _, entry := range b.All() {
 		if entry.Paired() {

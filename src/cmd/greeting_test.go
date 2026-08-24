@@ -8,6 +8,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
+	"github.com/bresilla/drop/src/pkg/proto"
 )
 
 func idFor(seed byte) node.ID {
@@ -45,7 +46,7 @@ func TestAStrangerLearnsNothingAboutNamespaces(t *testing.T) {
 		t.Fatalf("book.Load(): %v", err)
 	}
 
-	hello := greeting(pinned, served(t), idFor(9))
+	hello := greeting(pinned, served(t), idFor(9), proto.Badged{})
 	if len(hello.Serves) != 0 {
 		t.Fatalf("an unpaired caller was told about %+v", hello.Serves)
 	}
@@ -66,7 +67,7 @@ func TestAKnownButUnpairedDeviceLearnsNothing(t *testing.T) {
 	id := idFor(4)
 	pinned.Pin("seen", id)
 
-	if hello := greeting(pinned, served(t), id); len(hello.Serves) != 0 {
+	if hello := greeting(pinned, served(t), id, proto.Badged{}); len(hello.Serves) != 0 {
 		t.Fatalf("a pinned but unpaired caller was told about %+v", hello.Serves)
 	}
 }
@@ -84,7 +85,7 @@ func TestAPairedDeviceIsToldOnlyItsOwnPaths(t *testing.T) {
 	id := idFor(5)
 	pinned.Pair("laptop", id, make([]byte, book.SecretBytes))
 
-	hello := greeting(pinned, served(t), id)
+	hello := greeting(pinned, served(t), id, proto.Badged{})
 
 	shown := map[string]bool{}
 	for _, s := range hello.Serves {

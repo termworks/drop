@@ -242,3 +242,58 @@ func TestTheDeepestRuleWins(t *testing.T) {
 		t.Fatal("carol lost the shallower branch")
 	}
 }
+
+// A name on its own is a person: any machine they have signed a badge for.
+func TestANameAdmitsAnyMachineOfThatPerson(t *testing.T) {
+	rule := Access{Named: []string{"bob"}}
+
+	for _, machine := range []string{"laptop", "phone", "a machine nobody has seen before"} {
+		who := Caller{ID: "abc", Name: machine, UserName: "bob", Paired: true}
+		if ok, why := rule.Admits(who); !ok {
+			t.Errorf("bob's %s was refused: %s", machine, why)
+		}
+	}
+
+	// Somebody else's machine is not bob's, whatever it is called.
+	if ok, _ := rule.Admits(Caller{ID: "abc", Name: "laptop", UserName: "carol", Paired: true}); ok {
+		t.Error("carol was admitted by a rule naming bob")
+	}
+}
+
+// A name with a machine after it is that machine and no other.
+func TestANameWithAMachineAdmitsOnlyThatOne(t *testing.T) {
+	rule := Access{Named: []string{"bob@laptop"}}
+
+	if ok, why := rule.Admits(Caller{ID: "abc", Name: "laptop", UserName: "bob", Paired: true}); !ok {
+		t.Errorf("bob's laptop was refused: %s", why)
+	}
+	if ok, _ := rule.Admits(Caller{ID: "abc", Name: "phone", UserName: "bob", Paired: true}); ok {
+		t.Error("bob's phone was admitted by a rule naming his laptop")
+	}
+}
+
+// Every rule written before users existed names a device. Those devices have no user and must keep
+// working, or upgrading drop quietly closes every path somebody had opened.
+func TestADeviceWithNoUserIsStillAdmittedByName(t *testing.T) {
+	rule := Access{Named: []string{"buildbox"}}
+
+	if ok, why := rule.Admits(Caller{ID: "abc", Name: "buildbox", Paired: true}); !ok {
+		t.Errorf("a device with no user was refused by its own name: %s", why)
+	}
+}
+
+// A public path is reachable by whoever knows the id, paired or not. It is the only rule that
+// admits a stranger, and it has to be asked for.
+func TestAPublicPathAdmitsAnybody(t *testing.T) {
+	stranger := Caller{ID: "somebody nobody has met"}
+
+	if ok, _ := (Access{}).Admits(stranger); ok {
+		t.Fatal("a path with no rule admitted a stranger")
+	}
+	if ok, _ := (Access{AnyPaired: true}).Admits(stranger); ok {
+		t.Fatal("a paired-only path admitted a stranger")
+	}
+	if ok, why := (Access{Anyone: true}).Admits(stranger); !ok {
+		t.Fatalf("a public path refused a stranger: %s", why)
+	}
+}

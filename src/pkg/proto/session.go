@@ -41,6 +41,13 @@ type Open struct {
 	Items []Item
 	// Secret is a password offered for a path that asks for one. Empty when none was given.
 	Secret string
+	// Badge says whose machine this is, and Signed is the proof of it. Empty from a device that
+	// has no user, which is every device paired before users existed.
+	//
+	// The transport already proves which machine is calling. This is what turns that into a
+	// person, so a rule can name one.
+	Badge  []byte
+	Signed []byte
 }
 
 func (o Open) encode() []byte {
@@ -55,6 +62,12 @@ func (o Open) encode() []byte {
 		w.Int(item.Size)
 		w.Uint(uint64(item.Mode))
 	}
+
+	// After everything an older node knows how to read, so one that does not understand badges
+	// stops here and is none the wiser.
+	w.String(string(o.Badge))
+	w.String(string(o.Signed))
+
 	return w.Body()
 }
 
@@ -108,6 +121,22 @@ func decodeOpen(body []byte) (Open, error) {
 		}
 		out.Items = append(out.Items, Item{Name: name, Size: size, Mode: uint32(perm)})
 	}
+
+	// A node from before badges stops here, which is a node whose caller has no user rather than
+	// a broken one.
+	if r.Done() {
+		return out, nil
+	}
+
+	badge, err := r.String(wire.MaxString)
+	if err != nil {
+		return out, err
+	}
+	signed, err := r.String(wire.MaxString)
+	if err != nil {
+		return out, err
+	}
+	out.Badge, out.Signed = []byte(badge), []byte(signed)
 	return out, nil
 }
 

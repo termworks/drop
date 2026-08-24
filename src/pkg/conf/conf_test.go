@@ -373,3 +373,27 @@ func TestLoadTimeRaiseNamesFileAndLine(t *testing.T) {
 		t.Errorf("the error does not say what was wrong: %v", err)
 	}
 }
+
+// A path anybody may reach has to be asked for in as many words, and it must not be reachable by
+// mistake: every other spelling of access leaves it shut.
+func TestAPublicPathIsAskedForByName(t *testing.T) {
+	cfg := load(t, `
+		local drop = require("drop")
+		drop.mount("/wide",   { type = "chat", access = "anyone" })
+		drop.mount("/table",  { type = "chat", access = { anyone = true } })
+		drop.mount("/paired", { type = "chat", access = "paired" })
+		drop.mount("/named",  { type = "chat", access = { "bob" } })
+	`)
+
+	for path, want := range map[string]bool{
+		"/wide": true, "/table": true, "/paired": false, "/named": false,
+	} {
+		mount, _, ok := cfg.Mounts.Lookup(path)
+		if !ok {
+			t.Fatalf("%s is not mounted", path)
+		}
+		if mount.Access.Anyone != want {
+			t.Errorf("%s: public is %v, wanted %v", path, mount.Access.Anyone, want)
+		}
+	}
+}

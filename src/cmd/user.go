@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/bresilla/drop/src/pkg/proto"
 	"github.com/bresilla/drop/src/pkg/user"
 )
 
@@ -68,4 +70,38 @@ func showUser() error {
 		badge.Name, badge.Until.UTC().Format("2006-01-02"))
 
 	return nil
+}
+
+// wearBadge picks up this machine's badge, so everything it opens says whose machine it is.
+//
+// It is done once, here, rather than at every place a node starts, because a node that forgets to
+// do it is a node that arrives as a stranger for no reason anybody could see. A machine with no
+// badge is not an error: it is every machine that ran a version of drop from before people
+// existed, and it still works exactly as far as its own device rules let it.
+func wearBadge() {
+	badge, signed, err := user.Mine(time.Now())
+	if err != nil {
+		trace(fmt.Sprintf("no badge: %v", err))
+		return
+	}
+	proto.Carry(badge.Bytes(), signed)
+
+	mine.Lock()
+	defer mine.Unlock()
+	mine.key = user.Text(badge.User)
+}
+
+// mine is this machine's own user key, kept because it is looked at on every connection and
+// reading it from disk each time would be a file read per caller.
+var mine struct {
+	sync.Mutex
+	key string
+}
+
+// myKey is the user key this machine belongs to, and empty when it has none.
+func myKey() string {
+	mine.Lock()
+	defer mine.Unlock()
+
+	return mine.key
 }

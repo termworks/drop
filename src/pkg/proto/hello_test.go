@@ -4,6 +4,7 @@ import (
 	"io"
 	"testing"
 
+	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
@@ -104,7 +105,9 @@ func TestHelloIsAskedThenAnswered(t *testing.T) {
 	want := Hello{Name: "beta", Version: "0.1.0", Serves: []Served{{Path: "/tty", Kind: ns.KindTTY}}}
 
 	done := make(chan error, 1)
-	go func() { done <- AnswerHello(server, want) }()
+	go func() {
+		done <- AnswerHello(server, node.ID{}, func(Badged) Hello { return want })
+	}()
 
 	got, err := AskHello(client)
 	if err != nil {

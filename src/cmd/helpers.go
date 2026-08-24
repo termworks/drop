@@ -59,13 +59,13 @@ func streamOver(err error) bool {
 //
 // The namespace list goes only to a peer that is paired: what a device serves says a great deal
 // about it, and hello is answered by anyone who dials.
-func greeting(pinned *book.Book, mounts *ns.Table, from node.ID) proto.Hello {
+func greeting(pinned *book.Book, mounts *ns.Table, from node.ID, badge proto.Badged) proto.Hello {
 	// No pairing check here any more: the rules on the paths decide, and one of them may name a
 	// bare key. What an unpaired caller can reach is usually nothing, and then the list is empty.
 	return proto.Hello{
 		Name:    node.DisplayName(),
 		Version: version,
-		Serves:  proto.Describe(mounts, whoIs(pinned)(from)),
+		Serves:  proto.Describe(mounts, whoIs(pinned)(from, badge)),
 	}
 }
 
@@ -73,13 +73,44 @@ func greeting(pinned *book.Book, mounts *ns.Table, from node.ID) proto.Hello {
 //
 // Nothing here decides anything: it reports what is known — the name this device is filed under, and
 // whether a secret is shared with it — and the rule on the path does the deciding.
-func whoIs(pinned *book.Book) func(node.ID) ns.Caller {
-	return func(from node.ID) ns.Caller {
+// whoIs turns a caller into what the address book knows about it.
+//
+// There are two ways in. The machine itself may be in the book, which is how drop has always
+// worked. Or it may carry a badge signed by a person who is -- a machine of theirs this one has
+// never met, recognised without pairing again. Both may be true at once, and then the machine's
+// own entry names it and the badge says whose it is.
+func whoIs(pinned *book.Book) func(node.ID, proto.Badged) ns.Caller {
+	return func(from node.ID, badge proto.Badged) ns.Caller {
 		who := ns.Caller{ID: from.String()}
 
 		if entry, ok := pinned.ByID(from); ok {
 			who.Name = entry.Name
 			who.Paired = entry.Paired()
+		}
+
+		if !badge.Shown() {
+			return who
+		}
+		who.User = badge.Key
+
+		// A machine of my own is filed under "me". Nobody writes it in the address book, because
+		// there is nothing to pair with: it is whatever my own user key has signed.
+		if mine := myKey(); mine != "" && badge.Key == mine {
+			who.UserName, who.Paired = "me", true
+			if who.Name == "" {
+				who.Name = badge.As
+			}
+			return who
+		}
+
+		owner, known := pinned.ByUser(badge.Key)
+		if !known {
+			return who
+		}
+		who.UserName = owner.Name
+		who.Paired = who.Paired || owner.Paired()
+		if who.Name == "" {
+			who.Name = badge.As
 		}
 		return who
 	}

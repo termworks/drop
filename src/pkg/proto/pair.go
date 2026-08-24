@@ -29,6 +29,10 @@ type pairMsg struct {
 	Addrs []string
 	Name  string
 	Nonce []byte
+	// Badge and Signed say who this machine belongs to. Empty from a version of drop that had no
+	// notion of people, and then pairing is with the machine alone, as it always was.
+	Badge  []byte
+	Signed []byte
 }
 
 func (m pairMsg) encode() []byte {
@@ -41,6 +45,10 @@ func (m pairMsg) encode() []byte {
 		w.String(a)
 	}
 	w.Bytes(m.Nonce)
+
+	// Last, so a node that stops reading here reads everything before it correctly.
+	w.Bytes(m.Badge)
+	w.Bytes(m.Signed)
 	return w.Body()
 }
 
@@ -83,6 +91,19 @@ func decodePairMsg(body []byte) (pairMsg, error) {
 		return out, err
 	}
 	out.Nonce = append([]byte(nil), nonce...)
+
+	if r.Done() {
+		return out, nil
+	}
+	badge, err := r.Bytes(wire.MaxString)
+	if err != nil {
+		return out, err
+	}
+	signed, err := r.Bytes(wire.MaxString)
+	if err != nil {
+		return out, err
+	}
+	out.Badge, out.Signed = badge, signed
 	return out, nil
 }
 
@@ -94,6 +115,11 @@ type Pairing struct {
 	// Proof is what the initiator sent to show it held the pairing code.
 	Proof []byte
 	Addrs []string
+	// User is the far end's user key, if its badge checked out. Pairing with a person means
+	// keeping this: it is what lets their other machines be recognised without pairing again.
+	User string
+	// Machine is what they call this machine of theirs.
+	Machine string
 }
 
 // NewCode generates a one-time pairing code: 60 bits, which is far past guessing when the only way
@@ -147,6 +173,7 @@ func AnswerPairing(s Stream, self node.ID, name string, addrs []string) (Pairing
 	}
 
 	mine := pairMsg{From: self.String(), Name: name, Addrs: addrs, Nonce: make([]byte, nonceBytes)}
+	mine.Badge, mine.Signed = carried()
 	if _, err := rand.Read(mine.Nonce); err != nil {
 		return out, err
 	}
@@ -164,6 +191,7 @@ func Pair(s Stream, self node.ID, name string, proof []byte, addrs []string) (Pa
 	conn := wire.NewConn(s)
 
 	mine := pairMsg{From: self.String(), Name: name, Proof: proof, Addrs: addrs, Nonce: make([]byte, nonceBytes)}
+	mine.Badge, mine.Signed = carried()
 	if _, err := rand.Read(mine.Nonce); err != nil {
 		return out, fmt.Errorf("generating a nonce: %w", err)
 	}
@@ -200,5 +228,12 @@ func finishPairing(self node.ID, theirs, mine pairMsg) (Pairing, error) {
 	if err != nil {
 		return out, err
 	}
-	return Pairing{Peer: remote, Name: theirs.Name, Secret: secret, Proof: theirs.Proof, Addrs: theirs.Addrs}, nil
+	out = Pairing{Peer: remote, Name: theirs.Name, Secret: secret, Proof: theirs.Proof, Addrs: theirs.Addrs}
+
+	// The badge is checked against the id the transport proved, so a message claiming somebody
+	// else's badge is worth exactly nothing.
+	if badge := vouched(remote, Open{Badge: theirs.Badge, Signed: theirs.Signed}); badge.Shown() {
+		out.User, out.Machine = badge.Key, badge.As
+	}
+	return out, nil
 }

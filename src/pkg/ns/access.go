@@ -16,7 +16,15 @@ type Access struct {
 	// AnyPaired admits any device in the address book.
 	AnyPaired bool
 	// Named admits those devices, by the name they are filed under.
+	//
+	// A name on its own means a person: any machine of theirs. A name with a machine after it —
+	// "bob@laptop" — means that machine and no other. A device paired before users existed is
+	// filed under a name of its own and matches the plain form, which is how every rule written
+	// so far keeps working.
 	Named []string
+	// Anyone admits any caller at all, whether or not it has ever paired. A public path: whoever
+	// learns this device's id can reach it.
+	Anyone bool
 	// Keys admits bare endpoint ids that never paired.
 	Keys []string
 	// Password is an argon2id hash. Whoever presents the secret is admitted, whoever they are.
@@ -27,7 +35,41 @@ type Access struct {
 
 // Declared reports whether this says anything at all. One that says nothing admits nobody.
 func (a Access) Declared() bool {
-	return a.AnyPaired || len(a.Named) > 0 || len(a.Keys) > 0 || a.Password != ""
+	return a.Anyone || a.AnyPaired || len(a.Named) > 0 || len(a.Keys) > 0 || a.Password != ""
+}
+
+// named decides whether a caller is one of the names a rule lists.
+//
+// A name on its own is a person: "bob" admits any machine bob has signed a badge for. A name with a
+// machine after it is that machine: "bob@laptop" admits one of them. And a device with no user is
+// admitted by its own name, which is how every rule written before users existed keeps working.
+func named(names []string, c Caller) bool {
+	if !c.Paired {
+		return false
+	}
+
+	for _, want := range names {
+		who, machine, narrowed := strings.Cut(want, "@")
+
+		switch {
+		case narrowed:
+			// A person and one of their machines. The machine is matched by the name it is filed
+			// under, which is what a person reading the rule wrote down.
+			if c.UserName != "" && c.UserName == who && c.Name == machine {
+				return true
+			}
+
+		default:
+			// A person, or a device that has none and answers to its own name.
+			if c.UserName != "" && c.UserName == want {
+				return true
+			}
+			if c.UserName == "" && c.Name != "" && c.Name == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // rule is one declared way in, and whether the caller satisfied it.
@@ -46,6 +88,11 @@ type Caller struct {
 	Paired bool
 	// Password is what was offered, empty if nothing was.
 	Password string
+	// User is who owns this machine, as their user key is written down. Empty when the caller
+	// carried no badge, which is every device paired before users existed.
+	User string
+	// UserName is what that person is filed under, empty if they are not in the book.
+	UserName string
 }
 
 // Admits decides whether a caller may reach a path, and says why not when it may not.
@@ -62,11 +109,14 @@ func (a Access) Admits(c Caller) (bool, string) {
 
 	var rules []rule
 
+	if a.Anyone {
+		rules = append(rules, rule{"being anybody at all", true})
+	}
 	if a.AnyPaired {
 		rules = append(rules, rule{"pairing", c.Paired})
 	}
 	if len(a.Named) > 0 {
-		rules = append(rules, rule{"pairing", c.Paired && c.Name != "" && has(a.Named, c.Name)})
+		rules = append(rules, rule{"pairing", named(a.Named, c)})
 	}
 	if len(a.Keys) > 0 {
 		rules = append(rules, rule{"key", hasFold(a.Keys, c.ID)})

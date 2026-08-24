@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
@@ -128,14 +129,17 @@ func writable(m ns.Mount) bool {
 }
 
 // AnswerHello reads the ask and writes this node's description back.
-func AnswerHello(s io.ReadWriteCloser, self Hello) error {
+// AnswerHello reads the ask and answers it. Self is built from the badge the ask carried, because
+// what this node is willing to say it serves depends on who is asking.
+func AnswerHello(s io.ReadWriteCloser, from node.ID, self func(Badged) Hello) error {
 	c := wire.NewConn(s)
 
-	// The ask carries nothing; reading it is what keeps the two sides in step on one stream.
-	if _, _, err := c.ReadFrame(); err != nil {
+	// Reading the ask is also what keeps the two sides in step on one stream.
+	_, body, err := c.ReadFrame()
+	if err != nil {
 		return fmt.Errorf("reading the ask: %w", err)
 	}
-	return c.WriteFrame(wire.KindOpen, self.encode())
+	return c.WriteFrame(wire.KindOpen, self(showing(from, body)).encode())
 }
 
 // ReadHello reads what the far end calls itself.
@@ -153,7 +157,7 @@ func ReadHello(s io.ReadWriteCloser) (Hello, error) {
 // sent on it, so a client that opened one and only read would wait for an answer to a stream the
 // server had not yet been handed. This is the byte that makes the stream exist over there.
 func AskHello(s io.ReadWriteCloser) (Hello, error) {
-	if err := wire.NewConn(s).WriteFrame(wire.KindPing, nil); err != nil {
+	if err := wire.NewConn(s).WriteFrame(wire.KindPing, showable()); err != nil {
 		return Hello{}, fmt.Errorf("asking: %w", err)
 	}
 	return ReadHello(s)

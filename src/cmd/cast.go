@@ -105,7 +105,9 @@ func runCast(parent context.Context, addressFile string) error {
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
-			_ = proto.AnswerHello(s, proto.Hello{Name: node.DisplayName(), Version: version})
+			_ = proto.AnswerHello(s, from, func(proto.Badged) proto.Hello {
+				return proto.Hello{Name: node.DisplayName(), Version: version}
+			})
 		},
 	})
 

@@ -27,6 +27,7 @@ func SendMessages(ctx context.Context, s io.ReadWriteCloser, path string, batch 
 	conn := wire.NewConn(s)
 
 	open := Open{Mode: ModeMessages, From: from, Path: path}
+	open.Badge, open.Signed = carried()
 	if err := conn.WriteFrame(wire.KindOpen, open.encode()); err != nil {
 		return nil, err
 	}

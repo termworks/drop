@@ -166,6 +166,8 @@ func OpenDuplex(ctx context.Context, s Stream, path, name, from string) (*Duplex
 		From:  from,
 		Items: []Item{{Name: name, Size: SizeUnknown}},
 	}
+	open.Badge, open.Signed = carried()
+
 	if err := conn.WriteFrame(wire.KindOpen, open.encode()); err != nil {
 		_ = s.Close()
 		return nil, err

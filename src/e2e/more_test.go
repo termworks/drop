@@ -234,3 +234,58 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		t.Fatalf("nothing was remembered about how to reach beta:\n%s", raw)
 	}
 }
+
+// Pairing is with a person, not only with a machine.
+//
+// Each node generates a user key on first run and signs a badge for itself. Pairing carries that
+// badge, and what each side writes down is the other's user key — which is what lets a machine of
+// theirs that this one has never met be recognised later without pairing again.
+func TestPairingLearnsWhoTheOtherMachineBelongsTo(t *testing.T) {
+	one, two := newNode(t, "one", "45031"), newNode(t, "two", "45032")
+	one.serves(`local drop = require("drop")`)
+	two.serves(`local drop = require("drop")`)
+
+	// Each side has a user, and the two are different people.
+	keys := map[string]string{}
+	for _, n := range []*node{one, two} {
+		said := n.must("user")
+		if !strings.Contains(said, "ssh-ed25519 ") {
+			t.Fatalf("%s has no user key:\n%s", n.name, said)
+		}
+		keys[n.name] = between(t, said, "identity ", "\n")
+	}
+	if keys["one"] == keys["two"] {
+		t.Fatal("both nodes generated the same user key")
+	}
+
+	pair(t, one, two)
+
+	// Each address book holds the other's user key, alongside the machine it was learnt from.
+	for _, side := range []struct {
+		node *node
+		want string
+	}{{one, keys["two"]}, {two, keys["one"]}} {
+		raw, err := os.ReadFile(filepath.Join(side.node.home, "config", "drop", "peers.json"))
+		if err != nil {
+			t.Fatalf("%s: %v", side.node.name, err)
+		}
+		if !strings.Contains(string(raw), side.want) {
+			t.Errorf("%s did not learn the other's user key:\n%s", side.node.name, raw)
+		}
+	}
+}
+
+// between pulls the text between two markers out of what a command printed.
+func between(t *testing.T, said, from, to string) string {
+	t.Helper()
+
+	_, rest, found := strings.Cut(said, from)
+	if !found {
+		t.Fatalf("nothing said %q:\n%s", from, said)
+	}
+	out, _, found := strings.Cut(rest, to)
+	if !found {
+		t.Fatalf("nothing closed %q:\n%s", from, said)
+	}
+	return strings.TrimSpace(out)
+}

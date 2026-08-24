@@ -391,14 +391,14 @@ func optStrings(t *rt.Table, key string) ([]string, bool) {
 
 // readAccess reads who a path is shared with.
 //
-// Two shorthands, because almost every path wants one of them: a list of names is a list of paired
-// devices, and the bare word "paired" is anyone in the address book. The long form is for a path
-// that needs a key or a password.
+// Three shorthands, because almost every path wants one of them: a list of names is a list of
+// people and devices, the bare word "paired" is anyone in the address book, and the bare word
+// "anyone" is exactly what it says. The long form is for a path that needs a key or a password.
 func readAccess(opts *rt.Table) ns.Access {
 	value := opts.Get(rt.StringValue("access"))
 
 	if word, ok := value.TryString(); ok {
-		return ns.Access{AnyPaired: word == "paired"}
+		return ns.Access{AnyPaired: word == "paired", Anyone: word == "anyone"}
 	}
 
 	table, ok := value.TryTable()
@@ -421,6 +421,7 @@ func readAccess(opts *rt.Table) ns.Access {
 		out.AnyPaired = true
 		out.Named = nil
 	}
+	out.Anyone = fieldBool(table, "anyone")
 	return out
 }
 

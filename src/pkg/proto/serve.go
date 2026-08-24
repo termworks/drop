@@ -17,7 +17,7 @@ type Policy struct {
 	Dir string
 	// Who describes a caller: what it is filed under, and whether a secret is shared with it.
 	// Nil means nothing is known about anyone, which with deny-by-default serves nobody.
-	Who func(from node.ID) ns.Caller
+	Who func(from node.ID, badge Badged) ns.Caller
 	// Allow decides whether to take a session. Nil accepts nothing.
 	Allow func(from node.ID, open Open) (bool, string)
 	// Progress, when set, is called as bytes land. Total is SizeUnknown for an item with no length.
@@ -61,7 +61,7 @@ func Handle(s Stream, from node.ID, policy Policy) error {
 	// The namespace decides what this session is, so it is resolved before anything else.
 	caller := ns.Caller{ID: from.String()}
 	if policy.Who != nil {
-		caller = policy.Who(from)
+		caller = policy.Who(from, vouched(from, open))
 	}
 	caller.Password = open.Secret
 

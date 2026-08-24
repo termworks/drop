@@ -105,6 +105,7 @@ drop chat <device>             talk to one
 drop log [device]              a conversation, or all of them
 drop cast                      serve a terminal read from stdin as asciicast
 drop id                        this node's identity
+drop user                      who this machine belongs to
 ```
 
 ## namespaces
@@ -148,12 +149,19 @@ A rule declared deeper **replaces** the one it inherited rather than merging wit
 declaration says what it means.
 
 ```lua
-access = { "bob", "carol" }      -- paired devices, by the name you filed them under
-access = "paired"                 -- anyone in your address book
-access = { keys = { "7b97…" } }   -- a machine that never paired, by its endpoint id
+access = { "bob", "carol" }        -- people, by the name you filed them under
+access = { "bob@laptop" }          -- one machine of theirs, and no other
+access = { "me" }                  -- any machine of your own
+access = "paired"                  -- anyone in your address book
+access = "anyone"                  -- anybody who knows the id, paired or not
+access = { keys = { "7b97…" } }    -- a machine that never paired, by its endpoint id
 access = { password = "$argon2id$…" }
 access = { paired = { "laptop" }, password = "$argon2id$…", require = "all" }
 ```
+
+A name on its own is a **person**, not a machine: every machine they have signed a badge for gets
+in, including ones you have never met. Recognising somebody and letting them in are separate — see
+[who you are](#who-you-are).
 
 An endpoint id is a public key, and QUIC proves possession of the private half during the
 handshake — so `keys` is a real cryptographic statement, not a hostname you could spoof. What
@@ -196,6 +204,49 @@ takes precedence:
                /stream/logs/today →  /stream/logs   rest /today
                /streaming         →  nothing        (boundary, not substring)
 ```
+
+## who you are
+
+A device has an identity of its own — the endpoint key, which QUIC proves on every connection. That
+says *which machine*, never *whose*. A **user key** says whose.
+
+```
+  you ──── one SSH key ────┬──── laptop     each machine carries a badge:
+                           ├──── yubikey    "this user owns this machine,
+                           └──── server      called <name>, until <date>"
+```
+
+An ed25519 SSH key, generated on first run if you do not point drop at one, and read through
+`ssh-agent` if you do — so a key on a YubiKey, in a PIV slot, or in a file all work the same way.
+`drop user` shows what this machine is using.
+
+```console
+$ drop user
+  key      ~/.config/drop/user
+  identity ssh-ed25519 AAAAC3Nza…
+  as       SHA256:nkTYln1x9SMCjQxJCxVC9ng4829/4DxcU6CK+iKNHaw
+
+  this machine is "tron", until 2026-11-22
+```
+
+Each machine holds a **badge**: a statement signed by your user key, in OpenSSH's own signature
+format under drop's namespace, so it can be checked with `ssh-keygen -Y verify` and cannot be
+replayed as a git signature or an ssh login. It is signed once, at enrolment, and shown on every
+connection after that — a touch per connection would be unusable, and a touch every ninety days is
+not.
+
+**Pairing is with a person.** The exchange carries the badge, and both sides write down the other's
+user key. A machine of theirs you have never met then presents its own badge and is recognised
+without pairing again: *pair once per person, not once per pair of machines*.
+
+**Recognising somebody is not letting them in.** Pairing with bob grants his machines nothing at
+all — it means his phone arrives as `bob@phone` rather than as a stranger. What it may then reach
+is whatever the rules on each path say, and the default is nothing.
+
+**Revocation** is expiry and a local refusal, and nothing more honest is possible without a server.
+A badge lasts ninety days, so a lost machine stops being trusted within ninety days rather than
+today; `drop peers rm bob@laptop` stops this machine trusting it immediately, and tells nobody
+else.
 
 ## configuration
 
@@ -495,6 +546,7 @@ DROP_NAME          what this node calls itself; defaults to the hostname
 DROP_PORT          the port to listen on; defaults to 47777
 DROP_RELAYS        relay urls to use instead of the defaults, when a rendezvous is on
 DROP_CONFIG        the config file; defaults to $XDG_CONFIG_HOME/drop/init.lua
+DROP_USER_KEY      the user key to sign badges with; defaults to $XDG_CONFIG_HOME/drop/user
 DROP_OPENER        what opens an arriving link; defaults to xdg-open
 XDG_CONFIG_HOME    where identity and peers.json live; defaults to ~/.config
 XDG_DATA_HOME      where conversations live; defaults to ~/.local/share

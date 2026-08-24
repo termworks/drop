@@ -273,12 +273,17 @@ func record(p proto.Pairing, as string) error {
 		return err
 	}
 	b.Pair(name, p.Peer, p.Secret, p.Addrs...)
+	b.Belongs(name, p.User)
 	if err := b.Save(); err != nil {
 		return err
 	}
 
 	fmt.Printf("\npaired with %s\n", name)
-	fmt.Printf("  %s\n\n", p.Peer)
+	fmt.Printf("  %s\n", p.Peer)
+	if p.User != "" {
+		fmt.Printf("  a machine of theirs, called %q\n", p.Machine)
+	}
+	fmt.Println()
 	fmt.Printf("either device can now reach the other by name.\n")
 	return nil
 }
@@ -338,6 +343,7 @@ func joinWith(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as 
 		return "", err
 	}
 	pinned.Pair(name, id, p.Secret, p.Addrs...)
+	pinned.Belongs(name, p.User)
 
 	return name, pinned.Save()
 }

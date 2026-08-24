@@ -79,7 +79,9 @@ func runTUI(parent context.Context) error {
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
-			_ = proto.AnswerHello(s, greeting(pinned, cfg.Mounts, from))
+			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
+				return greeting(pinned, cfg.Mounts, from, badge)
+			})
 		},
 	})
 
@@ -315,6 +317,7 @@ func (l *live) Offer(ctx context.Context) (string, <-chan string, error) {
 			name = node.Brief(from)
 		}
 		pinned.Pair(name, from, p.Secret, p.Addrs...)
+		pinned.Belongs(name, p.User)
 		if err := pinned.Save(); err != nil {
 			return
 		}

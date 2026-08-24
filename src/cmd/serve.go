@@ -126,7 +126,9 @@ func runServe(parent context.Context, quiet bool) error {
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
 			_ = pinned.Refresh()
-			_ = proto.AnswerHello(s, greeting(pinned, cfg.Mounts, from))
+			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
+				return greeting(pinned, cfg.Mounts, from, badge)
+			})
 		},
 		// Pairing is answered by whoever holds the address, which is this. A separate `drop pair`
 		// process on this machine asks for a code to be shown; it cannot answer for the node.

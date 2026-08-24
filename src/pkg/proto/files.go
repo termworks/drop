@@ -67,6 +67,7 @@ func SendFiles(ctx context.Context, s io.ReadWriteCloser, path string, sources [
 	conn := wire.NewConn(s)
 
 	open := Open{Mode: ModeFiles, From: from, Path: path}
+	open.Badge, open.Signed = carried()
 	for _, src := range sources {
 		open.Items = append(open.Items, Item{Name: src.Name, Size: src.Size, Mode: src.Mode})
 	}
