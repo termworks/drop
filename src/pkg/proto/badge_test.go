@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/tmc/go-iroh/key"
+
+	"github.com/bresilla/drop/src/pkg/wire"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/bresilla/drop/src/pkg/node"
@@ -125,5 +127,35 @@ func TestPairingCarriesABadge(t *testing.T) {
 	}
 	if got.Name != "laptop" || len(got.Addrs) != 1 {
 		t.Error("the badge disturbed what was already there")
+	}
+}
+
+// A frame in the shape a node without badges would send must not decode.
+//
+// Nothing has ever shipped that sends one, and nothing is going to: a short frame is a bug or
+// somebody probing, and reading it as a caller with no person would be a way in that nobody
+// declared. This is the assertion that the tolerance is gone and stays gone.
+func TestAFrameWithNoBadgeInItIsRefused(t *testing.T) {
+	short := wire.NewWriter()
+	short.Byte(ModeMessages)
+	short.String("laptop")
+	short.String("/chat")
+	short.String("")
+	short.Uint(0)
+
+	if _, err := decodeOpen(short.Body()); err == nil {
+		t.Error("an open with no badge fields decoded")
+	}
+
+	// The same for pairing.
+	stub := wire.NewWriter()
+	stub.String(idFrom(1).String())
+	stub.String("laptop")
+	stub.Bytes([]byte("proof"))
+	stub.Uint(0)
+	stub.Bytes(make([]byte, nonceBytes))
+
+	if _, err := decodePairMsg(stub.Body()); err == nil {
+		t.Error("a pairing message with no badge fields decoded")
 	}
 }
