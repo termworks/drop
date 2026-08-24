@@ -89,6 +89,8 @@ type Model struct {
 	// onSelf is true while the list is showing what this device serves rather than a peer's.
 	onSelf bool
 	paths  []proto.Served
+	// rows is how the address book was arranged into the list: which row is which device.
+	rows grouped
 	// under is where in a device's paths the list is standing, "/" being the top.
 	under string
 	// steps is what is at that level: namespaces, and the ways further down.
@@ -367,6 +369,9 @@ const (
 type Identity struct {
 	Name string
 	ID   string
+	// User is the person this machine belongs to, written the way authorized_keys writes a key.
+	// It is what tells your own machines apart from everybody else's in the list.
+	User string
 	// How this device is reachable while the interface is open.
 	Reach Reach
 }

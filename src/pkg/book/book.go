@@ -29,10 +29,13 @@ type Entry struct {
 	// User is the person this machine belongs to, written the way authorized_keys writes a key.
 	// Empty for a machine paired on its own, and for every entry made before people existed.
 	User string
+	// Person is what that person is called here. A machine has a name and its owner has one, and
+	// they are not the same name once somebody has more than one machine.
+	Person string
 }
 
-// Person reports whether this entry is somebody, rather than a machine on its own.
-func (e Entry) Person() bool { return e.User != "" }
+// Owned reports whether this entry is somebody's machine, rather than a machine on its own.
+func (e Entry) Owned() bool { return e.User != "" }
 
 // Paired reports whether this entry carries a shared secret.
 func (e Entry) Paired() bool {
@@ -100,6 +103,7 @@ type stored struct {
 	Secret string   `json:"secret,omitempty"`
 	Addrs  []string `json:"addrs,omitempty"`
 	User   string   `json:"user,omitempty"`
+	Person string   `json:"person,omitempty"`
 }
 
 func path() (string, error) {
@@ -149,7 +153,7 @@ func Load() (*Book, error) {
 				return nil, fmt.Errorf("%s: %s has an unreadable secret: %w", file, name, err)
 			}
 		}
-		b.entries[name] = Entry{Name: name, ID: id, Secret: secret, Addrs: entry.Addrs, User: entry.User}
+		b.entries[name] = Entry{Name: name, ID: id, Secret: secret, Addrs: entry.Addrs, User: entry.User, Person: entry.Person}
 	}
 	return b, nil
 }
@@ -166,7 +170,7 @@ func (b *Book) Save() error {
 
 	onDisk := make(map[string]stored, len(b.entries))
 	for name, entry := range b.entries {
-		out := stored{ID: entry.ID.String(), Addrs: entry.Addrs, User: entry.User}
+		out := stored{ID: entry.ID.String(), Addrs: entry.Addrs, User: entry.User, Person: entry.Person}
 		if entry.Paired() {
 			out.Secret = base64.StdEncoding.EncodeToString(entry.Secret)
 		}
@@ -213,7 +217,21 @@ func (b *Book) Belongs(name, key string) {
 		return
 	}
 	entry.User = key
+	entry.Person = b.personFor(key, entry.Name)
 	b.entries[name] = entry
+}
+
+// personFor is what a user key is already called here, and the fallback when it is called nothing.
+//
+// Every machine of one person carries the same label, so which of their machines was paired first
+// does not decide what the rest of them are called.
+func (b *Book) personFor(key, fallback string) string {
+	for _, entry := range b.entries {
+		if entry.User == key && entry.Person != "" {
+			return entry.Person
+		}
+	}
+	return fallback
 }
 
 // ByUser finds who a user key belongs to: the name this machine files that person under.

@@ -285,7 +285,12 @@ func (l *live) Self() (tui.Identity, error) {
 		reach = tui.ReachDaemon
 	}
 
-	return tui.Identity{Name: node.DisplayName(), ID: l.node.ID().String(), Reach: reach}, nil
+	return tui.Identity{
+		Name:  node.DisplayName(),
+		ID:    l.node.ID().String(),
+		User:  myKey(),
+		Reach: reach,
+	}, nil
 }
 
 // Offer puts this device up for pairing and reports the name it paired with.

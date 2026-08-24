@@ -247,3 +247,34 @@ func TestReachingAStrangerRemembersNothing(t *testing.T) {
 		t.Errorf("Reached() = %v, %v for a device that is not in the book", changed, err)
 	}
 }
+
+// A person has a name of their own, and every machine of theirs carries it -- otherwise which of
+// their machines was paired with first would decide what the rest of them are called.
+func TestEveryMachineOfOnePersonSharesTheirName(t *testing.T) {
+	const key = "ssh-ed25519 AAAA…"
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	b, err := Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	b.Pair("bob", testID(t), testSecret(t))
+	b.Belongs("bob", key)
+
+	b.Pair("the-thing-under-his-desk", testID(t), testSecret(t))
+	b.Belongs("the-thing-under-his-desk", key)
+
+	for _, name := range []string{"bob", "the-thing-under-his-desk"} {
+		entry, ok := b.Lookup(name)
+		if !ok {
+			t.Fatalf("%s is not in the book", name)
+		}
+		if entry.Person != "bob" {
+			t.Errorf("%s belongs to %q", name, entry.Person)
+		}
+		if !entry.Owned() {
+			t.Errorf("%s has no owner", name)
+		}
+	}
+}

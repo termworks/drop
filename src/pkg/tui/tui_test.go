@@ -50,6 +50,7 @@ type fake struct {
 	refuse    error
 	paired    chan string
 	stream    string
+	self      Identity
 }
 
 func (f *fake) Peers() ([]book.Entry, error) { return f.peers, nil }
@@ -247,7 +248,12 @@ func start(t *testing.T, back Backend) Model {
 	return settleFrom(t, m, m.Init(), tea.WindowSizeMsg{Width: 120, Height: 30})
 }
 
-func (f *fake) Self() (Identity, error) { return Identity{Name: "alpha", ID: "e88c42df318c…"}, nil }
+func (f *fake) Self() (Identity, error) {
+	if f.self.Name != "" {
+		return f.self, nil
+	}
+	return Identity{Name: "alpha", ID: "e88c42df318c…"}, nil
+}
 
 // A pane is narrow and a path is not. Wrapping would break the column, so the head gives way and
 // the tail — which is what tells two paths apart — is kept.
@@ -1055,7 +1061,7 @@ func TestThisDeviceIsInTheList(t *testing.T) {
 		t.Fatalf("this device is not in the list:\n%s", m.View())
 	}
 
-	m.list.Select(rowMine)
+	m.list.Select(m.rows.me)
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	if !m.onSelf {
@@ -1073,7 +1079,7 @@ func TestAPeerIsStillEnteredByName(t *testing.T) {
 	back := withOne()
 	m := start(t, back)
 
-	m.list.Select(rowFirst)
+	m.list.Select(m.rowFor(0))
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	if m.onSelf {
@@ -1112,7 +1118,7 @@ func TestTheListSeparatesYoursFromEverybodyElses(t *testing.T) {
 	m := start(t, withOne())
 
 	shown := m.View()
-	for _, want := range []string{"ME", "PAIRED WITH"} {
+	for _, want := range []string{"ME", "MACHINES"} {
 		if !strings.Contains(shown, want) {
 			t.Errorf("the list has no %q divider:\n%s", want, shown)
 		}
@@ -1127,11 +1133,78 @@ func TestTheListSeparatesYoursFromEverybodyElses(t *testing.T) {
 	}
 }
 
-// With nobody paired there is nobody to label, so the second divider stays away.
+// With nobody paired there is nobody to label, so the rest of the dividers stay away.
 func TestTheSecondDividerNeedsSomebodyToPointAt(t *testing.T) {
 	m := start(t, &fake{})
 
-	if strings.Contains(m.View(), "PAIRED WITH") {
-		t.Errorf("a divider for nobody:\n%s", m.View())
+	for _, gone := range []string{"PEOPLE", "MACHINES"} {
+		if strings.Contains(m.View(), gone) {
+			t.Errorf("a %q divider for nobody:\n%s", gone, m.View())
+		}
+	}
+}
+
+// The list holds three different kinds of thing, and says which is which: your own machines, other
+// people's, and the machines that are nobody's.
+func TestTheListGroupsPeopleAndMachines(t *testing.T) {
+	back := &fake{
+		self: Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
+		peers: []book.Entry{
+			{Name: "laptop", ID: idFor(2), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 MINE", Person: "me"},
+			{Name: "bob", ID: idFor(3), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"},
+			{Name: "bobs-phone", ID: idFor(4), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"},
+			{Name: "buildbox", ID: idFor(5), Secret: make([]byte, book.SecretBytes)},
+		},
+	}
+
+	m := start(t, back)
+
+	// Read off the list rather than the screen: four devices and their headings are taller than a
+	// terminal, and what is being tested is the arrangement, not what happens to fit.
+	var labels []string
+	for _, item := range m.rows.items {
+		switch it := item.(type) {
+		case dividerItem:
+			labels = append(labels, strings.ToUpper(it.label))
+		case personItem:
+			labels = append(labels, it.name)
+		case deviceItem:
+			labels = append(labels, it.entry.Name)
+		}
+	}
+
+	got := strings.Join(labels, " ")
+	want := "ME tron laptop PEOPLE bob bob bobs-phone MACHINES buildbox"
+	if got != want {
+		t.Errorf("the list reads\n  %s\nwanted\n  %s", got, want)
+	}
+
+	// Every device still leads back to the entry it came from, which is what the rest of the
+	// interface acts on. Grouping must not renumber anything.
+	for i, p := range back.peers {
+		row := m.rowFor(i)
+		if got := m.peerFor(row); got != i {
+			t.Errorf("%s sits at row %d, which reads back as peer %d", p.Name, row, got)
+		}
+	}
+}
+
+// A person is a heading, not a device: entering one is not entering a machine.
+func TestAPersonIsNotADeviceToEnter(t *testing.T) {
+	back := &fake{
+		self: Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
+		peers: []book.Entry{
+			{Name: "bob", ID: idFor(3), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"},
+		},
+	}
+
+	m := start(t, back)
+
+	// The row above bob's machine is bob himself.
+	m.list.Select(m.rowFor(0) - 1)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.at != levelDevices {
+		t.Errorf("entering a person went somewhere, to level %d", m.at)
 	}
 }

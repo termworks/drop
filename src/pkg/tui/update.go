@@ -365,8 +365,10 @@ func (m Model) typeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) enter() (tea.Model, tea.Cmd) {
 	switch m.at {
 	case levelDevices:
-		// A divider is a label, not a thing to enter.
-		if _, ok := m.list.SelectedItem().(dividerItem); ok {
+		// A divider is a label and a person is a heading. Neither is a thing to enter: what you
+		// reach is a machine, and a person's machines are the rows underneath their name.
+		switch m.list.SelectedItem().(type) {
+		case dividerItem, personItem:
 			return m, nil
 		}
 
@@ -453,28 +455,10 @@ func (m Model) back_() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// showDevices puts the address book in the list.
+// showDevices puts the address book in the list, grouped.
 func (m *Model) showDevices() {
-	// This device first. What it shares is the thing a person most often wants to check and the
-	// only thing they cannot see from anywhere else, and a list of everybody except yourself is a
-	// strange list to be given.
-	items := make([]list.Item, 0, len(m.peers)+3)
-
-	items = append(items, dividerItem{label: "me"})
-	items = append(items, deviceItem{
-		entry: book.Entry{Name: m.me.Name, ID: idOf(m.me.ID)},
-		addr:  "this device",
-		self:  true,
-	})
-
-	if len(m.peers) > 0 {
-		items = append(items, dividerItem{label: "paired with"})
-	}
-	for _, p := range m.peers {
-		items = append(items, deviceItem{entry: p, addr: strings.Join(p.Addrs, "  ")})
-	}
-
-	m.list.SetItems(items)
+	m.rows = group(m.me, m.peers)
+	m.list.SetItems(m.rows.items)
 	m.list.Select(m.rowFor(m.atPeer))
 	m.list.SetSize(m.listWidth(), m.listHeight())
 }
@@ -669,29 +653,24 @@ func (m Model) scrollBy(lines int) Model {
 	return m
 }
 
-// Where things sit in the device list, which is not a plain list of peers: a label, this machine,
-// a label, then everybody else.
-const (
-	rowMine  = 1 // this machine
-	rowFirst = 3 // the first peer
-)
-
 // onSelfRow reports whether the cursor is on this machine.
-func (m Model) onSelfRow() bool { return m.list.Index() == rowMine }
+func (m Model) onSelfRow() bool { return m.list.Index() == m.rows.me }
 
 // rowFor is where a peer sits in the list.
+//
+// Looked up rather than counted: the list is grouped, so how many labels sit above a device
+// depends on who is in the address book.
 func (m Model) rowFor(peer int) int {
-	if peer < 0 || len(m.peers) == 0 {
-		return rowMine
+	if peer < 0 || peer >= len(m.rows.row) || m.rows.row[peer] < 0 {
+		return m.rows.me
 	}
-	return rowFirst + peer
+	return m.rows.row[peer]
 }
 
-// peerFor is which peer a row is, and -1 for the rows that are not peers.
+// peerFor is which peer a row is, and the one already open for a row that is not a device.
 func (m Model) peerFor(row int) int {
-	at := row - rowFirst
-	if at < 0 || at >= len(m.peers) {
-		return 0
+	if at, ok := m.rows.peer[row]; ok {
+		return at
 	}
-	return at
+	return m.atPeer
 }

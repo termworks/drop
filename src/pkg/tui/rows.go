@@ -47,7 +47,10 @@ func divider(it dividerItem, width, _ int, _ bool) string {
 
 type deviceItem struct {
 	// self marks the row for this machine, which is not a peer and is not paired with itself.
-	self  bool
+	self bool
+	// under marks a machine that sits beneath a person's name, and is drawn indented so that the
+	// list reads as a person with machines rather than as a flat list with a heading in it.
+	under bool
 	entry book.Entry
 	addr  string
 }
@@ -79,6 +82,8 @@ func (d rows) Render(w io.Writer, m list.Model, index int, item list.Item) {
 	switch it := item.(type) {
 	case dividerItem:
 		fmt.Fprint(w, divider(it, width, index, selected))
+	case personItem:
+		fmt.Fprint(w, person(it, width, index, selected))
 	case deviceItem:
 		fmt.Fprint(w, device(it, width, index, selected))
 	case pathItem:
@@ -115,20 +120,27 @@ func device(it deviceItem, width, index int, selected bool) string {
 		name = accent
 	}
 
+	// A machine of somebody's is set in from their name, so the two read as one thing.
+	indent := ""
+	if it.under {
+		indent = "   "
+		inner -= len(indent)
+	}
+
 	stateCol := 14
-	first := fill(stripe(base, selected) +
+	first := fill(stripe(base, selected) + indent +
 		cell(base, dotColour, 2, dot, false, false) +
 		cell(base, name, inner-2-stateCol, it.entry.Name, false, true) +
 		cell(base, subtext, stateCol, state, true, false))
 
-	rest := fill(stripe(base, selected) +
+	rest := fill(stripe(base, selected) + indent +
 		cell(base, muted, inner, it.entry.ID.String(), false, false))
 
 	where := it.addr
 	if where == "" {
 		where = "last seen address unknown"
 	}
-	last := fill(stripe(base, selected) +
+	last := fill(stripe(base, selected) + indent +
 		cell(base, muted, inner, where, false, false))
 
 	return first + "\n" + rest + "\n" + last
@@ -248,4 +260,41 @@ func describe(kind string) string {
 	}
 }
 
-var _ = strings.Join
+// personItem is somebody, with their machines under it.
+type personItem struct {
+	name string
+	of   int
+}
+
+func (p personItem) FilterValue() string { return p.name }
+
+// person draws a name, over the height every other row takes.
+func person(it personItem, width, index int, selected bool) string {
+	base := row(index, selected)
+	fill := func(s string) string { return base.Width(width).Render(s) }
+
+	var name lipgloss.TerminalColor = plain
+	if selected {
+		name = accent
+	}
+
+	inner := width - 2
+
+	machines := "one machine"
+	if it.of != 1 {
+		machines = fmt.Sprintf("%d machines", it.of)
+	}
+
+	stateCol := 14
+	first := fill(stripe(base, selected) +
+		cell(base, second, 2, "◈", false, false) +
+		cell(base, name, inner-2-stateCol, it.name, false, true) +
+		cell(base, subtext, stateCol, machines, true, false))
+
+	// The name as a rule would spell it, because that is the thing you go and write once you have
+	// decided somebody may reach something.
+	rule := fill(stripe(base, selected) +
+		cell(base, muted, inner, fmt.Sprintf("access = { %q }", it.name), false, false))
+
+	return first + "\n" + rule + "\n" + fill("")
+}
