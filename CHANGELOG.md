@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.4] - 2026-08-24
+
+### <!-- 0 -->⛰️  Features
+
+- Cards a step above the page
+- Open the camera from Go, no Java
+- Read a pairing code with the camera
+- One dark theme, and an icon with nothing behind it
+
 ## [0.2.3] - 2026-08-24
 
 ### <!-- 0 -->⛰️  Features
