@@ -53,9 +53,34 @@ func pipeCommand(at proto.Resolved, d *proto.Duplex) error {
 	done := make(chan error, 1)
 	go func() { done <- d.Pump(io.Discard) }()
 
-	if _, err := io.Copy(d, out); err != nil {
+	if _, err := io.Copy(asTerminal{d}, out); err != nil {
 		return err
 	}
 	_ = d.Close()
 	return <-done
+}
+
+// asTerminal turns bare newlines into carriage return and newline.
+//
+// A command's output goes through a pipe, not a terminal, so nothing translates its line endings —
+// the kernel does that for a pty, and a stream namespace has none. What arrives at the far end is
+// drawn on a terminal screen, where a line feed moves down without moving back, and the result is
+// each line starting further right than the last.
+type asTerminal struct{ to io.Writer }
+
+func (a asTerminal) Write(p []byte) (int, error) {
+	// Only newlines that are not already part of a pair, so a command that does its own
+	// translation is not given two carriage returns.
+	var out []byte
+	for i, b := range p {
+		if b == '\n' && (i == 0 || p[i-1] != '\r') {
+			out = append(out, '\r')
+		}
+		out = append(out, b)
+	}
+
+	if _, err := a.to.Write(out); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }

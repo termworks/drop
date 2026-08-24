@@ -92,15 +92,19 @@ func runServe(parent context.Context, quiet bool) error {
 		Duplex: serveDuplex(pinned, shells),
 	}
 
+	// The address book is re-read before answering anybody, because `drop pair` is a separate
+	// process: without this, a device paired while this was running stays a stranger to it.
 	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
+			_ = pinned.Refresh()
 			if err := proto.Handle(s, from, policy); err != nil {
 				fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 			}
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
+			_ = pinned.Refresh()
 			_ = proto.AnswerHello(s, greeting(pinned, cfg.Mounts, from))
 		},
 	})

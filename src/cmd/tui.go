@@ -136,6 +136,50 @@ func (l *live) Say(ctx context.Context, to book.Entry, body string) error {
 	return err
 }
 
+// Send copies files to a path on the far device.
+//
+// The same call the command line makes, over the interface's own node: a long-lived process should
+// not stand up a second endpoint to send a file, and the far end should not see a stranger.
+func (l *live) Send(ctx context.Context, to book.Entry, path string, files []string, progress func(string, int64, int64)) error {
+	sources, err := gather(files, "")
+	if err != nil {
+		return err
+	}
+
+	conn, s, err := reach(ctx, l.node, l.lan, to, node.ALPNSession)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	defer s.Close()
+
+	if err := proto.SendFiles(ctx, s, path, sources, node.DisplayName(), progress); err != nil {
+		return err
+	}
+	for _, src := range sources {
+		noteFile(to.ID, convo.Out, src.Name, src.Size)
+	}
+	return nil
+}
+
+// Post sends one message to a path.
+func (l *live) Post(ctx context.Context, to book.Entry, path string, kind byte, body string) error {
+	m, err := compose(to, kind, body, "")
+	if err != nil {
+		return err
+	}
+
+	conn, s, err := reach(ctx, l.node, l.lan, to, node.ALPNSession)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	defer s.Close()
+
+	_, err = proto.SendMessages(ctx, s, path, []convo.Message{m}, node.DisplayName())
+	return err
+}
+
 // Watch reads a live path into a screen, nudging the interface whenever the picture changes.
 func (l *live) Watch(ctx context.Context, on book.Entry, path string, into io.Writer, resize func(cols, rows int)) error {
 	conn, s, err := reach(ctx, l.node, l.lan, on, node.ALPNSession)
