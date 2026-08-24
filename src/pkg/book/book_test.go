@@ -138,3 +138,39 @@ func TestRemove(t *testing.T) {
 		t.Fatal("book is not empty after removing its only entry")
 	}
 }
+
+// A daemon holds the address book in memory while `drop pair` writes to it from another process.
+// Without noticing that, a device paired while the daemon was up stays a stranger to it, which
+// looks exactly like pairing being broken.
+func TestAPairingByAnotherProcessIsNoticed(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	beta := testID(t)
+
+	serving, err := Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+
+	// Somebody else pairs, and saves.
+	pairing, err := Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	pairing.Pair("beta", beta, testSecret(t))
+	if err := pairing.Save(); err != nil {
+		t.Fatalf("Save(): %v", err)
+	}
+
+	if _, ok := serving.ByID(beta); ok {
+		t.Fatal("the running book knew about a pairing it had not read")
+	}
+
+	if err := serving.Refresh(); err != nil {
+		t.Fatalf("Refresh(): %v", err)
+	}
+	if _, ok := serving.ByID(beta); !ok {
+		t.Fatal("a pairing made by another process was still not seen after a refresh")
+	}
+}

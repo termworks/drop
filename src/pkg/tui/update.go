@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -36,6 +37,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.trouble = ""
 		return m, loadPeers(m.back)
+
+	case tick:
+		if m.offering == nil {
+			return m, nil
+		}
+		return m, ticking()
+
+	case putDone:
+		m.offering = nil
+		if msg.err != nil {
+			m.trouble, m.said = msg.err.Error(), ""
+			return m, nil
+		}
+		m.trouble, m.said = "", "sent "+msg.what
+		if at, ok := m.peer(); ok {
+			return m, loadHistory(m.back, at)
+		}
+		return m, nil
 
 	case joined:
 		m.loading = false
@@ -135,6 +154,10 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.joinKey(msg)
 	}
 
+	if m.putting {
+		return m.putKey(msg)
+	}
+
 	if m.writing {
 		return m.typeKey(msg)
 	}
@@ -168,6 +191,13 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "i":
 		if at, ok := m.path(); ok && m.at == levelOpen && kindOf(at) == "chat" {
 			m.writing = true
+		}
+		return m, nil
+
+	case "s":
+		// One key for both, because they are the same act: name a thing and send it there.
+		if at, ok := m.path(); ok && m.at == levelOpen && putsInto(kindOf(at)) {
+			m.putting, m.typing, m.options, m.said, m.trouble = true, "", nil, "", ""
 		}
 		return m, nil
 
@@ -368,4 +398,78 @@ func (m Model) joinKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// putKey takes a file path or a URL, one key at a time.
+func (m Model) putKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyCtrlC:
+		m.putting, m.typing, m.options = false, "", nil
+		return m, nil
+
+	case tea.KeyTab:
+		// Completion is for paths. A URL has nothing on this machine to complete against.
+		at, ok := m.path()
+		if !ok || kindOf(at) != "files" {
+			return m, nil
+		}
+
+		finished, options := complete(m.typing)
+		m.typing, m.options = finished, options
+		if len(options) == 1 {
+			m.options = nil
+		}
+		return m, nil
+
+	case tea.KeyEnter:
+		body := strings.TrimSpace(m.typing)
+		if body == "" {
+			return m, nil
+		}
+
+		at, ok := m.path()
+		if !ok {
+			return m, nil
+		}
+		with, ok := m.peer()
+		if !ok {
+			return m, nil
+		}
+
+		m.putting, m.typing, m.options, m.trouble, m.said = false, "", nil, "", ""
+
+		if kindOf(at) == "files" {
+			file := expand(body)
+			if _, err := os.Stat(file); err != nil {
+				m.trouble = "no such file: " + file
+				return m, nil
+			}
+			m.offering = &moving{}
+			return m, tea.Batch(putFile(m.back, with, at.Path, file, m.offering), ticking())
+		}
+		return m, putLink(m.back, with, at.Path, body)
+
+	case tea.KeyBackspace:
+		if n := len(m.typing); n > 0 {
+			m.typing = m.typing[:n-1]
+			m.options = nil
+		}
+		return m, nil
+
+	case tea.KeyRunes:
+		m.typing += string(msg.Runes)
+		m.options = nil
+		return m, nil
+
+	case tea.KeySpace:
+		m.typing += " "
+		m.options = nil
+		return m, nil
+	}
+	return m, nil
+}
+
+// putsInto reports whether a path is somewhere you can send something.
+func putsInto(kind string) bool {
+	return kind == "files" || kind == "link" || kind == "bookmark"
 }

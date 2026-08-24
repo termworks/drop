@@ -82,7 +82,6 @@ whichever of these you are looking at.
 ```
 drop ls beta          the command line: what beta shares with you
 drop ui               a full-screen interface: enter a device, then a path
-drop web              a page in a browser, on this machine or from your phone
 ```
 
 ## commands
@@ -92,7 +91,6 @@ drop ls [device[/path]]        what a device shares with you
 drop to <device>/<path> [args] open a path; what is there decides what happens
 drop ui                        all of it, in a full-screen terminal
                                p shows a pairing code, t takes one
-drop web [--addr]              all of it, in a browser
 
 drop pair [ticket]             link a device to this one; --qr to show a code
 drop passwd                    hash a password, to guard a path with
@@ -268,31 +266,6 @@ because those are decisions.
 
 `drop ns` prints what this node serves. `misc/init.lua` is a worked example.
 
-## the phone
-
-`android/` is a window, not a second interface. It loads the page `drop web` already serves,
-so what a person sees on a phone is the same HTML, the same stylesheet and the same code as in
-a browser — one set of screens to design, one to style, one to fix.
-
-It holds no identity and pairs with nothing. What it adds is the part a page cannot do for
-itself: standing in Android's share sheet. Share anything to *drop* and it posts to `/share`,
-then follows the redirect to the page, which asks the one question the share sheet cannot —
-who it is for.
-
-It draws exactly one screen of its own, asking where drop is running, because that is what it
-needs in order to load anything else. It is styled from the same tokens, so the first screen is
-not a different program from the second.
-
-```
-drop web --addr 0.0.0.0:47990
-```
-
-There is no password on that page. Anyone who can reach the address can read your
-conversations, send as you, and watch a terminal — fine on a private network, not on café wifi.
-
-The APK is on the releases page, signed with a debug key so it installs by sideloading. It
-talks plain HTTP, which a native app may do and a browser page may not.
-
 ## conversations
 
 Everything drop does is a **conversation with an endpoint id**. Files, chat, links, terminals and
@@ -448,9 +421,7 @@ src/pkg/cast/          one terminal fanned out to many watchers
 src/pkg/asciicast/     reading an asciicast stream
 src/pkg/ticket/        a pairing invitation, as text, link, or QR
 src/pkg/tui/           the full-screen interface
-src/pkg/web/           the browser bridge and the page it serves
 src/pkg/conf/          the Lua configuration
-android/               the phone share client
 misc/                  the systemd user unit
 ```
 

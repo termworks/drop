@@ -98,9 +98,10 @@ func (m Model) openView() string {
 		return lines(m.screen.Draw(), m.viewHeight())
 
 	case "files":
-		with, _ := m.peer()
-		return "\n " + dimStyle.Render("a place to send files.") + "\n\n " +
-			faintStyle.Render("drop to ") + kindStyle.Render(with.Name+at.Path) + faintStyle.Render(" <file>")
+		return m.putView("a file", "files", m.transfers())
+
+	case "link", "bookmark":
+		return m.putView("a link", "link", m.links())
 
 	case "branch":
 		return "\n " + dimStyle.Render("holds other paths.") + "\n " +
@@ -158,8 +159,16 @@ func (m Model) footer() string {
 
 	default:
 		keys = []hint{{"esc", "back"}}
-		if at, ok := m.path(); ok && kindOf(at) == "chat" {
-			keys = append([]hint{{"i", "write"}}, keys...)
+		if at, ok := m.path(); ok {
+			switch {
+			case kindOf(at) == "chat":
+				keys = append([]hint{{"i", "write"}}, keys...)
+			case putsInto(kindOf(at)):
+				keys = append([]hint{{"s", "send"}}, keys...)
+			}
+		}
+		if m.putting {
+			keys = []hint{{"tab", "complete"}, {"enter", "send"}, {"esc", "cancel"}}
 		}
 	}
 
@@ -252,4 +261,145 @@ func fold(text string, width int) []string {
 		text = text[width:]
 	}
 	return append(out, text)
+}
+
+// putView is the files and links screen: what has gone before, and the line for sending the next.
+//
+// The same shape for both, because they are the same act. What differs is the word for the thing
+// and whether a path can be completed, and neither is worth a second screen.
+func (m Model) putView(what, kind string, before []string) string {
+	var out strings.Builder
+
+	if m.putting {
+		out.WriteString("\n " + brandStyle.Render("send") + " " + faintStyle.Render(what) + "\n")
+		out.WriteString("\n " + kindStyle.Render(tailOf(m.typing, m.width-4)) + keyStyle.Render("▏") + "\n")
+
+		if len(m.options) > 0 {
+			out.WriteString("\n " + faintStyle.Render(strings.Join(shortly(m.options, m.width-4), "  ")) + "\n")
+		}
+
+		hint := "enter sends, esc goes back"
+		if kind == "files" {
+			hint = "tab completes, " + hint
+		}
+		out.WriteString("\n " + faintStyle.Render(hint))
+		return out.String()
+	}
+
+	if m.offering != nil {
+		name, done, size := m.offering.read()
+		out.WriteString("\n " + goodStyle.Render("sending ") + kindStyle.Render(name) + "\n")
+		out.WriteString("\n " + bar(done, size, m.width-4) + "\n")
+		out.WriteString(" " + faintStyle.Render(sizeOf(done)+" of "+sizeOf(size)))
+		return out.String()
+	}
+
+	if m.said != "" {
+		out.WriteString("\n " + goodStyle.Render("✓ ") + dimStyle.Render(m.said) + "\n")
+	}
+	if m.trouble != "" {
+		out.WriteString("\n " + badStyle.Render("✗ ") + m.trouble + "\n")
+	}
+
+	if len(before) == 0 {
+		out.WriteString("\n " + dimStyle.Render("nothing here yet."))
+	}
+	for _, line := range before {
+		out.WriteString("\n " + line)
+	}
+
+	out.WriteString("\n\n " + faintStyle.Render("press ") + keyStyle.Render("s") + faintStyle.Render(" to send "+what))
+	return out.String()
+}
+
+// transfers is what has changed hands on this conversation, newest last.
+func (m Model) transfers() []string {
+	var out []string
+
+	for _, at := range m.history {
+		if at.Kind != convo.KindFile {
+			continue
+		}
+
+		arrow := dimStyle.Render("→")
+		if at.Dir == convo.In {
+			arrow = goodStyle.Render("←")
+		}
+		out = append(out, arrow+" "+kindStyle.Render(at.Body)+"  "+faintStyle.Render(at.Extra))
+	}
+	return lastOf(out, m.viewHeight()-6)
+}
+
+// links is what has been sent to a link path, newest last.
+func (m Model) links() []string {
+	var out []string
+
+	for _, at := range m.history {
+		if at.Kind != convo.KindLink {
+			continue
+		}
+
+		arrow := dimStyle.Render("→")
+		if at.Dir == convo.In {
+			arrow = goodStyle.Render("←")
+		}
+		out = append(out, arrow+" "+kindStyle.Render(at.Body))
+	}
+	return lastOf(out, m.viewHeight()-6)
+}
+
+// bar draws how far along a transfer is. A size nobody knows yet gets a moving mark rather than a
+// bar that would have to lie about a fraction.
+func bar(done, size int64, width int) string {
+	if width < 8 {
+		width = 8
+	}
+	if size <= 0 {
+		return faintStyle.Render(strings.Repeat("·", width))
+	}
+
+	full := int(int64(width) * done / size)
+	if full > width {
+		full = width
+	}
+	return goodStyle.Render(strings.Repeat("█", full)) + faintStyle.Render(strings.Repeat("░", width-full))
+}
+
+// shortly trims a list of completions to what fits on one line.
+func shortly(names []string, width int) []string {
+	var out []string
+	used := 0
+
+	for _, name := range names {
+		if used+len(name)+2 > width {
+			out = append(out, "…")
+			break
+		}
+		out = append(out, name)
+		used += len(name) + 2
+	}
+	return out
+}
+
+func lastOf(lines []string, n int) []string {
+	if n < 1 || len(lines) <= n {
+		return lines
+	}
+	return lines[len(lines)-n:]
+}
+
+// tailOf keeps the end of a line that is too long to show.
+//
+// The end, not the beginning: what somebody is typing is at the end, and a path whose last segment
+// is off the screen cannot be checked before it is sent.
+func tailOf(text string, width int) string {
+	if width < 8 {
+		width = 8
+	}
+
+	runes := []rune(text)
+	if len(runes) <= width {
+		return text
+	}
+	return "…" + string(runes[len(runes)-width+1:])
 }

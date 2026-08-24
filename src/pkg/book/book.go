@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/node"
 )
@@ -34,7 +36,56 @@ func (e Entry) Paired() bool {
 // Book maps local names to peers. Names are this machine's own labels; they are never published and
 // never trusted from the network.
 type Book struct {
+	// One lock, because a serving node reads this from every connection it answers while pairing
+	// writes to it, and because Refresh replaces the whole map under them.
+	mu      sync.RWMutex
 	entries map[string]Entry
+	// read is when the file this was loaded from was last written, so Refresh can tell whether
+	// anything has happened since.
+	read time.Time
+}
+
+// Refresh re-reads the address book if the file has changed since it was loaded.
+//
+// A long-running node has to notice a pairing it did not make itself: `drop pair` is a separate
+// process, and without this a device paired while the daemon was up stays a stranger to it until
+// the daemon is restarted — which looks exactly like pairing not working.
+func (b *Book) Refresh() error {
+	file, err := path()
+	if err != nil {
+		return err
+	}
+
+	at, err := os.Stat(file)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	b.mu.RLock()
+	known := b.read
+	b.mu.RUnlock()
+
+	if !at.ModTime().After(known) {
+		return nil
+	}
+
+	fresh, err := Load()
+	if err != nil {
+		return err
+	}
+
+	fresh.mu.RLock()
+	entries := fresh.entries
+	fresh.mu.RUnlock()
+
+	b.mu.Lock()
+	b.entries, b.read = entries, at.ModTime()
+	b.mu.Unlock()
+
+	return nil
 }
 
 // stored is the on-disk shape.
@@ -68,6 +119,12 @@ func Load() (*Book, error) {
 		return nil, fmt.Errorf("reading %s: %w", file, err)
 	}
 
+	// Stamped before parsing, so a write that lands while this is being read is noticed next time
+	// rather than being taken for already-read.
+	if at, err := os.Stat(file); err == nil {
+		b.read = at.ModTime()
+	}
+
 	var onDisk map[string]stored
 	if err := json.Unmarshal(raw, &onDisk); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", file, err)
@@ -92,6 +149,9 @@ func Load() (*Book, error) {
 
 // Save writes the address book back. The file holds pairing secrets, so it is written 0600.
 func (b *Book) Save() error {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
 	file, err := path()
 	if err != nil {
 		return err
@@ -121,16 +181,25 @@ func (b *Book) Save() error {
 
 // Pin records a name for a peer id, without a shared secret.
 func (b *Book) Pin(name string, id node.ID) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	b.entries[name] = Entry{Name: name, ID: id}
 }
 
 // Pair records a name, a peer id and the secret the two derived together.
 func (b *Book) Pair(name string, id node.ID, secret []byte, addrs ...string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	b.entries[name] = Entry{Name: name, ID: id, Secret: secret, Addrs: addrs}
 }
 
 // Remove drops a name, reporting whether it was there.
 func (b *Book) Remove(name string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	_, ok := b.entries[name]
 	delete(b.entries, name)
 	return ok
@@ -138,12 +207,18 @@ func (b *Book) Remove(name string) bool {
 
 // Lookup resolves a local name.
 func (b *Book) Lookup(name string) (Entry, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
 	entry, ok := b.entries[name]
 	return entry, ok
 }
 
 // ByID finds the entry for a peer id.
 func (b *Book) ByID(id node.ID) (Entry, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
 	for _, entry := range b.entries {
 		if entry.ID == id {
 			return entry, true
@@ -154,6 +229,9 @@ func (b *Book) ByID(id node.ID) (Entry, bool) {
 
 // All lists the book, name order.
 func (b *Book) All() []Entry {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
 	out := make([]Entry, 0, len(b.entries))
 	for _, entry := range b.entries {
 		out = append(out, entry)
@@ -164,6 +242,9 @@ func (b *Book) All() []Entry {
 
 // Paired lists only the peers a secret was derived with.
 func (b *Book) Paired() []Entry {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
 	var out []Entry
 	for _, entry := range b.All() {
 		if entry.Paired() {

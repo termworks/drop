@@ -38,6 +38,12 @@ type Backend interface {
 	// Join takes a ticket somebody else is showing, which is the other half of pairing.
 	Join(ctx context.Context, ticket string) (with string, err error)
 
+	// Send copies files to a path on another device, reporting progress as it goes.
+	Send(ctx context.Context, to book.Entry, path string, files []string, progress func(name string, done, size int64)) error
+
+	// Post sends one message to a path: a line of text to a chat, a URL to a link.
+	Post(ctx context.Context, to book.Entry, path string, kind byte, body string) error
+
 	// Watch reads a live path, writing what arrives into screen until ctx ends.
 	Watch(ctx context.Context, on book.Entry, path string, into io.Writer, resize func(cols, rows int)) error
 }
@@ -84,6 +90,13 @@ type Model struct {
 	// joining is a ticket being typed in, which is the other half of pairing: one device
 	// shows a code, the other takes it.
 	joining bool
+
+	// putting is a file path or a URL being typed, to send to the open path. offering is what
+	// is moving while it moves, and options are the completions last offered for a path.
+	putting  bool
+	offering *moving
+	options  []string
+	said     string
 
 	typing  string
 	writing bool

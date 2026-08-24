@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -30,16 +32,19 @@ func idFor(seed byte) node.ID {
 
 // fake stands in for a node, so the panes can be driven without a network.
 type fake struct {
-	mu      sync.Mutex
-	peers   []book.Entry
-	serves  map[string][]proto.Served
-	log     []convo.Message
-	said    []string
-	watched string
-	offered bool
-	took    string
-	paired  chan string
-	stream  string
+	mu        sync.Mutex
+	peers     []book.Entry
+	serves    map[string][]proto.Served
+	log       []convo.Message
+	said      []string
+	watched   string
+	offered   bool
+	took      string
+	sentFiles []string
+	posted    []string
+	refuse    error
+	paired    chan string
+	stream    string
 }
 
 func (f *fake) Peers() ([]book.Entry, error) { return f.peers, nil }
@@ -81,6 +86,8 @@ func withOne() *fake {
 		serves: map[string][]proto.Served{
 			"beta": {
 				{Path: "/friends/chat", Kind: ns.KindChat},
+				{Path: "/inbox", Kind: ns.KindFiles},
+				{Path: "/open", Kind: ns.KindLink},
 				{Path: "/term", Kind: ns.KindTTY},
 			},
 		},
@@ -243,7 +250,7 @@ func TestEnteringADeviceAsksWhatItShares(t *testing.T) {
 	if m.at != levelPaths {
 		t.Fatalf("at level %d after entering", m.at)
 	}
-	if len(m.paths) != 2 {
+	if len(m.paths) != len(withOne().serves["beta"]) {
 		t.Fatalf("paths = %+v", m.paths)
 	}
 }
@@ -279,10 +286,7 @@ func TestGoingBackWalksOutOneLevelAtATime(t *testing.T) {
 
 // A terminal is watched while it is open and not a moment longer.
 func TestAWatchLastsAsLongAsThePathIsOpen(t *testing.T) {
-	m := enter(t, start(t, withOne()))
-
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	m = enter(t, m)
+	m := openPath(t, withOne(), "/term")
 
 	if !m.live {
 		t.Fatal("entering a tty path did not start a watch")
@@ -409,6 +413,33 @@ func (f *fake) Offer(ctx context.Context) (string, <-chan string, error) {
 	return "7b9773d9#code#192.168.1.1:47777", done, nil
 }
 
+func (f *fake) Send(ctx context.Context, to book.Entry, path string, files []string, progress func(string, int64, int64)) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.refuse != nil {
+		return f.refuse
+	}
+	// Halfway, then all the way: a progress bar that only ever reports the end is one nobody can
+	// tell from a bar that is broken.
+	progress(files[0], 1, 2)
+	progress(files[0], 2, 2)
+
+	f.sentFiles = append(f.sentFiles, path+" "+files[0])
+	return nil
+}
+
+func (f *fake) Post(ctx context.Context, to book.Entry, path string, kind byte, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.refuse != nil {
+		return f.refuse
+	}
+	f.posted = append(f.posted, path+" "+body)
+	return nil
+}
+
 func (f *fake) Join(ctx context.Context, ticket string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -516,4 +547,117 @@ func TestTheTicketFieldCanBeLeft(t *testing.T) {
 	if m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc}); m.joining {
 		t.Fatal("escape did not leave the ticket field")
 	}
+}
+
+// Sending a file has to reach the backend with the path the far device named and the file this one
+// resolved, or the interface is a form that goes nowhere.
+func TestAFileIsSentFromTheInterface(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(file, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	back := withOne()
+	m := openPath(t, back, "/inbox")
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if !m.putting {
+		t.Fatalf("s did not open the send line:\n%s", m.View())
+	}
+
+	for _, r := range file {
+		m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	back.mu.Lock()
+	defer back.mu.Unlock()
+	if len(back.sentFiles) != 1 || back.sentFiles[0] != "/inbox "+file {
+		t.Fatalf("the backend was asked to send %v", back.sentFiles)
+	}
+}
+
+// A file that is not there must be said so before anything is dialled: the far end should not be
+// woken up to be told nothing is coming.
+func TestSendingAMissingFileSaysSo(t *testing.T) {
+	back := withOne()
+	m := openPath(t, back, "/inbox")
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	for _, r := range "/no/such/file" {
+		m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if !strings.Contains(m.View(), "no such file") {
+		t.Fatalf("a missing file was not reported:\n%s", m.View())
+	}
+
+	back.mu.Lock()
+	defer back.mu.Unlock()
+	if len(back.sentFiles) != 0 {
+		t.Fatalf("a missing file was still sent: %v", back.sentFiles)
+	}
+}
+
+// A link path takes a URL the same way, and must not try to complete it against this filesystem.
+func TestALinkIsSentFromTheInterface(t *testing.T) {
+	back := withOne()
+	m := openPath(t, back, "/open")
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	for _, r := range "https://example.com" {
+		m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyTab}) // must do nothing here
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	back.mu.Lock()
+	defer back.mu.Unlock()
+	if len(back.posted) != 1 || back.posted[0] != "/open https://example.com" {
+		t.Fatalf("the backend was asked to post %v", back.posted)
+	}
+}
+
+// Tab completes a path the way a shell does, so a long path is not typed out by hand.
+func TestTabCompletesAPath(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"report-one.txt", "report-two.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	finished, options := complete(filepath.Join(dir, "rep"))
+	if finished != filepath.Join(dir, "report-") {
+		t.Errorf("completed to %q, want the shared prefix", finished)
+	}
+	if len(options) != 2 {
+		t.Errorf("offered %v, want both files", options)
+	}
+}
+
+// openPath walks the interface to a path on the one paired device, the way a person would.
+func openPath(t *testing.T, back *fake, path string) Model {
+	t.Helper()
+
+	m := settle(t, start(t, back), tea.KeyMsg{Type: tea.KeyEnter})
+	for i := 0; i < 6; i++ {
+		if at, ok := m.path(); ok && at.Path == path {
+			return m
+		}
+		if m.at != levelPaths {
+			t.Fatalf("did not reach the path list, at %v", m.at)
+		}
+		m = settle(t, m, tea.KeyMsg{Type: tea.KeyDown})
+		m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+		if m.at == levelOpen {
+			if at, ok := m.path(); ok && at.Path == path {
+				return m
+			}
+			m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+		}
+	}
+	t.Fatalf("never opened %s", path)
+	return m
 }
