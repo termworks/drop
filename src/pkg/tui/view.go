@@ -512,8 +512,14 @@ func (m Model) compose() string {
 		return box.Foreground(muted).Render("press i to write")
 	}
 
+	// Every part carries the box's own ground. A style that sets only a foreground ends by
+	// resetting, and everything after it on the line falls back to whatever the terminal calls
+	// default — which is how a box turns black from the cursor onwards.
+	mark := lipgloss.NewStyle().Background(saidBg).Foreground(accent).Bold(true)
+	written := lipgloss.NewStyle().Background(saidBg).Foreground(plain)
+
 	typed := tailOf(m.typing, width-6)
-	return box.Foreground(plain).Render(pickStyle.Render("› ") + typed + pickStyle.Render("▏"))
+	return box.Render(mark.Render("› ") + written.Render(typed) + mark.Render("▏"))
 }
 
 // bubble draws one message: a coloured bar down the side of it, and what was said on a shaded
