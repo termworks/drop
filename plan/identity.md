@@ -67,19 +67,57 @@ again. That is the whole point: **pair once per person, not once per pair of mac
 carrying a valid badge from bob. `"bob@laptop"` matches that machine. `"me"` matches this user's
 own machines, which is what makes one config work on all of them.
 
+## What the user key should be: an SSH ed25519 key
+
+Not a new kind of key nobody has. An **ed25519 SSH key**, because it is a signing key by design,
+because most people already have one, and because it covers the whole range of how careful somebody
+wants to be with a single mechanism:
+
+| where it lives | what it is | how it signs |
+| --- | --- | --- |
+| a YubiKey | `ssh-keygen -t ed25519-sk -O resident -O verify-required` | never leaves the hardware; a touch per signature, through ssh-agent |
+| a file | `~/.ssh/id_ed25519`, or one drop generates | read and signed directly |
+
+Badges are signed and checked with OpenSSH's own signature format, under a namespace of drop's own:
+
+```
+ssh-keygen -Y sign   -f user -n drop badge
+ssh-keygen -Y verify -f allowed -I bob -n drop -s badge.sig < badge
+```
+
+The namespace matters: a badge signed `-n drop` cannot be replayed as a git commit signature or an
+ssh login, and neither of those can be replayed as a badge. In Go this is
+`golang.org/x/crypto/ssh` for parsing and verifying, and `ssh/agent` for signing — which is what
+makes a hardware key work without drop knowing anything about hardware.
+
+### Why not an age key
+
+Because an age key is for encryption, and the two hardware cases do not survive contact:
+
+- **age on a YubiKey** is a P-256 key in a retired PIV slot, used for ECDH. It cannot sign, and its
+  own documentation says so: *use SSH or FIDO2 for that*. Nothing can be derived from it either,
+  because the secret never leaves the key — which is the point of it.
+- **a file-based age identity** is X25519. Also an encryption key. A signing key can be derived from
+  it as seed material, deterministically, and that is worth offering as a shortcut for somebody who
+  wants their drop identity to follow a key they already keep. It is a shortcut and not the design:
+  rotating the age key would quietly make them somebody else.
+
 ## The two decisions
 
-**Where does the user key live?**
+**Where does the user key live?** An ssh key makes this a choice rather than a compromise:
 
-*Copied to every machine.* Simple: every machine can enrol the next one, and there is nothing to
-lose. But a stolen laptop is a stolen identity, and there is no way to take it back.
+*On a YubiKey.* The strong answer. The key cannot be copied off a stolen laptop, because it was
+never on it. Enrolling a machine costs a touch. Losing the key means losing the ability to enrol,
+so a second one enrolled at the same time is the backup — which is what people with YubiKeys
+already do.
 
-*Kept on one machine.* `drop enrol` on the new machine shows a code; a machine that has the user
-key signs its badge. The user key never travels. Losing that machine means losing the ability to
-add machines, so `drop user export` has to exist and has to be used.
+*In a file, on one machine.* The user key stays on the machine that enrols the others. Backed up
+by copying a file, which people understand.
 
-The second is the honest one, and the first is what people will do anyway. Support the second and
-document the first as the shortcut it is.
+*In a file, on every machine.* The shortcut. Every machine can enrol the next, and a stolen laptop
+is a stolen identity with no way to take it back.
+
+Support all three, because the mechanism is the same one; say plainly which is which.
 
 **Revocation, which has no good answer without a server.** A badge that has been issued is good
 until it expires. The options are all uncomfortable:
