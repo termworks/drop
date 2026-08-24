@@ -10,23 +10,29 @@ import (
 	"gioui.org/widget/material"
 )
 
-// The palette. One violet, one plum, and neutrals biased toward them — a grey mixed from the accent
-// reads as chosen, where a pure grey reads as whatever the toolkit had lying around.
+// The palette: dark, with neutrals mixed from the accent rather than pure greys.
+//
+// One theme, not two. drop is a thing you glance at in the evening to send a file, and a page that
+// flashes white to do it is worse than one that commits. Every neutral here carries a little of the
+// violet, which is what keeps a dark interface from looking like switched-off glass.
 var (
-	violet = color.NRGBA{R: 0x4c, G: 0x1d, B: 0x95, A: 0xff}
-	plum   = color.NRGBA{R: 0xc2, G: 0x40, B: 0x8f, A: 0xff}
-	deep   = color.NRGBA{R: 0x35, G: 0x14, B: 0x6b, A: 0xff}
-	ink    = color.NRGBA{R: 0x1c, G: 0x18, B: 0x24, A: 0xff}
-	dim    = color.NRGBA{R: 0x6b, G: 0x63, B: 0x78, A: 0xff}
-	faint  = color.NRGBA{R: 0x9c, G: 0x94, B: 0xa8, A: 0xff}
-	line   = color.NRGBA{R: 0xe6, G: 0xe1, B: 0xec, A: 0xff}
-	panel  = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
-	ground = color.NRGBA{R: 0xf7, G: 0xf5, B: 0xfa, A: 0xff}
-	wash   = color.NRGBA{R: 0xf1, G: 0xec, B: 0xf8, A: 0xff}
+	violet = color.NRGBA{R: 0x7c, G: 0x3a, B: 0xed, A: 0xff}
+	plum   = color.NRGBA{R: 0xe0, G: 0x45, B: 0x9b, A: 0xff}
+	deep   = color.NRGBA{R: 0x4c, G: 0x1d, B: 0x95, A: 0xff}
+	ink    = color.NRGBA{R: 0xf3, G: 0xef, B: 0xf9, A: 0xff}
+	dim    = color.NRGBA{R: 0xab, G: 0xa1, B: 0xbd, A: 0xff}
+	faint  = color.NRGBA{R: 0x73, G: 0x69, B: 0x88, A: 0xff}
+	line   = color.NRGBA{R: 0x27, G: 0x1e, B: 0x36, A: 0xff}
+	edge   = color.NRGBA{R: 0x34, G: 0x29, B: 0x47, A: 0xff}
+	panel  = color.NRGBA{R: 0x18, G: 0x13, B: 0x23, A: 0xff}
+	ground = color.NRGBA{R: 0x0e, G: 0x0b, B: 0x14, A: 0xff}
+	wash   = color.NRGBA{R: 0x23, G: 0x1a, B: 0x34, A: 0xff}
 	onDark = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
-	good   = color.NRGBA{R: 0x2f, G: 0x6f, B: 0x4f, A: 0xff}
-	bad    = color.NRGBA{R: 0xa3, G: 0x32, B: 0x4f, A: 0xff}
-	shadow = color.NRGBA{R: 0x2a, G: 0x1c, B: 0x3d, A: 0x0e}
+	good   = color.NRGBA{R: 0x45, G: 0xd4, B: 0x92, A: 0xff}
+	bad    = color.NRGBA{R: 0xff, G: 0x76, B: 0x8b, A: 0xff}
+	shadow = color.NRGBA{A: 0x59}
+	sheet  = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+	black  = color.NRGBA{R: 0x0b, G: 0x0a, B: 0x10, A: 0xff}
 )
 
 // One spacing scale, so nothing invents its own.

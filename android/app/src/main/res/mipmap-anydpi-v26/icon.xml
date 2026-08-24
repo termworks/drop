@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The launcher draws the foreground over the background and masks both to whatever shape the
-     device uses, so the mark is inset: what falls outside the safe circle is cut off. -->
+<!-- The mark and nothing else. A launcher masks both layers to whatever shape the device uses, so
+     the foreground is inset far enough that the crop cannot bite into it, and the background is
+     left empty rather than inventing a colour the logo was never drawn on. -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@color/ground" />
+    <background android:drawable="@android:color/transparent" />
     <foreground android:drawable="@mipmap/icon_foreground" />
 </adaptive-icon>

@@ -3,6 +3,7 @@
 package gui
 
 import (
+	"image"
 	"strings"
 
 	"gioui.org/font"
@@ -133,7 +134,11 @@ func (a *App) welcome(gtx layout.Context) layout.Dimensions {
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return a.mark(gtx, gtx.Dp(unit.Dp(88)))
+						// The mark sits in a pool of its own colour, which is the one piece of depth
+						// on a screen that is otherwise flat panels.
+						size := gtx.Dp(unit.Dp(104))
+						glow(gtx, image.Rect(size/4, size/4, size*3/4, size*3/4), violet, unit.Dp(64))
+						return a.mark(gtx, size)
 					}),
 					layout.Rigid(layout.Spacer{Height: roomy}.Layout),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {

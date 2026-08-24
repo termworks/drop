@@ -65,9 +65,9 @@ func (a *App) pairing(gtx layout.Context, at *linking) layout.Dimensions {
 						gtx.Constraints.Max.X = want
 
 						return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							return card(gtx, round, func(gtx layout.Context) layout.Dimensions {
+							return raised(gtx, round, sheet, func(gtx layout.Context) layout.Dimensions {
 								return layout.UniformInset(pad).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-									return qrCode(gtx, at.code, ink)
+									return qrCode(gtx, at.code, black)
 								})
 							})
 						})
