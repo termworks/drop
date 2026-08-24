@@ -194,6 +194,9 @@ func readFrom(parent context.Context, entry book.Entry, addr ns.Address, wait ti
 		return err
 	}
 
+	// Raw mode and a size only make sense for a terminal, but what is typed goes over either way:
+	// a pipe is how a script drives a shell on another machine, and refusing its input made this
+	// usable only by hand.
 	local := int(os.Stdin.Fd())
 	if term.IsTerminal(local) {
 		state, err := term.MakeRaw(local)
@@ -203,10 +206,14 @@ func readFrom(parent context.Context, entry book.Entry, addr ns.Address, wait ti
 		if w, h, err := term.GetSize(local); err == nil {
 			_ = d.Resize(uint16(w), uint16(h))
 		}
-		go func() { _, _ = io.Copy(d, os.Stdin) }()
-	} else {
-		_ = d.Close()
 	}
+
+	// Closed when standard input runs out, so a piped-in script ends the far side's shell rather
+	// than leaving it waiting for a line that is never coming.
+	go func() {
+		_, _ = io.Copy(d, os.Stdin)
+		_ = d.Close()
+	}()
 
 	fmt.Fprintf(os.Stderr, "drop: reading %s%s; ctrl-c to stop\r\n", entry.Name, addr.Path)
 

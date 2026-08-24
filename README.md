@@ -374,11 +374,39 @@ stream, so the far end reads a real end of file while its own writes keep workin
 
 ## sharing a terminal
 
+Two different things share a terminal, and they are not the same one.
+
+A **tty namespace** hands the far end a shell on this machine. It is declared in the config, it
+starts when somebody opens it, and `input` decides whether they may type into it:
+
 ```
+drop.mount("/term", { type = "tty", access = { "laptop" }, shell = "/bin/sh", input = true })
 ```
 
-Watchers are read-only. `drop cast --input` lets them type, and `drop watch --input` sends
-what you type; only paired devices can attach either way.
+```
+drop to laptop/term            open it; what you type goes there if it takes input
+```
+
+A **cast** is the terminal you are already sitting at, shown to whoever is watching. It reads
+asciicast v2 on standard input, so anything that writes asciicast will do:
+
+```
+asciinema rec --stdout | drop cast
+HEXE_SHARE_BACKEND="drop cast" hexe ...
+
+drop to laptop/cast            watch it
+```
+
+A cast is served by the node that is already running, if one is: it hands the recording to
+`drop serve` over a local socket rather than standing up a second endpoint. Two listeners cannot
+share one identity, and a watcher dialling the address in its address book has to reach the one
+that knows about the cast. With no daemon running, the cast serves itself.
+
+`/cast` exists only while somebody is casting. Before and after, it is absent rather than a path
+that answers with nothing behind it.
+
+Watchers are read-only: a cast is somebody's screen, and typing into it is a different grant —
+that is what a tty namespace with `input` is for.
 
 Someone attaching mid-session gets the last 128KB of output replayed, because a terminal is a
 stream of escape sequences and a watcher starting from nothing sees a blank screen until the
@@ -423,6 +451,19 @@ src/pkg/ticket/        a pairing invitation, as text, link, or QR
 src/pkg/tui/           the full-screen interface
 src/pkg/conf/          the Lua configuration
 misc/                  the systemd user unit
+```
+
+## testing it
+
+`make test` is the unit suite. `make e2e` is two real nodes on this machine, driven from the
+command line over QUIC: pairing, a message each way, a file each way, standard input as a file, a
+link, a stream, a shell, a cast, and a message queued for a device that was switched off.
+
+It is behind a build tag and not part of `make test`, because it builds the binary, starts daemons
+and takes a minute.
+
+```
+make e2e
 ```
 
 ## environment

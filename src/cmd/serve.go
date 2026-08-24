@@ -65,9 +65,21 @@ func runServe(parent context.Context, quiet bool) error {
 
 	startRendezvous(ctx, n)
 
-	if _, err := discovery.StartLAN(ctx, n); err != nil {
+	lan, err := discovery.StartLAN(ctx, n)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "drop: mDNS unavailable: %v\n", err)
 	}
+
+	go backlog(ctx, n, lan, pinned)
+
+	// A cast feeds this node over a local socket rather than standing up a second one, so a
+	// terminal can be shared while the daemon is running.
+	casts := newCastHost(cfg.Mounts)
+	go func() {
+		if err := hostCasts(ctx, casts); err != nil {
+			fmt.Fprintf(os.Stderr, "drop: casts unavailable: %v\n", err)
+		}
+	}()
 
 	shells := newTerminals()
 	defer shells.stop()
@@ -89,7 +101,7 @@ func runServe(parent context.Context, quiet bool) error {
 				From: nameFor(pinned, from), Kind: kindName(m.Kind), Body: m.Body, Path: "/chat",
 			})
 		}),
-		Duplex: serveDuplex(pinned, shells),
+		Duplex: serveDuplex(pinned, shells, casts),
 	}
 
 	// The address book is re-read before answering anybody, because `drop pair` is a separate
@@ -162,5 +174,35 @@ func detail(m ns.Mount) string {
 		return "recorded, not opened"
 	default:
 		return ""
+	}
+}
+
+// backlog keeps trying whatever is still queued for anybody.
+//
+// A message to a device that was off is kept rather than lost, and the thing that notices it coming
+// back has to be the thing that is always running. Until this, a backlog only moved while somebody
+// had `drop chat` open, which is the one moment they do not need it to.
+func backlog(ctx context.Context, n *node.Node, lan *discovery.LAN, pinned *book.Book) {
+	tick := time.NewTicker(flushEvery)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+
+		// Re-read first: a device paired since this started has a conversation too.
+		_ = pinned.Refresh()
+
+		for _, entry := range pinned.Paired() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			_, _ = deliver(ctx, n, lan, entry)
+		}
 	}
 }

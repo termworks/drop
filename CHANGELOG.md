@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.1] - 2026-08-24
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Share a terminal while the daemon runs
+
+### <!-- 6 -->🧪 Testing
+
+- Drive two nodes through the whole command line
+
 ## [0.3.0] - 2026-08-24
 
 ### <!-- 0 -->⛰️  Features
