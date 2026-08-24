@@ -1,6 +1,11 @@
 package dial
 
 import (
+	"context"
+
+	"github.com/tmc/go-iroh/netaddr"
+
+	"github.com/bresilla/drop/src/pkg/book"
 	"net/netip"
 	"testing"
 )
@@ -54,4 +59,31 @@ func TestNothingElseIsThrownAway(t *testing.T) {
 	if ranked := Nearest(given); len(ranked) != len(given) {
 		t.Fatalf("ranked %v, want all %d kept", ranked, len(given))
 	}
+}
+
+// A finder that is not there must not be called.
+//
+// An interface holding a nil pointer is not nil. Handing one over used to take the program down —
+// and only when the local wire failed to find the device, which is to say the first time somebody
+// carried a laptop to a different network.
+func TestANilFinderIsNotCalled(t *testing.T) {
+	var missing *neverFinds
+
+	if usable(missing) {
+		t.Error("a nil pointer in an interface was taken for a finder")
+	}
+	if usable(nil) {
+		t.Error("nothing at all was taken for a finder")
+	}
+	if !usable(&neverFinds{}) {
+		t.Error("a real finder was taken for nothing")
+	}
+}
+
+// neverFinds panics if anything calls it, which is what the old code did by itself.
+type neverFinds struct{ called bool }
+
+func (f *neverFinds) Find(context.Context, book.Entry) (netaddr.EndpointAddr, bool) {
+	f.called = true
+	return netaddr.EndpointAddr{}, false
 }

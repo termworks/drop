@@ -27,12 +27,21 @@ func reach(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.Ent
 // reachAt is reach with addresses the caller already knows, which is how a ticket works: it
 // carries where the far end is so the first connection needs nothing to resolve it.
 func reachAt(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.Entry, alpn string, known []netip.AddrPort) (*iroh.Conn, *iroh.Stream, error) {
-	// rendezvousFor is consulted lazily, so a command that never needs one never builds it.
-	var moved dial.Finder
+	return dial.At(ctx, n, lan, finder(n), entry, alpn, known)
+}
+
+// finder is the rendezvous as something to look a device up with, or nothing at all.
+//
+// Nothing at all has to be a nil interface, not an interface holding a nil pointer. rendezvousFor
+// returns a typed nil when there is no rendezvous, and handing that straight over makes a value
+// that is not nil and cannot be called: the dial checks it, finds something, and dereferences
+// nothing. It only shows up when the local wire fails to find the device — which is to say, the
+// first time somebody carries a laptop to another network.
+func finder(n *node.Node) dial.Finder {
 	if rv := rendezvousFor(n); rv != nil {
-		moved = rv
+		return rv
 	}
-	return dial.At(ctx, n, lan, moved, entry, alpn, known)
+	return nil
 }
 
 // serveLoop accepts connections and routes each by the protocol it negotiated.

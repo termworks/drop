@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"reflect"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -52,7 +53,7 @@ func At(ctx context.Context, n *node.Node, lan *discovery.LAN, moved Finder, ent
 
 		// Only when this wire did not answer, because it is the one step that asks a third party. A
 		// peer standing next to you is reached without telling a relay anything about it.
-		if !onWire && moved != nil {
+		if !onWire && usable(moved) {
 			if found, ok := moved.Find(ctx, entry); ok {
 				at = found
 			}
@@ -140,4 +141,22 @@ func Addrs(written []string) []netip.AddrPort {
 		}
 	}
 	return out
+}
+
+// usable reports whether a finder is really there.
+//
+// An interface holding a nil pointer is not nil, and calling through it panics. That is a mistake a
+// caller makes rather than a state worth having, but it costs one reflection to survive rather than
+// taking the program down in the one situation this code exists for: a device that has moved.
+func usable(f Finder) bool {
+	if f == nil {
+		return false
+	}
+
+	at := reflect.ValueOf(f)
+	switch at.Kind() {
+	case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func:
+		return !at.IsNil()
+	}
+	return true
 }

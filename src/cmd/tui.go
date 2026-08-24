@@ -52,7 +52,7 @@ func runTUI(parent context.Context) error {
 	arriving := make(chan struct{}, 1)
 
 	// One connection per device, kept for as long as the interface is open.
-	held := dial.Hold(n, lan, rendezvousFor(n))
+	held := dial.Hold(n, lan, finder(n))
 	defer held.Close()
 
 	// The interface serves while it is open, so a device that pairs with it can reach it — and
