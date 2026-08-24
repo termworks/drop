@@ -130,7 +130,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.trouble = msg.err.Error()
 			return m, nil
 		}
-		m.peers, m.reaching, m.trouble = msg.peers, msg.reaching, ""
+		m.peers, m.reaching, m.knocked, m.trouble = msg.peers, msg.reaching, msg.knocked, ""
 		if m.at == levelDevices {
 			m.showDevices()
 		}
@@ -532,7 +532,7 @@ func (m Model) back_() (tea.Model, tea.Cmd) {
 
 // showDevices puts the address book in the list, grouped.
 func (m *Model) showDevices() {
-	m.rows = group(m.me, m.peers, m.reaching)
+	m.rows = group(m.me, m.peers, m.reaching, m.knocked)
 	m.list.SetItems(m.rows.items)
 	m.list.Select(m.rowFor(m.atPeer))
 	m.list.SetSize(m.listWidth(), m.listHeight())

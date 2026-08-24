@@ -57,6 +57,7 @@ type fake struct {
 	refuseServes error
 	reaching     map[string]bool
 	holding      map[string][]Held
+	knocked      []Knock
 }
 
 func (f *fake) Peers() ([]book.Entry, error) { return f.peers, nil }
@@ -1451,5 +1452,36 @@ func TestSomebodyElsesFilesNamespaceStillSends(t *testing.T) {
 
 	if !strings.Contains(m.View(), "send") {
 		t.Errorf("a peer's files namespace does not offer to send:\n%s", m.View())
+	}
+}
+
+func (f *fake) Knocked() ([]Knock, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.knocked, nil
+}
+
+// A device that dialled and was refused is worth listing: it is how letting a bare id in stops
+// meaning copying sixty-four characters of hex out of a log.
+func TestWhatKnockedIsListed(t *testing.T) {
+	back := withOne()
+	back.knocked = []Knock{{
+		ID:    "7b97c1de4a20f3e5c8b1d0a9f6e4c2b70d3a5e8f1c9b7a6d4e2f0c8b5a3d1e9f",
+		At:    time.Date(2026, 8, 24, 22, 10, 0, 0, time.UTC),
+		Asked: "/work",
+		Why:   "nothing here is shared with anyone",
+	}}
+
+	shown := start(t, back).View()
+	for _, want := range []string{"SEEN", "7b97c1de", "/work", "shared with anyone"} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("the list is missing %q:\n%s", want, shown)
+		}
+	}
+
+	// A device that is not one of your own, so it must not be mistaken for one.
+	if strings.Contains(shown, "paired\n") && !strings.Contains(shown, "SEEN") {
+		t.Error("a refused device was drawn as a paired one")
 	}
 }

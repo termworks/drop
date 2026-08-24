@@ -6,11 +6,13 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
+	"github.com/bresilla/drop/src/pkg/seen"
 )
 
 // accepting builds the policy that decides whose sessions to take. Pairing is the gate: a peer
@@ -116,5 +118,19 @@ func whoIs(pinned *book.Book) func(node.ID, proto.Badged) ns.Caller {
 			who.Name = badge.As
 		}
 		return who
+	}
+}
+
+// noting writes down a caller that was turned away, unless it is somebody already known.
+//
+// A device in the address book being refused a path is an access rule doing its job, and there is
+// nothing to look up afterwards. A stranger is the case this exists for: it dialled, so its id is
+// known, and letting it in later should not mean copying sixty-four characters of hex out of a log.
+func noting(pinned *book.Book) func(node.ID, string, string) {
+	return func(from node.ID, asked, why string) {
+		if _, known := pinned.ByID(from); known {
+			return
+		}
+		_ = seen.Knocked(from, asked, why, time.Now())
 	}
 }

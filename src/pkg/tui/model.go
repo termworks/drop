@@ -30,6 +30,8 @@ type Backend interface {
 	// Not a probe: it reports what is open, because dialling everybody to draw a list would spend
 	// a handshake per device per redraw.
 	Reaching() map[string]bool
+	// Knocked is what has dialled this device and been turned away, most recent first.
+	Knocked() ([]Knock, error)
 	// Serves asks a device what it shares with us.
 	Serves(ctx context.Context, with book.Entry) ([]proto.Served, error)
 	// Mine is what this device serves, read from its own config rather than asked over a wire.
@@ -111,6 +113,8 @@ type Model struct {
 	rows grouped
 	// reaching is which devices a connection is being held to, by name.
 	reaching map[string]bool
+	// knocked is what has dialled this device and been turned away.
+	knocked []Knock
 	// rule is who may reach the path whose access is being looked at.
 	rule Rule
 	// under is where in a device's paths the list is standing, "/" being the top.
@@ -179,7 +183,9 @@ type peersLoaded struct {
 	peers []book.Entry
 	// reaching is which of them a connection is being held to.
 	reaching map[string]bool
-	err      error
+	// knocked is what has dialled and been turned away.
+	knocked []Knock
+	err     error
 }
 
 type pathsLoaded struct {
@@ -206,7 +212,8 @@ type saidIt struct{ err error }
 func loadPeers(back Backend) tea.Cmd {
 	return func() tea.Msg {
 		peers, err := back.Peers()
-		return peersLoaded{peers: peers, reaching: back.Reaching(), err: err}
+		knocked, _ := back.Knocked()
+		return peersLoaded{peers: peers, reaching: back.Reaching(), knocked: knocked, err: err}
 	}
 }
 
@@ -539,4 +546,13 @@ func loadHeld(back Backend, path string) tea.Cmd {
 		held, err := back.Holding(path)
 		return heldLoaded{path: path, held: held, err: err}
 	}
+}
+
+// Knock is one device that dialled this one and was not let in.
+type Knock struct {
+	ID string
+	// At is when it last tried, and Asked is the path it wanted.
+	At    time.Time
+	Asked string
+	Why   string
 }

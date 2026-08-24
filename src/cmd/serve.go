@@ -116,7 +116,8 @@ func runServe(parent context.Context, quiet bool) error {
 				From: nameFor(pinned, from), Kind: kindName(m.Kind), Body: m.Body, Path: "/chat",
 			})
 		}),
-		Duplex: serveDuplex(pinned, shells, casts),
+		Duplex:  serveDuplex(pinned, shells, casts),
+		Refused: noting(pinned),
 	}
 
 	// The address book is re-read before answering anybody, because `drop pair` is a separate

@@ -31,6 +31,9 @@ type Policy struct {
 	Message func(from node.ID, m convo.Message) error
 	// Duplex, when set, handles an accepted live stream. Without it, live streams are refused.
 	Duplex func(at Resolved, d *Duplex) error
+	// Refused, when set, is called when a caller is turned away. It is a note of who knocked, so
+	// that letting a bare id in later does not mean copying it out of a log by hand.
+	Refused func(from node.ID, asked, why string)
 }
 
 // Handle takes one session stream. The transport is not its concern: anything that reads and
@@ -67,6 +70,7 @@ func Handle(s Stream, from node.ID, policy Policy) error {
 
 	at, err := resolve(policy.Mounts, from, caller, open)
 	if err != nil {
+		turnedAway(policy, from, open.Path, err.Error())
 		return conn.WriteFrame(wire.KindReject, Reject{Reason: err.Error()}.encode())
 	}
 
@@ -75,6 +79,7 @@ func Handle(s Stream, from node.ID, policy Policy) error {
 		allowed, reason = policy.Allow(from, open)
 	}
 	if !allowed {
+		turnedAway(policy, from, open.Path, reason)
 		return conn.WriteFrame(wire.KindReject, Reject{Reason: reason}.encode())
 	}
 
@@ -105,4 +110,12 @@ func withDir(policy Policy, dir string) Policy {
 		policy.Dir = dir
 	}
 	return policy
+}
+
+// turnedAway notes a caller that was refused, when anybody is keeping that note.
+func turnedAway(policy Policy, from node.ID, asked, why string) {
+	if policy.Refused == nil {
+		return
+	}
+	policy.Refused(from, asked, why)
 }

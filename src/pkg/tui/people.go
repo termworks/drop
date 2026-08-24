@@ -19,6 +19,9 @@ const (
 	groupMe       = "me"
 	groupPeople   = "people"
 	groupMachines = "machines"
+	// groupSeen is devices that dialled and were refused. Not a rung of anything: a record of an
+	// attempt, kept so that letting a bare id in does not mean copying hex out of a log.
+	groupSeen = "seen"
 )
 
 // grouped arranges the address book for the list: which rows are dividers, which are devices, and
@@ -39,7 +42,7 @@ type grouped struct {
 }
 
 // group sorts the address book into what the list shows.
-func group(self Identity, peers []book.Entry, reaching map[string]bool) grouped {
+func group(self Identity, peers []book.Entry, reaching map[string]bool, knocked []Knock) grouped {
 	out := grouped{peer: map[int]int{}, row: make([]int, len(peers)), reaching: reaching}
 	for i := range out.row {
 		out.row[i] = -1
@@ -66,10 +69,18 @@ func group(self Identity, peers []book.Entry, reaching map[string]bool) grouped 
 		out.take(people[who], peers, true)
 	}
 
-	// And last the machines that are nobody's.
+	// The machines that are nobody's.
 	if loose := machines(peers); len(loose) > 0 {
 		out.items = append(out.items, dividerItem{label: groupMachines})
 		out.take(loose, peers, false)
+	}
+
+	// And last what has dialled and been turned away.
+	if len(knocked) > 0 {
+		out.items = append(out.items, dividerItem{label: groupSeen})
+		for _, at := range knocked {
+			out.items = append(out.items, knockItem{knock: at})
+		}
 	}
 	return out
 }

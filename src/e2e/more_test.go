@@ -496,3 +496,45 @@ func TestPairingWithAMachineLearnsNoPerson(t *testing.T) {
 		t.Errorf("the other side lost its person too:\n%s", raw)
 	}
 }
+
+// A device that dialled and was refused is written down, so letting a bare id in later does not
+// mean copying sixty-four characters of hex out of a log.
+func TestAStrangerThatDialledIsWrittenDown(t *testing.T) {
+	host, stranger := newNode(t, "host", "45081"), newNode(t, "stranger", "45082")
+
+	host.serves(`
+local drop = require("drop")
+drop.mount("/work", { type = "chat", access = "paired" })
+`)
+	stranger.serves(`
+local drop = require("drop")
+drop.mount("/chat", { type = "chat", access = "paired" })
+`)
+
+	_, _, stop := host.background("serve")
+	defer stop()
+
+	id := strings.TrimSpace(host.must("id"))
+
+	// Not paired with anybody, so this is refused — and that is the point.
+	if said, err := stranger.run("to", id+"/work", "let me in"); err == nil {
+		t.Fatalf("a stranger was admitted:\n%s", said)
+	}
+
+	at := filepath.Join(host.home, "data", "drop", "seen.json")
+	waitFor(t, "the knock to be written down", 30*time.Second, func() bool {
+		_, err := os.Stat(at)
+		return err == nil
+	})
+
+	raw, err := os.ReadFile(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), strings.TrimSpace(stranger.must("id"))) {
+		t.Errorf("the stranger's id was not written down:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "/work") {
+		t.Errorf("what it asked for was not written down:\n%s", raw)
+	}
+}

@@ -582,6 +582,8 @@ src/pkg/proto/         pairing, hello, transfer, and the framing under them
 src/pkg/book/          the address book, including pairing secrets
 src/pkg/grant/         who has been let in and shut out from the interface
 src/pkg/vault/         the key everything on this disk is encrypted with
+src/pkg/seen/          devices that dialled and were turned away
+src/pkg/shares/        what each device last said it shares
 src/pkg/user/          a person, and the badge each of their machines carries
 src/pkg/convo/         the durable conversation log and outbox
 src/pkg/term/          a terminal screen, rebuilt from what a device sends

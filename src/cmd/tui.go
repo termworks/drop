@@ -21,6 +21,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
+	"github.com/bresilla/drop/src/pkg/seen"
 	"github.com/bresilla/drop/src/pkg/shares"
 	"github.com/bresilla/drop/src/pkg/tui"
 	"io"
@@ -71,9 +72,10 @@ func runTUI(parent context.Context) error {
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
 			_ = proto.Handle(s, from, proto.Policy{
-				Mounts: cfg.Mounts,
-				Allow:  accepting(pinned, false),
-				Who:    whoIs(pinned),
+				Mounts:  cfg.Mounts,
+				Allow:   accepting(pinned, false),
+				Who:     whoIs(pinned),
+				Refused: noting(pinned),
 				Message: receiving(pinned, cfg.OpenLinks, func(node.ID, convo.Message) {
 					knock(arriving)
 				}),
@@ -438,5 +440,19 @@ func (l *live) Holding(path string) ([]tui.Held, error) {
 
 	// Newest last, the way everything else in this interface reads.
 	sort.Slice(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
+	return out, nil
+}
+
+// Knocked is what has dialled this device and been turned away.
+func (l *live) Knocked() ([]tui.Knock, error) {
+	all, err := seen.All()
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]tui.Knock, 0, len(all))
+	for _, at := range all {
+		out = append(out, tui.Knock{ID: at.ID.String(), At: at.At, Asked: at.Asked, Why: at.Why})
+	}
 	return out, nil
 }

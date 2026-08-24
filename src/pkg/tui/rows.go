@@ -92,6 +92,8 @@ func (d rows) Render(w io.Writer, m list.Model, index int, item list.Item) {
 		fmt.Fprint(w, path(it, width, index, selected))
 	case accessItem:
 		fmt.Fprint(w, access(it, width, index, selected))
+	case knockItem:
+		fmt.Fprint(w, knock(it, width, index, selected))
 	}
 }
 
@@ -371,4 +373,48 @@ func rung(name string) string {
 	default:
 		return "knowledge rather than a key, so it spreads"
 	}
+}
+
+// knockItem is a device that dialled and was refused.
+type knockItem struct{ knock Knock }
+
+func (k knockItem) FilterValue() string { return k.knock.ID }
+
+// knock draws one, which is an id, when it tried, and what it wanted.
+func knock(it knockItem, width, index int, selected bool) string {
+	base := row(index, selected)
+	fill := func(s string) string { return base.Width(width).Render(s) }
+	inner := width - 2
+
+	var name lipgloss.TerminalColor = plain
+	if selected {
+		name = accent
+	}
+
+	whenCol := 18
+	first := fill(stripe(base, selected) +
+		cell(base, muted, 2, "○", false, false) +
+		cell(base, name, inner-2-whenCol, brief(it.knock.ID), false, true) +
+		cell(base, subtext, whenCol, it.knock.At.Format("2 Jan 15:04"), true, false))
+
+	wanted := it.knock.Asked
+	if wanted == "" {
+		wanted = "nothing it got as far as naming"
+	}
+	rest := fill(stripe(base, selected) +
+		cell(base, second, 10, "wanted", false, false) +
+		cell(base, muted, inner-10, wanted, false, false))
+
+	last := fill(stripe(base, selected) +
+		cell(base, muted, inner, it.knock.Why, false, false))
+
+	return first + "\n" + rest + "\n" + last
+}
+
+// brief is an endpoint id short enough to read, since the whole of one tells nobody anything.
+func brief(id string) string {
+	if len(id) <= 16 {
+		return id
+	}
+	return id[:8] + "…" + id[len(id)-8:]
 }
