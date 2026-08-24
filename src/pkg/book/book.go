@@ -274,3 +274,49 @@ func Resolve(target string) (Entry, error) {
 	}
 	return Entry{Name: target, ID: id}, nil
 }
+
+// Reached remembers the address a device actually answered on.
+//
+// Finding a device is the expensive part of talking to it: discovery, a relay, a rendezvous, then
+// a handshake. The address that worked is the best guess for the next time, and writing it down
+// turns the second conversation into a dial rather than a search.
+//
+// Only when it changes something. A dial is not a reason to rewrite a file.
+func (b *Book) Reached(id node.ID, at string) (bool, error) {
+	b.mu.Lock()
+
+	name, entry, found := "", Entry{}, false
+	for known, e := range b.entries {
+		if e.ID == id {
+			name, entry, found = known, e, true
+			break
+		}
+	}
+	if !found || (len(entry.Addrs) > 0 && entry.Addrs[0] == at) {
+		b.mu.Unlock()
+		return false, nil
+	}
+
+	// First, and once: the rest keep their order behind it, because they were worth trying before
+	// and may be again from somewhere else.
+	addrs := make([]string, 0, len(entry.Addrs)+1)
+	addrs = append(addrs, at)
+	for _, was := range entry.Addrs {
+		if was != at {
+			addrs = append(addrs, was)
+		}
+	}
+	if len(addrs) > mostAddrs {
+		addrs = addrs[:mostAddrs]
+	}
+
+	entry.Addrs = addrs
+	b.entries[name] = entry
+	b.mu.Unlock()
+
+	return true, b.Save()
+}
+
+// mostAddrs caps what is remembered for one device. A machine that moves between a few networks is
+// worth keeping; one that has been on thirty is not, and the oldest are the least likely to work.
+const mostAddrs = 8

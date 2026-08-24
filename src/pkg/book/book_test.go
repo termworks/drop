@@ -174,3 +174,76 @@ func TestAPairingByAnotherProcessIsNoticed(t *testing.T) {
 		t.Fatal("a pairing made by another process was still not seen after a refresh")
 	}
 }
+
+// Finding a device is the expensive part of talking to it. The address that answered is the best
+// guess for next time, and it is only worth anything if it is written down.
+func TestTheAddressThatAnsweredIsRemembered(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	beta := testID(t)
+
+	b, err := Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	b.Pair("beta", beta, testSecret(t), "10.8.0.2:47777", "192.168.1.9:47777")
+	if err := b.Save(); err != nil {
+		t.Fatalf("Save(): %v", err)
+	}
+
+	changed, err := b.Reached(beta, "192.168.1.9:47777")
+	if err != nil || !changed {
+		t.Fatalf("Reached() = %v, %v", changed, err)
+	}
+
+	// First, and nothing lost: the others may work from somewhere else tomorrow.
+	entry, _ := b.Lookup("beta")
+	if len(entry.Addrs) != 2 || entry.Addrs[0] != "192.168.1.9:47777" {
+		t.Fatalf("addrs = %v, want the one that answered first", entry.Addrs)
+	}
+
+	// And it survives being read back by another process.
+	again, err := Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if entry, _ := again.Lookup("beta"); entry.Addrs[0] != "192.168.1.9:47777" {
+		t.Fatalf("after reloading, addrs = %v", entry.Addrs)
+	}
+}
+
+// Reaching a device at the address already at the front changes nothing, and must not rewrite the
+// file for every message somebody sends.
+func TestReachingTheSameAddressChangesNothing(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	beta := testID(t)
+
+	b, _ := Load()
+	b.Pair("beta", beta, testSecret(t), "192.168.1.9:47777")
+	if err := b.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := b.Reached(beta, "192.168.1.9:47777")
+	if err != nil {
+		t.Fatalf("Reached(): %v", err)
+	}
+	if changed {
+		t.Error("it rewrote the address book to say what it already said")
+	}
+}
+
+// A device nobody has paired with has nothing to remember.
+func TestReachingAStrangerRemembersNothing(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	b, _ := Load()
+
+	if changed, err := b.Reached(testID(t), "192.168.1.9:47777"); changed || err != nil {
+		t.Errorf("Reached() = %v, %v for a device that is not in the book", changed, err)
+	}
+}

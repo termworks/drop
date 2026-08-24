@@ -175,6 +175,16 @@ func describe(cfg *conf.Config, n *node.Node) {
 	for _, m := range cfg.Mounts.All() {
 		fmt.Printf("  %-24s %-7s %s\n", m.Path, m.Kind, detail(m))
 	}
+
+	// Whether a device that has moved can still be found. There is no way to tell from the outside
+	// and it decides whether this works at all once a laptop leaves the building.
+	fmt.Println()
+	if node.Rendezvous() {
+		fmt.Println("  findable from other networks")
+	} else {
+		fmt.Println("  local networks only  (drop.rendezvous = true to be findable elsewhere)")
+	}
+
 	fmt.Println("\nready; ctrl-c to stop")
 }
 

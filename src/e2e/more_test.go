@@ -5,6 +5,8 @@ package e2e
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -189,4 +191,46 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		said, _ := watcher.runIn(read, "", "to", "casting/cast", "--wait", "10s")
 		return strings.Contains(said, "cast on its own")
 	})
+}
+
+// Finding a device is the expensive part. Once it has answered, the address that worked is written
+// down, so the next conversation is a dial rather than a search.
+func TestTheAddressThatWorkedIsRemembered(t *testing.T) {
+	alpha := newNode(t, "alpha", "47841")
+	beta := newNode(t, "beta", "47842")
+
+	shared := `
+local drop = require("drop")
+
+drop.mount("/chat", { type = "chat", access = "paired" })
+`
+	alpha.serves(shared)
+	beta.serves(shared)
+
+	_, betaSaid, stopBeta := beta.background("serve")
+	defer stopBeta()
+	_, alphaSaid, stopAlpha := alpha.background("serve")
+	defer stopAlpha()
+
+	waitFor(t, "both nodes to be ready", 30*time.Second, func() bool {
+		return strings.Contains(betaSaid.String(), "ready") && strings.Contains(alphaSaid.String(), "ready")
+	})
+	pair(t, beta, alpha)
+
+	// Whatever it was reached at is written down, and it has to be an address rather than nothing.
+	alpha.must("ls", "beta")
+
+	book := filepath.Join(alpha.home, "config", "drop", "peers.json")
+	waitFor(t, "the address to be written down", 30*time.Second, func() bool {
+		raw, err := os.ReadFile(book)
+		return err == nil && strings.Contains(string(raw), ":"+beta.port)
+	})
+
+	raw, err := os.ReadFile(book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "addrs") {
+		t.Fatalf("nothing was remembered about how to reach beta:\n%s", raw)
+	}
 }

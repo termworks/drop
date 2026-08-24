@@ -206,7 +206,7 @@ local drop = require("drop")
 
 drop.name = "workstation"
 drop.open_links = true
-drop.rendezvous = true  -- optional; see below
+drop.rendezvous = false -- optional; on unless you say otherwise, see below
 
 -- A branch: no type, just who may reach everything under it. Access inherits downward, and
 -- a path with no rule above it is reachable by nobody.
@@ -234,8 +234,10 @@ On one network, devices find each other by multicast and need nothing else. A de
 moves — a laptop that left the building — cannot be found that way, because the address its
 peers wrote down at pairing no longer reaches it.
 
-`drop.rendezvous = true` turns on publishing its current address so paired devices can still
-reach it. It is off by default, because it writes to a relay you do not own.
+So drop publishes its current address for paired devices to find. **This is on by default**: a
+laptop that changed networks is the ordinary case, and a program that only works while both
+machines are on one wire is not worth pairing with. `drop.rendezvous = false` turns it off for
+somebody who would rather a device be unreachable than announced at all.
 
 What gets published is not your identity. For each device you have paired with, drop derives
 a throwaway identity from the secret the two of you established when you paired:

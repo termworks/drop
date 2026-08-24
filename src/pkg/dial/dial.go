@@ -60,16 +60,17 @@ func At(ctx context.Context, n *node.Node, lan *discovery.LAN, moved Finder, ent
 		}
 	}
 
-	// The nearest address alone first, when there is one worth singling out. A transport handed
-	// every address a machine has does not race them: the one that would answer waits behind the
-	// ones that never will, and a device on the same wire takes ten seconds instead of five
-	// milliseconds. If that guess is wrong, everything is still tried below.
-	if best, ok := nearestOf(at); ok {
+	// One address at a time first, best guess downwards. A transport handed every address a
+	// machine has does not race them: the one that would answer waits behind the ones that never
+	// will, and a device on the same wire takes ten seconds instead of five milliseconds. If every
+	// guess is wrong, the whole set is still tried below.
+	for _, best := range worthTrying(at, entry) {
 		quick, stop := context.WithTimeout(ctx, straightAway)
-		conn, s, err := open(quick, n, best, alpn)
+		conn, s, err := open(quick, n, node.AddrFor(entry.ID, best), alpn)
 		stop()
 
 		if err == nil {
+			remember(entry, best)
 			return conn, s, nil
 		}
 	}
@@ -94,15 +95,60 @@ func At(ctx context.Context, n *node.Node, lan *discovery.LAN, moved Finder, ent
 // being wrong costs less than the full attempt saves.
 const straightAway = 3 * time.Second
 
-// nearestOf picks the one address worth trying by itself, if any is.
-func nearestOf(at netaddr.EndpointAddr) (netaddr.EndpointAddr, bool) {
-	ranked := Nearest(at.IPAddrs())
-	if len(ranked) < 2 || !onOurWire(ranked[0].Addr()) {
-		// One address is already the whole attempt, and nothing on our own wire means no guess
-		// worth making.
-		return netaddr.EndpointAddr{}, false
+// worthTrying is the addresses to try on their own, best first.
+//
+// The one that answered last time comes first: finding a device is expensive and the answer rarely
+// changes between two conversations. Then the one on our own wire, which is the best guess when
+// there is no memory to go on.
+func worthTrying(at netaddr.EndpointAddr, entry book.Entry) []netip.AddrPort {
+	candidates := at.IPAddrs()
+	if len(candidates) < 2 {
+		// One address is already the whole attempt.
+		return nil
 	}
-	return node.AddrFor(at.ID, ranked[0]), true
+
+	var out []netip.AddrPort
+
+	if worked, ok := lastWorked(entry); ok && has(candidates, worked) {
+		out = append(out, worked)
+	}
+
+	ranked := Nearest(candidates)
+	if len(ranked) > 0 && onOurWire(ranked[0].Addr()) && !has(out, ranked[0]) {
+		out = append(out, ranked[0])
+	}
+	return out
+}
+
+// lastWorked is the address this device answered on last time, if one was written down.
+func lastWorked(entry book.Entry) (netip.AddrPort, bool) {
+	if len(entry.Addrs) == 0 {
+		return netip.AddrPort{}, false
+	}
+
+	at, err := netip.ParseAddrPort(entry.Addrs[0])
+	return at, err == nil
+}
+
+func has(all []netip.AddrPort, one netip.AddrPort) bool {
+	for _, at := range all {
+		if at == one {
+			return true
+		}
+	}
+	return false
+}
+
+// remember writes down the address that answered, so the next conversation starts there.
+//
+// Quietly: a conversation is not the moment to complain that a file could not be written, and the
+// only cost of failing is doing the finding again next time.
+func remember(entry book.Entry, at netip.AddrPort) {
+	pinned, err := book.Load()
+	if err != nil {
+		return
+	}
+	_, _ = pinned.Reached(entry.ID, at.String())
 }
 
 // open dials and takes a stream, waiting for the handshake first.

@@ -7,11 +7,15 @@ import "sync"
 // A setting the config never mentions is left alone, so the environment or a flag still decides
 // it. That is why these are set rather than defaulted: there is no value here meaning "unset".
 var (
-	settingsMu    sync.RWMutex
-	nameSet       string
-	bootstrapSet  []string
-	relaysSet     []string
-	rendezvousSet bool
+	settingsMu   sync.RWMutex
+	nameSet      string
+	bootstrapSet []string
+	relaysSet    []string
+	// On unless a config turns it off. A device that has moved to another network cannot be found
+	// any other way, and a program that only works while both machines are on one wire is not the
+	// program this is meant to be. What it publishes is derived from a pairing secret and rotates
+	// hourly, so a relay learns a key it cannot link to anybody and an address.
+	rendezvousSet = true
 )
 
 // SetName makes this node call itself something other than its hostname.
@@ -59,8 +63,11 @@ func configuredRelays() []string {
 	return relaysSet
 }
 
-// SetRendezvous turns on publishing this device's address so paired peers can find it after it
-// moves networks. Off unless a config asks for it: it writes to a relay this machine does not own.
+// SetRendezvous turns publishing this device's address on or off.
+//
+// On by default: a laptop that changed networks is the ordinary case, not the exotic one, and
+// finding it again is the only thing that makes pairing worth having. A config can turn it off for
+// somebody who would rather a device be unreachable than tell a relay it exists.
 func SetRendezvous(on bool) {
 	settingsMu.Lock()
 	defer settingsMu.Unlock()
