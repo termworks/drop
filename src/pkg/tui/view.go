@@ -80,7 +80,7 @@ func (m Model) body() string {
 	case m.at == levelOpen:
 		return m.openView()
 
-	case m.at == levelDevices && len(m.peers) == 0:
+	case m.at == levelUsers && len(m.peers) == 0:
 		return m.nothingPaired()
 	}
 
@@ -121,8 +121,14 @@ func (m Model) listTitle() string {
 	if m.at == levelAccess {
 		return m.rule.Path + "  ·  who may reach it"
 	}
+	if m.at == levelUsers {
+		return "users"
+	}
+	if m.at == levelMachines {
+		return m.atUser + "  ·  machines"
+	}
 	if m.at != levelPaths {
-		return "devices"
+		return "users"
 	}
 
 	name := "shares"
@@ -201,7 +207,7 @@ func (m Model) where() string {
 		return crumb("pairing")
 	}
 	if m.onSelf && m.at >= levelPaths {
-		parts = append(parts, m.me.Name)
+		parts = append(parts, Me, m.me.Name)
 		if m.at == levelOpen {
 			if on, ok := m.path(); ok {
 				parts = append(parts, on.Path)
@@ -209,7 +215,13 @@ func (m Model) where() string {
 		}
 		return crumb(parts...)
 	}
+	if m.at == levelMachines {
+		return crumb(m.atUser)
+	}
 	if m.at >= levelPaths {
+		if m.atUser != "" {
+			parts = append(parts, m.atUser)
+		}
 		if with, ok := m.peer(); ok {
 			parts = append(parts, with.Name)
 		}
@@ -473,8 +485,11 @@ func (m Model) footer() string {
 	case m.linking != nil:
 		keys = []hint{{"esc", "cancel"}}
 
-	case m.at == levelDevices:
-		keys = []hint{{"p", "show code"}, {"t", "take code"}, {"m", "manage"}, {"↑↓", "move"}, {"enter", "open"}, {"q", "quit"}}
+	case m.at == levelUsers:
+		keys = []hint{{"p", "show code"}, {"t", "take code"}, {"m", "manage"}, {"enter", "machines"}, {"q", "quit"}}
+
+	case m.at == levelMachines:
+		keys = []hint{{"↑↓", "move"}, {"enter", "open"}, {"m", "manage"}, {"esc", "users"}, {"r", "reload"}}
 
 	case m.at == levelPaths:
 		keys = []hint{{"↑↓", "move"}, {"enter", "open"}, {"esc", "devices"}, {"r", "reload"}}

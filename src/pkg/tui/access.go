@@ -99,15 +99,15 @@ func accessRows(rule Rule) []list.Item {
 
 	var items []list.Item
 	if len(people) > 0 {
-		items = append(items, dividerItem{label: groupPeople})
+		items = append(items, dividerItem{label: groupWhoever})
 		for _, who := range people {
-			items = append(items, accessItem{who: who, group: groupPeople})
+			items = append(items, accessItem{who: who, group: groupWhoever})
 		}
 	}
 	if len(machines) > 0 {
-		items = append(items, dividerItem{label: groupMachines})
+		items = append(items, dividerItem{label: groupDevices})
 		for _, who := range machines {
-			items = append(items, accessItem{who: who, group: groupMachines})
+			items = append(items, accessItem{who: who, group: groupDevices})
 		}
 	}
 
@@ -145,8 +145,10 @@ func onWhen(on bool) Standing {
 // groupAnyone heads the rungs that admit somebody without naming them, and groupAsked heads the
 // people waiting on an answer.
 const (
-	groupAnyone = "anyone"
-	groupAsked  = "asked for it"
+	groupAnyone  = "anyone"
+	groupAsked   = "asked for it"
+	groupWhoever = "people"
+	groupDevices = "machines"
 )
 
 // rang says a request was sent, or says why it was not.

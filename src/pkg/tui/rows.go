@@ -48,12 +48,6 @@ func divider(it dividerItem, width, _ int, _ bool) string {
 type deviceItem struct {
 	// self marks the row for this machine, which is not a peer and is not paired with itself.
 	self bool
-	// under marks a machine that sits beneath a person's name. limb is the branch drawn beside its
-	// first line and trail beside the rest, so the three lines of a row hang off one tree rather
-	// than floating in an indent.
-	under bool
-	limb  string
-	trail string
 	// reaching marks a device a connection is being held to right now.
 	reaching bool
 	entry    book.Entry
@@ -87,8 +81,8 @@ func (d rows) Render(w io.Writer, m list.Model, index int, item list.Item) {
 	switch it := item.(type) {
 	case dividerItem:
 		fmt.Fprint(w, divider(it, width, index, selected))
-	case personItem:
-		fmt.Fprint(w, person(it, width, index, selected))
+	case userItem:
+		fmt.Fprint(w, user(it, width, index, selected))
 	case deviceItem:
 		fmt.Fprint(w, device(it, width, index, selected))
 	case pathItem:
@@ -135,30 +129,20 @@ func device(it deviceItem, width, index int, selected bool) string {
 		name = accent
 	}
 
-	// A machine of somebody's hangs off their name. The branch is drawn rather than left as an
-	// indent, so the gap between a person and their machines is a line instead of a hole.
-	limb, trail := "", ""
-	if it.under {
-		limb, trail = it.limb, it.trail
-		inner -= lipgloss.Width(limb)
-	}
-
-	twig := func(at string) string { return base.Foreground(surface).Render(at) }
-
 	stateCol := 14
-	first := fill(stripe(base, selected) + twig(limb) +
+	first := fill(stripe(base, selected) +
 		cell(base, dotColour, 2, dot, false, false) +
 		cell(base, name, inner-2-stateCol, it.entry.Name, false, true) +
 		cell(base, subtext, stateCol, state, true, false))
 
-	rest := fill(stripe(base, selected) + twig(trail) +
+	rest := fill(stripe(base, selected) +
 		cell(base, muted, inner, it.entry.ID.String(), false, false))
 
 	where := it.addr
 	if where == "" {
 		where = "last seen address unknown"
 	}
-	last := fill(stripe(base, selected) + twig(trail) +
+	last := fill(stripe(base, selected) +
 		cell(base, muted, inner, where, false, false))
 
 	return first + "\n" + rest + "\n" + last
@@ -297,37 +281,47 @@ func describe(kind string) string {
 	}
 }
 
-// personItem is somebody, with their machines under it.
-type personItem struct {
+// userItem is one user on the first screen: you, somebody you have paired with, or anon.
+type userItem struct {
 	name string
 	of   int
-	// trusted marks somebody you decided to trust, which is what the narrow rules are written
-	// against. Worth saying on the row, because it changes what they can reach.
+	// trusted marks somebody you decided to trust, which is what the narrow rules key off.
 	trusted bool
+	// mine marks you, and anon the user that machines paired on their own belong to.
+	mine bool
+	anon bool
+	// reaching is how many of their machines are answering right now.
+	reaching int
 }
 
-func (p personItem) FilterValue() string { return p.name }
+func (u userItem) FilterValue() string { return u.name }
 
-// person draws a name, over the height every other row takes.
-func person(it personItem, width, index int, selected bool) string {
+// user draws one: who they are, how many machines, and how to write them into a rule.
+func user(it userItem, width, index int, selected bool) string {
 	base := row(index, selected)
 	fill := func(s string) string { return base.Width(width).Render(s) }
+	inner := width - 2
 
 	var name lipgloss.TerminalColor = plain
 	if selected {
 		name = accent
 	}
 
-	inner := width - 2
-
-	machines := "one machine"
-	if it.of != 1 {
-		machines = fmt.Sprintf("%d machines", it.of)
+	mark, markColour := "◈", second
+	switch {
+	case it.mine:
+		// No trust mark on yourself: it means "somebody I decided to trust", which says nothing
+		// about you.
+		mark, markColour = "◈", accent
+	case it.trusted:
+		mark, markColour = "★", green
+	case it.anon:
+		mark, markColour = "◌", muted
 	}
 
-	mark, markColour := "◈", second
-	if it.trusted {
-		mark, markColour = "★", green
+	machines := fmt.Sprintf("%d machines", it.of)
+	if it.of == 1 {
+		machines = "one machine"
 	}
 
 	stateCol := 14
@@ -336,21 +330,29 @@ func person(it personItem, width, index int, selected bool) string {
 		cell(base, name, inner-2-stateCol, it.name, false, true) +
 		cell(base, subtext, stateCol, machines, true, false))
 
-	// The name as a rule would spell it, because that is the thing you go and write once you have
-	// decided somebody may reach something. Trust is said here too: it is what the narrow rules
-	// key off, and it is not visible anywhere else in this list.
-	says := fmt.Sprintf("access = { %q }", it.name)
-	if it.trusted {
-		says += "   ·   trusted"
+	// What they are, in the words the rest of drop uses.
+	says := "a person you have paired with"
+	switch {
+	case it.mine:
+		says = "you — every machine your user key has signed"
+	case it.anon:
+		says = "machines paired on their own, belonging to nobody"
+	case it.trusted:
+		says = "a person you decided to trust"
 	}
-	rule := fill(stripe(base, selected) +
-		cell(base, muted, inner, says, false, false))
+	rest := fill(stripe(base, selected) + cell(base, muted, inner, says, false, false))
 
-	// Not a blank line: the stem their machines hang from. A blank here is the hole that made a
-	// person and their machines read as two unrelated things.
-	stem := fill(stripe(base, selected) + base.Foreground(surface).Render("│"))
+	// How to write them into a rule, and what is answering.
+	third := fmt.Sprintf("access = { %q }", it.name)
+	if it.anon {
+		third = "name each machine on its own; anon is not a rule"
+	}
+	if it.reaching > 0 {
+		third += fmt.Sprintf("   ·   %d reachable", it.reaching)
+	}
+	last := fill(stripe(base, selected) + cell(base, muted, inner, third, false, false))
 
-	return first + "\n" + rule + "\n" + stem
+	return first + "\n" + rest + "\n" + last
 }
 
 // access draws one row of the access pane: somebody, and whether they get in.

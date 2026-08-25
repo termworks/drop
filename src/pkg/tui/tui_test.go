@@ -289,7 +289,7 @@ func back(t *testing.T, m Model) Model {
 func TestItStartsOnTheDeviceList(t *testing.T) {
 	m := start(t, withOne())
 
-	if m.at != levelDevices {
+	if m.at != levelUsers {
 		t.Fatalf("started at level %d", m.at)
 	}
 	if len(m.peers) != 1 {
@@ -305,7 +305,7 @@ func TestItStartsOnTheDeviceList(t *testing.T) {
 }
 
 func TestEnteringADeviceAsksWhatItShares(t *testing.T) {
-	m := enter(t, start(t, withOne()))
+	m := intoPeer(t, start(t, withOne()), 0)
 
 	if m.at != levelPaths {
 		t.Fatalf("at level %d after entering", m.at)
@@ -342,11 +342,16 @@ func TestGoingBackWalksOutOneLevelAtATime(t *testing.T) {
 	}
 
 	m = back(t, m)
-	if m.at != levelDevices {
+	if m.at != levelMachines {
 		t.Fatalf("back from a device left level %d", m.at)
 	}
 	if len(m.paths) != 0 {
 		t.Fatal("leaving a device kept its paths")
+	}
+
+	m = back(t, m)
+	if m.at != levelUsers {
+		t.Fatalf("back from a user left level %d", m.at)
 	}
 }
 
@@ -422,10 +427,15 @@ func TestQClimbsOutBeforeItQuits(t *testing.T) {
 		t.Fatalf("q in a folder left level %d under %q", m.at, m.under)
 	}
 
-	// And out of the device.
+	// And out of the device, then out of the user.
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	if m.at != levelDevices {
+	if m.at != levelMachines {
 		t.Fatalf("q at the top of a device left level %d", m.at)
+	}
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if m.at != levelUsers {
+		t.Fatalf("q at the top of a user left level %d", m.at)
 	}
 }
 
@@ -743,7 +753,7 @@ func TestTabCompletesAPath(t *testing.T) {
 func openPath(t *testing.T, back *fake, want string) Model {
 	t.Helper()
 
-	m := settle(t, start(t, back), tea.KeyMsg{Type: tea.KeyEnter})
+	m := intoPeer(t, start(t, back), 0)
 	if m.at != levelPaths {
 		t.Fatalf("did not reach the path list, at %v", m.at)
 	}
@@ -841,7 +851,7 @@ func TestWaitingEndsWhenTheNodeDoes(t *testing.T) {
 // place, not as waiting.
 func TestEnteringADeviceTwiceKeepsWhatItShares(t *testing.T) {
 	back := withOne()
-	m := settle(t, start(t, back), tea.KeyMsg{Type: tea.KeyEnter})
+	m := intoPeer(t, start(t, back), 0)
 
 	if len(m.paths) == 0 {
 		t.Fatal("entering a device the first time showed nothing")
@@ -874,7 +884,7 @@ func TestEnteringADeviceTwiceKeepsWhatItShares(t *testing.T) {
 // guess at what it shares.
 func TestAFailedRefreshKeepsTheLastAnswer(t *testing.T) {
 	back := withOne()
-	m := settle(t, start(t, back), tea.KeyMsg{Type: tea.KeyEnter})
+	m := intoPeer(t, start(t, back), 0)
 
 	had := len(m.paths)
 	if had == 0 {
@@ -1069,12 +1079,17 @@ func TestThisDeviceIsInTheList(t *testing.T) {
 
 	m := start(t, back)
 
-	// First, before anybody else.
-	if !strings.Contains(m.View(), "this device") {
-		t.Fatalf("this device is not in the list:\n%s", m.View())
+	// Your own user is first, and this machine is inside it.
+	if !strings.Contains(m.View(), Me) {
+		t.Fatalf("your own user is not on the first screen:\n%s", m.View())
 	}
 
-	m.list.Select(m.rows.me)
+	m = intoUser(t, m, Me)
+	if !strings.Contains(m.View(), "this device") {
+		t.Fatalf("this device is not among your machines:\n%s", m.View())
+	}
+
+	m.list.Select(0)
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	if !m.onSelf {
@@ -1092,8 +1107,7 @@ func TestAPeerIsStillEnteredByName(t *testing.T) {
 	back := withOne()
 	m := start(t, back)
 
-	m.list.Select(m.rowFor(0))
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = intoPeer(t, m, 0)
 
 	if m.onSelf {
 		t.Fatal("entering a peer opened this device instead")
@@ -1125,24 +1139,21 @@ func TestAPathThatIsAlsoAFolderCanBeOpened(t *testing.T) {
 	}
 }
 
-// The list is not one list: your own machines are not the same kind of thing as somebody else's,
-// and a label between them is what says so.
-func TestTheListSeparatesYoursFromEverybodyElses(t *testing.T) {
+// The first screen holds one kind of thing: users. Machines are inside them, and a machine that
+// belongs to nobody is under a user called anon rather than in a group of its own.
+func TestTheFirstScreenHoldsOnlyUsers(t *testing.T) {
 	m := start(t, withOne())
 
-	shown := m.View()
-	for _, want := range []string{"ME", "MACHINES"} {
-		if !strings.Contains(shown, want) {
-			t.Errorf("the list has no %q divider:\n%s", want, shown)
+	for _, item := range m.rows.items {
+		if _, ok := item.(deviceItem); ok {
+			t.Errorf("a machine is on the users screen: %+v", item)
 		}
 	}
 
-	// A label is not a thing to enter.
-	m.list.Select(0)
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-
-	if m.at != levelDevices {
-		t.Errorf("entering a divider went somewhere, to level %d", m.at)
+	// Entering a user goes in rather than opening anything.
+	m = intoUser(t, m, Anon)
+	if m.at != levelMachines {
+		t.Errorf("entering a user went to level %d", m.at)
 	}
 }
 
@@ -1159,66 +1170,121 @@ func TestTheSecondDividerNeedsSomebodyToPointAt(t *testing.T) {
 
 // The list holds three different kinds of thing, and says which is which: your own machines, other
 // people's, and the machines that are nobody's.
-func TestTheListGroupsPeopleAndMachines(t *testing.T) {
+func TestTheFirstScreenIsUsersNotMachines(t *testing.T) {
 	back := &fake{
 		self: Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
 		peers: []book.Entry{
 			{Name: "laptop", ID: idFor(2), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 MINE", Person: "me"},
-			{Name: "bob", ID: idFor(3), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"},
-			{Name: "bobs-phone", ID: idFor(4), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"},
+			{Name: "bob-desk", ID: idFor(3), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"},
+			{Name: "bob-phone", ID: idFor(4), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"},
 			{Name: "buildbox", ID: idFor(5), Secret: make([]byte, book.SecretBytes)},
 		},
 	}
 
 	m := start(t, back)
 
-	// Read off the list rather than the screen: four devices and their headings are taller than a
-	// terminal, and what is being tested is the arrangement, not what happens to fit.
-	var labels []string
+	// You first, then people by name, then the machines that belong to nobody.
+	var users []string
 	for _, item := range m.rows.items {
-		switch it := item.(type) {
-		case dividerItem:
-			labels = append(labels, strings.ToUpper(it.label))
-		case personItem:
-			labels = append(labels, it.name)
-		case deviceItem:
-			labels = append(labels, it.entry.Name)
+		if it, ok := item.(userItem); ok {
+			users = append(users, it.name)
+		}
+	}
+	if got, want := strings.Join(users, " "), "me bob anon"; got != want {
+		t.Errorf("the users screen reads %q, wanted %q", got, want)
+	}
+
+	// You are a user with machines in it, exactly as bob is: this machine plus the one paired.
+	for who, want := range map[string]int{Me: 2, "bob": 2, Anon: 1} {
+		at, ok := m.rows.row[who]
+		if !ok {
+			t.Fatalf("no user %q", who)
+		}
+		if got := m.rows.items[at].(userItem).of; got != want {
+			t.Errorf("%s has %d machines, wanted %d", who, got, want)
 		}
 	}
 
-	got := strings.Join(labels, " ")
-	want := "ME tron laptop PEOPLE bob bob bobs-phone MACHINES buildbox"
-	if got != want {
-		t.Errorf("the list reads\n  %s\nwanted\n  %s", got, want)
+	// Entering a user shows the machines, and each still leads back to its entry.
+	m = intoUser(t, m, "bob")
+	if m.at != levelMachines {
+		t.Fatalf("entering a user went to level %d", m.at)
 	}
-
-	// Every device still leads back to the entry it came from, which is what the rest of the
-	// interface acts on. Grouping must not renumber anything.
-	for i, p := range back.peers {
-		row := m.rowFor(i)
-		if got := m.peerFor(row); got != i {
-			t.Errorf("%s sits at row %d, which reads back as peer %d", p.Name, row, got)
+	if len(m.list.Items()) != 2 {
+		t.Fatalf("bob has %d machines on screen", len(m.list.Items()))
+	}
+	for _, peer := range []int{1, 2} {
+		if got := m.peerFor(m.rowFor(peer)); got != peer {
+			t.Errorf("peer %d reads back as %d", peer, got)
 		}
 	}
 }
 
-// A person is a heading, not a device: entering one is not entering a machine.
-func TestAPersonIsNotADeviceToEnter(t *testing.T) {
+// A machine paired on its own belongs to nobody, and nobody is a user called anon. It is not a
+// third kind of row on the first screen.
+func TestAMachineWithNoPersonLivesUnderAnon(t *testing.T) {
 	back := &fake{
-		self: Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
-		peers: []book.Entry{
-			{Name: "bob", ID: idFor(3), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"},
+		self:  Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
+		peers: []book.Entry{{Name: "buildbox", ID: idFor(5), Secret: make([]byte, book.SecretBytes)}},
+	}
+
+	m := start(t, back)
+	m = intoUser(t, m, Anon)
+
+	if len(m.list.Items()) != 1 {
+		t.Fatalf("anon holds %d machines", len(m.list.Items()))
+	}
+	if it, ok := m.list.Items()[0].(deviceItem); !ok || it.entry.Name != "buildbox" {
+		t.Errorf("anon holds %+v", m.list.Items()[0])
+	}
+}
+
+// Your own user holds this machine as well as the ones you paired, or it is not the same kind of
+// thing as everybody else's.
+func TestYourOwnUserHoldsThisMachineToo(t *testing.T) {
+	back := &fake{
+		self:  Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
+		peers: []book.Entry{{Name: "laptop", ID: idFor(2), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 MINE", Person: "me"}},
+	}
+
+	m := start(t, back)
+	m = intoUser(t, m, Me)
+
+	var names []string
+	for _, item := range m.list.Items() {
+		if it, ok := item.(deviceItem); ok {
+			names = append(names, it.entry.Name)
+		}
+	}
+	if got, want := strings.Join(names, " "), "tron laptop"; got != want {
+		t.Errorf("your machines read %q, wanted %q", got, want)
+	}
+}
+
+// Going back comes out one level at a time: a machine, then the user, then the users screen.
+func TestBackComesOutOneLevelAtATime(t *testing.T) {
+	back := &fake{
+		self:  Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
+		peers: []book.Entry{{Name: "bob", ID: idFor(3), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"}},
+		serves: map[string][]proto.Served{
+			"bob": {{Path: "/chat", Kind: ns.KindChat}},
 		},
 	}
 
 	m := start(t, back)
+	m = intoPeer(t, m, 0)
+	if m.at != levelPaths {
+		t.Fatalf("opening a machine went to level %d", m.at)
+	}
 
-	// The row above bob's machine is bob himself.
-	m.list.Select(m.rowFor(0) - 1)
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.at != levelMachines || m.atUser != "bob" {
+		t.Fatalf("back went to level %d, user %q", m.at, m.atUser)
+	}
 
-	if m.at != levelDevices {
-		t.Errorf("entering a person went somewhere, to level %d", m.at)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.at != levelUsers {
+		t.Fatalf("back again went to level %d", m.at)
 	}
 }
 
@@ -1276,8 +1342,7 @@ func TestWhoMayReachAPathIsShownAndChanged(t *testing.T) {
 	m := start(t, back)
 
 	// Into this machine's own paths, then onto /work.
-	m.list.Select(m.rows.me)
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = intoSelf(t, m)
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
 
 	if m.at != levelAccess {
@@ -1316,8 +1381,7 @@ func TestThePublicRungIsNotAKeystroke(t *testing.T) {
 	}
 
 	m := start(t, back)
-	m.list.Select(m.rows.me)
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = intoSelf(t, m)
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
 
 	onto(t, &m, "anyone with the id")
@@ -1361,8 +1425,7 @@ func TestADeviceThatIsOffStillOpens(t *testing.T) {
 	}
 
 	m := start(t, back)
-	m.list.Select(m.rowFor(0))
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = intoPeer(t, m, 0)
 
 	if m.at != levelPaths {
 		t.Fatalf("entering an unreachable device went to level %d", m.at)
@@ -1391,13 +1454,21 @@ func TestTheListSaysWhoIsReachable(t *testing.T) {
 	back := withOne()
 	back.reaching = map[string]bool{"beta": true}
 
-	if shown := start(t, back).View(); !strings.Contains(shown, "reachable") {
-		t.Errorf("the list does not say beta is reachable:\n%s", shown)
+	// On the users screen it is a count, because a user has more than one machine.
+	if shown := start(t, back).View(); !strings.Contains(shown, "1 reachable") {
+		t.Errorf("the users screen does not say anybody is reachable:\n%s", shown)
+	}
+
+	// And inside, the machine itself says so.
+	m := intoUser(t, start(t, back), Anon)
+	if !strings.Contains(m.View(), "reachable") {
+		t.Errorf("the machine does not say it is reachable:\n%s", m.View())
 	}
 
 	back.reaching = nil
-	if shown := start(t, back).View(); strings.Contains(shown, "reachable") {
-		t.Errorf("a device nothing is held to came out reachable:\n%s", shown)
+	m = intoUser(t, start(t, back), Anon)
+	if strings.Contains(m.View(), "reachable") {
+		t.Errorf("a device nothing is held to came out reachable:\n%s", m.View())
 	}
 }
 
@@ -1422,8 +1493,7 @@ func TestYourOwnFilesNamespaceListsWhatIsInIt(t *testing.T) {
 	}
 
 	m := start(t, back)
-	m.list.Select(m.rows.me)
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = intoSelf(t, m)
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	shown := m.View()
@@ -1442,8 +1512,7 @@ func TestSomebodyElsesFilesNamespaceStillSends(t *testing.T) {
 	back := withOne()
 
 	m := start(t, back)
-	m.list.Select(m.rowFor(0))
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = intoPeer(t, m, 0)
 
 	// Onto /inbox, which is what beta shares.
 	for i, item := range m.list.Items() {
@@ -1510,8 +1579,7 @@ func TestALockedPathIsShownAndCanBeAskedFor(t *testing.T) {
 	}
 
 	m := start(t, back)
-	m.list.Select(m.rowFor(0))
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = intoPeer(t, m, 0)
 
 	shown := m.View()
 	for _, want := range []string{"vault", "locked", "ask for it"} {
@@ -1558,8 +1626,7 @@ func TestARequestWaitsInTheAccessPane(t *testing.T) {
 	}
 
 	m := start(t, back)
-	m.list.Select(m.rows.me)
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = intoSelf(t, m)
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
 
 	shown := m.View()
@@ -1628,8 +1695,8 @@ func TestSomebodyCanBeManaged(t *testing.T) {
 
 	m := start(t, back)
 
-	// From the person's heading, not only from a machine.
-	m.list.Select(m.rowFor(0) - 1)
+	// From bob's row on the users screen: trust and grants belong to the user.
+	onUser(t, &m, "bob")
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
 
 	if m.at != levelManage {
@@ -1669,7 +1736,7 @@ func TestSomebodyCanBeManaged(t *testing.T) {
 
 	// And out again, back to the list.
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-	if m.at != levelDevices {
+	if m.at != levelUsers {
 		t.Errorf("esc left the management screen at level %d", m.at)
 	}
 }
@@ -1681,8 +1748,9 @@ func TestForgettingSomebodyLeavesTheScreen(t *testing.T) {
 		manages: map[string]Managed{"bob": {Paired: true}},
 	}
 
+	// bob has no user key here, so he is a machine under anon and is managed as the machine.
 	m := start(t, back)
-	m.list.Select(m.rowFor(0))
+	m = intoUser(t, m, Anon)
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
 
@@ -1693,7 +1761,54 @@ func TestForgettingSomebodyLeavesTheScreen(t *testing.T) {
 	if len(forgot) != 1 || forgot[0] != "bob" {
 		t.Fatalf("forgot %v", forgot)
 	}
-	if m.at != levelDevices {
-		t.Errorf("it stayed on a screen for somebody who is gone, at level %d", m.at)
+	if m.at == levelManage {
+		t.Errorf("it stayed on a screen for somebody who is gone")
 	}
+}
+
+// intoUser opens somebody's machines from the users screen.
+func intoUser(t *testing.T, m Model, who string) Model {
+	t.Helper()
+
+	at, ok := m.rows.row[who]
+	if !ok {
+		t.Fatalf("no user called %q in %v", who, m.rows.order)
+	}
+	m.list.Select(at)
+
+	return settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+}
+
+// intoSelf opens this machine, which lives inside your own user.
+func intoSelf(t *testing.T, m Model) Model {
+	t.Helper()
+
+	m = intoUser(t, m, Me)
+	m.list.Select(0)
+
+	return settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+}
+
+// intoPeer opens one machine of the address book, whoever it belongs to.
+func intoPeer(t *testing.T, m Model, peer int) Model {
+	t.Helper()
+
+	if peer >= len(m.peers) {
+		t.Fatalf("no peer %d", peer)
+	}
+	m = intoUser(t, m, userOf(m.me, m.peers[peer]))
+	m.list.Select(m.rowFor(peer))
+
+	return settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+}
+
+// onUser puts the cursor on somebody in the users screen without entering.
+func onUser(t *testing.T, m *Model, who string) {
+	t.Helper()
+
+	at, ok := m.rows.row[who]
+	if !ok {
+		t.Fatalf("no user called %q", who)
+	}
+	m.list.Select(at)
 }

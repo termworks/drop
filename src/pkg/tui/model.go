@@ -94,7 +94,10 @@ type Backend interface {
 type level int
 
 const (
-	levelDevices level = iota
+	// levelUsers is the first screen: people, not machines.
+	levelUsers level = iota
+	// levelMachines is one user's machines.
+	levelMachines
 	levelPaths
 	levelOpen
 	// levelAccess is who may reach one of this machine's own paths, and where that is changed.
@@ -122,8 +125,11 @@ type Model struct {
 	// onSelf is true while the list is showing what this device serves rather than a peer's.
 	onSelf bool
 	paths  []proto.Served
-	// rows is how the address book was arranged into the list: which row is which device.
-	rows grouped
+	// rows is how the address book was arranged into the users screen.
+	rows users
+	// atUser is whose machines are being shown, and ofUser is which peer each row came from.
+	atUser string
+	ofUser []int
 	// reaching is which devices a connection is being held to, by name.
 	reaching map[string]bool
 	// knocked is what has dialled this device and been turned away.
@@ -185,7 +191,7 @@ func New(back Backend) Model {
 	shown.SetFilteringEnabled(true)
 	shown.SetShowPagination(true)
 
-	return Model{back: back, at: levelDevices, list: shown}
+	return Model{back: back, at: levelUsers, list: shown}
 }
 
 func (m Model) Init() tea.Cmd {

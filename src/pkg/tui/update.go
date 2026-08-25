@@ -59,7 +59,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.gone {
-			m.at, m.trouble = levelDevices, ""
+			m.at, m.trouble = levelUsers, ""
 			return m, loadPeers(m.back)
 		}
 		// Read back rather than believed, the same as a grant.
@@ -115,7 +115,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next := []tea.Cmd{listenFor(m.back.Arrivals())}
 
 		switch {
-		case m.at == levelDevices:
+		case m.at == levelUsers:
 			next = append(next, loadPeers(m.back))
 		case m.at == levelOpen:
 			if with, ok := m.peer(); ok {
@@ -164,8 +164,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.peers, m.reaching, m.knocked, m.trouble = msg.peers, msg.reaching, msg.knocked, ""
-		if m.at == levelDevices {
-			m.showDevices()
+		if m.at == levelUsers {
+			m.showUsers()
 		}
 		return m, nil
 
@@ -345,7 +345,7 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "q":
 		// q leaves the level rather than the program, until there is nowhere left to go back to.
-		if m.at == levelDevices {
+		if m.at == levelUsers {
 			m.stop()
 			return m, tea.Quit
 		}
@@ -371,7 +371,7 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "p":
-		if m.at == levelDevices && m.linking == nil {
+		if m.at == levelUsers && m.linking == nil {
 			return m, offer(m.back)
 		}
 		return m, nil
@@ -381,7 +381,7 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.at == levelManage {
 			return m, trusting(m.back, m.managed.Name, !m.managed.Trusted)
 		}
-		if m.at == levelDevices && m.linking == nil {
+		if m.at == levelUsers && m.linking == nil {
 			m.joining, m.typing, m.trouble = true, "", ""
 		}
 		return m, nil
@@ -396,27 +396,30 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, loadPeers(m.back)
 
 	case "m":
-		// Managing somebody, as against reaching them. Works on a person's heading as well as on
-		// one of their machines: trust and grants belong to the person.
-		if m.at != levelDevices {
+		// Managing somebody, as against reaching them. Trust and grants belong to a user, so this
+		// is a user's screen — except under anon, where there is no person and the machine is the
+		// only thing there is to manage.
+		var who string
+		switch {
+		case m.at == levelUsers:
+			if it, ok := m.list.SelectedItem().(userItem); ok && !it.anon {
+				who = it.name
+			}
+		case m.at == levelMachines && m.atUser == Anon:
+			if it, ok := m.list.SelectedItem().(deviceItem); ok && !it.self {
+				who = it.entry.Name
+			}
+		case m.at == levelMachines:
+			who = m.atUser
+		}
+		if who == "" || who == Me {
 			return m, nil
 		}
-		switch it := m.list.SelectedItem().(type) {
-		case personItem:
-			m.at, m.loading, m.trouble = levelManage, true, ""
-			m.managed = Managed{Name: it.name}
-			m.showManage()
-			return m, loadManaged(m.back, it.name)
-		case deviceItem:
-			if it.self {
-				return m, nil
-			}
-			m.at, m.loading, m.trouble = levelManage, true, ""
-			m.managed = Managed{Name: it.entry.Name}
-			m.showManage()
-			return m, loadManaged(m.back, it.entry.Name)
-		}
-		return m, nil
+
+		m.at, m.loading, m.trouble = levelManage, true, ""
+		m.managed = Managed{Name: who}
+		m.showManage()
+		return m, loadManaged(m.back, who)
 
 	case "f":
 		if m.at != levelManage {
@@ -527,17 +530,21 @@ func (m Model) typeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// enter goes one level deeper: a device, then a path, then the thing itself.
+// enter goes one level deeper: a user, then one of their machines, then a path, then the thing.
 func (m Model) enter() (tea.Model, tea.Cmd) {
 	switch m.at {
-	case levelDevices:
-		// A divider is a label and a person is a heading. Neither is a thing to enter: what you
-		// reach is a machine, and a person's machines are the rows underneath their name.
-		switch m.list.SelectedItem().(type) {
-		case dividerItem, personItem:
+	case levelUsers:
+		it, ok := m.list.SelectedItem().(userItem)
+		if !ok {
+			// A divider or a device that merely knocked. Neither is a thing to enter.
 			return m, nil
 		}
 
+		m.at, m.atUser, m.trouble = levelMachines, it.name, ""
+		m.showMachines()
+		return m, nil
+
+	case levelMachines:
 		// This machine's own row. Everything a peer's list does, it does — except that what it
 		// shares is read from this machine's own config instead of asked for over a wire.
 		if m.onSelfRow() {
@@ -598,8 +605,15 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 func (m Model) back_() (tea.Model, tea.Cmd) {
 	switch m.at {
 	case levelManage:
-		m.at, m.trouble = levelDevices, ""
-		m.showDevices()
+		// Back to wherever it was opened from, which is the users screen unless it was reached
+		// from inside somebody's machines.
+		if m.atUser != "" {
+			m.at, m.trouble = levelMachines, ""
+			m.showMachines()
+			return m, nil
+		}
+		m.at, m.trouble = levelUsers, ""
+		m.showUsers()
 		return m, nil
 
 	case levelAccess:
@@ -623,16 +637,31 @@ func (m Model) back_() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		m.at, m.onSelf = levelDevices, false
+		m.at, m.onSelf = levelMachines, false
 		m.paths, m.trouble = nil, ""
-		m.showDevices()
+		m.showMachines()
+		return m, nil
+
+	case levelMachines:
+		m.at, m.atUser, m.trouble = levelUsers, "", ""
+		m.showUsers()
 		return m, nil
 	}
 	return m, nil
 }
 
 // showDevices puts the address book in the list, grouped.
-func (m *Model) showDevices() {
+// showMachines puts one user's machines in the list.
+func (m *Model) showMachines() {
+	items, from := machinesOf(m.me, m.peers, m.rows.under[m.atUser], m.atUser, m.reaching)
+
+	m.ofUser = from
+	m.list.SetItems(items)
+	m.list.Select(m.rowFor(m.atPeer))
+	m.list.SetSize(m.listWidth(), m.listHeight())
+}
+
+func (m *Model) showUsers() {
 	m.rows = group(m.me, m.peers, m.reaching, m.knocked)
 	m.list.SetItems(m.rows.items)
 	m.list.Select(m.rowFor(m.atPeer))
@@ -846,24 +875,26 @@ func (m Model) scrollBy(lines int) Model {
 	return m
 }
 
-// onSelfRow reports whether the cursor is on this machine.
-func (m Model) onSelfRow() bool { return m.list.Index() == m.rows.me }
-
-// rowFor is where a peer sits in the list.
-//
-// Looked up rather than counted: the list is grouped, so how many labels sit above a device
-// depends on who is in the address book.
-func (m Model) rowFor(peer int) int {
-	if peer < 0 || peer >= len(m.rows.row) || m.rows.row[peer] < 0 {
-		return m.rows.me
-	}
-	return m.rows.row[peer]
+// onSelfRow reports whether the cursor is on this machine, which only exists inside your own user.
+func (m Model) onSelfRow() bool {
+	it, ok := m.list.SelectedItem().(deviceItem)
+	return ok && it.self
 }
 
-// peerFor is which peer a row is, and the one already open for a row that is not a device.
-func (m Model) peerFor(row int) int {
-	if at, ok := m.rows.peer[row]; ok {
-		return at
+// rowFor is where a peer sits on the machines screen, and the top when it is not on it.
+func (m Model) rowFor(peer int) int {
+	for at, from := range m.ofUser {
+		if from == peer {
+			return at
+		}
 	}
-	return m.atPeer
+	return 0
+}
+
+// peerFor is which peer a row on the machines screen is, and the one already open otherwise.
+func (m Model) peerFor(row int) int {
+	if row < 0 || row >= len(m.ofUser) || m.ofUser[row] < 0 {
+		return m.atPeer
+	}
+	return m.ofUser[row]
 }

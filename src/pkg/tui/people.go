@@ -9,77 +9,87 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 )
 
-// The device list is grouped, because it holds three different kinds of thing.
+// The first screen is users. Machines are inside them.
 //
-// Your own machines are not peers in any useful sense -- reaching one is reaching your own disk
-// from another chair. Somebody else's machines belong under that person, because that is the unit
-// access is granted to. And a machine with no person behind it is neither: a build server, or
-// anything else paired with --machine.
+// A user is the unit everything else is written against: access rules name people, trust belongs to
+// people, and a machine somebody buys next week is already covered. Putting machines on the first
+// screen made it as long as the number of laptops in your life, and put the thing you grant to a
+// level below the thing you look at.
+//
+// Every machine has a user, including the ones that do not: a device paired with --machine belongs
+// to nobody, and nobody is a user called anon. That keeps the screen one kind of thing rather than
+// three, and it keeps you symmetric with everybody else — me is a user with machines in it, exactly
+// as bob is.
+
+// Anon is the user a machine paired on its own belongs to, and Me is what you are called here.
 const (
-	groupMe       = "me"
-	groupPeople   = "people"
-	groupMachines = "machines"
-	// groupSeen is devices that dialled and were refused. Not a rung of anything: a record of an
-	// attempt, kept so that letting a bare id in does not mean copying hex out of a log.
-	groupSeen = "seen"
+	Anon = "anon"
+	Me   = "me"
 )
 
-// grouped arranges the address book for the list: which rows are dividers, which are devices, and
-// where each device from the book ended up.
-//
-// The mapping back is kept rather than computed, because a grouped list has no arithmetic that
-// turns a row into a device -- how many labels are above a row depends on who is in the book.
-type grouped struct {
+// groupSeen heads the devices that dialled and were refused. Not a user: a record of an attempt,
+// kept so that letting a bare id in does not mean copying hex out of a log.
+const groupSeen = "seen"
+
+// users arranges the address book into people, and remembers which machines are whose.
+type users struct {
 	items []list.Item
-	// me is the row for this machine.
-	me int
-	// row is where each peer sits, by its index in the address book.
-	row []int
-	// peer is which peer a row is, for the rows that are one.
-	peer map[int]int
-	// reaching is which devices a connection is being held to.
-	reaching map[string]bool
+	// who is the name at each row, for the rows that are a user.
+	who map[int]string
+	// row is where each user sits, by name.
+	row map[string]int
+	// under is every machine of a user, as indices into the address book.
+	under map[string][]int
+	// order is the users in the order they are shown.
+	order []string
 }
 
-// group sorts the address book into what the list shows.
-func group(self Identity, peers []book.Entry, reaching map[string]bool, knocked []Knock) grouped {
-	out := grouped{peer: map[int]int{}, row: make([]int, len(peers)), reaching: reaching}
-	for i := range out.row {
-		out.row[i] = -1
+// group sorts the address book into the users screen.
+func group(self Identity, peers []book.Entry, reaching map[string]bool, knocked []Knock) users {
+	out := users{
+		who:   map[int]string{},
+		row:   map[string]int{},
+		under: map[string][]int{},
 	}
 
-	// Your own machines first. What this one shares is the thing most often worth checking and the
-	// only thing that cannot be seen from anywhere else.
-	out.items = append(out.items, dividerItem{label: groupMe})
-	out.me = len(out.items)
-	out.items = append(out.items, deviceItem{
-		entry: book.Entry{Name: self.Name, ID: idOf(self.ID)},
-		addr:  "this device",
-		self:  true,
-	})
-	out.take(mine(self, peers), peers, false)
-
-	// Then everybody else, their machines under them, people in name order.
-	people, names := byPerson(self, peers)
-	if len(names) > 0 {
-		out.items = append(out.items, dividerItem{label: groupPeople})
+	for i, p := range peers {
+		who := userOf(self, p)
+		out.under[who] = append(out.under[who], i)
 	}
-	for _, who := range names {
-		out.items = append(out.items, personItem{
-			name:    who,
-			of:      len(people[who]),
-			trusted: peers[people[who][0]].Trusted,
+
+	// You first, then everybody else by name, then the machines that belong to nobody. Anon last
+	// because it is the odd one: a user that is not a person.
+	var people []string
+	for who := range out.under {
+		if who == Me || who == Anon {
+			continue
+		}
+		people = append(people, who)
+	}
+	sort.Strings(people)
+
+	out.order = append([]string{Me}, people...)
+	if len(out.under[Anon]) > 0 {
+		out.order = append(out.order, Anon)
+	}
+
+	for _, who := range out.order {
+		of := out.under[who]
+
+		out.row[who] = len(out.items)
+		out.who[len(out.items)] = who
+		out.items = append(out.items, userItem{
+			name: who,
+			// You always have at least this machine, which is not in the address book.
+			of:       len(of) + countSelf(who),
+			trusted:  trustedIn(peers, of),
+			mine:     who == Me,
+			anon:     who == Anon,
+			reaching: reachingIn(peers, of, reaching) + countSelf(who),
 		})
-		out.take(people[who], peers, true)
 	}
 
-	// The machines that are nobody's.
-	if loose := machines(peers); len(loose) > 0 {
-		out.items = append(out.items, dividerItem{label: groupMachines})
-		out.take(loose, peers, false)
-	}
-
-	// And last what has dialled and been turned away.
+	// And last what has dialled and been turned away, which is nobody's user.
 	if len(knocked) > 0 {
 		out.items = append(out.items, dividerItem{label: groupSeen})
 		for _, at := range knocked {
@@ -89,71 +99,73 @@ func group(self Identity, peers []book.Entry, reaching map[string]bool, knocked 
 	return out
 }
 
-// take adds a run of devices to the list, remembering where each of them landed.
-func (g *grouped) take(which []int, peers []book.Entry, under bool) {
-	for i, at := range which {
-		// Every machine but the last continues the branch; the last one closes it, and the lines
-		// under it carry no stem because there is nothing below to reach.
-		limb, trail := "├─ ", "│  "
-		if i == len(which)-1 {
-			limb, trail = "└─ ", "   "
-		}
+// userOf is the user a machine belongs to.
+func userOf(self Identity, p book.Entry) string {
+	switch {
+	case !p.Owned():
+		return Anon
+	case self.User != "" && p.User == self.User:
+		return Me
+	case p.Person != "":
+		return p.Person
+	default:
+		return p.Name
+	}
+}
 
-		g.row[at] = len(g.items)
-		g.peer[len(g.items)] = at
-		g.items = append(g.items, deviceItem{
+// countSelf is the machine this interface is running on, which is yours and is not in the book.
+func countSelf(who string) int {
+	if who == Me {
+		return 1
+	}
+	return 0
+}
+
+func trustedIn(peers []book.Entry, of []int) bool {
+	for _, at := range of {
+		if peers[at].Trusted {
+			return true
+		}
+	}
+	return false
+}
+
+func reachingIn(peers []book.Entry, of []int, reaching map[string]bool) int {
+	out := 0
+	for _, at := range of {
+		if reaching[peers[at].Name] {
+			out++
+		}
+	}
+	return out
+}
+
+// machinesOf is one user's machines, as rows, and which peer each row came from.
+//
+// Your own screen carries this machine first: it is yours, it is the one thing that cannot be seen
+// from anywhere else, and leaving it out is what made your own user the odd one out.
+func machinesOf(self Identity, peers []book.Entry, of []int, who string, reaching map[string]bool) ([]list.Item, []int) {
+	var items []list.Item
+	var from []int
+
+	if who == Me {
+		items = append(items, deviceItem{
+			entry: book.Entry{Name: self.Name, ID: idOf(self.ID)},
+			addr:  "this device",
+			self:  true,
+		})
+		from = append(from, -1)
+	}
+
+	for _, at := range of {
+		items = append(items, deviceItem{
 			entry:    peers[at],
 			addr:     addrsOf(peers[at]),
-			under:    under,
-			limb:     limb,
-			trail:    trail,
-			reaching: g.reaching[peers[at].Name],
+			reaching: reaching[peers[at].Name],
 		})
+		from = append(from, at)
 	}
-}
-
-// mine is the machines signed by this machine's own user key.
-func mine(self Identity, peers []book.Entry) []int {
-	if self.User == "" {
-		return nil
-	}
-
-	var out []int
-	for i, p := range peers {
-		if p.User == self.User {
-			out = append(out, i)
-		}
-	}
-	return out
-}
-
-// byPerson groups everybody else's machines under the name their owner is filed as.
-func byPerson(self Identity, peers []book.Entry) (map[string][]int, []string) {
-	out := map[string][]int{}
-	for i, p := range peers {
-		if !p.Owned() || p.User == self.User {
-			continue
-		}
-		out[p.Person] = append(out[p.Person], i)
-	}
-
-	names := make([]string, 0, len(out))
-	for who := range out {
-		names = append(names, who)
-	}
-	sort.Strings(names)
-	return out, names
-}
-
-// machines is the devices with no person behind them.
-func machines(peers []book.Entry) []int {
-	var out []int
-	for i, p := range peers {
-		if !p.Owned() {
-			out = append(out, i)
-		}
-	}
-	return out
+	return items, from
 }
 
 // addrsOf is where a device was last known to be, as one line.

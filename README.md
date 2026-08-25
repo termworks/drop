@@ -199,9 +199,32 @@ Nobody is trusted by pairing alone. Your own machines are trusted by constructio
 user key, so they are you. Trust belongs to the **person**, not to one of their laptops: trusting
 bob trusts every machine he signs, now and later.
 
+### the interface is users, then machines
+
+The first screen is **users**, not devices. A user is what everything else is written against —
+access rules name people, trust belongs to people, and a machine somebody buys next week is already
+covered. Enter a user to see their machines, enter a machine to see what it shares.
+
+```
+╭─ users ──────────────────────────────────────────────────────────╮
+│   ◈ me                                                2 machines │
+│   you — every machine your user key has signed                    │
+│   access = { "me" }   ·   2 reachable                             │
+│   ★ bob                                               2 machines │
+│   a person you decided to trust                                   │
+│   access = { "bob" }                                              │
+│   ◌ anon                                             one machine │
+│   machines paired on their own, belonging to nobody               │
+╰───────────────────────────────────────────────────────────────────╯
+```
+
+**You are a user like any other** — `me` holds this machine and every other one your user key has
+signed. A device paired with `--machine` belongs to nobody, and nobody is a user called **anon**, so
+the screen stays one kind of thing rather than three.
+
 ### managing somebody
 
-`m` on a person or a machine in the device list opens the screen for it — who they are, whether they
+`m` on somebody in the users list opens the screen for them — who they are, whether they
 are trusted, and every path you have granted or refused them:
 
 ```
