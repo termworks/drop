@@ -1812,3 +1812,51 @@ func onUser(t *testing.T, m *Model, who string) {
 	}
 	m.list.Select(at)
 }
+
+// Leaving a live path while it is still sending must not take the interface down with it.
+//
+// The far end goes on writing for a moment after a watch is over — a read already in flight has to
+// land somewhere — so the screen is written from one goroutine while the interface is taking it
+// down from another. Closing the channel that carries "there is something new" turned that into a
+// panic on a channel nobody owned any more, and it took the whole program with it.
+func TestLeavingALivePathWhileItIsStillWriting(t *testing.T) {
+	s := newScreen(40, 10)
+
+	// Whoever is reading the far end, still going.
+	stop := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_, _ = s.Write([]byte("still arriving\r\n"))
+			}
+		}
+	}()
+
+	// The interface, waiting for repaints and then giving up on the screen.
+	for range 20 {
+		waitForFrame(s)()
+	}
+	s.Finish()
+
+	// Everything after this used to panic.
+	for range 200 {
+		_, _ = s.Write([]byte("after the watch ended\r\n"))
+		s.Resize(40, 10)
+	}
+
+	close(stop)
+	<-done
+
+	// And whoever is waiting for a repaint is let go rather than left there.
+	if msg := waitForFrame(s)(); msg != nil {
+		t.Errorf("waiting for a frame on a finished screen gave %T", msg)
+	}
+	// Twice, because being finished with is not a thing that happens once per waiter.
+	s.Finish()
+}

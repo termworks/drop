@@ -18,11 +18,28 @@ type screen struct {
 
 	// nudge tells the interface a repaint is worth doing. Depth one, and a full channel is simply
 	// left alone: the signal carries nothing, so one pending nudge means the same as ten.
+	//
+	// Never closed. Whatever is reading the far end goes on writing for a moment after the watch
+	// is over -- the read that was already in flight has to land somewhere -- and closing this
+	// would turn that into a panic on a channel nobody owns any more.
 	nudge chan struct{}
+	// done says the screen is finished with, so whoever is waiting for a repaint stops waiting.
+	done chan struct{}
+	over sync.Once
 }
 
 func newScreen(cols, rows int) *screen {
-	return &screen{inner: term.New(cols, rows), nudge: make(chan struct{}, 1)}
+	return &screen{
+		inner: term.New(cols, rows),
+		nudge: make(chan struct{}, 1),
+		done:  make(chan struct{}),
+	}
+}
+
+// Finish says nothing more will be drawn from this screen. Safe to call more than once, and safe
+// while somebody is still writing to it.
+func (s *screen) Finish() {
+	s.over.Do(func() { close(s.done) })
 }
 
 func (s *screen) Write(p []byte) (int, error) {
@@ -65,6 +82,12 @@ func (s *screen) Draw() string {
 }
 
 func (s *screen) wake() {
+	select {
+	case <-s.done:
+		return
+	default:
+	}
+
 	select {
 	case s.nudge <- struct{}{}:
 	default:

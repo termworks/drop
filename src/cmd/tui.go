@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"sort"
 	"syscall"
+	"time"
 
 	"crypto/hmac"
 	tea "github.com/charmbracelet/bubbletea"
@@ -346,13 +347,26 @@ func (l *live) Watch(ctx context.Context, on book.Entry, path string, into io.Wr
 	select {
 	case err := <-done:
 		return err
+
 	case <-ctx.Done():
 		// The stream goes, the connection stays: it is shared with everything else this device is
 		// doing, and closing it here would drop a conversation to end a watch.
 		s.Close()
+
+		// And the pump is waited for. It writes into a screen the interface is about to take down,
+		// and returning while it is still writing leaves two goroutines racing over it — which is
+		// a panic on whichever one loses.
+		select {
+		case <-done:
+		case <-time.After(stopWithin):
+		}
 		return ctx.Err()
 	}
 }
+
+// stopWithin bounds the wait for a watch to notice its stream has gone. A read already in flight
+// lands or fails quickly; anything longer is not worth holding the interface for.
+const stopWithin = 2 * time.Second
 
 var _ = fmt.Sprintf
 

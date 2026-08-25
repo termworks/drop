@@ -352,22 +352,25 @@ type delivered struct{ err error }
 func watch(back Backend, on book.Entry, path string, into *screen, ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
 		err := back.Watch(ctx, on, path, into, into.Resize)
-		close(into.nudge)
+		into.Finish()
+
 		return watchEnded{err: err}
 	}
 }
 
 // waitForFrame blocks until the far end has drawn something, so the interface repaints when there is
 // a reason to rather than on a timer.
-func waitForFrame(nudge chan struct{}) tea.Cmd {
-	if nudge == nil {
+func waitForFrame(s *screen) tea.Cmd {
+	if s == nil {
 		return nil
 	}
 	return func() tea.Msg {
-		if _, ok := <-nudge; !ok {
+		select {
+		case <-s.nudge:
+			return framePainted{}
+		case <-s.done:
 			return nil
 		}
-		return framePainted{}
 	}
 }
 

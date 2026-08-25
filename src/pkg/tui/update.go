@@ -247,7 +247,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.screen == nil {
 			return m, nil
 		}
-		return m, waitForFrame(m.screen.nudge)
+		return m, waitForFrame(m.screen)
 
 	case watchEnded:
 		m.live = false
@@ -732,7 +732,7 @@ func (m *Model) openPath() tea.Cmd {
 
 		return tea.Batch(
 			watch(m.back, with, at.Path, m.screen, ctx),
-			waitForFrame(m.screen.nudge),
+			waitForFrame(m.screen),
 		)
 	}
 	return nil
