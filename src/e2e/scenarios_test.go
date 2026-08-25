@@ -60,6 +60,7 @@ drop.mount("/inbox", { type = "files", access = "paired", dir = "` + alpha.inbox
 	_, betaSaid, stopBeta := beta.background("serve")
 	defer stopBeta()
 	_, alphaSaid, stopAlpha := alpha.background("serve")
+
 	defer stopAlpha()
 
 	waitFor(t, "both nodes to be ready", 30*time.Second, func() bool {

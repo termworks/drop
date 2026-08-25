@@ -123,7 +123,10 @@ func runServe(parent context.Context, quiet bool) error {
 
 	// The address book is re-read before answering anybody, because `drop pair` is a separate
 	// process: without this, a device paired while this was running stays a stranger to it.
-	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){
+	// Every connection that arrives is kept, and whatever is queued for whoever opened it goes
+	// down the same pipe. A device nothing can dial is still a device that dials, and until now
+	// its queue only ever emptied in one direction.
+	answer := map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
 			_ = pinned.Refresh()
@@ -158,7 +161,31 @@ func runServe(parent context.Context, quiet bool) error {
 			}
 			offers.answered(p)
 		},
+	}
+
+	// Whatever a device opens on a connection we made is answered the same way as one it made:
+	// which side dialled is a fact about the network, not about who may ask what.
+	held.Serving(ctx, func(from node.ID, alpn string, s *iroh.Stream) {
+		if handle, ok := answer[alpn]; ok {
+			handle(from, s)
+		}
 	})
+
+	pushing := func(from node.ID) {
+		// Somebody just opened a connection to us. Whatever is waiting for them can go now, over
+		// the connection they are holding, rather than waiting for a dial that may never work.
+		_ = pinned.Refresh()
+
+		entry, known := pinned.ByID(from)
+		if !known || !entry.Paired() {
+			return
+		}
+		if _, err := deliverOver(ctx, onlyHeld{held: held}, entry, "/chat"); err != nil {
+			trace(fmt.Sprintf("pushing to %s: %v", entry.Name, err))
+		}
+	}
+
+	go serveLoopKeeping(ctx, n, answer, held, pushing)
 
 	describe(cfg, n)
 
@@ -261,6 +288,14 @@ func backlog(ctx context.Context, n *node.Node, lan *discovery.LAN, pinned *book
 				return
 			default:
 			}
+
+			// A connection first, whether or not there is anything to send. This device may be
+			// one nothing can dial, and then the connection it opens is the only way anybody has
+			// of reaching it — including to hand it what they have been holding.
+			if err := held.Reach(ctx, entry, node.ALPNSession); err != nil {
+				trace(fmt.Sprintf("reaching %s: %v", entry.Name, err))
+			}
+
 			_, _ = deliverOver(ctx, kept{held: held}, entry, "/chat")
 		}
 	}

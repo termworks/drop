@@ -83,6 +83,25 @@ func (b borrowed) To(ctx context.Context, entry book.Entry, alpn string) (io.Clo
 	return b.fallback.To(ctx, entry, alpn)
 }
 
+// onlyHeld reaches a device only over a connection already open to it, and refuses otherwise.
+//
+// What the serving side uses to push. Dialling from there would have two devices that can both dial
+// opening connections at each other without end.
+type onlyHeld struct{ held *dial.Kept }
+
+func (o onlyHeld) To(ctx context.Context, entry book.Entry, alpn string) (io.Closer, proto.Stream, error) {
+	s, err := o.held.Existing(ctx, entry, alpn)
+	if err != nil {
+		return nil, nil, err
+	}
+	return noClose{}, s, nil
+}
+
+// noClose is a closer for a connection that is not ours to close.
+type noClose struct{}
+
+func (noClose) Close() error { return nil }
+
 // viaDaemon opens a stream over the running node's connection to a device.
 func viaDaemon(entry book.Entry, alpn string) (*lent, error) {
 	path, err := castSocket()

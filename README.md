@@ -710,6 +710,28 @@ mangled render.
 A watcher that cannot keep up is dropped rather than fed a stream with holes in it: a terminal
 rendered from a gappy byte stream is worse than one that stopped.
 
+### when only one side can be reached
+
+Behind a strict NAT a device can open connections and nothing can open one to it. Its address never
+resolves to anywhere anybody can dial, so a queue for it would wait forever while the device itself
+sits there connected and idle.
+
+So the direction of a connection is not the direction of the traffic. A device holds a session open
+to everybody it has paired with, whether or not it has anything to say, and the far end keeps that
+connection and pushes whatever is waiting back down it. QUIC does not care which side opened a
+connection; either can start a stream on it.
+
+```
+    behind a NAT                              reachable
+    ────────────                              ─────────
+    holds a connection open  ──────────────▶  keeps it
+                             ◀──────────────  pushes what is queued
+```
+
+Nothing here depends on the NAT being friendly, on a relay hole being punched, or on the unreachable
+side being findable at all. It only needs it to be able to dial out, which is the one thing such a
+device can always do.
+
 ## staying reachable
 
 `drop serve` keeps the node reachable. Install it as a user
@@ -790,6 +812,7 @@ DROP_CONFIG        the config file; defaults to $XDG_CONFIG_HOME/drop/init.lua
 DROP_USER_KEY      the user key to sign badges with; overrides drop.user_key
 DROP_PROFILE       run as another person on this machine, with its own keys and port
 DROP_NO_MDNS       turn the local wire off, so finding a device has to go out and back
+DROP_NO_PUBLISH    publish where this device is nowhere, so nothing can look it up
 DROP_OPENER        what opens an arriving link; defaults to xdg-open
 XDG_CONFIG_HOME    where identity, peers.json and grants.json live; defaults to ~/.config
 XDG_DATA_HOME      where conversations live; defaults to ~/.local/share

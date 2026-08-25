@@ -790,3 +790,52 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		t.Errorf("it did not say what to do about it:\n%s", second.String())
 	}
 }
+
+// A device nothing can dial still gets what is queued for it, over the connection it opened.
+//
+// This is the ordinary case behind a NAT: one side can open connections and the other cannot reach
+// it at all. The unreachable side holds a connection open to everybody it has paired with, and
+// whatever is waiting goes down that pipe — without the waiting side ever dialling.
+func TestAQueueEmptiesOverTheConnectionThePeerOpened(t *testing.T) {
+	me := newNode(t, "me", "45141")
+	them := newNode(t, "them", "45142")
+
+	me.serves(`
+local drop = require("drop")
+drop.mount("/chat", { type = "chat", access = "paired" })
+`)
+
+	them.serves(`
+local drop = require("drop")
+drop.mount("/chat", { type = "chat", access = "paired" })
+`)
+
+	pair(t, me, them)
+
+	// From here on they are unfindable: no local wire, and they publish nowhere. They can still
+	// find everybody else and dial out, which is exactly what a device behind a strict NAT can do.
+	them.blind = true
+
+	_, said, stopMe := me.background("serve")
+	defer stopMe()
+	waitFor(t, "my daemon", 30*time.Second, func() bool {
+		return strings.Contains(said.String(), "ready")
+	})
+
+	// Written down while they are not even running.
+	me.must("to", "them/chat", "waiting for you to say something")
+	if got := them.must("log"); strings.Contains(got, "waiting for you") {
+		t.Fatal("it arrived before the far end existed")
+	}
+
+	// They come up. Nothing can find them — but they can find us, and they hold that connection.
+	_, theirs, stopThem := them.background("serve")
+	defer stopThem()
+	waitFor(t, "their daemon", 30*time.Second, func() bool {
+		return strings.Contains(theirs.String(), "ready")
+	})
+
+	waitFor(t, "the queue to empty over their connection", 90*time.Second, func() bool {
+		return strings.Contains(them.must("log"), "waiting for you to say something")
+	})
+}

@@ -84,12 +84,13 @@ func (n *node) env() []string {
 	)
 }
 
-// blindly is the environment, with the local wire turned off when this node is meant to be blind.
+// blindly is the environment, with the ways of being found turned off when this node is meant to
+// be unfindable: the local wire, and publishing where it is. It can still find everybody else.
 func (n *node) blindly() []string {
 	if !n.blind {
 		return os.Environ()
 	}
-	return append(os.Environ(), "DROP_NO_MDNS=1")
+	return append(os.Environ(), "DROP_NO_MDNS=1", "DROP_NO_PUBLISH=1")
 }
 
 func (n *node) inbox() string { return filepath.Join(n.home, "inbox") }

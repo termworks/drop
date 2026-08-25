@@ -49,6 +49,21 @@ func finder(n *node.Node) dial.Finder {
 // ALPN is per connection in iroh rather than per stream, so the protocol is known before a byte is
 // read and every stream on a connection belongs to the same one.
 func serveLoop(ctx context.Context, n *node.Node, handlers map[string]func(node.ID, *iroh.Stream)) {
+	serveLoopKeeping(ctx, n, handlers, nil, nil)
+}
+
+// serveLoopKeeping is the same, and keeps every connection that arrives.
+//
+// A device behind a NAT that nothing can dial can still dial out, and the connection it opens is a
+// way back to it for as long as it holds it. Keeping it means whatever is queued for that device
+// can go down the same pipe instead of waiting for a dial that will never succeed.
+func serveLoopKeeping(
+	ctx context.Context,
+	n *node.Node,
+	handlers map[string]func(node.ID, *iroh.Stream),
+	held *dial.Kept,
+	arrived func(node.ID),
+) {
 	for {
 		conn, err := n.Accept(ctx)
 		if err != nil {
@@ -57,6 +72,14 @@ func serveLoop(ctx context.Context, n *node.Node, handlers map[string]func(node.
 			}
 			continue
 		}
+
+		if held != nil {
+			held.Adopt(conn.RemoteID(), conn.ALPN(), conn)
+		}
+		if arrived != nil {
+			go arrived(conn.RemoteID())
+		}
+
 		go serveConn(ctx, conn, handlers)
 	}
 }

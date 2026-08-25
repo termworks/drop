@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -74,6 +75,13 @@ func (s *Service) Run(ctx context.Context) {
 	defer watch.Stop()
 
 	defer s.closeAll()
+
+	// Turned off on purpose, which is how the other direction gets tested: a device that publishes
+	// nowhere cannot be found, and anything that reaches it has to be a connection it opened.
+	if os.Getenv("DROP_NO_PUBLISH") != "" {
+		<-ctx.Done()
+		return
+	}
 
 	said := ""
 	say := func(whatever bool) {
