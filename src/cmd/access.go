@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"fmt"
+	"sort"
 
 	"github.com/bresilla/drop/src/pkg/asked"
 	"github.com/bresilla/drop/src/pkg/book"
@@ -10,6 +12,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
+	"github.com/bresilla/drop/src/pkg/shares"
 	"github.com/bresilla/drop/src/pkg/tui"
 )
 
@@ -196,4 +199,126 @@ func (l *live) AskFor(ctx context.Context, on book.Entry, path, why string) erro
 	defer stream.Close()
 
 	return proto.Ask(ctx, stream, path, why, node.DisplayName())
+}
+
+// Managed is everything known about somebody, for the screen that manages them.
+//
+// Assembled from three places that each hold a different kind of truth: the address book knows who
+// they are and whether they are trusted, the grants know what has been decided about them here, and
+// the connection pool knows whether they are answering right now.
+func (l *live) Managed(name string) (tui.Managed, error) {
+	pinned, err := book.Load()
+	if err != nil {
+		return tui.Managed{}, err
+	}
+
+	entry, ok := pinned.Lookup(name)
+	if !ok {
+		// A person's own heading rather than one machine: find any machine of theirs.
+		for _, one := range pinned.All() {
+			if one.Person == name {
+				entry, ok = one, true
+				break
+			}
+		}
+	}
+	if !ok {
+		return tui.Managed{}, fmt.Errorf("%s is not in the address book", name)
+	}
+
+	out := tui.Managed{
+		Name:     name,
+		Person:   entry.Person,
+		User:     entry.User,
+		Paired:   entry.Paired(),
+		Trusted:  entry.Trusted,
+		Reaching: l.held.Reaching(entry.ID),
+	}
+
+	// A row that stands for one machine names its device; a person's does not, because they have
+	// more than one.
+	if entry.Name == name {
+		out.ID = entry.ID.String()
+	}
+	for _, one := range pinned.All() {
+		if one.User != "" && one.User == entry.User {
+			out.Machines++
+		}
+	}
+
+	out.Allowed, out.Refused, err = decided(name)
+	if err != nil {
+		return tui.Managed{}, err
+	}
+	return out, nil
+}
+
+// decided is every path somebody has been granted or refused here.
+func decided(who string) (allowed, refused []string, err error) {
+	store, err := grant.Load()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for at, rule := range store.Paths() {
+		if has(rule.Allow, who) {
+			allowed = append(allowed, at)
+		}
+		if has(rule.Deny, who) {
+			refused = append(refused, at)
+		}
+	}
+	sort.Strings(allowed)
+	sort.Strings(refused)
+
+	return allowed, refused, nil
+}
+
+// Trust marks somebody trusted or not, and every machine of theirs with them.
+func (l *live) Trust(name string, trusted bool) error {
+	pinned, err := book.Load()
+	if err != nil {
+		return err
+	}
+
+	pinned.Trust(name, trusted)
+	if _, ok := pinned.Lookup(name); !ok {
+		// A person's heading: trust every machine filed under them.
+		for _, one := range pinned.All() {
+			if one.Person == name {
+				pinned.Trust(one.Name, trusted)
+			}
+		}
+	}
+	return pinned.Save()
+}
+
+// Forget drops a pairing, and everything kept about it that is now meaningless.
+func (l *live) Forget(name string) error {
+	pinned, err := book.Load()
+	if err != nil {
+		return err
+	}
+
+	gone := []string{name}
+	if _, ok := pinned.Lookup(name); !ok {
+		gone = nil
+		for _, one := range pinned.All() {
+			if one.Person == name {
+				gone = append(gone, one.Name)
+			}
+		}
+	}
+
+	for _, at := range gone {
+		entry, ok := pinned.Lookup(at)
+		if !ok {
+			continue
+		}
+		pinned.Remove(at)
+
+		// What that device said it shares is worth nothing once it is a stranger again.
+		_ = shares.Forget(entry.ID)
+	}
+	return pinned.Save()
 }

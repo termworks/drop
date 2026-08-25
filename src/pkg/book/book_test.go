@@ -278,3 +278,45 @@ func TestEveryMachineOfOnePersonSharesTheirName(t *testing.T) {
 		}
 	}
 }
+
+// Trust is a property of a person, not of one of their laptops: deciding you trust bob and then
+// saying it again for each machine he owns is a decision nobody would keep up with.
+func TestTrustingSomebodyTrustsEveryMachineOfTheirs(t *testing.T) {
+	const key = "ssh-ed25519 AAAA…"
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	b, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Pair("bob", testID(t), testSecret(t))
+	b.Belongs("bob", key)
+	b.Pair("bobs-phone", testID(t), testSecret(t))
+	b.Belongs("bobs-phone", key)
+	b.Pair("carol", testID(t), testSecret(t))
+
+	// Nobody is trusted by pairing alone.
+	for _, name := range []string{"bob", "bobs-phone", "carol"} {
+		if entry, _ := b.Lookup(name); entry.Trusted {
+			t.Errorf("%s was trusted merely by being paired with", name)
+		}
+	}
+
+	b.Trust("bob", true)
+
+	for _, name := range []string{"bob", "bobs-phone"} {
+		if entry, _ := b.Lookup(name); !entry.Trusted {
+			t.Errorf("%s was not trusted along with the rest of bob's machines", name)
+		}
+	}
+	if entry, _ := b.Lookup("carol"); entry.Trusted {
+		t.Error("trusting bob trusted somebody else")
+	}
+
+	// And it comes back off the same way.
+	b.Trust("bobs-phone", false)
+	if entry, _ := b.Lookup("bob"); entry.Trusted {
+		t.Error("withdrawing trust left one of his machines trusted")
+	}
+}

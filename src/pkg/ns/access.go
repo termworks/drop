@@ -13,8 +13,10 @@ import (
 // proved it holds during the handshake; the third binds only to knowledge, which is why it is the
 // one worth thinking twice about.
 type Access struct {
-	// AnyPaired admits any device in the address book.
-	AnyPaired bool
+	// AnyPaired admits any device in the address book, and AnyTrusted only the ones you decided
+	// to trust. Pairing is recognition, so "paired" is a wide rule; "trusted" is the narrow one.
+	AnyPaired  bool
+	AnyTrusted bool
 	// Named admits people and machines, by the name they are filed under.
 	//
 	// A name on its own means a person: any machine of theirs. A name with a machine after it —
@@ -39,6 +41,9 @@ type Access struct {
 	// see it learns that it exists.
 	Visible    []string
 	AnyVisible bool
+	// TrustedVisible shows it to the people you decided to trust, and to nobody else you have
+	// merely met. This is the ordinary way to put something up to be asked for.
+	TrustedVisible bool
 	// Refused is who may not reach this path whatever else says otherwise. It is not written in
 	// the config: it is what revoking from the interface leaves behind, and it beats every rule
 	// above, which is what makes it take effect on the next connection rather than in ninety days.
@@ -47,7 +52,8 @@ type Access struct {
 
 // Declared reports whether this says anything at all. One that says nothing admits nobody.
 func (a Access) Declared() bool {
-	return a.Anyone || a.AnyPaired || len(a.Named) > 0 || len(a.Keys) > 0 || a.Password != ""
+	return a.Anyone || a.AnyPaired || a.AnyTrusted ||
+		len(a.Named) > 0 || len(a.Keys) > 0 || a.Password != ""
 }
 
 // Sees reports whether a caller may know this path exists, without being able to open it.
@@ -64,11 +70,14 @@ func (a Access) Sees(c Caller) bool {
 	if a.AnyVisible && c.Paired {
 		return true
 	}
+	if a.TrustedVisible && c.Paired && c.Trusted {
+		return true
+	}
 	return named(a.Visible, c)
 }
 
 // Shows reports whether this says anything about being seen.
-func (a Access) Shows() bool { return a.AnyVisible || len(a.Visible) > 0 }
+func (a Access) Shows() bool { return a.AnyVisible || a.TrustedVisible || len(a.Visible) > 0 }
 
 // named decides whether a caller is one of the names a rule lists.
 //
@@ -119,6 +128,9 @@ type Caller struct {
 	Name string
 	// Paired says a shared secret exists with it.
 	Paired bool
+	// Trusted says this is somebody you decided to trust, not merely somebody you have met.
+	// Pairing is recognition; trust is the second, deliberate step.
+	Trusted bool
 	// Password is what was offered, empty if nothing was.
 	Password string
 	// User is who owns this machine, as their user key is written down. Empty when the badge did
@@ -152,6 +164,9 @@ func (a Access) Admits(c Caller) (bool, string) {
 	}
 	if a.AnyPaired {
 		rules = append(rules, rule{"pairing", c.Paired})
+	}
+	if a.AnyTrusted {
+		rules = append(rules, rule{"being trusted", c.Paired && c.Trusted})
 	}
 	if len(a.Named) > 0 {
 		rules = append(rules, rule{"pairing", named(a.Named, c)})

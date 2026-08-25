@@ -65,7 +65,11 @@ func group(self Identity, peers []book.Entry, reaching map[string]bool, knocked 
 		out.items = append(out.items, dividerItem{label: groupPeople})
 	}
 	for _, who := range names {
-		out.items = append(out.items, personItem{name: who, of: len(people[who])})
+		out.items = append(out.items, personItem{
+			name:    who,
+			of:      len(people[who]),
+			trusted: peers[people[who][0]].Trusted,
+		})
 		out.take(people[who], peers, true)
 	}
 

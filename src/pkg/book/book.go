@@ -32,6 +32,13 @@ type Entry struct {
 	// Person is what that person is called here, set whenever User is. A machine has a name and
 	// its owner has one, and they are not the same name once somebody has more than one machine.
 	Person string
+	// Trusted marks somebody you would show things to without thinking about it.
+	//
+	// Pairing is recognition, not trust: it means a device arrives with a name instead of as a
+	// stranger. Trust is the second, deliberate step, and it is what the narrower rules are
+	// written against -- a path visible to "trusted" is not visible to somebody you paired with
+	// once at a conference.
+	Trusted bool
 }
 
 // Owned reports whether this entry is somebody's machine, rather than a machine on its own.
@@ -99,11 +106,12 @@ func (b *Book) Refresh() error {
 
 // stored is the on-disk shape.
 type stored struct {
-	ID     string   `json:"id"`
-	Secret string   `json:"secret,omitempty"`
-	Addrs  []string `json:"addrs,omitempty"`
-	User   string   `json:"user,omitempty"`
-	Person string   `json:"person,omitempty"`
+	ID      string   `json:"id"`
+	Secret  string   `json:"secret,omitempty"`
+	Addrs   []string `json:"addrs,omitempty"`
+	User    string   `json:"user,omitempty"`
+	Person  string   `json:"person,omitempty"`
+	Trusted bool     `json:"trusted,omitempty"`
 }
 
 func path() (string, error) {
@@ -153,7 +161,7 @@ func Load() (*Book, error) {
 				return nil, fmt.Errorf("%s: %s has an unreadable secret: %w", file, name, err)
 			}
 		}
-		b.entries[name] = Entry{Name: name, ID: id, Secret: secret, Addrs: entry.Addrs, User: entry.User, Person: entry.Person}
+		b.entries[name] = Entry{Name: name, ID: id, Secret: secret, Addrs: entry.Addrs, User: entry.User, Person: entry.Person, Trusted: entry.Trusted}
 	}
 	return b, nil
 }
@@ -170,7 +178,7 @@ func (b *Book) Save() error {
 
 	onDisk := make(map[string]stored, len(b.entries))
 	for name, entry := range b.entries {
-		out := stored{ID: entry.ID.String(), Addrs: entry.Addrs, User: entry.User, Person: entry.Person}
+		out := stored{ID: entry.ID.String(), Addrs: entry.Addrs, User: entry.User, Person: entry.Person, Trusted: entry.Trusted}
 		if entry.Paired() {
 			out.Secret = base64.StdEncoding.EncodeToString(entry.Secret)
 		}
@@ -232,6 +240,33 @@ func (b *Book) personFor(key, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+// Trust marks somebody trusted or not, and every machine of theirs with them.
+//
+// Trust is a property of a person, not of one of their laptops: deciding you trust bob and then
+// having to say it again for each machine he owns is a decision nobody would keep up with.
+func (b *Book) Trust(name string, trusted bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	entry, ok := b.entries[name]
+	if !ok {
+		return
+	}
+
+	entry.Trusted = trusted
+	b.entries[name] = entry
+
+	if entry.User == "" {
+		return
+	}
+	for at, other := range b.entries {
+		if other.User == entry.User {
+			other.Trusted = trusted
+			b.entries[at] = other
+		}
+	}
 }
 
 // ByUser finds who a user key belongs to: the name this machine files that person under.

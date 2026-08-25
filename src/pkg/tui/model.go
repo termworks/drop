@@ -32,6 +32,13 @@ type Backend interface {
 	Reaching() map[string]bool
 	// Knocked is what has dialled this device and been turned away, most recent first.
 	Knocked() ([]Knock, error)
+	// Managed is everything known about somebody, for the screen that manages them rather than
+	// reaches them: who they are, whether they are trusted, and what they have been granted.
+	Managed(name string) (Managed, error)
+	// Trust marks somebody trusted or not, and every machine of theirs with them.
+	Trust(name string, trusted bool) error
+	// Forget drops a pairing, so they arrive as a stranger from then on.
+	Forget(name string) error
 	// Serves asks a device what it shares with us.
 	Serves(ctx context.Context, with book.Entry) ([]proto.Served, error)
 	// Mine is what this device serves, read from its own config rather than asked over a wire.
@@ -92,6 +99,8 @@ const (
 	levelOpen
 	// levelAccess is who may reach one of this machine's own paths, and where that is changed.
 	levelAccess
+	// levelManage is one person or machine: who they are, and what they have been given.
+	levelManage
 )
 
 // Model is the whole interface.
@@ -121,6 +130,8 @@ type Model struct {
 	knocked []Knock
 	// rule is who may reach the path whose access is being looked at.
 	rule Rule
+	// managed is whoever the management screen is showing.
+	managed Managed
 	// under is where in a device's paths the list is standing, "/" being the top.
 	under string
 	// steps is what is at that level: namespaces, and the ways further down.

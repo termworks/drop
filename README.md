@@ -159,9 +159,11 @@ access = { "bob", "carol" }        -- people, by the name you filed them under
 access = { "bob@laptop" }          -- one machine of theirs, and no other
 access = { "me" }                  -- any machine of your own
 access = "paired"                  -- anyone in your address book
+access = "trusted"                 -- only the ones you decided to trust
 access = "anyone"                  -- anybody who knows the id, paired or not
 access = { keys = { "7b97…" } }    -- a machine that never paired, by its endpoint id
 visible = "paired"                 -- they see it exists, and must ask
+visible = "trusted"                -- only the people you trust see it
 visible = { "carol" }              -- only carol sees it
 access = { password = "$argon2id$…" }
 access = { paired = { "laptop" }, password = "$argon2id$…", require = "all" }
@@ -180,6 +182,46 @@ A password is the weak one: the other two bind to a key nobody else holds, and a
 binds to knowledge, which spreads. It earns its place because it is the only one that works
 before you know who is coming. `drop passwd` prints the hash to put in the config — the
 plaintext never goes in a file, so a leaked config is not a leaked password.
+
+### paired is not the same as trusted
+
+Pairing is recognition: it means a device arrives with a name instead of as a stranger. Trust is a
+second, deliberate step, and it is what the narrow rules are written against — otherwise "everybody
+I have ever met" and "everybody I trust" are the same set.
+
+```lua
+access  = "paired"    -- anybody in the address book
+access  = "trusted"   -- only the ones you said yes to
+visible = "trusted"   -- put something up to be asked for, by people you trust
+```
+
+Nobody is trusted by pairing alone. Your own machines are trusted by construction — they carry your
+user key, so they are you. Trust belongs to the **person**, not to one of their laptops: trusting
+bob trusts every machine he signs, now and later.
+
+### managing somebody
+
+`m` on a person or a machine in the device list opens the screen for it — who they are, whether they
+are trusted, and every path you have granted or refused them:
+
+```
+╭─ bob  ·  who they are, and what you have given them ─────────────────╮
+│ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ WHO THEY ARE ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ │
+│   · bob                                                              │
+│   a person, with 2 machines                                          │
+│ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ TRUST ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ │
+│   ✓ trusted                                                          │
+│ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ WHAT THEY MAY REACH ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ │
+│   ✓ /work                                                            │
+╰──────────────────────────────────────────────────────────────────────╯
+  t  trust   x  revoke   f  forget   esc  back
+```
+
+`t` changes trust, `x` revokes a path they hold, `f` drops the pairing. It is a separate screen from
+the list on purpose: the list answers *what can I open*, which you ask constantly, and this answers
+*who is this and what have I given them*, which you ask rarely. Putting both in one list made
+neither readable.
+
 
 ### seen, but not open
 

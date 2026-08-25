@@ -414,7 +414,11 @@ func readAccess(opts *rt.Table) ns.Access {
 	value := opts.Get(rt.StringValue("access"))
 
 	if word, ok := value.TryString(); ok {
-		return withVisible(opts, ns.Access{AnyPaired: word == "paired", Anyone: word == "anyone"})
+		return withVisible(opts, ns.Access{
+			AnyPaired:  word == "paired",
+			AnyTrusted: word == "trusted",
+			Anyone:     word == "anyone",
+		})
 	}
 
 	table, ok := value.TryTable()
@@ -433,10 +437,15 @@ func readAccess(opts *rt.Table) ns.Access {
 		Password: fieldString(table, "password"),
 		All:      fieldString(table, "require") == "all",
 	}
-	if word, ok := table.Get(rt.StringValue("paired")).TryString(); ok && word == "paired" {
-		out.AnyPaired = true
-		out.Named = nil
+	if word, ok := table.Get(rt.StringValue("paired")).TryString(); ok {
+		switch word {
+		case "paired":
+			out.AnyPaired, out.Named = true, nil
+		case "trusted":
+			out.AnyTrusted, out.Named = true, nil
+		}
 	}
+	out.AnyTrusted = out.AnyTrusted || fieldBool(table, "trusted")
 	out.Anyone = fieldBool(table, "anyone")
 	return withVisible(opts, out)
 }
@@ -454,6 +463,7 @@ func withVisible(opts *rt.Table, out ns.Access) ns.Access {
 
 	if word, ok := value.TryString(); ok {
 		out.AnyVisible = word == "paired" || word == "anyone"
+		out.TrustedVisible = word == "trusted"
 		return out
 	}
 	if table, ok := value.TryTable(); ok {

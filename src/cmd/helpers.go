@@ -88,6 +88,7 @@ func whoIs(pinned *book.Book) func(node.ID, proto.Badged) ns.Caller {
 		if entry, ok := pinned.ByID(from); ok {
 			who.Name = entry.Name
 			who.Paired = entry.Paired()
+			who.Trusted = entry.Trusted
 		}
 
 		if !badge.Shown() {
@@ -97,8 +98,9 @@ func whoIs(pinned *book.Book) func(node.ID, proto.Badged) ns.Caller {
 
 		// A machine of my own is filed under "me". Nobody writes it in the address book, because
 		// there is nothing to pair with: it is whatever my own user key has signed.
+		// A machine of my own is trusted by construction: it is me.
 		if mine := myKey(); mine != "" && badge.Key == mine {
-			who.UserName, who.Paired = "me", true
+			who.UserName, who.Paired, who.Trusted = "me", true, true
 			if who.Name == "" {
 				who.Name = badge.As
 			}
@@ -111,6 +113,7 @@ func whoIs(pinned *book.Book) func(node.ID, proto.Badged) ns.Caller {
 		}
 		who.UserName = owner.Person
 		who.Paired = who.Paired || owner.Paired()
+		who.Trusted = who.Trusted || owner.Trusted
 		if who.Name == "" {
 			who.Name = badge.As
 		}

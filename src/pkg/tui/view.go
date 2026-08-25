@@ -115,6 +115,9 @@ func (m Model) emptyList() string {
 
 // listTitle names what is being listed, in the panel's top edge.
 func (m Model) listTitle() string {
+	if m.at == levelManage {
+		return m.managed.Name + "  ·  who they are, and what you have given them"
+	}
 	if m.at == levelAccess {
 		return m.rule.Path + "  ·  who may reach it"
 	}
@@ -190,6 +193,9 @@ func (m Model) where() string {
 
 	if m.linking != nil {
 		return crumb("pairing")
+	}
+	if m.at == levelManage {
+		return crumb(m.managed.Name)
 	}
 	if m.joining {
 		return crumb("pairing")
@@ -468,7 +474,7 @@ func (m Model) footer() string {
 		keys = []hint{{"esc", "cancel"}}
 
 	case m.at == levelDevices:
-		keys = []hint{{"p", "show code"}, {"t", "take code"}, {"↑↓", "move"}, {"enter", "open"}, {"r", "reload"}, {"q", "quit"}}
+		keys = []hint{{"p", "show code"}, {"t", "take code"}, {"m", "manage"}, {"↑↓", "move"}, {"enter", "open"}, {"q", "quit"}}
 
 	case m.at == levelPaths:
 		keys = []hint{{"↑↓", "move"}, {"enter", "open"}, {"esc", "devices"}, {"r", "reload"}}
@@ -481,6 +487,9 @@ func (m Model) footer() string {
 
 	case m.at == levelAccess:
 		keys = []hint{{"↑↓", "move"}, {"a", "allow"}, {"x", "refuse"}, {"d", "config decides"}, {"esc", "back"}}
+
+	case m.at == levelManage:
+		keys = []hint{{"t", "trust"}, {"x", "revoke"}, {"f", "forget"}, {"esc", "back"}}
 
 	default:
 		keys = []hint{{"esc", "back"}}

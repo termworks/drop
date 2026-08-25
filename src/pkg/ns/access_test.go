@@ -352,3 +352,47 @@ func TestARefusalHidesAPathAsWell(t *testing.T) {
 		t.Error("somebody refused could still see the path")
 	}
 }
+
+// Pairing is recognition; trust is the second, deliberate step. A narrow rule is written against
+// the second, or "everybody I have ever met" and "everybody I trust" would be the same set.
+func TestTrustedIsNarrowerThanPaired(t *testing.T) {
+	met := Caller{ID: "abc", Name: "laptop", Paired: true}
+	trusted := Caller{ID: "def", Name: "desk", Paired: true, Trusted: true}
+
+	wide := Access{AnyPaired: true}
+	if ok, why := wide.Admits(met); !ok {
+		t.Errorf("a paired device was refused a paired rule: %s", why)
+	}
+
+	narrow := Access{AnyTrusted: true}
+	if ok, _ := narrow.Admits(met); ok {
+		t.Error("somebody merely paired with got into a trusted rule")
+	}
+	if ok, why := narrow.Admits(trusted); !ok {
+		t.Errorf("a trusted device was refused: %s", why)
+	}
+
+	// And an unpaired stranger is neither.
+	if ok, _ := narrow.Admits(Caller{ID: "ghi", Trusted: true}); ok {
+		t.Error("an unpaired caller claiming trust got in")
+	}
+}
+
+// Visibility follows the same line: something put up to be asked for is shown to the people you
+// trust, not to everybody you have ever met.
+func TestVisibilityCanFollowTrust(t *testing.T) {
+	rule := Access{TrustedVisible: true}
+
+	met := Caller{ID: "abc", Name: "laptop", Paired: true}
+	if rule.Sees(met) {
+		t.Error("somebody merely paired with saw a path visible to trusted devices")
+	}
+
+	trusted := Caller{ID: "def", Name: "desk", Paired: true, Trusted: true}
+	if !rule.Sees(trusted) {
+		t.Error("a trusted device could not see it")
+	}
+	if ok, _ := rule.Admits(trusted); ok {
+		t.Error("being trusted enough to see it was enough to open it")
+	}
+}

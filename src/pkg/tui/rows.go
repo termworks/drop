@@ -94,6 +94,8 @@ func (d rows) Render(w io.Writer, m list.Model, index int, item list.Item) {
 		fmt.Fprint(w, access(it, width, index, selected))
 	case knockItem:
 		fmt.Fprint(w, knock(it, width, index, selected))
+	case manageItem:
+		fmt.Fprint(w, manage(it, width, index, selected))
 	}
 }
 
@@ -293,6 +295,9 @@ func describe(kind string) string {
 type personItem struct {
 	name string
 	of   int
+	// trusted marks somebody you decided to trust, which is what the narrow rules are written
+	// against. Worth saying on the row, because it changes what they can reach.
+	trusted bool
 }
 
 func (p personItem) FilterValue() string { return p.name }
@@ -314,16 +319,26 @@ func person(it personItem, width, index int, selected bool) string {
 		machines = fmt.Sprintf("%d machines", it.of)
 	}
 
+	mark, markColour := "◈", second
+	if it.trusted {
+		mark, markColour = "★", green
+	}
+
 	stateCol := 14
 	first := fill(stripe(base, selected) +
-		cell(base, second, 2, "◈", false, false) +
+		cell(base, markColour, 2, mark, false, false) +
 		cell(base, name, inner-2-stateCol, it.name, false, true) +
 		cell(base, subtext, stateCol, machines, true, false))
 
 	// The name as a rule would spell it, because that is the thing you go and write once you have
-	// decided somebody may reach something.
+	// decided somebody may reach something. Trust is said here too: it is what the narrow rules
+	// key off, and it is not visible anywhere else in this list.
+	says := fmt.Sprintf("access = { %q }", it.name)
+	if it.trusted {
+		says += "   ·   trusted"
+	}
 	rule := fill(stripe(base, selected) +
-		cell(base, muted, inner, fmt.Sprintf("access = { %q }", it.name), false, false))
+		cell(base, muted, inner, says, false, false))
 
 	return first + "\n" + rule + "\n" + fill("")
 }
@@ -444,4 +459,33 @@ func brief(id string) string {
 		return id
 	}
 	return id[:8] + "…" + id[len(id)-8:]
+}
+
+// manage draws one row of the management screen.
+func manage(it manageItem, width, index int, selected bool) string {
+	base := row(index, selected)
+	fill := func(s string) string { return base.Width(width).Render(s) }
+	inner := width - 2
+
+	var name lipgloss.TerminalColor = plain
+	if selected {
+		name = accent
+	}
+
+	mark, markColour := "·", muted
+	switch {
+	case it.off:
+		mark, markColour = "✗", red
+	case it.on:
+		mark, markColour = "✓", green
+	}
+
+	first := fill(stripe(base, selected) +
+		cell(base, markColour, 2, mark, false, false) +
+		cell(base, name, inner-2, it.label, false, true))
+
+	rest := fill(stripe(base, selected) +
+		cell(base, muted, inner, it.note, false, false))
+
+	return first + "\n" + rest + "\n" + fill("")
 }

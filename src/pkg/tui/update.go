@@ -41,6 +41,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.key(msg)
 
+	case managing:
+		m.loading = false
+		if msg.err != nil {
+			m.trouble = msg.err.Error()
+			return m, nil
+		}
+		m.managed, m.trouble = msg.who, ""
+		if m.at == levelManage {
+			m.showManage()
+		}
+		return m, nil
+
+	case managed:
+		if msg.err != nil {
+			m.trouble = msg.err.Error()
+			return m, nil
+		}
+		if msg.gone {
+			m.at, m.trouble = levelDevices, ""
+			return m, loadPeers(m.back)
+		}
+		// Read back rather than believed, the same as a grant.
+		return m, loadManaged(m.back, msg.name)
+
 	case rang:
 		m.said = ""
 		if msg.err != nil {
@@ -353,6 +377,10 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "t":
+		// Take a code on the device list; on the management screen it is what changes trust.
+		if m.at == levelManage {
+			return m, trusting(m.back, m.managed.Name, !m.managed.Trusted)
+		}
 		if m.at == levelDevices && m.linking == nil {
 			m.joining, m.typing, m.trouble = true, "", ""
 		}
@@ -366,6 +394,35 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, loadPeers(m.back)
+
+	case "m":
+		// Managing somebody, as against reaching them. Works on a person's heading as well as on
+		// one of their machines: trust and grants belong to the person.
+		if m.at != levelDevices {
+			return m, nil
+		}
+		switch it := m.list.SelectedItem().(type) {
+		case personItem:
+			m.at, m.loading, m.trouble = levelManage, true, ""
+			m.managed = Managed{Name: it.name}
+			m.showManage()
+			return m, loadManaged(m.back, it.name)
+		case deviceItem:
+			if it.self {
+				return m, nil
+			}
+			m.at, m.loading, m.trouble = levelManage, true, ""
+			m.managed = Managed{Name: it.entry.Name}
+			m.showManage()
+			return m, loadManaged(m.back, it.entry.Name)
+		}
+		return m, nil
+
+	case "f":
+		if m.at != levelManage {
+			return m, nil
+		}
+		return m, forgetting(m.back, m.managed.Name)
 
 	case "w":
 		// Who may reach it. Only for your own paths: what somebody else shares and with whom is
@@ -391,6 +448,22 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, ringFor(m.back, with, at)
 			}
 			return m, nil
+		}
+
+		if m.at == levelManage {
+			row, ok := m.onManaged()
+			if !ok || row.path == "" {
+				return m, nil
+			}
+
+			to := Allowed
+			switch msg.String() {
+			case "x":
+				to = Refused
+			case "d":
+				to = NotNamed
+			}
+			return m, changeThen(m.back, row.path, m.managed.Name, to, m.managed.Name)
 		}
 
 		if m.at != levelAccess {
@@ -524,6 +597,11 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 // back_ comes out one level, stopping whatever the level was doing.
 func (m Model) back_() (tea.Model, tea.Cmd) {
 	switch m.at {
+	case levelManage:
+		m.at, m.trouble = levelDevices, ""
+		m.showDevices()
+		return m, nil
+
 	case levelAccess:
 		m.at, m.trouble = levelPaths, ""
 		m.showPaths()

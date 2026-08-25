@@ -59,6 +59,8 @@ type fake struct {
 	holding      map[string][]Held
 	knocked      []Knock
 	askedFor     []string
+	manages      map[string]Managed
+	forgot       []string
 }
 
 func (f *fake) Peers() ([]book.Entry, error) { return f.peers, nil }
@@ -1573,5 +1575,125 @@ func TestARequestWaitsInTheAccessPane(t *testing.T) {
 
 	if got := standingFor(m, "carol"); got != Allowed {
 		t.Errorf("carol stands at %d after being allowed", got)
+	}
+}
+
+func (f *fake) Managed(name string) (Managed, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	who := f.manages[name]
+	who.Name = name
+	return who, nil
+}
+
+func (f *fake) Trust(name string, trusted bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.manages == nil {
+		f.manages = map[string]Managed{}
+	}
+	who := f.manages[name]
+	who.Name, who.Trusted = name, trusted
+	f.manages[name] = who
+	return nil
+}
+
+func (f *fake) Forget(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.forgot = append(f.forgot, name)
+	return nil
+}
+
+// Managing somebody is a different question from reaching them, and has a screen of its own: who
+// they are, whether they are trusted, and what they have been given.
+func TestSomebodyCanBeManaged(t *testing.T) {
+	back := &fake{
+		self:  Identity{Name: "tron", ID: "e88c…", User: "ssh-ed25519 MINE"},
+		peers: []book.Entry{{Name: "bob", ID: idFor(3), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"}},
+		manages: map[string]Managed{
+			"bob": {
+				Person:   "bob",
+				User:     "ssh-ed25519 BOB",
+				Machines: 2,
+				Paired:   true,
+				Allowed:  []string{"/work"},
+				Refused:  []string{"/keys"},
+			},
+		},
+	}
+
+	m := start(t, back)
+
+	// From the person's heading, not only from a machine.
+	m.list.Select(m.rowFor(0) - 1)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+
+	if m.at != levelManage {
+		t.Fatalf("m did not open the management screen, at level %d", m.at)
+	}
+	// Read off the list rather than the screen: the rows are three lines each and more of them
+	// than a terminal holds, and what is being tested is what is there, not what fits.
+	var rows []string
+	for _, item := range m.list.Items() {
+		switch it := item.(type) {
+		case dividerItem:
+			rows = append(rows, strings.ToUpper(it.label))
+		case manageItem:
+			rows = append(rows, it.label)
+		}
+	}
+	got := strings.Join(rows, " | ")
+
+	for _, want := range []string{"bob", "not trusted", "/work", "/keys", "forget them",
+		"WHO THEY ARE", "TRUST", "WHAT THEY MAY REACH", "WHAT THEY ARE SHUT OUT OF"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the management screen is missing %q:\n  %s", want, got)
+		}
+	}
+	if !strings.Contains(m.View(), "2 machines") {
+		t.Errorf("it does not say how many machines they have:\n%s", m.View())
+	}
+
+	// Trust is the one thing here that changes what the rules do.
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	if !m.managed.Trusted {
+		t.Error("t did not trust them")
+	}
+	if !strings.Contains(m.View(), "trusted") {
+		t.Errorf("the screen did not say so:\n%s", m.View())
+	}
+
+	// And out again, back to the list.
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.at != levelDevices {
+		t.Errorf("esc left the management screen at level %d", m.at)
+	}
+}
+
+// Forgetting drops the pairing and goes back to the list, because there is nobody left to show.
+func TestForgettingSomebodyLeavesTheScreen(t *testing.T) {
+	back := &fake{
+		peers:   []book.Entry{{Name: "bob", ID: idFor(3), Secret: make([]byte, book.SecretBytes)}},
+		manages: map[string]Managed{"bob": {Paired: true}},
+	}
+
+	m := start(t, back)
+	m.list.Select(m.rowFor(0))
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+
+	back.mu.Lock()
+	forgot := append([]string(nil), back.forgot...)
+	back.mu.Unlock()
+
+	if len(forgot) != 1 || forgot[0] != "bob" {
+		t.Fatalf("forgot %v", forgot)
+	}
+	if m.at != levelDevices {
+		t.Errorf("it stayed on a screen for somebody who is gone, at level %d", m.at)
 	}
 }
