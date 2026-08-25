@@ -732,6 +732,16 @@ Nothing here depends on the NAT being friendly, on a relay hole being punched, o
 side being findable at all. It only needs it to be able to dial out, which is the one thing such a
 device can always do.
 
+### joining a terminal already running
+
+What a watcher is handed on joining is the **screen**, not a replay of recent bytes. A full-screen
+program draws by moving the cursor and changing the cells that altered, so a tail of output holds
+whichever cells happened to change lately — join btop halfway and you get those and nothing else: a
+screen with holes in it, filling in slowly as the program repaints.
+
+So the serving side keeps a terminal of its own, feeds every byte through it, and hands a joiner the
+picture as it stands. However long the program has been running, that is one screenful.
+
 ### watching, and typing
 
 A terminal takes its shape from whoever is looking at it, whether or not they may type into it: a

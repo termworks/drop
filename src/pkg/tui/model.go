@@ -375,6 +375,14 @@ func waitForFrame(s *screen) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
+		// Finished wins over a repaint left in the queue. Otherwise a screen that is being taken
+		// down goes on asking to be drawn for as long as there are stale nudges behind it.
+		select {
+		case <-s.done:
+			return nil
+		default:
+		}
+
 		select {
 		case <-s.nudge:
 			return framePainted{}
