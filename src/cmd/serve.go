@@ -202,6 +202,16 @@ func describe(cfg *conf.Config, n *node.Node) {
 		fmt.Println("  local networks only  (drop.rendezvous = true to be findable elsewhere)")
 	}
 
+	// A second drop on this machine already has the port this identity is reached at. This one can
+	// still ask questions, but nothing dialling the identity arrives here — it arrives there, which
+	// looks from the outside like this node answering with whatever that one happens to be running.
+	if !n.Own() {
+		fmt.Println()
+		fmt.Println("  ✗ another drop on this machine holds this identity's port")
+		fmt.Println("    nothing that dials this device will reach this process.")
+		fmt.Println("    stop the other one first:  pkill drop")
+	}
+
 	fmt.Println("\nready; ctrl-c to stop")
 }
 

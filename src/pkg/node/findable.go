@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/tmc/go-iroh/dns"
@@ -36,11 +37,19 @@ func resolving() (iroh.Option, error) {
 	return iroh.WithAddressLookup(lookup), nil
 }
 
-// republish is how often the record is written again.
+// How often the record is written again, and how often the address is looked at.
 //
 // A pkarr record expires, and an address changes when a laptop moves between networks. Both are
 // answered by saying it again, which is cheap: one HTTP PUT to a relay.
-const republish = 2 * time.Minute
+//
+// The second one matters more than it looks. An endpoint does not know where it is the moment it
+// starts: it reports a guess, and a few seconds later a network report replaces it with the relay it
+// actually reached. Publishing once at startup writes the guess, and whoever holds the ticket then
+// dials somewhere nobody is listening.
+const (
+	republish = 2 * time.Minute
+	settle    = 2 * time.Second
+)
 
 // Findable publishes where this device is, under its own id, until ctx ends.
 //
@@ -57,19 +66,34 @@ func Findable(ctx context.Context, n *Node) error {
 		return err
 	}
 
-	say := func() { publisher.Publish(dns.EndpointDataFromAddr(n.Endpoint.Addr())) }
-	say()
+	said := ""
+	say := func(whatever bool) {
+		at := n.Endpoint.Addr()
+
+		now := fmt.Sprint(at.Addrs())
+		if !whatever && now == said {
+			return
+		}
+		said = now
+		publisher.Publish(dns.EndpointDataFromAddr(at))
+	}
+	say(true)
 
 	go func() {
-		tick := time.NewTicker(republish)
-		defer tick.Stop()
+		slow := time.NewTicker(republish)
+		defer slow.Stop()
+
+		watch := time.NewTicker(settle)
+		defer watch.Stop()
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-tick.C:
-				say()
+			case <-watch.C:
+				say(false)
+			case <-slow.C:
+				say(true)
 			}
 		}
 	}()

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,21 +54,60 @@ func New(n *node.Node, relay string) (*Service, error) {
 	}, nil
 }
 
+// Settle is how often the address is looked at again.
+//
+// An endpoint does not know where it is the moment it starts: it reports a guess, and a few seconds
+// later a network report replaces it with the relay it actually reached and the address the world
+// sees. Publishing once at startup writes the guess, and every peer then dials somewhere nobody is
+// listening until the next refresh -- which is minutes away, and looks exactly like being offline.
+const Settle = 2 * time.Second
+
 // Run publishes this device's address to every paired peer until ctx ends.
+//
+// Twice over: whenever the address changes, which is what catches the moment it settles, and on a
+// slow tick regardless, because a published record expires.
 func (s *Service) Run(ctx context.Context) {
-	tick := time.NewTicker(Refresh)
-	defer tick.Stop()
+	slow := time.NewTicker(Refresh)
+	defer slow.Stop()
+
+	watch := time.NewTicker(Settle)
+	defer watch.Stop()
+
 	defer s.closeAll()
 
-	for {
+	said := ""
+	say := func(whatever bool) {
+		now := whereNow(s.node.Endpoint.Addr())
+		if !whatever && now == said {
+			return
+		}
+		said = now
 		s.publishRound(time.Now())
+	}
 
+	say(true)
+
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-tick.C:
+		case <-watch.C:
+			say(false)
+		case <-slow.C:
+			say(true)
 		}
 	}
+}
+
+// whereNow is an address as something comparable, so a change can be noticed.
+func whereNow(at netaddr.EndpointAddr) string {
+	out := make([]string, 0, 4)
+	for _, one := range at.Addrs() {
+		out = append(out, fmt.Sprint(one))
+	}
+	sort.Strings(out)
+
+	return strings.Join(out, " ")
 }
 
 // publishRound writes this device's current address once per pair, per epoch.

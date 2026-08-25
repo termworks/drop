@@ -757,3 +757,36 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		t.Errorf("an answered request is still pending:\n%s", got)
 	}
 }
+
+// A second drop on one machine cannot have the identity's port, and has to say so.
+//
+// Silence here is expensive: the second process starts, answers nothing anybody dials, and the
+// first one keeps replying with whatever version it happens to be running. From the outside that
+// looks like the device answering strangely rather than like two processes.
+func TestASecondDaemonSaysItCannotBeReached(t *testing.T) {
+	one := newNode(t, "one", "45131")
+	one.serves(`
+local drop = require("drop")
+drop.mount("/chat", { type = "chat", access = "paired" })
+`)
+
+	_, first, stopFirst := one.background("serve")
+	defer stopFirst()
+	waitFor(t, "the first daemon", 30*time.Second, func() bool {
+		return strings.Contains(first.String(), "ready")
+	})
+	if strings.Contains(first.String(), "holds this identity") {
+		t.Fatalf("the first daemon complained about itself:\n%s", first.String())
+	}
+
+	// The same machine, the same identity, the same port.
+	_, second, stopSecond := one.background("serve")
+	defer stopSecond()
+
+	waitFor(t, "the second daemon to say so", 30*time.Second, func() bool {
+		return strings.Contains(second.String(), "holds this identity")
+	})
+	if !strings.Contains(second.String(), "pkill") {
+		t.Errorf("it did not say what to do about it:\n%s", second.String())
+	}
+}
