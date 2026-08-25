@@ -68,7 +68,7 @@ func runTUI(parent context.Context) error {
 
 	// The interface serves while it is open, so a device that pairs with it can reach it — and
 	// so what arrives lands in a conversation rather than being refused.
-	ears := listenOn(ctx, n, map[string]func(node.ID, *iroh.Stream){
+	answer := map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
 
@@ -103,7 +103,31 @@ func runTUI(parent context.Context) error {
 				return greeting(pinned, cfg.Mounts, from, badge)
 			})
 		},
+	}
+
+	// The same as the daemon: answer whatever a device opens on a connection we made, keep the
+	// ones it opens to us, and push what is waiting the moment it appears. Without this the
+	// interface is only reachable by devices that can be dialled, and every message it sends costs
+	// a handshake instead of a stream.
+	held.Serving(ctx, func(from node.ID, alpn string, s *iroh.Stream) {
+		if handle, ok := answer[alpn]; ok {
+			handle(from, s)
+		}
 	})
+
+	ears := listenKeeping(ctx, n, answer, held, func(from node.ID) {
+		_ = pinned.Refresh()
+
+		entry, known := pinned.ByID(from)
+		if !known || !entry.Paired() {
+			return
+		}
+		if _, err := deliverOver(ctx, onlyHeld{held: held}, entry, "/chat"); err == nil {
+			knock(arriving)
+		}
+	})
+
+	go holding(ctx, pinned, held)
 
 	program := tea.NewProgram(
 		tui.New(&live{node: n, lan: lan, ears: ears, arriving: arriving, held: held}),

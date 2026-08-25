@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/tmc/go-iroh/iroh"
 
@@ -73,7 +74,10 @@ func serveLoopKeeping(
 			continue
 		}
 
-		if held != nil {
+		// Only a session connection is worth keeping. A hello is one question from a command that
+		// exits straight after, and holding it means the next question goes down a pipe whose far
+		// end left — which answers nothing, slowly.
+		if held != nil && conn.ALPN() == node.ALPNSession {
 			held.Adopt(conn.RemoteID(), conn.ALPN(), conn)
 		}
 		if arrived != nil {
@@ -184,6 +188,20 @@ type listener struct {
 }
 
 func listenOn(ctx context.Context, n *node.Node, handlers map[string]func(node.ID, *iroh.Stream)) *listener {
+	return listenKeeping(ctx, n, handlers, nil, nil)
+}
+
+// listenKeeping is the same, keeping every session connection that arrives.
+//
+// The interface serves while it is open, so it needs what the daemon needs: a device that cannot be
+// dialled reaches it, and what is waiting for that device goes back down the connection it opened.
+func listenKeeping(
+	ctx context.Context,
+	n *node.Node,
+	handlers map[string]func(node.ID, *iroh.Stream),
+	held *dial.Kept,
+	arrived func(node.ID),
+) *listener {
 	if handlers == nil {
 		handlers = map[string]func(node.ID, *iroh.Stream){}
 	}
@@ -198,11 +216,45 @@ func listenOn(ctx context.Context, n *node.Node, handlers map[string]func(node.I
 				}
 				continue
 			}
+
+			if held != nil && conn.ALPN() == node.ALPNSession {
+				held.Adopt(conn.RemoteID(), conn.ALPN(), conn)
+			}
+			if arrived != nil {
+				go arrived(conn.RemoteID())
+			}
+
 			go l.answer(ctx, conn)
 		}
 	}()
 
 	return l
+}
+
+// holding keeps a connection to everybody paired, so a device that nothing can dial is reachable
+// for as long as this is open — and so a message costs a stream rather than a handshake.
+func holding(ctx context.Context, pinned *book.Book, held *dial.Kept) {
+	tick := time.NewTicker(flushEvery)
+	defer tick.Stop()
+
+	for {
+		_ = pinned.Refresh()
+
+		for _, entry := range pinned.Paired() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			_ = held.Reach(ctx, entry, node.ALPNSession)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 // Handle adds a protocol, or takes one away when given nil — which is how a pairing stops being
