@@ -67,6 +67,10 @@ type Backend interface {
 	// Send copies files to a path on another device, reporting progress as it goes.
 	Send(ctx context.Context, to book.Entry, path string, files []string, progress func(name string, done, size int64)) error
 
+	// AskFor rings the bell on a path that can be seen but not opened. Nothing is granted by it:
+	// the request is written down on the far machine for somebody there to answer.
+	AskFor(ctx context.Context, on book.Entry, path, why string) error
+
 	// Post sends one message to a path: a line of text to a chat, a URL to a link.
 	Post(ctx context.Context, to book.Entry, path string, kind byte, body string) error
 

@@ -41,6 +41,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.key(msg)
 
+	case rang:
+		m.said = ""
+		if msg.err != nil {
+			m.trouble = msg.err.Error()
+			return m, nil
+		}
+		m.trouble, m.said = "", "asked for "+msg.path+" — somebody there decides"
+		return m, nil
+
 	case ruleLoaded:
 		m.loading = false
 		if msg.err != nil {
@@ -370,6 +379,20 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "a", "x", "d":
+		// On somebody else's locked path, a is how you ask for it. Everywhere else the three keys
+		// belong to the access list.
+		if m.at == levelPaths && !m.onSelf && msg.String() == "a" {
+			// Whatever the cursor is on, not whatever was last entered.
+			row, okPath := m.list.SelectedItem().(pathItem)
+			with, okPeer := m.peer()
+			if okPath && okPeer && row.step.served.Locked {
+				at := row.step.served.Path
+				m.trouble, m.said = "", "asking for "+at+"…"
+				return m, ringFor(m.back, with, at)
+			}
+			return m, nil
+		}
+
 		if m.at != levelAccess {
 			return m, nil
 		}

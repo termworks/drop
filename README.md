@@ -109,6 +109,8 @@ drop user                      who this machine belongs to
 drop grant <path> <who>        let somebody reach a path
 drop revoke <path> <who>       stop them
 drop grants                    what has been allowed and refused
+drop ask <device>/<path>       ask to be let into a path you can see
+drop requests                  who has asked to be let in
 drop vault                     whether what is kept on this disk is encrypted
 ```
 
@@ -159,6 +161,8 @@ access = { "me" }                  -- any machine of your own
 access = "paired"                  -- anyone in your address book
 access = "anyone"                  -- anybody who knows the id, paired or not
 access = { keys = { "7b97…" } }    -- a machine that never paired, by its endpoint id
+visible = "paired"                 -- they see it exists, and must ask
+visible = { "carol" }              -- only carol sees it
 access = { password = "$argon2id$…" }
 access = { paired = { "laptop" }, password = "$argon2id$…", require = "all" }
 ```
@@ -176,6 +180,48 @@ A password is the weak one: the other two bind to a key nobody else holds, and a
 binds to knowledge, which spreads. It earns its place because it is the only one that works
 before you know who is coming. `drop passwd` prints the hash to put in the config — the
 plaintext never goes in a file, so a leaked config is not a leaked password.
+
+### seen, but not open
+
+Between shared and secret there is a third thing: a path that says it exists and refuses to be
+opened. It appears in a listing marked **locked**, and whoever sees it can ask.
+
+```lua
+drop.mount("/vault", { type = "files", dir = "~/vault", visible = "paired" })
+drop.mount("/work",  { type = "chat", access = { "bob" }, visible = { "carol" } })
+```
+
+`visible` is its own option rather than a rung inside `access`, because it answers a different
+question: access says who gets in, visible says who is told there is a door. A path can have both —
+shared with one person, merely visible to another, who then asks.
+
+```console
+$ drop ls beta
+  /vault   files    locked
+
+$ drop ask beta/vault --why "for the thing we discussed"
+asked beta for /vault
+nothing is granted by asking: somebody there decides.
+```
+
+On the other machine the request waits until somebody answers it:
+
+```console
+$ drop requests
+  /vault
+    from  carol
+    why   for the thing we discussed
+
+$ drop requests allow /vault carol
+```
+
+In the interface it is the same two keys as everything else: `a` on a locked path asks for it, and
+`a` on a waiting request grants it. Answering either way takes the request off the list — a list
+that kept answered requests is a list nobody reads.
+
+**Asking grants nothing.** The request is a note on somebody's disk. A refusal still beats it, so
+revoking somebody also stops them seeing what they used to reach and asking for it again.
+
 
 ### granting and revoking
 
@@ -624,6 +670,7 @@ src/pkg/passwd/        argon2id, for the secrets that guard a path
 src/pkg/proto/         pairing, hello, transfer, and the framing under them
 src/pkg/book/          the address book, including pairing secrets
 src/pkg/grant/         who has been let in and shut out from the interface
+src/pkg/asked/         requests to reach a path, waiting on an answer
 src/pkg/vault/         the key everything on this disk is encrypted with
 src/pkg/seen/          devices that dialled and were turned away
 src/pkg/shares/        what each device last said it shares

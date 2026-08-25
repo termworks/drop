@@ -1,10 +1,15 @@
 package cmd
 
 import (
+	"context"
+
+	"github.com/bresilla/drop/src/pkg/asked"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/conf"
 	"github.com/bresilla/drop/src/pkg/grant"
+	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
+	"github.com/bresilla/drop/src/pkg/proto"
 	"github.com/bresilla/drop/src/pkg/tui"
 )
 
@@ -49,6 +54,33 @@ func (l *live) Access(path string) (tui.Rule, error) {
 	// Somebody named on this path who is in no address book: a bare id let in once, or a name
 	// written by hand for a machine that has not paired yet.
 	out.Who = append(out.Who, strangers(rule, written, out.Who)...)
+
+	out.Seen = rule.Shows()
+	out.Asked, err = waiting(path)
+	if err != nil {
+		return tui.Rule{}, err
+	}
+	return out, nil
+}
+
+// waiting is who has rung the bell on a path and not been answered.
+func waiting(path string) ([]tui.Wanting, error) {
+	all, err := asked.All()
+	if err != nil {
+		return nil, err
+	}
+
+	var out []tui.Wanting
+	for _, one := range all {
+		if one.Path != path {
+			continue
+		}
+		out = append(out, tui.Wanting{
+			Who:  one.Who(),
+			Why:  one.Why,
+			When: one.At.Local().Format("2 Jan 15:04"),
+		})
+	}
 	return out, nil
 }
 
@@ -64,19 +96,21 @@ const (
 )
 
 func editGrant(path, who string, how int) error {
+	// Allowing and refusing both answer a request, so both take it off the list -- the same call
+	// the command line makes, so the interface and the command cannot disagree about what an
+	// answer means.
+	switch how {
+	case grantAllow:
+		return answering(path, who, true)
+	case grantDeny:
+		return answering(path, who, false)
+	}
+
 	store, err := grant.Load()
 	if err != nil {
 		return err
 	}
-
-	switch how {
-	case grantAllow:
-		return store.Allow(path, who)
-	case grantDeny:
-		return store.Deny(path, who)
-	default:
-		return store.Forget(path, who)
-	}
+	return store.Forget(path, who)
 }
 
 // everybody is the address book as the access list shows it: each person once, and each machine
@@ -151,4 +185,15 @@ func hasWho(all []tui.Who, name string) bool {
 		}
 	}
 	return false
+}
+
+// AskFor rings the bell on a path this machine can see but not open.
+func (l *live) AskFor(ctx context.Context, on book.Entry, path, why string) error {
+	stream, err := l.held.To(ctx, on, node.ALPNSession)
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+
+	return proto.Ask(ctx, stream, path, why, node.DisplayName())
 }

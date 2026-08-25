@@ -475,6 +475,9 @@ func (m Model) footer() string {
 		if m.onSelf {
 			keys = append([]hint{{"w", "who may reach it"}}, keys...)
 		}
+		if row, ok := m.list.SelectedItem().(pathItem); ok && !m.onSelf && row.step.served.Locked {
+			keys = append([]hint{{"a", "ask for it"}}, keys...)
+		}
 
 	case m.at == levelAccess:
 		keys = []hint{{"↑↓", "move"}, {"a", "allow"}, {"x", "refuse"}, {"d", "config decides"}, {"esc", "back"}}

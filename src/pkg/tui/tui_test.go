@@ -58,6 +58,7 @@ type fake struct {
 	reaching     map[string]bool
 	holding      map[string][]Held
 	knocked      []Knock
+	askedFor     []string
 }
 
 func (f *fake) Peers() ([]book.Entry, error) { return f.peers, nil }
@@ -1483,5 +1484,94 @@ func TestWhatKnockedIsListed(t *testing.T) {
 	// A device that is not one of your own, so it must not be mistaken for one.
 	if strings.Contains(shown, "paired\n") && !strings.Contains(shown, "SEEN") {
 		t.Error("a refused device was drawn as a paired one")
+	}
+}
+
+func (f *fake) AskFor(ctx context.Context, on book.Entry, path, why string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.askedFor = append(f.askedFor, on.Name+path)
+	return f.refuse
+}
+
+// A path that is visible but not shared shows up locked, and a is how you ask for it.
+func TestALockedPathIsShownAndCanBeAskedFor(t *testing.T) {
+	back := &fake{
+		peers: []book.Entry{{Name: "beta", ID: idFor(2), Secret: make([]byte, book.SecretBytes)}},
+		serves: map[string][]proto.Served{
+			"beta": {
+				{Path: "/chat", Kind: ns.KindChat, Writable: true},
+				{Path: "/vault", Kind: ns.KindChat, Locked: true},
+			},
+		},
+	}
+
+	m := start(t, back)
+	m.list.Select(m.rowFor(0))
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	shown := m.View()
+	for _, want := range []string{"vault", "locked", "ask for it"} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("a locked path is missing %q:\n%s", want, shown)
+		}
+	}
+
+	// Onto it, and ask.
+	for i, item := range m.list.Items() {
+		if it, ok := item.(pathItem); ok && it.step.at == "/vault" {
+			m.list.Select(i)
+		}
+	}
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+
+	back.mu.Lock()
+	got := append([]string(nil), back.askedFor...)
+	back.mu.Unlock()
+
+	if len(got) != 1 || got[0] != "beta/vault" {
+		t.Fatalf("asked for %v", got)
+	}
+	if !strings.Contains(m.View(), "somebody there decides") {
+		t.Errorf("it did not say what asking means:\n%s", m.View())
+	}
+}
+
+// The other side: a request waiting on an answer sits in the access pane, where the keys that
+// answer it are the same keys that grant anything else.
+func TestARequestWaitsInTheAccessPane(t *testing.T) {
+	back := &fake{
+		mine: []proto.Served{{Path: "/vault", Kind: ns.KindChat}},
+		rules: map[string]Rule{
+			"/vault": {
+				Seen: true,
+				Asked: []Wanting{{
+					Who:  "carol",
+					Why:  "for the thing we discussed",
+					When: "24 Aug 21:05",
+				}},
+			},
+		},
+	}
+
+	m := start(t, back)
+	m.list.Select(m.rows.me)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+
+	shown := m.View()
+	for _, want := range []string{"ASKED FOR IT", "carol", "waiting", "for the thing we discussed"} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("the pending request is missing %q:\n%s", want, shown)
+		}
+	}
+
+	// Answering it is the ordinary allow.
+	onto(t, &m, "carol")
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+
+	if got := standingFor(m, "carol"); got != Allowed {
+		t.Errorf("carol stands at %d after being allowed", got)
 	}
 }

@@ -212,6 +212,25 @@ func path(it pathItem, width, index int, selected bool) string {
 		send, sendColour = "", muted
 	}
 
+	// Seen but not open. It is here to be asked for, and saying so is the whole point of the rung.
+	if it.step.served.Locked {
+		const lockCol = 16
+
+		first := fill(stripe(base, selected) +
+			cell(base, muted, 2, "⊘", false, false) +
+			cell(base, name, inner-2-lockCol, it.step.name, false, true) +
+			cell(base, peach, lockCol, "locked", true, false))
+
+		rest := fill(stripe(base, selected) +
+			cell(base, second, 10, kind, false, false) +
+			cell(base, muted, inner-10, "visible, not shared with you", false, false))
+
+		last := fill(stripe(base, selected) +
+			cell(base, muted, inner, "press a to ask for it", false, false))
+
+		return first + "\n" + rest + "\n" + last
+	}
+
 	shown := it.step.name
 	if it.step.below > 0 {
 		shown += "/  " + count(it.step.below)
@@ -321,8 +340,11 @@ func access(it accessItem, width, index int, selected bool) string {
 	}
 
 	mark, markColour, state := "·", muted, "not named"
-	if it.group == groupAnyone {
+	switch it.group {
+	case groupAnyone:
 		state = "off"
+	case groupAsked:
+		mark, markColour, state = "◇", peach, "waiting"
 	}
 
 	switch it.who.At {
@@ -350,6 +372,11 @@ func access(it accessItem, width, index int, selected bool) string {
 // whatKind says what a row names, and where the answer came from.
 func whatKind(it accessItem) string {
 	switch {
+	case it.group == groupAsked:
+		if it.want.Why != "" {
+			return it.want.When + " — " + it.want.Why
+		}
+		return "asked " + it.want.When + ", and said nothing about why"
 	case it.group == groupAnyone:
 		return rung(it.who.Name)
 	case it.who.InConfig:

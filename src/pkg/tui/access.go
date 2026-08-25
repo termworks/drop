@@ -1,10 +1,14 @@
 package tui
 
 import (
+	"context"
 	"sort"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/bresilla/drop/src/pkg/book"
 )
 
 // Rule is who may reach one of this machine's own paths.
@@ -23,6 +27,19 @@ type Rule struct {
 	// Who is everybody the list can say something about: named in the config, granted here, or
 	// simply in the address book and therefore somebody you might want to let in.
 	Who []Who
+	// Seen is who may know this path exists without being able to open it.
+	Seen bool
+	// Asked is who has rung the bell on it and is waiting for an answer.
+	Asked []Wanting
+}
+
+// Wanting is one request to be let into a path.
+type Wanting struct {
+	// Who is the name a grant would be written against: a person if one is known, else the device.
+	Who string
+	// Why is what they said about it, and may be empty.
+	Why  string
+	When string
 }
 
 // Standing is how somebody stands with a path.
@@ -56,6 +73,8 @@ type accessItem struct {
 	who Who
 	// group is the heading this row falls under, kept so the list can be rebuilt in place.
 	group string
+	// want is set when this row is somebody waiting on an answer.
+	want Wanting
 }
 
 func (a accessItem) FilterValue() string { return a.who.Name }
@@ -92,6 +111,19 @@ func accessRows(rule Rule) []list.Item {
 		}
 	}
 
+	// What is waiting on an answer, first: it is the only thing here that somebody is expecting
+	// you to do something about.
+	if len(rule.Asked) > 0 {
+		items = append(items, dividerItem{label: groupAsked})
+		for _, one := range rule.Asked {
+			items = append(items, accessItem{
+				who:   Who{Name: one.Who, At: NotNamed},
+				group: groupAsked,
+				want:  one,
+			})
+		}
+	}
+
 	// The rungs that name nobody. Shown even when off, because a path that is open to anyone who
 	// knows its id is the single most important thing this list can tell you.
 	items = append(items, dividerItem{label: groupAnyone})
@@ -110,8 +142,31 @@ func onWhen(on bool) Standing {
 	return NotNamed
 }
 
-// groupAnyone heads the rungs that admit somebody without naming them.
-const groupAnyone = "anyone"
+// groupAnyone heads the rungs that admit somebody without naming them, and groupAsked heads the
+// people waiting on an answer.
+const (
+	groupAnyone = "anyone"
+	groupAsked  = "asked for it"
+)
+
+// rang says a request was sent, or says why it was not.
+type rang struct {
+	path string
+	err  error
+}
+
+// askFor rings the bell on a path that is visible but not open.
+func ringFor(back Backend, on book.Entry, path string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, stop := context.WithTimeout(context.Background(), askWithin)
+		defer stop()
+
+		return rang{path: path, err: back.AskFor(ctx, on, path, "")}
+	}
+}
+
+// askWithin bounds one request, which is a dial and a sentence.
+const askWithin = 90 * time.Second
 
 // ruleLoaded carries who may reach a path back from the backend.
 type ruleLoaded struct {
