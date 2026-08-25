@@ -60,6 +60,8 @@ func Execute(v string, exit func(int), args []string) {
 		newRevokeCmd(),
 		newGrantsCmd(),
 		newVaultCmd(),
+		newAskCmd(),
+		newRequestsCmd(),
 		newNamespacesCmd(),
 		newPasswdCmd(),
 		newListCmd(),

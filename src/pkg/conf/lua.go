@@ -414,17 +414,17 @@ func readAccess(opts *rt.Table) ns.Access {
 	value := opts.Get(rt.StringValue("access"))
 
 	if word, ok := value.TryString(); ok {
-		return ns.Access{AnyPaired: word == "paired", Anyone: word == "anyone"}
+		return withVisible(opts, ns.Access{AnyPaired: word == "paired", Anyone: word == "anyone"})
 	}
 
 	table, ok := value.TryTable()
 	if !ok {
-		return ns.Access{}
+		return withVisible(opts, ns.Access{})
 	}
 
 	// A list of names, rather than a table of rules.
 	if names := listOfStrings(table); len(names) > 0 {
-		return ns.Access{Named: names}
+		return withVisible(opts, ns.Access{Named: names})
 	}
 
 	out := ns.Access{
@@ -438,6 +438,27 @@ func readAccess(opts *rt.Table) ns.Access {
 		out.Named = nil
 	}
 	out.Anyone = fieldBool(table, "anyone")
+	return withVisible(opts, out)
+}
+
+// withVisible reads who may see a path without being able to open it.
+//
+// Its own option rather than a rung inside access, because it is a different question: access says
+// who gets in, visible says who is told there is a door. A path can have both -- shared with one
+// person and merely visible to another, who then asks.
+//
+//	visible = "paired"        everybody in the address book
+//	visible = { "carol" }     that person, and every machine of theirs
+func withVisible(opts *rt.Table, out ns.Access) ns.Access {
+	value := opts.Get(rt.StringValue("visible"))
+
+	if word, ok := value.TryString(); ok {
+		out.AnyVisible = word == "paired" || word == "anyone"
+		return out
+	}
+	if table, ok := value.TryTable(); ok {
+		out.Visible = listOfStrings(table)
+	}
 	return out
 }
 

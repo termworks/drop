@@ -31,6 +31,9 @@ type Policy struct {
 	Message func(from node.ID, m convo.Message) error
 	// Duplex, when set, handles an accepted live stream. Without it, live streams are refused.
 	Duplex func(at Resolved, d *Duplex) error
+	// Asked, when set, takes a request to reach a path the caller can see but not open. Returning
+	// an error refuses the request; nothing here grants anything.
+	Asked func(who Asker) error
 	// Refused, when set, is called when a caller is turned away. It is a note of who knocked, so
 	// that letting a bare id in later does not mean copying it out of a log by hand.
 	Refused func(from node.ID, asked, why string)
@@ -68,10 +71,33 @@ func Handle(s Stream, from node.ID, policy Policy) error {
 	}
 	caller.Password = open.Secret
 
+	// Asking is what somebody does *because* they are not admitted, so it is answered before the
+	// access rules turn them away — but only for a path they are allowed to know exists.
+	if open.Mode == ModeAsk {
+		if policy.Mounts == nil || !policy.Mounts.Sees(open.Path, caller) {
+			return conn.WriteFrame(wire.KindReject, Reject{Reason: "no such path"}.encode())
+		}
+		return TakeAsk(conn, policy, Asker{
+			From:   from,
+			Name:   caller.Name,
+			Person: caller.UserName,
+			Path:   open.Path,
+			Why:    open.Secret,
+		})
+	}
+
 	at, err := resolve(policy.Mounts, from, caller, open)
 	if err != nil {
-		turnedAway(policy, from, open.Path, err.Error())
-		return conn.WriteFrame(wire.KindReject, Reject{Reason: err.Error()}.encode())
+		reason := err.Error()
+
+		// A path somebody can see but not open is a door with a bell on it. Saying so is the
+		// difference between "there is nothing here" and "you may ask for this".
+		if policy.Mounts != nil && policy.Mounts.Sees(open.Path, caller) {
+			reason = fmt.Sprintf("%s: you may ask for it", open.Path)
+		}
+
+		turnedAway(policy, from, open.Path, reason)
+		return conn.WriteFrame(wire.KindReject, Reject{Reason: reason}.encode())
 	}
 
 	allowed, reason := false, "not accepting sessions"
@@ -110,6 +136,18 @@ func withDir(policy Policy, dir string) Policy {
 		policy.Dir = dir
 	}
 	return policy
+}
+
+// Asker is somebody ringing the bell on a path they can see but cannot open.
+type Asker struct {
+	From node.ID
+	// Who they are, as far as this machine knows: what the device is filed under, and the person
+	// whose badge it carried.
+	Name   string
+	Person string
+	Path   string
+	// Why is what they said about it, and may be empty.
+	Why string
 }
 
 // turnedAway notes a caller that was refused, when anybody is keeping that note.

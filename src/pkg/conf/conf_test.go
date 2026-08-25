@@ -426,3 +426,44 @@ func TestAVaultIsOneRecipientOrSeveral(t *testing.T) {
 		t.Errorf("a config with no vault came out as %+v", none.Vault)
 	}
 }
+
+// Visible is its own option, because it answers a different question from access: access says who
+// gets in, visible says who is told there is a door.
+func TestVisibleIsReadSeparatelyFromAccess(t *testing.T) {
+	cfg := load(t, `
+		local drop = require("drop")
+		drop.mount("/shared", { type = "chat", access = { "bob" }, visible = { "carol" } })
+		drop.mount("/asked",  { type = "chat", visible = "paired" })
+		drop.mount("/secret", { type = "chat", access = { "bob" } })
+	`)
+
+	shared, _, _ := cfg.Mounts.Lookup("/shared")
+	if len(shared.Access.Named) != 1 || shared.Access.Named[0] != "bob" {
+		t.Errorf("access = %v", shared.Access.Named)
+	}
+	if len(shared.Access.Visible) != 1 || shared.Access.Visible[0] != "carol" {
+		t.Errorf("visible = %v", shared.Access.Visible)
+	}
+
+	asked, _, _ := cfg.Mounts.Lookup("/asked")
+	if !asked.Access.AnyVisible {
+		t.Error("visible = \"paired\" did not take")
+	}
+	if asked.Access.Declared() {
+		t.Error("a path that is only visible was read as being shared with somebody")
+	}
+
+	secret, _, _ := cfg.Mounts.Lookup("/secret")
+	if secret.Access.Shows() {
+		t.Error("a path with no visible option came out visible")
+	}
+
+	// And a path that is only visible still governs itself, rather than falling through to nothing.
+	carol := ns.Caller{ID: "abc", Name: "laptop", UserName: "carol", Paired: true}
+	if !cfg.Mounts.Sees("/asked", carol) {
+		t.Error("a visible-only path could not be seen by anybody")
+	}
+	if ok, _ := cfg.Mounts.Admits("/asked", carol); ok {
+		t.Error("a visible-only path let somebody in")
+	}
+}

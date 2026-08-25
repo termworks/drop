@@ -297,3 +297,58 @@ func TestAPublicPathAdmitsAnybody(t *testing.T) {
 		t.Fatalf("a public path refused a stranger: %s", why)
 	}
 }
+
+// A visible path says it exists and refuses to be opened. It is the rung between shared and
+// secret: somebody can ask for it by name rather than having to be told it is there.
+func TestAVisiblePathIsSeenButNotOpened(t *testing.T) {
+	rule := Access{Named: []string{"bob"}, Visible: []string{"carol"}}
+
+	carol := Caller{ID: "abc", Name: "laptop", UserName: "carol", Paired: true}
+	if ok, _ := rule.Admits(carol); ok {
+		t.Error("a visible path let somebody in")
+	}
+	if !rule.Sees(carol) {
+		t.Error("a visible path was hidden from the person it is visible to")
+	}
+
+	// Somebody it says nothing about learns nothing.
+	dave := Caller{ID: "def", Name: "phone", UserName: "dave", Paired: true}
+	if rule.Sees(dave) {
+		t.Error("a visible path was shown to somebody it does not name")
+	}
+
+	// And whoever may open it can obviously see it.
+	bob := Caller{ID: "ghi", Name: "laptop", UserName: "bob", Paired: true}
+	if !rule.Sees(bob) {
+		t.Error("somebody who may open a path cannot see it")
+	}
+}
+
+// Visible to anybody paired, which is the ordinary way to put something up to be asked for.
+func TestAPathCanBeVisibleToEveryonePaired(t *testing.T) {
+	rule := Access{Named: []string{"bob"}, AnyVisible: true}
+
+	stranger := Caller{ID: "abc"}
+	if rule.Sees(stranger) {
+		t.Error("a stranger saw a path that is visible to paired devices")
+	}
+
+	carol := Caller{ID: "def", Name: "laptop", UserName: "carol", Paired: true}
+	if !rule.Sees(carol) {
+		t.Error("somebody paired could not see it")
+	}
+	if ok, _ := rule.Admits(carol); ok {
+		t.Error("being able to see it let them in")
+	}
+}
+
+// A refusal beats being visible too, or revoking somebody would still leave them able to see what
+// they used to reach and ask for it again.
+func TestARefusalHidesAPathAsWell(t *testing.T) {
+	rule := Access{AnyVisible: true, Refused: []string{"bob"}}
+
+	bob := Caller{ID: "abc", Name: "laptop", UserName: "bob", Paired: true}
+	if rule.Sees(bob) {
+		t.Error("somebody refused could still see the path")
+	}
+}

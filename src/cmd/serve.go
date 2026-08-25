@@ -118,6 +118,7 @@ func runServe(parent context.Context, quiet bool) error {
 		}),
 		Duplex:  serveDuplex(pinned, shells, casts),
 		Refused: noting(pinned),
+		Asked:   taking(),
 	}
 
 	// The address book is re-read before answering anybody, because `drop pair` is a separate

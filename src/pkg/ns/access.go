@@ -30,6 +30,15 @@ type Access struct {
 	Password string
 	// All requires every rule declared here, rather than any one of them.
 	All bool
+	// Visible is who may see this path without being able to open it, and AnyVisible is everybody
+	// paired. A path that is visible says it exists and refuses to be opened, so somebody can ask
+	// for it by name instead of having to be told it is there.
+	//
+	// It is the rung between shared and secret. A folder made later shows up for the people it is
+	// meant for, and they ask; nobody has to paste a path around, and nobody who was not meant to
+	// see it learns that it exists.
+	Visible    []string
+	AnyVisible bool
 	// Refused is who may not reach this path whatever else says otherwise. It is not written in
 	// the config: it is what revoking from the interface leaves behind, and it beats every rule
 	// above, which is what makes it take effect on the next connection rather than in ninety days.
@@ -40,6 +49,26 @@ type Access struct {
 func (a Access) Declared() bool {
 	return a.Anyone || a.AnyPaired || len(a.Named) > 0 || len(a.Keys) > 0 || a.Password != ""
 }
+
+// Sees reports whether a caller may know this path exists, without being able to open it.
+//
+// Anybody admitted can see it, obviously. Beyond that a path may be made visible on its own terms,
+// which is what lets somebody ask for something rather than be handed it.
+func (a Access) Sees(c Caller) bool {
+	if ok, _ := a.Admits(c); ok {
+		return true
+	}
+	if refused(a.Refused, c) {
+		return false
+	}
+	if a.AnyVisible && c.Paired {
+		return true
+	}
+	return named(a.Visible, c)
+}
+
+// Shows reports whether this says anything about being seen.
+func (a Access) Shows() bool { return a.AnyVisible || len(a.Visible) > 0 }
 
 // named decides whether a caller is one of the names a rule lists.
 //
@@ -202,7 +231,9 @@ func (t *Table) AccessFor(path string) (Access, bool) {
 
 	best, bestLen, found := Access{}, -1, false
 	for at, m := range t.mounts {
-		if !m.Access.Declared() || !covers(at, path) {
+		// A rule that only makes a path visible still governs it: it says nobody may open this,
+		// and these people may know it is here.
+		if !(m.Access.Declared() || m.Access.Shows()) || !covers(at, path) {
 			continue
 		}
 		if len(at) > bestLen {
@@ -210,6 +241,15 @@ func (t *Table) AccessFor(path string) (Access, bool) {
 		}
 	}
 	return t.merge(path, best, found)
+}
+
+// Sees is whether a caller may know a path exists, asked of the table.
+func (t *Table) Sees(path string, c Caller) bool {
+	rule, found := t.AccessFor(path)
+	if !found {
+		return false
+	}
+	return rule.Sees(c)
 }
 
 // Admits is the whole question, asked of a path.

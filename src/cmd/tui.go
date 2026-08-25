@@ -82,6 +82,7 @@ func runTUI(parent context.Context) error {
 				Allow:   accepting(pinned, false),
 				Who:     whoIs(pinned),
 				Refused: noting(pinned),
+				Asked:   taking(),
 				Message: receiving(pinned, cfg.OpenLinks, func(node.ID, convo.Message) {
 					knock(arriving)
 				}),

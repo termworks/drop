@@ -687,3 +687,73 @@ drop.mount("/inbox", { type = "files", access = "paired", dir = "%s" })
 		t.Errorf("a device that just paired was told too little:\n%s", said)
 	}
 }
+
+// A path that is visible but not shared: it shows up, refuses to open, and can be asked for.
+//
+// The rung between shared and secret. A folder made later appears for the people it is meant for
+// and they ask for it, so nobody has to paste a path around and nobody who was not meant to see it
+// learns that it exists.
+func TestAVisiblePathIsSeenAskedForAndGranted(t *testing.T) {
+	me := newNode(t, "me", "45121")
+	them := newNode(t, "them", "45122")
+
+	me.serves(`
+local drop = require("drop")
+drop.mount("/chat",   { type = "chat", access = "paired" })
+drop.mount("/vault",  { type = "chat", visible = "paired" })
+drop.mount("/hidden", { type = "chat" })
+`)
+	them.serves(`
+local drop = require("drop")
+drop.mount("/chat", { type = "chat", access = "paired" })
+`)
+
+	pair(t, me, them)
+
+	_, _, stop := me.background("serve")
+	defer stop()
+
+	// Seen, and said to be locked. The one nothing mentions is not seen at all.
+	said := them.must("ls", "me")
+	if !strings.Contains(said, "/vault") {
+		t.Fatalf("a visible path was not listed:\n%s", said)
+	}
+	if !strings.Contains(said, "/chat") {
+		t.Fatalf("the shared path went missing:\n%s", said)
+	}
+	if strings.Contains(said, "/hidden") {
+		t.Fatalf("a path shared with nobody was listed:\n%s", said)
+	}
+
+	// Seen is not open.
+	if out, err := them.run("to", "me/vault", "let me in"); err == nil {
+		t.Fatalf("a visible path was opened:\n%s", out)
+	} else if !strings.Contains(out, "ask") {
+		t.Errorf("the refusal did not say it could be asked for:\n%s", out)
+	}
+
+	// Ringing the bell.
+	if out := them.must("ask", "me/vault", "--why", "for the thing we discussed"); !strings.Contains(out, "asked") {
+		t.Fatalf("asking said nothing useful:\n%s", out)
+	}
+
+	waitFor(t, "the request to be written down", 30*time.Second, func() bool {
+		return strings.Contains(me.must("requests"), "/vault")
+	})
+	if got := me.must("requests"); !strings.Contains(got, "for the thing we discussed") {
+		t.Errorf("what they said about it was lost:\n%s", got)
+	}
+
+	// Answering it is a grant, and it takes effect on the next connection.
+	me.must("requests", "allow", "/vault", "them")
+
+	waitFor(t, "the path to open", 30*time.Second, func() bool {
+		_, err := them.run("to", "me/vault", "thank you")
+		return err == nil
+	})
+
+	// And the request is off the list, because it has been dealt with.
+	if got := me.must("requests"); strings.Contains(got, "/vault") {
+		t.Errorf("an answered request is still pending:\n%s", got)
+	}
+}

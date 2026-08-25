@@ -20,6 +20,8 @@ type Served struct {
 	// Writable says the far end may send into it: a files namespace that accepts, or a tty that
 	// takes input. It is what the page needs to know whether to offer a way to send.
 	Writable bool
+	// Locked says this path can be seen but not opened. It is here to be asked for.
+	Locked bool
 }
 
 // Hello is what a node answers with when asked what it calls itself. Self-declared, so it names a
@@ -43,6 +45,7 @@ func (h Hello) encode() []byte {
 		w.String(s.Path)
 		w.Byte(byte(s.Kind))
 		w.Bool(s.Writable)
+		w.Bool(s.Locked)
 	}
 	return w.Body()
 }
@@ -82,7 +85,16 @@ func decodeHello(body []byte) (Hello, error) {
 		if err != nil {
 			return out, err
 		}
-		out.Serves = append(out.Serves, Served{Path: path, Kind: ns.Kind(kind), Writable: writable})
+		locked, err := r.Bool()
+		if err != nil {
+			return out, err
+		}
+		out.Serves = append(out.Serves, Served{
+			Path:     path,
+			Kind:     ns.Kind(kind),
+			Writable: writable,
+			Locked:   locked,
+		})
 	}
 	return out, nil
 }
@@ -102,10 +114,16 @@ func Describe(table *ns.Table, caller ns.Caller) []Served {
 
 	var out []Served
 	for _, m := range table.All() {
-		if ok, _ := table.Admits(m.Path, caller); !ok {
+		open, _ := table.Admits(m.Path, caller)
+		if !open && !table.Sees(m.Path, caller) {
 			continue
 		}
-		out = append(out, Served{Path: m.Path, Kind: m.Kind, Writable: writable(m)})
+		out = append(out, Served{
+			Path:     m.Path,
+			Kind:     m.Kind,
+			Writable: open && writable(m),
+			Locked:   !open,
+		})
 	}
 	return out
 }
