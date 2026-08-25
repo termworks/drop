@@ -71,6 +71,12 @@ func runTUI(parent context.Context) error {
 	ears := listenOn(ctx, n, map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
+
+			// Re-read before answering, the way the daemon does. Pairing happens while this is
+			// open — from this very interface — and without it a device that just paired stays a
+			// stranger until the interface is restarted, which looks exactly like pairing failing.
+			_ = pinned.Refresh()
+
 			_ = proto.Handle(s, from, proto.Policy{
 				Mounts:  cfg.Mounts,
 				Allow:   accepting(pinned, false),
@@ -90,6 +96,8 @@ func runTUI(parent context.Context) error {
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
+			_ = pinned.Refresh()
+
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
 				return greeting(pinned, cfg.Mounts, from, badge)
 			})

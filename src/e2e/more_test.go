@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -645,4 +646,44 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	waitFor(t, "the message", 60*time.Second, func() bool {
 		return strings.Contains(me.must("log"), "found you the long way round")
 	})
+}
+
+// A device paired with while something is already serving must be answered properly straight away.
+//
+// The address book is on disk and read into memory once. Pairing is a separate write to that file —
+// sometimes from another process, sometimes from the very interface that is serving — so whatever
+// answers has to re-read before it decides who somebody is. Without that, a device that has just
+// paired is told the far end shares nothing, which looks exactly like pairing having failed.
+func TestADeviceThatJustPairedIsAnsweredAtOnce(t *testing.T) {
+	me := newNode(t, "me", "45111")
+	them := newNode(t, "them", "45112")
+
+	shared := `
+local drop = require("drop")
+drop.mount("/chat",  { type = "chat", access = "paired" })
+drop.mount("/inbox", { type = "files", access = "paired", dir = "%s" })
+`
+	me.serves(fmt.Sprintf(shared, me.inbox()))
+	them.serves(fmt.Sprintf(shared, them.inbox()))
+
+	// Both serving before they have ever met, which is the case that goes wrong.
+	_, mine, stopMe := me.background("serve")
+	defer stopMe()
+	_, theirs, stopThem := them.background("serve")
+	defer stopThem()
+
+	waitFor(t, "both daemons", 30*time.Second, func() bool {
+		return strings.Contains(mine.String(), "ready") && strings.Contains(theirs.String(), "ready")
+	})
+
+	pair(t, me, them)
+
+	// No restart of anything: what the far end shares has to be visible now.
+	waitFor(t, "the paths to show up", 30*time.Second, func() bool {
+		return strings.Contains(them.must("ls", "me"), "/chat")
+	})
+
+	if said := them.must("ls", "me"); !strings.Contains(said, "/inbox") {
+		t.Errorf("a device that just paired was told too little:\n%s", said)
+	}
 }
