@@ -48,9 +48,12 @@ func divider(it dividerItem, width, _ int, _ bool) string {
 type deviceItem struct {
 	// self marks the row for this machine, which is not a peer and is not paired with itself.
 	self bool
-	// under marks a machine that sits beneath a person's name, and is drawn indented so that the
-	// list reads as a person with machines rather than as a flat list with a heading in it.
+	// under marks a machine that sits beneath a person's name. limb is the branch drawn beside its
+	// first line and trail beside the rest, so the three lines of a row hang off one tree rather
+	// than floating in an indent.
 	under bool
+	limb  string
+	trail string
 	// reaching marks a device a connection is being held to right now.
 	reaching bool
 	entry    book.Entry
@@ -132,27 +135,30 @@ func device(it deviceItem, width, index int, selected bool) string {
 		name = accent
 	}
 
-	// A machine of somebody's is set in from their name, so the two read as one thing.
-	indent := ""
+	// A machine of somebody's hangs off their name. The branch is drawn rather than left as an
+	// indent, so the gap between a person and their machines is a line instead of a hole.
+	limb, trail := "", ""
 	if it.under {
-		indent = "   "
-		inner -= len(indent)
+		limb, trail = it.limb, it.trail
+		inner -= lipgloss.Width(limb)
 	}
 
+	twig := func(at string) string { return base.Foreground(surface).Render(at) }
+
 	stateCol := 14
-	first := fill(stripe(base, selected) + indent +
+	first := fill(stripe(base, selected) + twig(limb) +
 		cell(base, dotColour, 2, dot, false, false) +
 		cell(base, name, inner-2-stateCol, it.entry.Name, false, true) +
 		cell(base, subtext, stateCol, state, true, false))
 
-	rest := fill(stripe(base, selected) + indent +
+	rest := fill(stripe(base, selected) + twig(trail) +
 		cell(base, muted, inner, it.entry.ID.String(), false, false))
 
 	where := it.addr
 	if where == "" {
 		where = "last seen address unknown"
 	}
-	last := fill(stripe(base, selected) + indent +
+	last := fill(stripe(base, selected) + twig(trail) +
 		cell(base, muted, inner, where, false, false))
 
 	return first + "\n" + rest + "\n" + last
@@ -340,7 +346,11 @@ func person(it personItem, width, index int, selected bool) string {
 	rule := fill(stripe(base, selected) +
 		cell(base, muted, inner, says, false, false))
 
-	return first + "\n" + rule + "\n" + fill("")
+	// Not a blank line: the stem their machines hang from. A blank here is the hole that made a
+	// person and their machines read as two unrelated things.
+	stem := fill(stripe(base, selected) + base.Foreground(surface).Render("│"))
+
+	return first + "\n" + rule + "\n" + stem
 }
 
 // access draws one row of the access pane: somebody, and whether they get in.

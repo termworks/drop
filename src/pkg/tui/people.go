@@ -91,13 +91,22 @@ func group(self Identity, peers []book.Entry, reaching map[string]bool, knocked 
 
 // take adds a run of devices to the list, remembering where each of them landed.
 func (g *grouped) take(which []int, peers []book.Entry, under bool) {
-	for _, at := range which {
+	for i, at := range which {
+		// Every machine but the last continues the branch; the last one closes it, and the lines
+		// under it carry no stem because there is nothing below to reach.
+		limb, trail := "├─ ", "│  "
+		if i == len(which)-1 {
+			limb, trail = "└─ ", "   "
+		}
+
 		g.row[at] = len(g.items)
 		g.peer[len(g.items)] = at
 		g.items = append(g.items, deviceItem{
 			entry:    peers[at],
 			addr:     addrsOf(peers[at]),
 			under:    under,
+			limb:     limb,
+			trail:    trail,
 			reaching: g.reaching[peers[at].Name],
 		})
 	}
