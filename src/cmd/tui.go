@@ -352,6 +352,13 @@ func (l *live) Offer(ctx context.Context) (string, <-chan string, error) {
 	invite := ticketFor(l.node.ID(), code)
 	done := make(chan string, 1)
 
+	// Findable by whoever holds the ticket, for as long as it is being offered. The rendezvous
+	// cannot help: it publishes under a key derived from a shared secret, and pairing is what
+	// makes one. Without this a code only ever reaches the same wire.
+	if err := node.Findable(ctx, l.node); err != nil {
+		return "", nil, err
+	}
+
 	pinned, err := book.Load()
 	if err != nil {
 		return "", nil, err
@@ -396,8 +403,13 @@ func (l *live) Offer(ctx context.Context) (string, <-chan string, error) {
 }
 
 // Join takes a ticket another device is showing.
+//
+// The same join the command line does, over the endpoint this interface already has up. Not a
+// second implementation: when it was one, the two drifted and pairing worked from one and not the
+// other.
 func (l *live) Join(ctx context.Context, ticket string) (string, error) {
-	return joinWith(ctx, l.node, l.lan, ticket, "")
+	_, name, err := join(ctx, l.node, l.lan, ticket, "", false, nil)
+	return name, err
 }
 
 // Holding is what is in one of this machine's own files namespaces.

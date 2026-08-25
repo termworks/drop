@@ -250,11 +250,6 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, s
 
 func joinPairing(parent context.Context, ticket, as string, wait time.Duration, machine bool, at []string) error {
 	trace("start")
-	id, code, err := readTicket(tickets.FromLink(ticket))
-	trace("ticket read")
-	if err != nil {
-		return err
-	}
 
 	ctx, cancel := context.WithTimeout(parent, wait)
 	defer cancel()
@@ -273,39 +268,22 @@ func joinPairing(parent context.Context, ticket, as string, wait time.Duration, 
 	}
 
 	trace("LAN up; reaching")
-	fmt.Printf("reaching %s...\n", node.Brief(id))
 
-	where, err := asAddrs(at)
+	p, name, err := join(ctx, n, lan, ticket, as, machine, at)
 	if err != nil {
 		return err
 	}
+	announce(p, name, machine)
 
-	// Looked up under its own id: pairing is the one exchange with no shared secret to derive a
-	// rendezvous key from, and mDNS reaches only the same wire.
-	var openly dial.Finder
-	if found, err := rendezvous.Open(); err == nil {
-		openly = found
-	}
-
-	conn, s, err := dial.At(ctx, n, lan, openly, book.Entry{Name: node.Brief(id), ID: id}, node.ALPNPair, where)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	defer s.Close()
-
-	p, err := proto.Pair(s, n.ID(), node.DisplayName(), codeProof(code, n.ID(), id), written(discovery.LocalAddrs(n)))
-	if err != nil {
-		return err
-	}
-	return record(p, as, machine)
+	return nil
 }
 
-// record files a completed pairing in the address book.
+// filed writes a completed pairing into the address book and says what it ended up called.
 //
+// The one place a pairing is written down, whichever side made it and whichever interface asked.
 // Machine means what it says: the device key is kept and the user key is not, so the rest of that
 // person's machines stay strangers however many badges they sign.
-func record(p proto.Pairing, as string, machine bool) error {
+func filed(p proto.Pairing, as string, machine bool) (string, error) {
 	name := as
 	if name == "" {
 		name = p.Name
@@ -316,16 +294,17 @@ func record(p proto.Pairing, as string, machine bool) error {
 
 	b, err := book.Load()
 	if err != nil {
-		return err
+		return "", err
 	}
 	b.Pair(name, p.Peer, p.Secret, p.Addrs...)
 	if !machine {
 		b.Belongs(name, p.User)
 	}
-	if err := b.Save(); err != nil {
-		return err
-	}
+	return name, b.Save()
+}
 
+// announce says who was paired with, for the interfaces that print rather than draw.
+func announce(p proto.Pairing, name string, machine bool) {
 	fmt.Printf("\npaired with %s\n", name)
 	fmt.Printf("  %s\n", p.Peer)
 	switch {
@@ -336,6 +315,16 @@ func record(p proto.Pairing, as string, machine bool) error {
 	}
 	fmt.Println()
 	fmt.Printf("either device can now reach the other by name.\n")
+}
+
+// record files a pairing and says so, which is what the offering side does when it completes.
+func record(p proto.Pairing, as string, machine bool) error {
+	name, err := filed(p, as, machine)
+	if err != nil {
+		return err
+	}
+	announce(p, name, machine)
+
 	return nil
 }
 
@@ -360,43 +349,47 @@ func written(addrs []netip.AddrPort) []string {
 //
 // The command builds its own node and tears it down; an interface already has one, and starting a
 // second would mean two endpoints on one identity fighting over a port.
-func joinWith(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as string) (string, error) {
+// join is the whole of taking somebody's ticket, over a node that is already up.
+//
+// One function, because there are two callers -- the command line and the interface -- and when
+// this was two functions they drifted: one learnt how to find a device that is not on the same
+// wire and the other did not, so pairing worked from one and failed from the other with an error
+// that said nothing about why.
+func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as string, machine bool, at []string) (proto.Pairing, string, error) {
 	id, code, err := readTicket(tickets.FromLink(ticket))
 	if err != nil {
-		return "", err
+		return proto.Pairing{}, "", err
 	}
 	if id == n.ID() {
-		return "", fmt.Errorf("that is this device's own ticket")
+		return proto.Pairing{}, "", fmt.Errorf("that is this device's own ticket")
 	}
 
-	conn, s, err := dial.At(ctx, n, lan, nil, book.Entry{Name: node.Brief(id), ID: id}, node.ALPNPair, nil)
+	where, err := asAddrs(at)
 	if err != nil {
-		return "", err
+		return proto.Pairing{}, "", err
+	}
+
+	// Looked up under its own id: pairing is the one exchange with no shared secret to derive a
+	// rendezvous key from, and mDNS reaches only the same wire.
+	var openly dial.Finder
+	if found, err := rendezvous.Open(); err == nil {
+		openly = found
+	}
+
+	conn, s, err := dial.At(ctx, n, lan, openly, book.Entry{Name: node.Brief(id), ID: id}, node.ALPNPair, where)
+	if err != nil {
+		return proto.Pairing{}, "", err
 	}
 	defer conn.Close()
 	defer s.Close()
 
 	p, err := proto.Pair(s, n.ID(), node.DisplayName(), codeProof(code, n.ID(), id), written(discovery.LocalAddrs(n)))
 	if err != nil {
-		return "", err
+		return proto.Pairing{}, "", err
 	}
 
-	name := as
-	if name == "" {
-		name = p.Name
-	}
-	if name == "" {
-		name = node.Brief(id)
-	}
-
-	pinned, err := book.Load()
-	if err != nil {
-		return "", err
-	}
-	pinned.Pair(name, id, p.Secret, p.Addrs...)
-	pinned.Belongs(name, p.User)
-
-	return name, pinned.Save()
+	name, err := filed(p, as, machine)
+	return p, name, err
 }
 
 // offerThroughDaemon asks the running node to show a code, and waits for somebody to take it.
