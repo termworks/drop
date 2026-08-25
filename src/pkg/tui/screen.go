@@ -4,6 +4,8 @@ import (
 	"strings"
 	"sync"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/bresilla/drop/src/pkg/term"
 )
 
@@ -92,4 +94,51 @@ func (s *screen) wake() {
 	case s.nudge <- struct{}{}:
 	default:
 	}
+}
+
+// keyBytes is a keypress as the bytes a terminal expects.
+//
+// Bubbletea has already decoded the escape sequences into keys, so this puts back the ones a pty
+// on the far end is waiting for. Runes go as themselves; the rest are what a terminal sends.
+func keyBytes(msg tea.KeyMsg) []byte {
+	switch msg.Type {
+	case tea.KeyRunes:
+		return []byte(string(msg.Runes))
+	case tea.KeySpace:
+		return []byte(" ")
+	case tea.KeyEnter:
+		return []byte("\r")
+	case tea.KeyTab:
+		return []byte("\t")
+	case tea.KeyBackspace:
+		return []byte{0x7f}
+	case tea.KeyEsc:
+		return []byte{0x1b}
+	case tea.KeyUp:
+		return []byte("\x1b[A")
+	case tea.KeyDown:
+		return []byte("\x1b[B")
+	case tea.KeyRight:
+		return []byte("\x1b[C")
+	case tea.KeyLeft:
+		return []byte("\x1b[D")
+	case tea.KeyHome:
+		return []byte("\x1b[H")
+	case tea.KeyEnd:
+		return []byte("\x1b[F")
+	case tea.KeyDelete:
+		return []byte("\x1b[3~")
+	case tea.KeyPgUp:
+		return []byte("\x1b[5~")
+	case tea.KeyPgDown:
+		return []byte("\x1b[6~")
+	}
+
+	// The control keys are their letter minus sixty-four: ctrl+c is 3, ctrl+d is 4, and so on.
+	if name := msg.String(); strings.HasPrefix(name, "ctrl+") && len(name) == 6 {
+		if c := name[5]; c >= 'a' && c <= 'z' {
+			return []byte{c - 'a' + 1}
+		}
+	}
+	return nil
 }

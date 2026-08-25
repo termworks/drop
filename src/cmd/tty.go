@@ -123,10 +123,16 @@ func serveTTY(at proto.Resolved, d *proto.Duplex, live *terminal) error {
 	into := io.Writer(io.Discard)
 	if at.Mount.Input {
 		into = live.ptmx
-		d.OnResize = func(c, r uint16) {
-			_ = pty.Setsize(live.ptmx, &pty.Winsize{Cols: c, Rows: r})
-			live.stage.Resize(c, r)
-		}
+	}
+
+	// Its shape reaches the shell either way. A watcher that cannot type still has a window, and a
+	// pty drawing for a size nobody is looking at wraps every line in the wrong place — which is
+	// what a read-only terminal looked like before.
+	//
+	// One shell, so the last watcher to resize decides. That is what sharing a terminal means.
+	d.OnResize = func(c, r uint16) {
+		_ = pty.Setsize(live.ptmx, &pty.Winsize{Cols: c, Rows: r})
+		live.stage.Resize(c, r)
 	}
 
 	if err := d.Pump(into); err != nil {

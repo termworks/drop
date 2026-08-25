@@ -86,7 +86,7 @@ type Backend interface {
 	Arrivals() <-chan struct{}
 
 	// Watch reads a live path, writing what arrives into screen until ctx ends.
-	Watch(ctx context.Context, on book.Entry, path string, into io.Writer, resize func(cols, rows int)) error
+	Watch(ctx context.Context, w Watching) error
 }
 
 // level is how deep you have gone. Entering rather than tabbing: what a path is depends on the
@@ -161,6 +161,10 @@ type Model struct {
 	// scroll is how many lines back from the newest the conversation is being read, so a person
 	// looking at something older is not dragged to the bottom every time somebody says a word.
 	scroll int
+	// typingAt is the live path being watched, when it can be spoken to, and atKeyboard says every
+	// key is going to it rather than to this interface.
+	typingAt   Talk
+	atKeyboard bool
 	// screen is the far end's terminal, when the open path is live.
 	screen  *screen
 	live    bool
@@ -349,9 +353,15 @@ type delivered struct{ err error }
 //
 // The screen is written from this goroutine and read from the interface's, which is why the nudge
 // carries nothing: by the time the interface reacts, what it reads is whatever is there now.
-func watch(back Backend, on book.Entry, path string, into *screen, ctx context.Context) tea.Cmd {
+func watch(back Backend, on book.Entry, path string, into *screen, ctx context.Context, ready func(Talk)) tea.Cmd {
 	return func() tea.Msg {
-		err := back.Watch(ctx, on, path, into, into.Resize)
+		err := back.Watch(ctx, Watching{
+			On:    on,
+			Path:  path,
+			Into:  into,
+			Sized: into.Resize,
+			Ready: ready,
+		})
 		into.Finish()
 
 		return watchEnded{err: err}
@@ -431,6 +441,29 @@ type Identity struct {
 	User string
 	// How this device is reachable while the interface is open.
 	Reach Reach
+}
+
+// Watching is one live path being read, and everything the interface needs around it.
+type Watching struct {
+	On   book.Entry
+	Path string
+	// Into is where what arrives is written.
+	Into io.Writer
+	// Sized is called when the far end reports the shape of its terminal.
+	Sized func(cols, rows int)
+	// Ready hands back a way to speak to it, once there is one.
+	Ready func(Talk)
+}
+
+// Talk is a live path that can be spoken to.
+//
+// Shape and keystrokes are two different things. A terminal takes its shape from whoever is looking
+// at it, whether or not they may type into it — a pty drawing for a window nobody has wraps every
+// line in the wrong place. What is typed is the part a namespace decides, and the far end is what
+// decides it: anything sent here is simply dropped when it says no.
+type Talk interface {
+	Resize(cols, rows int) error
+	Type(p []byte) error
 }
 
 // loadMine reads what this device serves, from its own config.
@@ -579,4 +612,21 @@ type Knock struct {
 	At    time.Time
 	Asked string
 	Why   string
+}
+
+// talking carries the way to speak to a live path back into the model.
+type talking struct{ talk Talk }
+
+// waitForTalk hands the model a way to speak to a live path, and tells the far end the shape of the
+// window as soon as there is one to tell.
+func waitForTalk(said chan Talk, cols, rows int) tea.Cmd {
+	return func() tea.Msg {
+		talk, ok := <-said
+		if !ok || talk == nil {
+			return nil
+		}
+		_ = talk.Resize(cols, rows)
+
+		return talking{talk: talk}
+	}
 }

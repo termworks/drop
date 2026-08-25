@@ -25,7 +25,6 @@ import (
 	"github.com/bresilla/drop/src/pkg/seen"
 	"github.com/bresilla/drop/src/pkg/shares"
 	"github.com/bresilla/drop/src/pkg/tui"
-	"io"
 )
 
 func runTUI(parent context.Context) error {
@@ -325,24 +324,27 @@ func (l *live) Post(ctx context.Context, to book.Entry, path string, kind byte, 
 }
 
 // Watch reads a live path into a screen, nudging the interface whenever the picture changes.
-func (l *live) Watch(ctx context.Context, on book.Entry, path string, into io.Writer, resize func(cols, rows int)) error {
-	s, err := l.held.To(ctx, on, node.ALPNSession)
+func (l *live) Watch(ctx context.Context, w tui.Watching) error {
+	s, err := l.held.To(ctx, w.On, node.ALPNSession)
 	if err != nil {
 		return err
 	}
 
-	d, err := proto.OpenDuplex(ctx, s, path, path, node.DisplayName())
+	d, err := proto.OpenDuplex(ctx, s, w.Path, w.Path, node.DisplayName())
 	if err != nil {
 		return err
 	}
-	d.OnResize = func(cols, rows uint16) { resize(int(cols), int(rows)) }
+	d.OnResize = func(cols, rows uint16) { w.Sized(int(cols), int(rows)) }
 
-	// No keystrokes go back. The interface is a viewer, and a viewer that could type would be a
-	// shell handed to whoever walked past the desk.
-	_ = d.Close()
+	// The write side stays open. Closing it here used to be how a viewer was kept from typing, but
+	// it also threw away the only way to say how big the window is — and what may be typed is the
+	// far end's decision, which it makes whatever arrives.
+	if w.Ready != nil {
+		w.Ready(saying{d: d})
+	}
 
 	done := make(chan error, 1)
-	go func() { done <- d.Pump(into) }()
+	go func() { done <- d.Pump(w.Into) }()
 
 	select {
 	case err := <-done:
@@ -367,6 +369,24 @@ func (l *live) Watch(ctx context.Context, on book.Entry, path string, into io.Wr
 // stopWithin bounds the wait for a watch to notice its stream has gone. A read already in flight
 // lands or fails quickly; anything longer is not worth holding the interface for.
 const stopWithin = 2 * time.Second
+
+// saying is a live path the interface can speak to.
+type saying struct{ d *proto.Duplex }
+
+func (s saying) Resize(cols, rows int) error {
+	if cols < 1 || rows < 1 {
+		return nil
+	}
+	return s.d.Resize(uint16(cols), uint16(rows))
+}
+
+func (s saying) Type(p []byte) error {
+	if len(p) == 0 {
+		return nil
+	}
+	_, err := s.d.Write(p)
+	return err
+}
 
 var _ = fmt.Sprintf
 

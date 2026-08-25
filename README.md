@@ -732,6 +732,20 @@ Nothing here depends on the NAT being friendly, on a relay hole being punched, o
 side being findable at all. It only needs it to be able to dial out, which is the one thing such a
 device can always do.
 
+### watching, and typing
+
+A terminal takes its shape from whoever is looking at it, whether or not they may type into it: a
+pty drawing for a window nobody has wraps every line in the wrong place. Shape is presentation, not
+input, and it is sent either way.
+
+What is typed is the part `input` decides, and the far end is what decides it — anything sent to a
+read-only terminal is dropped there rather than being refused here.
+
+In the interface, `i` gives a terminal the keyboard and **ctrl+]** takes it back. While it has the
+keyboard it gets every key there is, `esc` and `q` included, because half a keyboard is not a
+terminal. The panel says `· typing` so you can see where your keys are going.
+
+
 ## staying reachable
 
 `drop serve` keeps the node reachable. Install it as a user

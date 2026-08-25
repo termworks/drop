@@ -16,8 +16,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.list.SetSize(m.listWidth(), m.listHeight())
+
 		if m.screen != nil {
 			m.screen.Resize(m.viewWidth(), m.viewHeight())
+
+			// The far end draws for the window it is being watched in, whether or not it takes
+			// keys. Its shape is not something it has to be trusted with.
+			if m.typingAt != nil {
+				_ = m.typingAt.Resize(m.viewWidth(), m.viewHeight())
+			}
 		}
 		return m, nil
 
@@ -243,6 +250,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.history, m.waiting = msg.log, msg.waiting
 		return m, nil
 
+	case talking:
+		m.typingAt = msg.talk
+		return m, nil
+
 	case framePainted:
 		if m.screen == nil {
 			return m, nil
@@ -287,6 +298,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// A terminal with focus takes every key there is, including esc and q — it is a terminal, and
+	// half a keyboard is not one. Ctrl+] gives it back, which is what telnet chose for the same
+	// reason and what fingers already know.
+	if m.atKeyboard {
+		if msg.Type == tea.KeyCtrlCloseBracket {
+			m.atKeyboard = false
+			return m, nil
+		}
+		if m.typingAt != nil {
+			_ = m.typingAt.Type(keyBytes(msg))
+		}
+		return m, nil
+	}
+
 	// While composing, the keys are the message — except the two that end it.
 	// While a pairing is on screen it owns the keyboard: there is one thing to do, and one way
 	// out of it.
@@ -358,8 +383,19 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.enter()
 
 	case "i":
-		if at, ok := m.path(); ok && m.at == levelOpen && kindOf(at) == "chat" {
+		at, ok := m.path()
+		if !ok || m.at != levelOpen {
+			return m, nil
+		}
+
+		switch {
+		case kindOf(at) == "chat":
 			m.writing = true
+
+		// A terminal that takes input is typed into the same way, by saying so first. Everything
+		// after goes to it rather than to this list.
+		case kindOf(at) == "tty" && at.Writable && m.typingAt != nil:
+			m.atKeyboard, m.trouble = true, ""
 		}
 		return m, nil
 
@@ -725,14 +761,24 @@ func (m *Model) openPath() tea.Cmd {
 
 	case "tty", "stream":
 		m.screen = newScreen(m.viewWidth(), m.viewHeight())
-		m.live = true
+		m.live, m.typingAt = true, nil
 
 		ctx, stop := context.WithCancel(context.Background())
 		m.stopped = stop
 
+		// The far end hands back a way to speak to it once there is one. Kept where the model can
+		// see it, so a window that changes shape says so and a key can be sent.
+		said := make(chan Talk, 1)
+
 		return tea.Batch(
-			watch(m.back, with, at.Path, m.screen, ctx),
+			watch(m.back, with, at.Path, m.screen, ctx, func(t Talk) {
+				select {
+				case said <- t:
+				default:
+				}
+			}),
 			waitForFrame(m.screen),
+			waitForTalk(said, m.viewWidth(), m.viewHeight()),
 		)
 	}
 	return nil

@@ -61,6 +61,7 @@ type fake struct {
 	askedFor     []string
 	manages      map[string]Managed
 	forgot       []string
+	spoke        *saidTo
 }
 
 func (f *fake) Peers() ([]book.Entry, error) { return f.peers, nil }
@@ -118,19 +119,54 @@ func (f *fake) Waiting(with book.Entry) (map[string]bool, error) {
 	return f.queued, nil
 }
 
-func (f *fake) Watch(ctx context.Context, on book.Entry, path string, into io.Writer, resize func(int, int)) error {
+func (f *fake) Watch(ctx context.Context, w Watching) error {
 	f.mu.Lock()
-	f.watched = path
+	f.watched = w.Path
 	stream := f.stream
+	talk := &saidTo{}
+	f.spoke = talk
 	f.mu.Unlock()
 
+	if w.Ready != nil {
+		w.Ready(talk)
+	}
 	if stream != "" {
-		if _, err := io.WriteString(into, stream); err != nil {
+		if _, err := io.WriteString(w.Into, stream); err != nil {
 			return err
 		}
 	}
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+// saidTo records what the interface said to a live path.
+type saidTo struct {
+	mu    sync.Mutex
+	sized [][2]int
+	typed []byte
+}
+
+func (s *saidTo) Resize(cols, rows int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.sized = append(s.sized, [2]int{cols, rows})
+	return nil
+}
+
+func (s *saidTo) Type(p []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.typed = append(s.typed, p...)
+	return nil
+}
+
+func (s *saidTo) shape() ([][2]int, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([][2]int(nil), s.sized...), string(s.typed)
 }
 
 func withOne() *fake {
@@ -1859,4 +1895,95 @@ func TestLeavingALivePathWhileItIsStillWriting(t *testing.T) {
 	}
 	// Twice, because being finished with is not a thing that happens once per waiter.
 	s.Finish()
+}
+
+// A terminal takes its shape from whoever is looking at it, whether or not they may type into it.
+// A pty drawing for a window nobody has wraps every line in the wrong place.
+func TestWatchingATerminalTellsItTheWindowShape(t *testing.T) {
+	back := withOne()
+	back.serves["beta"] = []proto.Served{{Path: "/term", Kind: ns.KindTTY}}
+
+	m := intoPeer(t, start(t, back), 0)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if !m.live {
+		t.Fatal("it is not watching")
+	}
+
+	back.mu.Lock()
+	spoke := back.spoke
+	back.mu.Unlock()
+
+	sized, _ := spoke.shape()
+	if len(sized) == 0 {
+		t.Fatal("it never said how big the window is")
+	}
+	if sized[0][0] < 1 || sized[0][1] < 1 {
+		t.Errorf("it said the window is %v", sized[0])
+	}
+
+	// And says so again when the window changes.
+	was := len(sized)
+	m = settle(t, m, tea.WindowSizeMsg{Width: 100, Height: 40})
+
+	if sized, _ = spoke.shape(); len(sized) <= was {
+		t.Error("the far end was not told the window had changed")
+	}
+}
+
+// A terminal that takes input is typed into by saying so first, and every key then goes to it —
+// including the ones this interface would otherwise use for itself.
+func TestTypingIntoATerminalTakesEveryKey(t *testing.T) {
+	back := withOne()
+	back.serves["beta"] = []proto.Served{{Path: "/term", Kind: ns.KindTTY, Writable: true}}
+
+	m := intoPeer(t, start(t, back), 0)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+
+	if !m.atKeyboard {
+		t.Fatal("i did not give the terminal the keyboard")
+	}
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("ls")},
+		{Type: tea.KeyEnter},
+		// q and esc belong to the terminal now, not to this list.
+		{Type: tea.KeyRunes, Runes: []rune("q")},
+		{Type: tea.KeyEsc},
+	} {
+		m = settle(t, m, key)
+	}
+
+	if m.at != levelOpen {
+		t.Fatalf("a key meant for the terminal moved the interface, to level %d", m.at)
+	}
+
+	back.mu.Lock()
+	spoke := back.spoke
+	back.mu.Unlock()
+
+	if _, typed := spoke.shape(); typed != "ls\rq\x1b" {
+		t.Errorf("the terminal was sent %q", typed)
+	}
+
+	// And ctrl+] gives the keyboard back.
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyCtrlCloseBracket})
+	if m.atKeyboard {
+		t.Error("ctrl+] did not give the keyboard back")
+	}
+}
+
+// A terminal that says it takes no input is not typed into: there is nothing to focus.
+func TestAReadOnlyTerminalIsNotTypedInto(t *testing.T) {
+	back := withOne()
+	back.serves["beta"] = []proto.Served{{Path: "/term", Kind: ns.KindTTY}}
+
+	m := intoPeer(t, start(t, back), 0)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+
+	if m.atKeyboard {
+		t.Error("a read-only terminal took the keyboard")
+	}
 }

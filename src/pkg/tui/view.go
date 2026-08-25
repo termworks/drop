@@ -242,7 +242,10 @@ func (m Model) openView() string {
 	}
 
 	title := at.Path
-	if m.live {
+	switch {
+	case m.atKeyboard:
+		title = at.Path + " · typing"
+	case m.live:
 		title = at.Path + " · live"
 	}
 
@@ -506,12 +509,17 @@ func (m Model) footer() string {
 	case m.at == levelManage:
 		keys = []hint{{"t", "trust"}, {"x", "revoke"}, {"f", "forget"}, {"esc", "back"}}
 
+	case m.atKeyboard:
+		keys = []hint{{"ctrl+]", "give the keyboard back"}}
+
 	default:
 		keys = []hint{{"esc", "back"}}
 		if at, ok := m.path(); ok {
 			switch {
 			case kindOf(at) == "chat":
 				keys = append([]hint{{"i", "write"}}, keys...)
+			case kindOf(at) == "tty" && at.Writable:
+				keys = append([]hint{{"i", "type into it"}}, keys...)
 			case putsInto(kindOf(at)):
 				keys = append([]hint{{"s", "send"}}, keys...)
 			}
