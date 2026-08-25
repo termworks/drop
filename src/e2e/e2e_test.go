@@ -30,6 +30,8 @@ type node struct {
 	// profile makes this a second person under the same home, reached with $DROP_PROFILE. Its
 	// port is derived from the name, so it does not need one of its own.
 	profile string
+	// blind turns the local wire off, so finding a device has to go out to a relay and back.
+	blind bool
 }
 
 // binary is the drop under test, built once for the whole run.
@@ -64,7 +66,7 @@ func newNode(t *testing.T, name, port string) *node {
 
 func (n *node) env() []string {
 	if n.profile != "" {
-		return append(os.Environ(),
+		return append(n.blindly(),
 			"DROP_PROFILE="+n.profile,
 			"XDG_CONFIG_HOME="+filepath.Join(n.home, "config"),
 			"XDG_DATA_HOME="+filepath.Join(n.home, "data"),
@@ -72,7 +74,7 @@ func (n *node) env() []string {
 		)
 	}
 
-	return append(os.Environ(),
+	return append(n.blindly(),
 		"DROP_NAME="+n.name,
 		"DROP_PORT="+n.port,
 		"XDG_CONFIG_HOME="+filepath.Join(n.home, "config"),
@@ -80,6 +82,14 @@ func (n *node) env() []string {
 		// A link that arrives must not open a browser on the machine running the tests.
 		"DROP_OPENER=/bin/true",
 	)
+}
+
+// blindly is the environment, with the local wire turned off when this node is meant to be blind.
+func (n *node) blindly() []string {
+	if !n.blind {
+		return os.Environ()
+	}
+	return append(os.Environ(), "DROP_NO_MDNS=1")
 }
 
 func (n *node) inbox() string { return filepath.Join(n.home, "inbox") }

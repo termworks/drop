@@ -24,6 +24,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/proto"
+	"github.com/bresilla/drop/src/pkg/rendezvous"
 	tickets "github.com/bresilla/drop/src/pkg/ticket"
 )
 
@@ -34,6 +35,7 @@ func newPairCmd() *cobra.Command {
 		code    string
 		wait    time.Duration
 		machine bool
+		at      []string
 	)
 
 	cmd := &cobra.Command{
@@ -49,7 +51,7 @@ func newPairCmd() *cobra.Command {
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 1 {
-				return joinPairing(cmd.Context(), args[0], as, wait, machine)
+				return joinPairing(cmd.Context(), args[0], as, wait, machine, at)
 			}
 			return offerPairing(cmd.Context(), as, code, wait, showQR, machine)
 		},
@@ -60,6 +62,7 @@ func newPairCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&showQR, "qr", false, "draw the ticket as a code a phone can read")
 	cmd.Flags().DurationVarP(&wait, "wait", "w", 5*time.Minute, "how long to keep pairing open")
 	cmd.Flags().BoolVar(&machine, "machine", false, "pair with this device alone, not with whoever owns it")
+	cmd.Flags().StringSliceVar(&at, "at", nil, "where to reach the other device, when finding it fails (host:port)")
 
 	return cmd
 }
@@ -136,6 +139,34 @@ func readTicket(text string) (node.ID, string, error) {
 	return at, code, nil
 }
 
+// asAddrs reads the addresses --at was given.
+//
+// A ticket says who and never where, because an address in an invitation is a guess about somebody
+// else's network. But finding a device needs something to find it with: mDNS reaches the same wire,
+// and a rendezvous only works between devices that have already paired. Two machines meeting for the
+// first time across a tunnel have neither, and this is how somebody says where to look.
+func asAddrs(written []string) ([]netip.AddrPort, error) {
+	var out []netip.AddrPort
+
+	for _, one := range written {
+		one = strings.TrimSpace(one)
+		if one == "" {
+			continue
+		}
+		// A bare host is the ordinary port, because that is what somebody has to hand.
+		if !strings.Contains(one, ":") {
+			one = fmt.Sprintf("%s:%d", one, node.DefaultPort)
+		}
+
+		at, err := netip.ParseAddrPort(one)
+		if err != nil {
+			return nil, fmt.Errorf("--at %q is not an address: %w", one, err)
+		}
+		out = append(out, at)
+	}
+	return out, nil
+}
+
 // codeProof binds an attempt to the code, so a device that was not invited cannot complete one.
 func codeProof(code string, initiator, responder node.ID) []byte {
 	mac := hmac.New(sha256.New, []byte(code))
@@ -178,6 +209,12 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, s
 		fmt.Fprintf(os.Stderr, "drop: mDNS unavailable: %v\n", err)
 	}
 
+	// Findable by whoever holds the ticket, for as long as it is being offered. mDNS reaches the
+	// same wire and nothing else, and there is no shared secret yet for a rendezvous to use.
+	if err := node.Findable(ctx, n); err != nil {
+		fmt.Fprintf(os.Stderr, "drop: cannot publish where this device is: %v\n", err)
+	}
+
 	invite := ticketFor(n.ID(), code)
 
 	showTicket(invite, wait, showQR)
@@ -211,7 +248,7 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, s
 	}
 }
 
-func joinPairing(parent context.Context, ticket, as string, wait time.Duration, machine bool) error {
+func joinPairing(parent context.Context, ticket, as string, wait time.Duration, machine bool, at []string) error {
 	trace("start")
 	id, code, err := readTicket(tickets.FromLink(ticket))
 	trace("ticket read")
@@ -238,7 +275,19 @@ func joinPairing(parent context.Context, ticket, as string, wait time.Duration, 
 	trace("LAN up; reaching")
 	fmt.Printf("reaching %s...\n", node.Brief(id))
 
-	conn, s, err := reachAt(ctx, n, lan, book.Entry{Name: node.Brief(id), ID: id}, node.ALPNPair, nil)
+	where, err := asAddrs(at)
+	if err != nil {
+		return err
+	}
+
+	// Looked up under its own id: pairing is the one exchange with no shared secret to derive a
+	// rendezvous key from, and mDNS reaches only the same wire.
+	var openly dial.Finder
+	if found, err := rendezvous.Open(); err == nil {
+		openly = found
+	}
+
+	conn, s, err := dial.At(ctx, n, lan, openly, book.Entry{Name: node.Brief(id), ID: id}, node.ALPNPair, where)
 	if err != nil {
 		return err
 	}

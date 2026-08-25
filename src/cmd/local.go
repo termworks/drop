@@ -38,13 +38,15 @@ import (
 // One at a time: a second code while the first is unanswered means two ways in, and the person who
 // asked for the first one has no way to know the second exists.
 type pairHost struct {
-	mu     sync.Mutex
-	code   string
-	as     string
+	mu   sync.Mutex
+	code string
+	as   string
+	// node is this daemon's endpoint, so a code being shown can publish where to find it.
+	node   *node.Node
 	paired chan proto.Pairing
 }
 
-func newPairHost() *pairHost { return &pairHost{} }
+func newPairHost(n *node.Node) *pairHost { return &pairHost{node: n} }
 
 // open puts a code up for answering, and hands back what to wait on.
 func (h *pairHost) open(code, as string) (<-chan proto.Pairing, error) {
@@ -276,6 +278,13 @@ func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as st
 		return nil
 	}
 	defer offers.close()
+
+	// Findable by whoever holds the ticket, for as long as the code is up. The rendezvous cannot
+	// help here: it publishes under a key derived from a shared secret, and pairing is what makes
+	// one. Without this a code only ever reaches the same wire.
+	if err := node.Findable(ctx, offers.node); err != nil {
+		fmt.Fprintf(os.Stderr, "drop: cannot publish where this device is: %v\n", err)
+	}
 
 	fmt.Println("  showing a pairing code")
 	defer fmt.Println("  the pairing code is no longer being shown")

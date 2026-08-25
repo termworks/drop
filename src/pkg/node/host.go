@@ -57,6 +57,12 @@ func Start(ctx context.Context) (*Node, error) {
 	// third party, and traffic should not start crossing one because a default said so.
 	if Rendezvous() {
 		opts = append(opts, iroh.WithRelayMode(relayMode()), iroh.WithNetReport())
+
+		// Being able to turn somebody else's id into an address. Costs them nothing and is what
+		// lets a ticket be pasted between two machines that are not on the same wire.
+		if lookup, err := resolving(); err == nil {
+			opts = append(opts, lookup)
+		}
 	}
 
 	borrowed := false

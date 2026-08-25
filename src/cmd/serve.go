@@ -89,7 +89,7 @@ func runServe(parent context.Context, quiet bool) error {
 	// A cast feeds this node over a local socket rather than standing up a second one, so a
 	// terminal can be shared while the daemon is running.
 	casts := newCastHost(cfg.Mounts)
-	offers := newPairHost()
+	offers := newPairHost(n)
 	go func() {
 		if err := hostLocal(ctx, casts, offers, held); err != nil {
 			fmt.Fprintf(os.Stderr, "drop: casts unavailable: %v\n", err)

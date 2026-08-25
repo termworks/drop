@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"net/netip"
+
+	"github.com/bresilla/drop/src/pkg/node"
 	"strings"
 	"testing"
 )
@@ -60,5 +62,28 @@ func TestATicketWithAnythingElseInItIsRefused(t *testing.T) {
 	}
 	if code == "abcd-efgh-ijkl" {
 		t.Fatal("trailing rubbish was read as though it were not there")
+	}
+}
+
+// --at is how two machines meeting for the first time across a tunnel find each other: mDNS reaches
+// only the same wire, and a rendezvous only works between devices that have already paired.
+func TestAtReadsAddressesAndFillsInThePort(t *testing.T) {
+	got, err := asAddrs([]string{"192.168.1.157:47777", "100.68.8.159", " ", "[::1]:47777"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("read %d addresses: %v", len(got), got)
+	}
+	if got[0] != at("192.168.1.157:47777") {
+		t.Errorf("first = %v", got[0])
+	}
+	// A bare host takes the ordinary port, because that is what somebody has to hand.
+	if got[1].Port() != node.DefaultPort {
+		t.Errorf("a bare host got port %d", got[1].Port())
+	}
+
+	if _, err := asAddrs([]string{"not-an-address"}); err == nil {
+		t.Error("rubbish was accepted as an address")
 	}
 }

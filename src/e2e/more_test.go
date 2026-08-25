@@ -586,3 +586,63 @@ drop.mount("/private", { type = "chat", access = { "me" } })
 		t.Fatalf("a different person reached a path meant for my own machines:\n%s", said)
 	}
 }
+
+// Pairing with the local wire turned off.
+//
+// mDNS reaches the same wire and nothing else, so with it off a device can only be found the way a
+// device on somebody else's network is found: it publishes where it is, and the other side resolves
+// that and dials it back through a relay. This is the path that matters and the one nothing else
+// here exercises -- every other test pairs over the wire without knowing it.
+func TestPairingWorksWithTheLocalWireOff(t *testing.T) {
+	me := newNode(t, "me", "45101")
+	me.blind = true
+
+	them := &node{t: t, name: "them", home: me.home, port: "", profile: "them", blind: true}
+
+	shared := `
+local drop = require("drop")
+drop.mount("/chat", { type = "chat", access = "paired" })
+`
+	me.serves(shared)
+	them.serves(shared)
+
+	// Serving, so the offer is published by the daemon the way it is in real use.
+	_, said, stop := me.background("serve")
+	defer stop()
+	waitFor(t, "the daemon", 30*time.Second, func() bool {
+		return strings.Contains(said.String(), "ready")
+	})
+
+	_, offered, stopOffer := me.background("pair", "--code", "no-mdns-test", "--wait", "3m")
+	defer stopOffer()
+
+	var ticket string
+	waitFor(t, "a ticket", 30*time.Second, func() bool {
+		ticket = ticketIn(offered.String())
+		return ticket != ""
+	})
+
+	// The wire really is off on the offering side, or this test proves nothing. The offer is made
+	// through the daemon, so it is the daemon that says so.
+	if !strings.Contains(said.String(), "mDNS unavailable") {
+		t.Fatalf("the local wire was still up on the offering side:\n%s", said.String())
+	}
+
+	// No --at, no address of any kind: only the id in the ticket.
+	out, err := them.run("pair", ticket)
+	if err != nil {
+		t.Fatalf("pairing without the local wire failed:\n%s", out)
+	}
+	if !strings.Contains(out, "mDNS unavailable") {
+		t.Fatalf("the local wire was still up on the joining side:\n%s", out)
+	}
+	if !strings.Contains(out, "reach the other") {
+		t.Fatalf("pairing did not finish:\n%s", out)
+	}
+
+	// And it can be used afterwards, which is the point of having paired.
+	them.must("to", "me/chat", "found you the long way round")
+	waitFor(t, "the message", 60*time.Second, func() bool {
+		return strings.Contains(me.must("log"), "found you the long way round")
+	})
+}

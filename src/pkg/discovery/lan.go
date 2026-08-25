@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"time"
 
@@ -54,6 +55,12 @@ type sighting struct {
 
 // StartLAN begins announcing and listening. It stops when ctx is done.
 func StartLAN(ctx context.Context, n *node.Node) (*LAN, error) {
+	// Turned off on purpose, which is how the path that does not use the local wire gets tested:
+	// with this set, finding a device has to go out to a relay and come back.
+	if os.Getenv("DROP_NO_MDNS") != "" {
+		return nil, fmt.Errorf("the local wire is turned off by DROP_NO_MDNS")
+	}
+
 	group := &net.UDPAddr{IP: net.ParseIP(Group), Port: Port}
 
 	lc := net.ListenConfig{Control: reuseAddr}

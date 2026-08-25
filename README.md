@@ -677,6 +677,7 @@ DROP_RELAYS        relay urls to use instead of the defaults, when a rendezvous 
 DROP_CONFIG        the config file; defaults to $XDG_CONFIG_HOME/drop/init.lua
 DROP_USER_KEY      the user key to sign badges with; overrides drop.user_key
 DROP_PROFILE       run as another person on this machine, with its own keys and port
+DROP_NO_MDNS       turn the local wire off, so finding a device has to go out and back
 DROP_OPENER        what opens an arriving link; defaults to xdg-open
 XDG_CONFIG_HOME    where identity, peers.json and grants.json live; defaults to ~/.config
 XDG_DATA_HOME      where conversations live; defaults to ~/.local/share
