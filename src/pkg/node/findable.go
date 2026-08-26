@@ -61,7 +61,7 @@ func Findable(ctx context.Context, n *Node) error {
 		return err
 	}
 
-	publisher, err := iroh.N0PkarrPublisher(sk, nil)
+	publisher, err := iroh.N0PkarrPublisher(sk, &iroh.PkarrPublisherConfig{AddrFilter: Filter()})
 	if err != nil {
 		return err
 	}

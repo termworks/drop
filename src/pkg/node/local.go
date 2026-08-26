@@ -4,6 +4,9 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+
+	"github.com/tmc/go-iroh/iroh"
+	"github.com/tmc/go-iroh/netaddr"
 )
 
 // Where this machine is on its own networks.
@@ -130,4 +133,20 @@ func among(all []netip.AddrPort, one netip.AddrPort) bool {
 		}
 	}
 	return false
+}
+
+// Filter is what a publisher may put in a record.
+//
+// A pkarr publisher keeps only the relay unless it is told otherwise, which is the safe default for
+// a library: a record is signed under an endpoint id and left on somebody else's relay. Pinning an
+// address is therefore only half of publishing it — without this the addresses this machine
+// enumerated are computed, advertised locally, and then dropped on the way out.
+//
+// Nil is not "everything": a nil filter is what the publisher replaces with its own. So relay-only
+// is spelled out rather than left to the default.
+func Filter() iroh.AddrFilter {
+	if !Direct() {
+		return iroh.RelayOnlyFilter
+	}
+	return func(addrs []netaddr.TransportAddr) []netaddr.TransportAddr { return addrs }
 }

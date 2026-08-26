@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/tmc/go-iroh/netaddr"
 )
 
 // The whole point of enumerating this machine's addresses is that a peer can dial one. An address
@@ -189,4 +191,37 @@ func TestAnOverlayIsNotMistakenForABridge(t *testing.T) {
 	if !Dialable(netip.MustParseAddr("172.30.0.248")) {
 		t.Error("an overlay address was refused for looking like a bridge")
 	}
+}
+
+// Pinning an address is only half of publishing it.
+//
+// A pkarr publisher keeps the relay and drops every IP unless it is handed a filter, so a machine
+// can enumerate its networks, advertise them to itself, and still tell nobody. What is asserted
+// here is that the setting reaches the thing that strips them.
+func TestWhatIsPinnedIsWhatIsPublished(t *testing.T) {
+	relay, err := netaddr.ParseRelayURL("https://relay.example/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	here := []netaddr.TransportAddr{
+		netaddr.RelayAddr{URL: relay},
+		netaddr.IPAddr{Addr: netip.MustParseAddrPort("192.168.1.24:47777")},
+		netaddr.IPAddr{Addr: netip.MustParseAddrPort("172.30.0.96:47777")},
+	}
+
+	SetDirect(true)
+	if got := Filter()(here); len(got) != len(here) {
+		t.Errorf("with direct on, %d of %d addresses would be published", len(got), len(here))
+	}
+
+	SetDirect(false)
+	got := Filter()(here)
+	if len(got) != 1 {
+		t.Fatalf("with direct off, %d addresses would be published, expected only the relay", len(got))
+	}
+	if _, ok := got[0].(netaddr.RelayAddr); !ok {
+		t.Errorf("with direct off, what would be published is %T", got[0])
+	}
+
+	SetDirect(true)
 }

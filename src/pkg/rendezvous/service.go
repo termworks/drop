@@ -152,7 +152,7 @@ func (s *Service) publishRound(now time.Time) {
 			s.mu.Lock()
 			p, ok := s.publishers[at]
 			if !ok {
-				p, err = iroh.NewPkarrPublisher(sk, s.relay, nil)
+				p, err = iroh.NewPkarrPublisher(sk, s.relay, &iroh.PkarrPublisherConfig{AddrFilter: node.Filter()})
 				if err != nil {
 					s.mu.Unlock()
 					continue
