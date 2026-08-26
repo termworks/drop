@@ -2,7 +2,6 @@ package ns
 
 import (
 	"testing"
-	"time"
 
 	"github.com/bresilla/drop/src/pkg/passwd"
 )
@@ -439,20 +438,18 @@ func TestACallerAdmittedOtherwiseNeverPaysForAGuess(t *testing.T) {
 		t.Fatalf("hashing: %v", err)
 	}
 
-	// What one guess costs here, measured rather than assumed: the machine running this decides.
-	at := time.Now()
-	passwd.Verify(hash, "nope")
-	guess := time.Since(at)
-
 	guarded := Access{AnyPaired: true, Password: hash}
 	paired := Caller{ID: "aaaa", Name: "bob", Paired: true, Password: "nope"}
 
-	at = time.Now()
+	// Counted rather than timed: how many guesses were paid for is the question, and a stopwatch
+	// answers it only on a machine doing nothing else.
+	before := passwd.Spent()
+
 	if ok, _ := guarded.Admits(paired); !ok {
 		t.Fatal("a paired caller was refused a path shared with anyone paired")
 	}
-	if took := time.Since(at); took > guess/2 {
-		t.Errorf("admitting a paired caller took %v against %v for a guess", took, guess)
+	if paid := passwd.Spent() - before; paid != 0 {
+		t.Errorf("admitting a paired caller paid for %d guesses", paid)
 	}
 }
 
@@ -464,17 +461,13 @@ func TestARuleThatAlreadyFailedDoesNotReachTheHash(t *testing.T) {
 		t.Fatalf("hashing: %v", err)
 	}
 
-	at := time.Now()
-	passwd.Verify(hash, "let me in")
-	guess := time.Since(at)
-
 	both := Access{All: true, AnyPaired: true, Password: hash}
+	before := passwd.Spent()
 
-	at = time.Now()
 	if ok, _ := both.Admits(Caller{ID: "cccc", Password: "let me in"}); ok {
 		t.Fatal("a path needing pairing and a password was opened with the password alone")
 	}
-	if took := time.Since(at); took > guess/2 {
-		t.Errorf("refusing an unpaired caller took %v against %v for a guess", took, guess)
+	if paid := passwd.Spent() - before; paid != 0 {
+		t.Errorf("refusing an unpaired caller paid for %d guesses", paid)
 	}
 }

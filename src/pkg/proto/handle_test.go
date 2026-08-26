@@ -263,12 +263,6 @@ func TestARefusedOpenCostsOneGuess(t *testing.T) {
 		t.Fatalf("hashing: %v", err)
 	}
 
-	// What one guess costs here, warm, because the first of them pays for the memory as well.
-	passwd.Verify(hash, "nope")
-	at := time.Now()
-	passwd.Verify(hash, "nope")
-	guess := time.Since(at)
-
 	table := served(t, ns.Mount{
 		Path:      "/handoff",
 		Archetype: "echo",
@@ -278,14 +272,18 @@ func TestARefusedOpenCostsOneGuess(t *testing.T) {
 		Who: func(from node.ID, _ Badged) ns.Caller { return ns.Caller{ID: from.String(), Paired: true} },
 	})
 
-	at = time.Now()
-	_, err = Open(caller, "/handoff", "", 0, "nope", "tester")
-	took := time.Since(at)
+	// Counted rather than timed: a guess is expensive on purpose, and how many were run is the
+	// question. A stopwatch answers it only on a machine doing nothing else.
+	before := passwd.Spent()
 
+	_, err = Open(caller, "/handoff", "", 0, "nope", "tester")
 	if err == nil || !strings.Contains(err.Error(), "you may ask for it") {
 		t.Fatalf("a wrong password was answered with %v", err)
 	}
-	if took > guess*3/2 {
-		t.Errorf("one refused open took %v, against %v for a single guess", took, guess)
+
+	// The rule is asked twice on the way through — once to admit, once to say the path may be
+	// asked for — and the guess must be hashed for only the first of them.
+	if paid := passwd.Spent() - before; paid != 1 {
+		t.Errorf("one refused open paid for %d guesses, want 1", paid)
 	}
 }

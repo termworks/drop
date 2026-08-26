@@ -3,6 +3,7 @@ package passwd
 import (
 	"runtime"
 	"sync"
+	"sync/atomic"
 )
 
 // What one guess is allowed to spend, and how many may spend it at once.
@@ -30,11 +31,20 @@ func atOnce() int {
 	return n
 }
 
+// spent counts the hashes that have actually been run. What a guess costs is the whole reason the
+// memory is queued and the answer is remembered, and counting is the only way to say so in a test
+// that a loaded machine cannot make flaky.
+var spent atomic.Uint64
+
+// Spent is how many guesses this process has paid for.
+func Spent() uint64 { return spent.Load() }
+
 // spend runs one hash, waiting for room.
 func spend(hash func()) {
 	hashing <- struct{}{}
 	defer func() { <-hashing }()
 
+	spent.Add(1)
 	hash()
 }
 
