@@ -13,12 +13,12 @@ import (
 // that means "whichever machine is reading this" cannot be dialled from anywhere else.
 func TestOnlyAddressesThatMeanThisMachineAreKept(t *testing.T) {
 	for _, bad := range []string{"127.0.0.1", "::1", "169.254.3.4", "fe80::1", "224.0.0.251", "0.0.0.0", "::"} {
-		if dialable(netip.MustParseAddr(bad)) {
+		if Dialable(netip.MustParseAddr(bad)) {
 			t.Errorf("%s was taken for somewhere a peer can dial", bad)
 		}
 	}
 	for _, good := range []string{"192.168.1.24", "10.147.20.3", "100.68.116.48", "203.0.113.7", "2001:db8::1"} {
-		if !dialable(netip.MustParseAddr(good)) {
+		if !Dialable(netip.MustParseAddr(good)) {
 			t.Errorf("%s was thrown away", good)
 		}
 	}
@@ -33,7 +33,7 @@ func TestOwnAddressesAreDialableAtTheBoundPort(t *testing.T) {
 	}
 
 	for _, at := range own {
-		if !dialable(at.Addr()) {
+		if !Dialable(at.Addr()) {
 			t.Errorf("%s is not somewhere a peer can dial", at)
 		}
 		if at.Port() != 47777 {
@@ -166,4 +166,27 @@ func indexOf(all []netip.AddrPort, one netip.AddrPort) int {
 		}
 	}
 	return -1
+}
+
+// The range a bridge lives in is the range an overlay lives in.
+//
+// ZeroTier hands out 172.30.x, which is inside the pool docker is usually blamed for. Deciding by
+// address would throw away the one link two machines on that overlay actually share, so what a
+// machine made for itself is told by the interface it is on.
+func TestAnOverlayIsNotMistakenForABridge(t *testing.T) {
+	for _, made := range []string{"docker0", "br-1a2b3c", "virbr0", "veth9f2", "podman1"} {
+		if !Virtual(made) {
+			t.Errorf("%s was taken for a network somebody else can reach", made)
+		}
+	}
+	for _, real := range []string{"eth0", "eno2", "wlan0", "ztmjffowwq", "wt0", "tailscale0", "enx52ea8e7deb7c"} {
+		if Virtual(real) {
+			t.Errorf("%s was thrown away as a bridge", real)
+		}
+	}
+
+	// The address that started this: an overlay both machines are on, in docker's range.
+	if !Dialable(netip.MustParseAddr("172.30.0.248")) {
+		t.Error("an overlay address was refused for looking like a bridge")
+	}
 }

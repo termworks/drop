@@ -3,6 +3,7 @@ package node
 import (
 	"net"
 	"net/netip"
+	"strings"
 )
 
 // Where this machine is on its own networks.
@@ -36,6 +37,9 @@ func OwnAddrs(port uint16) []netip.AddrPort {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
+		if Virtual(iface.Name) {
+			continue
+		}
 		here, err := iface.Addrs()
 		if err != nil {
 			continue
@@ -50,7 +54,7 @@ func OwnAddrs(port uint16) []netip.AddrPort {
 			if !ok {
 				continue
 			}
-			if ip = ip.Unmap(); !dialable(ip) {
+			if ip = ip.Unmap(); !Dialable(ip) {
 				continue
 			}
 			out = append(out, netip.AddrPortFrom(ip, port))
@@ -59,35 +63,29 @@ func OwnAddrs(port uint16) []netip.AddrPort {
 	return out
 }
 
-// dialable reports whether an address means the same machine from somewhere else.
-func dialable(ip netip.Addr) bool {
+// Dialable reports whether an address means the same machine from somewhere else.
+func Dialable(ip netip.Addr) bool {
 	switch {
 	case !ip.IsValid(), ip.IsUnspecified(), ip.IsLoopback():
 		return false
 	case ip.IsLinkLocalUnicast(), ip.IsMulticast():
 		return false
-	case Virtual(ip):
-		return false
 	}
 	return true
 }
 
-// Virtual reports whether an address is one every machine running the same software has.
+// Virtual reports whether an interface is one a machine made for itself.
 //
-// libvirt hands out 192.168.122.x and docker 172.17-31.x on every host. Publishing one sends a peer
-// at whatever its own machine is running, or at nothing at all, and a hole punched there is punched
-// into its own bridge.
-func Virtual(ip netip.Addr) bool {
-	if !ip.Is4() {
-		return false
-	}
-	b := ip.As4()
-
-	switch {
-	case b[0] == 192 && b[1] == 168 && b[2] == 122:
-		return true
-	case b[0] == 172 && b[1] >= 17 && b[1] <= 31:
-		return true
+// A bridge that libvirt, docker or podman stood up carries an address every host running the same
+// software has, so publishing it sends a peer at whatever its own machine is running, and a hole
+// punched there is punched into its own bridge. The interface says so; the address does not.
+// Docker's pool is 172.16/12, and so is where ZeroTier usually puts an overlay — the range that
+// looks most like a private bridge is the one most worth publishing.
+func Virtual(name string) bool {
+	for _, made := range []string{"docker", "br-", "virbr", "veth", "podman", "cni", "flannel", "kube"} {
+		if strings.HasPrefix(name, made) {
+			return true
+		}
 	}
 	return false
 }

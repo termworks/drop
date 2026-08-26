@@ -23,7 +23,7 @@ import (
 func Nearest(addrs []netip.AddrPort) []netip.AddrPort {
 	out := make([]netip.AddrPort, 0, len(addrs))
 	for _, at := range addrs {
-		if node.Virtual(at.Addr()) {
+		if !node.Dialable(at.Addr()) {
 			continue
 		}
 		out = append(out, at)
@@ -76,32 +76,39 @@ func subnets() []netip.Prefix {
 		return ours.nets
 	}
 
-	found, err := net.InterfaceAddrs()
+	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil
 	}
 
-	nets := make([]netip.Prefix, 0, len(found))
-	for _, at := range found {
-		one, ok := at.(*net.IPNet)
-		if !ok {
+	var nets []netip.Prefix
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || node.Virtual(iface.Name) {
+			continue
+		}
+		found, err := iface.Addrs()
+		if err != nil {
 			continue
 		}
 
-		ip, ok := netip.AddrFromSlice(one.IP)
-		if !ok {
-			continue
+		for _, at := range found {
+			one, ok := at.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip, ok := netip.AddrFromSlice(one.IP)
+			if !ok {
+				continue
+			}
+			bits, _ := one.Mask.Size()
+			if bits == 0 {
+				continue
+			}
+			if ip = ip.Unmap(); !node.Dialable(ip) {
+				continue
+			}
+			nets = append(nets, netip.PrefixFrom(ip, bits).Masked())
 		}
-		bits, _ := one.Mask.Size()
-		if bits == 0 {
-			continue
-		}
-
-		ip = ip.Unmap()
-		if node.Virtual(ip) || ip.IsLoopback() {
-			continue
-		}
-		nets = append(nets, netip.PrefixFrom(ip, bits).Masked())
 	}
 
 	ours.nets, ours.read = nets, time.Now()

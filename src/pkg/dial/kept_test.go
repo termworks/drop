@@ -34,16 +34,21 @@ func TestTheAddressOnOurOwnWireComesFirst(t *testing.T) {
 }
 
 // A bridge every machine has is the same address here as there, so dialling it reaches whatever is
-// running on the machine doing the dialling.
-func TestVirtualBridgesAreDropped(t *testing.T) {
+// running on the machine doing the dialling. It cannot be told from an overlay by its address —
+// ZeroTier hands out the range docker is usually blamed for — so it is ranked last rather than
+// thrown away, and this machine's own bridges are left out of what counts as our wire.
+func TestABridgeIsTriedLast(t *testing.T) {
 	ranked := Nearest([]netip.AddrPort{
 		netip.MustParseAddrPort("192.168.122.1:47777"),
 		netip.MustParseAddrPort("172.18.0.1:47777"),
 		netip.MustParseAddrPort("192.168.1.175:47777"),
 	})
 
-	if len(ranked) != 1 || ranked[0].Addr().String() != "192.168.1.175" {
-		t.Fatalf("ranked %v, want only the real address", ranked)
+	if len(ranked) != 3 {
+		t.Fatalf("ranked %v, want all three kept", ranked)
+	}
+	if ranked[0].Addr().String() == "192.168.122.1" {
+		t.Fatalf("ranked %v, want a bridge behind an address that could answer", ranked)
 	}
 }
 
