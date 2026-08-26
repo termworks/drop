@@ -12,6 +12,7 @@ import (
 	"github.com/tmc/go-iroh/iroh"
 	"golang.org/x/term"
 
+	"github.com/bresilla/drop/src/pkg/arch/note"
 	"github.com/bresilla/drop/src/pkg/arch/share"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/convo"
@@ -56,6 +57,34 @@ func openTerminal(ctx context.Context, o opening) error { return readLive(ctx, o
 
 // openStream follows what a namespace is writing.
 func openStream(ctx context.Context, o opening) error { return readLive(ctx, o, false) }
+
+// openNote prints the note as the far end has it.
+//
+// Reading and no more: a note is changed by holding it, editing the file it keeps here and letting
+// the two machines meet, and `drop path join` is how this machine comes to hold one.
+func openNote(ctx context.Context, o opening) error {
+	find, cancel := o.within(ctx)
+	defer cancel()
+
+	done, s, err := o.over().To(find, o.entry, node.ALPNSession)
+	if err != nil {
+		return err
+	}
+	defer done.Close()
+	defer s.Close()
+
+	conn, err := proto.Open(s, o.served.Path, "note", 0, "", node.DisplayName())
+	if err != nil {
+		return err
+	}
+
+	body, err := note.Text(conn)
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.Write(body)
+	return err
+}
 
 // openFiles lists the directory and says what walks it from there.
 func openFiles(ctx context.Context, o opening) error {

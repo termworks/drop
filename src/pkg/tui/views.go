@@ -52,10 +52,13 @@ type view struct {
 // views is which view answers to which archetype name. Adding a kind of namespace to this interface
 // is adding a line here.
 var views = map[string]view{
-	"chat":   {glyph: "▤", shows: showsTalk},
-	"share":  {glyph: "▣", shows: showsPut, mine: showsWalk, sends: "a file", onDisk: true, kind: convo.KindFile},
-	"files":  {glyph: "▦", shows: showsWalk, mine: showsWalk, sends: "a file", onDisk: true, kind: convo.KindFile},
-	"link":   {glyph: "◈", shows: showsPut, sends: "a link", kind: convo.KindLink},
+	"chat":  {glyph: "▤", shows: showsTalk},
+	"share": {glyph: "▣", shows: showsPut, mine: showsWalk, sends: "a file", onDisk: true, kind: convo.KindFile},
+	"files": {glyph: "▦", shows: showsWalk, mine: showsWalk, sends: "a file", onDisk: true, kind: convo.KindFile},
+	"link":  {glyph: "◈", shows: showsPut, sends: "a link", kind: convo.KindLink},
+	// A note is a file in somebody's own editor, so there is nothing here to press: the interface
+	// says what it is, and joining it is what puts it on this disk.
+	"note":   {glyph: "▩"},
 	"tty":    {glyph: "▮", shows: showsLive},
 	"stream": {glyph: "▶", shows: showsLive},
 	// A branch is the absence of an archetype: a path holding others and serving nothing itself.

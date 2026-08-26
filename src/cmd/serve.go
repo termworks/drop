@@ -114,6 +114,10 @@ func runServe(parent context.Context, quiet bool) error {
 	// needs the connections and the address book, and neither exists until the config is read.
 	doing.changed = told(ctx, kept{held: held}, cfg.Mounts, pinned)
 
+	// And the one archetype that has something to do when nobody has opened anything: a note is a
+	// file somebody saves in their own editor, and noticing that is a timer of its own.
+	doing.noting().Watch(ctx, cfg.Mounts)
+
 	// A cast feeds this node over a local socket rather than standing up a second one, so a
 	// terminal can be shared while the daemon is running.
 	casts := newCastHost(cfg.Mounts, known)

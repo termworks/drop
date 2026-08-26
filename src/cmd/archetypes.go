@@ -7,6 +7,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/arch/chat"
 	"github.com/bresilla/drop/src/pkg/arch/files"
 	"github.com/bresilla/drop/src/pkg/arch/link"
+	"github.com/bresilla/drop/src/pkg/arch/note"
 	"github.com/bresilla/drop/src/pkg/arch/share"
 	"github.com/bresilla/drop/src/pkg/arch/stream"
 	"github.com/bresilla/drop/src/pkg/arch/tty"
@@ -48,6 +49,9 @@ type doings struct {
 	shown func(path string) (*cast.Caster, bool)
 	// shells is the terminals this process is running, held so they can all be ended at once.
 	shells *tty.TTY
+	// pages is the notes this process keeps, held so that the config and the timer that watches
+	// them are looking at the same ones.
+	pages *note.Note
 }
 
 // reading registers every archetype for its settings alone.
@@ -67,6 +71,7 @@ func (d *doings) serving() *arch.Registry {
 	known.Register(link.New(link.Into{Store: d.store}))
 	known.Register(stream.New(stream.Into{Opened: d.opened}))
 	known.Register(d.terminals())
+	known.Register(d.noting())
 	return known
 }
 
@@ -90,6 +95,40 @@ func (d *doings) terminals() *tty.TTY {
 		d.shells = tty.New(tty.Into{Watched: d.watched, Showing: d.showing})
 	}
 	return d.shells
+}
+
+// noting is this process's notes, made once so that the config reads the same ones the timer keeps.
+func (d *doings) noting() *note.Note {
+	if d.pages == nil {
+		d.pages = note.New(note.Into{Changed: d.moved, Named: d.person, Trouble: d.note})
+	}
+	return d.pages
+}
+
+// moved says that something in a namespace has changed, and says nothing at all in a process that
+// has nobody to say it to.
+func (d *doings) moved(path string) {
+	if d.changed != nil {
+		d.changed(path)
+	}
+}
+
+// person is what this machine calls whoever signs with a key, and empty for somebody it has never
+// met.
+func (d *doings) person(author string) string {
+	if author == "" {
+		return ""
+	}
+	if author == myKey() {
+		return node.DisplayName()
+	}
+	if d.pinned == nil {
+		return ""
+	}
+	if owner, known := d.pinned.ByUser(author); known {
+		return personOf(owner)
+	}
+	return ""
 }
 
 // stop ends whatever the archetypes are holding open.

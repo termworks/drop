@@ -23,6 +23,7 @@ import (
 type Log struct {
 	mu   sync.Mutex
 	at   string
+	dir  string
 	file string
 	// changes is everything the log holds, by id. size is how long the file was when that was
 	// built, so another drop appending to the same log is noticed without rereading it every time.
@@ -62,13 +63,18 @@ func Open(at string) (*Log, error) {
 	if l, held := open.logs[dir]; held {
 		return l, nil
 	}
-	l := &Log{at: at, file: filepath.Join(dir, "log")}
+	l := &Log{at: at, dir: dir, file: filepath.Join(dir, "log")}
 	if open.logs == nil {
 		open.logs = map[string]*Log{}
 	}
 	open.logs[dir] = l
 	return l, nil
 }
+
+// Dir is where this log lives, for whoever reads it and has one more thing to remember about the
+// thing it is about. It exists already, and nothing else is in it that this package did not put
+// there.
+func (l *Log) Dir() string { return l.dir }
 
 // nameable reports whether a thing's id can be a directory of its own. It becomes a path, so one
 // that would climb out of the history directory or name nothing at all is refused rather than

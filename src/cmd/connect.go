@@ -76,6 +76,7 @@ var openers = map[string]opener{
 	"stream": {does: "follows what it is writing until you stop it", open: openStream},
 	"files":  {does: "lists the directory; drop file walks it from there", open: openFiles},
 	"link":   {takes: "a link", does: "sends a link, and the far end decides what to do with it", open: openLink},
+	"note":   {does: "prints the note as it stands there; join it to write in it", open: openNote},
 	"share":  {takes: "files", does: "sends the files named after it, and - is standard input", open: openShare},
 }
 
