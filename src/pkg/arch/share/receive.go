@@ -56,6 +56,10 @@ func offered(items []Item) error {
 func receive(conn *wire.Conn, into string, from node.ID, hooks Into) error {
 	kind, body, err := conn.ReadFrame()
 	if err != nil {
+		// A sender that closes before offering anything has pushed nothing, which is not a fault.
+		if wire.Closed(err) {
+			return nil
+		}
 		return fmt.Errorf("reading the offer from %s: %w", node.Brief(from), err)
 	}
 	if kind != wire.KindItem {

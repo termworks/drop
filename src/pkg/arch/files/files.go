@@ -8,9 +8,8 @@ package files
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
+	"os"
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/node"
@@ -75,6 +74,16 @@ func (f *Files) Serve(ctx context.Context, at arch.Session) error {
 		return at.Conn.WriteFrame(wire.KindReject, reject.Encode())
 	}
 
+	// Every name this session is given is resolved through the open directory, one component at a
+	// time, and leaves it for nothing: no link out, no dot-dot, and nothing that appears between the
+	// check and the open.
+	dir, err := os.OpenRoot(cfg.Dir)
+	if err != nil {
+		reject := wire.Reject{Reason: "this namespace's directory cannot be opened"}
+		return at.Conn.WriteFrame(wire.KindReject, reject.Encode())
+	}
+	defer dir.Close()
+
 	conn := at.Conn
 	if err := conn.WriteFrame(wire.KindReply, ready{Writable: cfg.Writable}.encode()); err != nil {
 		return err
@@ -83,7 +92,9 @@ func (f *Files) Serve(ctx context.Context, at arch.Session) error {
 	for {
 		kind, body, err := conn.ReadFrame()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			// Closing is how a session ends. There is no goodbye frame: a caller that has finished
+			// asking stops, and a stream that ends between rounds ended in the ordinary way.
+			if wire.Closed(err) {
 				return nil
 			}
 			return fmt.Errorf("reading a request for %s: %w", at.Path, err)
@@ -96,7 +107,7 @@ func (f *Files) Serve(ctx context.Context, at arch.Session) error {
 		if err != nil {
 			return err
 		}
-		if err := f.answer(conn, at, cfg, q); err != nil {
+		if err := f.answer(conn, at, dir, cfg.Writable, q); err != nil {
 			return err
 		}
 	}

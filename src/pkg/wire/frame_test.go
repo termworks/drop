@@ -2,7 +2,10 @@ package wire
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"testing"
 )
 
@@ -75,4 +78,39 @@ func TestReadHeaderRefusesAnAbsurdLength(t *testing.T) {
 type readWriter struct {
 	io.Reader
 	io.Writer
+}
+
+// A session ends by the stream ending. That is the one error a reader is allowed to call an
+// ordinary finish, and only where a frame was about to start.
+func TestClosedTellsAFinishFromAFault(t *testing.T) {
+	for _, at := range []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{io.EOF, true},
+		{fmt.Errorf("reading a request: %w", io.EOF), true},
+		{net.ErrClosed, true},
+		{fmt.Errorf("receiving: %w", net.ErrClosed), true},
+		{io.ErrUnexpectedEOF, false},
+		{errors.New("something else"), false},
+	} {
+		if got := Closed(at.err); got != at.want {
+			t.Errorf("Closed(%v) = %v, want %v", at.err, got, at.want)
+		}
+	}
+}
+
+// A stream that stops in the middle of a frame header did not finish, whatever the reader under it
+// calls that.
+func TestAHalfReadHeaderIsNotAFinish(t *testing.T) {
+	empty := NewConn(readWriter{bytes.NewReader(nil), io.Discard})
+	if _, _, err := empty.ReadHeader(); !Closed(err) {
+		t.Errorf("a stream that ended between frames came back as %v", err)
+	}
+
+	half := NewConn(readWriter{bytes.NewReader([]byte{KindData}), io.Discard})
+	if _, _, err := half.ReadHeader(); Closed(err) {
+		t.Errorf("a stream that ended inside a frame came back as a finish: %v", err)
+	}
 }

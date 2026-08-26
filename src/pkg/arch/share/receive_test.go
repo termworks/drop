@@ -325,3 +325,15 @@ func TestNumberedSpacesANameOut(t *testing.T) {
 		}
 	}
 }
+
+// A sender that opens a share and closes without offering anything pushed nothing. Ending is how a
+// session ends; there is nothing to report.
+func TestAClosedShareIsNotAnError(t *testing.T) {
+	var nothing, out bytes.Buffer
+	if err := receive(wire.NewConn(readWriter{&nothing, &out}), t.TempDir(), node.ID{}, Into{}); err != nil {
+		t.Fatalf("a share closed before it offered anything came back as %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("a share that was closed answered %d bytes", out.Len())
+	}
+}

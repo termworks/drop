@@ -3,8 +3,10 @@ package wire
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 )
 
 // Frame kinds. Control frames carry a codec body; DATA carries raw bytes.
@@ -85,6 +87,9 @@ func (c *Conn) ReadHeader() (kind byte, size int, err error) {
 
 	length, err := binary.ReadUvarint(c.r)
 	if err != nil {
+		if errors.Is(err, io.EOF) {
+			err = io.ErrUnexpectedEOF
+		}
 		return 0, 0, fmt.Errorf("wire: reading a frame length: %w", err)
 	}
 	if length > MaxFrame {
@@ -127,4 +132,16 @@ func (c *Conn) Discard(size int) error {
 		return fmt.Errorf("wire: skipping a frame body: %w", err)
 	}
 	return nil
+}
+
+// Closed reports whether an error is the far end having finished rather than something going
+// wrong: the stream ended, or the transport says the peer closed it.
+//
+// It is asked where a frame was about to start and nothing was in flight. A stream that stops
+// inside a frame ends as an unexpected end of file, and stays an error wherever it is read.
+func Closed(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed)
 }

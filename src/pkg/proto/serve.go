@@ -58,6 +58,10 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 
 	kind, body, err := conn.ReadFrame()
 	if err != nil {
+		// A stream opened and closed without a word is a peer that changed its mind, not a fault.
+		if wire.Closed(err) {
+			return nil
+		}
 		return fmt.Errorf("reading the open from %s: %w", node.Brief(from), err)
 	}
 	if kind != wire.KindOpen {

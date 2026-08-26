@@ -3,6 +3,7 @@ package live
 import (
 	"bytes"
 	"io"
+	"net"
 	"testing"
 
 	"github.com/bresilla/drop/src/pkg/wire"
@@ -74,4 +75,33 @@ func TestDuplexReportsResize(t *testing.T) {
 
 func wireConn(buf *bytes.Buffer) *wire.Conn {
 	return wire.NewConn(readWriter{buf, buf})
+}
+
+// shut is a stream whose transport reports that the peer closed the connection, which is what a
+// QUIC stream does when the far end goes away in the ordinary way.
+type shut struct{}
+
+func (shut) Read([]byte) (int, error) { return 0, net.ErrClosed }
+
+// A peer that closes is a peer that finished writing. The stream ending and the transport saying so
+// are the same news.
+func TestPumpTakesAClosedTransportAsTheEnd(t *testing.T) {
+	d := &Duplex{conn: wire.NewConn(readWriter{shut{}, io.Discard})}
+	if err := d.Pump(io.Discard); err != nil {
+		t.Fatalf("Pump() came back as %v", err)
+	}
+}
+
+// A stream that dies in the middle of a frame did not finish, and is still reported.
+func TestPumpReportsAStreamThatDiesMidFrame(t *testing.T) {
+	var buf bytes.Buffer
+	if err := wireConn(&buf).WriteData(bytes.Repeat([]byte{0x7f}, 64)); err != nil {
+		t.Fatalf("WriteData(): %v", err)
+	}
+	cut := buf.Bytes()[:8]
+
+	d := &Duplex{conn: wire.NewConn(readWriter{bytes.NewReader(cut), io.Discard})}
+	if err := d.Pump(io.Discard); err == nil {
+		t.Fatal("Pump() called a half-arrived frame the end of the stream")
+	}
 }

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"path"
 
 	"github.com/bresilla/drop/src/pkg/wire"
 )
@@ -85,7 +85,7 @@ func (b *Browsing) Get(name, into string, progress func(name string, done, total
 	if len(got.Entries) > 0 {
 		size, mode = got.Entries[0].Size, got.Entries[0].Mode
 	}
-	return takeBody(b.conn, filepath.Base(name), into, size, mode, progress)
+	return takeOnto(b.conn, into, path.Base(name), size, mode, progress)
 }
 
 // Put writes one file into the namespace. It fails unless the far end said the namespace is
@@ -98,7 +98,7 @@ func (b *Browsing) Put(name string, body io.Reader, size int64, mode uint32, pro
 	if !got.OK {
 		return fmt.Errorf("writing %s: %s", shown(name), got.Reason)
 	}
-	return sendBody(b.conn, body, filepath.Base(name), size, progress)
+	return sendBody(b.conn, body, path.Base(name), size, progress)
 }
 
 // PutFile writes one file from this disk into the namespace.

@@ -7,7 +7,6 @@
 package live
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -145,7 +144,7 @@ func (d *Duplex) Pump(out io.Writer) error {
 	for {
 		kind, size, err := d.conn.ReadHeader()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if wire.Closed(err) {
 				return nil
 			}
 			return err
