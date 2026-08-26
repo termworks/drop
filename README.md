@@ -48,7 +48,7 @@ Discovery, pairing and transfer work.
 - private rendezvous per pair, hourly rotation
 - AutoRelay, so a node behind a NAT still has a dialable address
 - transfer with blake3 verification, resume, and paired-only acceptance
-- directories are not supported yet; files only
+- a push carries files, not whole directories, yet
 
 ## build
 
@@ -114,7 +114,7 @@ drop requests                  who has asked to be let in
 drop vault                     whether what is kept on this disk is encrypted
 ```
 
-## namespaces
+## namespaces and archetypes
 
 One identity per device, and named paths under it. An address is a peer and a path:
 
@@ -126,16 +126,40 @@ One identity per device, and named paths under it. An address is a peer and a pa
      who                   what
 ```
 
-Each path has a **type**, and the type is what decides what happens when someone opens it. That is
-declared in the config, not chosen by a flag at the far end — so there is one verb:
+Each of those paths is a **namespace**: an address, an access rule, and the name of the
+**archetype** it belongs to. The archetype is what the namespace *means* — what opening it does,
+which settings it reads out of its declaration, what it hands whoever is on the other end.
 
 ```
-drop to laptop/inbox report.pdf     it is a files namespace, so this sends a file
+   archetype   chat        what a chat is: messages, stored, acknowledged
+   namespace   /friends    one of them
+   namespace   /work       another one, same archetype, different rule and history
+```
+
+A namespace knows which archetype it belongs to and nothing about what that archetype means. That
+is the whole shape of the thing: a chat, a terminal and a drop box have no code and no data model
+in common, and the part of drop that resolves a path, checks a rule and frames the wire has never
+heard of any of them. Adding a seventh is [writing one and registering it](#adding-an-archetype),
+and nothing else.
+
+In a config the archetype is named by `type`, and everything else in the table is that archetype's
+own business:
+
+```lua
+drop.mount("/inbox", { type = "share", dir = "~/Downloads" })
+drop.mount("/term",  { type = "tty",   shell = "/bin/sh", input = false })
+```
+
+Which archetype a path belongs to is declared here, on the side that serves it, and not chosen by a
+flag at the far end — so there is one verb:
+
+```
+drop to laptop/inbox report.pdf     a share namespace, so this sends a file
 drop to laptop/inbox -              and - is standard input, whose length is unknown
-drop to laptop/logs                 it is a stream namespace, so this reads it
-drop to laptop/term                 it is a tty namespace, so this watches it
-drop to laptop/chat "on my way"     it is a chat namespace, so this is a message
-drop to laptop/open https://…       it is a link namespace, so that opens over there
+drop to laptop/logs                 a stream namespace, so this reads it
+drop to laptop/term                 a tty namespace, so this watches it
+drop to laptop/chat "on my way"     a chat namespace, so this is a message
+drop to laptop/open https://…       a link namespace, so that opens over there
 ```
 
 Asking a namespace for something it is not is refused with the reason, rather than half-working:
@@ -143,6 +167,100 @@ Asking a namespace for something it is not is refused with the reason, rather th
 ```
 $ drop to laptop/chat report.pdf
 drop: 12D3KooW… declined: /chat is a chat namespace
+```
+
+### the archetypes
+
+Six of them, and each one reads its own settings out of the mount that declares it:
+
+| archetype | what it is for | it reads | what the far end gets |
+| --- | --- | --- | --- |
+| `share` | a drop box: things are pushed in, once | `dir` | it offers items, they land in `dir`, the session ends |
+| `files` | a folder: the far end walks it | `dir`, `writable` | list and download; with `writable`, also upload, delete, mkdir, move |
+| `chat` | a conversation | | it sends messages, stored here and acknowledged once they are on disk |
+| `link` | a URL handed over | `action` | it sends a URL, which is written down, or given to `action` |
+| `tty` | a terminal, shared | `shell`, `input` | one shell fanned out to everybody watching; typing only with `input` |
+| `stream` | a command being followed | `command` | whatever the command writes, for as long as it writes it |
+
+Anything a mount does not say takes the archetype's own default, and the two that hand something
+over — `writable` and `input` — default to **off**. A mount may also pin `version` to one revision
+of an archetype's protocol; without it, the newest this build has is used.
+
+A declaration is read by the archetype it names, when the config is read. So a `share` with no
+`dir`, or a `type` this build has never heard of, is an error with a file and a line on it, rather
+than a namespace that turns out to answer nothing months later.
+
+### share and files are not the same thing
+
+They both point at a directory and they are opposites.
+
+**`share` is one-shot and one-directional.** Somebody pushes items, they land in `dir`, the session
+ends. Nothing is listed and nothing is asked for: the sender says what it has, the receiver says
+how much of each it already holds, and the bytes go over. Whoever the access rule admits can *put*
+things there, and cannot see, read or remove what is already in it — not even what they sent
+themselves. A name that is taken becomes `report-1.pdf`, so nothing that arrives replaces anything.
+
+**`files` is a folder the far end walks.** It lists directories, and it downloads. With
+`writable = true` it also uploads, makes directories, moves things, and **deletes them**. There is
+no separate delete permission: one flag turns on the whole writing half.
+
+```lua
+drop.mount("/inbox",  { type = "share", dir = "~/Downloads/drop" })  -- they may put things in
+drop.mount("/papers", { type = "files", dir = "~/papers" })          -- they may read it
+drop.mount("/scratch", { type = "files", dir = "~/scratch", writable = true, access = { "me" } })
+```
+
+Read the third line as: every machine of mine may take anything out of `~/scratch` and delete
+anything in it. That is what `writable` means, so write it against a rule you would be happy to say
+out loud, and leave it off otherwise — a folder that is read-only is the useful default and the
+safe one.
+
+> **Upgrading:** `files` used to be the drop box, and is not any more — the drop box is now called
+> `share`. A config written before this that says `type = "files"` still loads, still points at the
+> same directory, and now means *let them walk it and read it* instead of *let them send here*.
+> Read your `init.lua` again before you next serve it. There is no compatibility shim and there
+> will not be one; the names mean what this table says they mean.
+
+### adding an archetype
+
+Six is what is registered today, not a ceiling. An archetype is an implementation of one
+interface — [`arch.Archetype`](src/pkg/arch/arch.go) — and a line registering it:
+
+```go
+Name() string                                  // what a config writes, and what travels
+Version() int                                  // which revision of your own protocol that is
+Read(arch.Declared) (arch.Config, error)       // your settings, out of the mount that declared you
+Note(arch.Config) arch.Note                    // what a listing may say about one of yours
+Serve(ctx, arch.Session) error                 // one session, over a stream nothing else reads
+```
+
+`Read` is handed the mount table as written, and pulls its own keys out of it by name; the config
+reader knows none of them. `Note` is how a listing, a row in the interface and the startup table
+describe your namespace without a case for it. `Serve` is given a framed connection and the path,
+and what is said on it from there is yours alone — no other part of drop reads a byte of it.
+
+Register it in [`src/cmd/archetypes.go`](src/cmd/archetypes.go), which is where a process says
+which archetypes it answers for — the daemon registers all six, `drop chat` registers one, and a
+test registers whatever it is testing. Nothing in `ns`, `conf`, `proto` or `wire` changes, and
+nothing in them may be made to: a path that resolves an access rule and a wire that frames bytes
+have no business knowing what your archetype is.
+
+[`src/pkg/arch/whole_test.go`](src/pkg/arch/whole_test.go) is that claim, tested. It is a `camera`
+archetype written entirely inside one test file — declared in lua, read into settings of its own,
+mounted, listed, opened over a pipe and served, speaking a protocol nobody else has heard of. Read
+it as the shortest complete answer to "what would mine have to look like".
+
+### the longest prefix wins
+
+A mount serves everything below it, so `/stream` answers
+`/stream/of/one/specific/namespace` without declaring each one — and a more specific mount still
+takes precedence:
+
+```
+   declared:   /stream            /stream/logs
+   asked:      /stream/a/b        →  /stream        rest /a/b
+               /stream/logs/today →  /stream/logs   rest /today
+               /streaming         →  nothing        (boundary, not substring)
 ```
 
 ## who may reach what
@@ -252,7 +370,7 @@ Between shared and secret there is a third thing: a path that says it exists and
 opened. It appears in a listing marked **locked**, and whoever sees it can ask.
 
 ```lua
-drop.mount("/vault", { type = "files", dir = "~/vault", visible = "paired" })
+drop.mount("/vault", { type = "share", dir = "~/vault", visible = "paired" })
 drop.mount("/work",  { type = "chat", access = { "bob" }, visible = { "carol" } })
 ```
 
@@ -262,7 +380,7 @@ shared with one person, merely visible to another, who then asks.
 
 ```console
 $ drop ls beta
-  /vault   files    locked
+  /vault   share    locked
 
 $ drop ask beta/vault --why "for the thing we discussed"
 asked beta for /vault
@@ -317,29 +435,6 @@ a terminal worth attacking.
 
 A path guarded by a password is in no listing at all — nobody offers a secret to ask what
 exists — so whoever you hand one to needs the path as well as the word.
-
-### the types
-
-| type | what opening it does | needs |
-| --- | --- | --- |
-| `files` | receives files into a directory | `dir` |
-| `stream` | runs a command and sends what it writes, for as long as it writes | `command` |
-| `tty` | a shell in a pty; read-only unless told otherwise | `shell`, `input` |
-| `chat` | conversation messages | |
-| `link` | a URL, optionally handed to a browser | `action` |
-
-### the longest prefix wins
-
-A mount serves everything below it, so `/stream` answers
-`/stream/of/one/specific/namespace` without declaring each one — and a more specific mount still
-takes precedence:
-
-```
-   declared:   /stream            /stream/logs
-   asked:      /stream/a/b        →  /stream        rest /a/b
-               /stream/logs/today →  /stream/logs   rest /today
-               /streaming         →  nothing        (boundary, not substring)
-```
 
 ## who you are
 
@@ -448,20 +543,23 @@ drop.name = "workstation"
 drop.open_links = true
 drop.rendezvous = false -- optional; on unless you say otherwise, see below
 
--- A branch: no type, just who may reach everything under it. Access inherits downward, and
+-- A branch: no archetype, just who may reach everything under it. Access inherits downward, and
 -- a path with no rule above it is reachable by nobody.
 drop.mount("/work",    { access = { "laptop", "phone" } })
 drop.mount("/friends", { access = { "bob", "carol" } })
 
-drop.mount("/work/inbox", { type = "files",  dir = "~/Downloads" })
+drop.mount("/work/inbox", { type = "share",  dir = "~/Downloads" })
 drop.mount("/work/logs",  { type = "stream", command = "journalctl -f -n 50" })
 drop.mount("/work/term",  { type = "tty",    shell = "/bin/sh", input = false })
+
+-- A folder they walk. Read-only, because writable would also mean they may delete from it.
+drop.mount("/work/notes", { type = "files",  dir = "~/notes" })
 
 drop.mount("/friends/chat", { type = "chat" })
 drop.mount("/friends/open", { type = "link", action = "xdg-open" })
 
 -- A deeper rule replaces the one above it rather than adding to it.
-drop.mount("/friends/just-bob", { type = "files", dir = "~/bob", access = { "bob" } })
+drop.mount("/friends/just-bob", { type = "share", dir = "~/bob", access = { "bob" } })
 
 if os.getenv("DROP_DEV") then
   drop.mount("/work/build", { type = "stream", command = "tail -f /tmp/build.log" })
@@ -502,12 +600,14 @@ Set `drop.relays` to your own if you would rather not use the defaults.
 Mounts are keyed by path, so declaring one twice replaces it rather than adding a second — a config
 that loops, or is re-read, cannot silently grow the table.
 
-A file that exists and does not parse is **fatal**, and the error names the file and line. A typo
-that silently drops half the namespaces is worse than not starting. With no file at all, drop serves
-a small default: `/inbox`, `/chat`, `/open`, and nothing that runs a command or shares a terminal,
-because those are decisions.
+A file that exists and does not parse is **fatal**, and the error names the file and line, whether
+what is wrong is the lua or a setting an archetype refused. A typo that silently drops half the
+namespaces is worse than not starting. With no file at all, drop serves a small default: `/inbox`
+to send to, `/chat` to talk in, `/open` for links — and nothing that hands over a directory, runs a
+command or shares a terminal, because those are decisions.
 
-`drop ns` prints what this node serves. `misc/init.lua` is a worked example.
+`drop ns` prints what this node serves, and what each archetype says about itself.
+[`misc/init.lua`](misc/init.lua) is a worked example with one namespace of every archetype in it.
 
 ## conversations
 
@@ -636,24 +736,53 @@ Both end the same way: an `End` frame carrying the length the sender actually wr
 digest of all of it. For an unknown-size item that frame is where the length is finally learned.
 The receiver checks both before renaming anything into place.
 
-### the two modes
+### the opening, and then whatever the archetype says
 
-**Files** is one side pushing items:
+Only the first two frames are everybody's. A caller says which path it wants and which archetype it
+expects to find there; the far end resolves the path, checks the rule, and either accepts or gives
+a reason:
+
+```
+  Open{path, archetype, version, badge}  ------->
+                     <------- Accept     // or Reject{reason}
+```
+
+After that the stream belongs to the archetype, and nothing generic reads another byte of it. Four
+shapes are in use, and a seventh archetype is free to invent a fifth.
+
+**A push** — `share`:
 
 ```
 sender                          receiver
-  Open{files, sizes}   ------->
+  Item{names, sizes}   ------->        // the whole offer, in one frame
         <------- Accept{resume[]}      // per item, bytes already held
-  Data ... Data        ------->
+  Data ... Data        ------->        // then each item in turn
   End{size, digest}    ------->
         <------- Ack{ok}               // hashed and verified
 ```
 
-**Duplex** is a live stream, both ends writing at once, nobody counting:
+**A batch** — `chat` and `link`: what is acknowledged is what reached a disk, nothing more:
 
 ```
-  Open{duplex}         ------->
-        <------- Accept
+  Item{message}        ------->        // as many as there are
+  End                  ------->
+        <------- Ack{the ids stored}
+```
+
+**Rounds** — `files`, one request and one reply at a time, for as long as the caller keeps asking.
+A round that moves a file ends the way a push ends, with a size, a digest and a verdict:
+
+```
+           <------- Reply{writable}     // what this mount allows, said once
+  Request{list /papers}   ------->
+           <------- Reply{entries}
+  Request{get thesis.pdf} ------->
+           <------- Reply{size}, then Data … End, and an Ack back
+```
+
+**A duplex** — `tty` and `stream`: both ends writing at once, nobody counting:
+
+```
   Data          <-- both ways -->  Data
   Resize        <-- both ways -->  Resize
   End (half-close)     ------->
@@ -776,9 +905,10 @@ src/cmd/               the cobra command tree, one file per command
 src/pkg/node/          identity, the iroh endpoint, relays
 src/pkg/discovery/     finding a device on this wire
 src/pkg/rendezvous/    finding one that moved, under a derived identity
-src/pkg/ns/            paths, kinds, and the access rules on them
+src/pkg/ns/            namespaces: paths, the access rules on them, nothing about meaning
+src/pkg/arch/          archetypes: the interface, the registry, and one package each
 src/pkg/passwd/        argon2id, for the secrets that guard a path
-src/pkg/proto/         pairing, hello, transfer, and the framing under them
+src/pkg/proto/         pairing, hello, opening a namespace, and the framing under them
 src/pkg/book/          the address book, including pairing secrets
 src/pkg/grant/         who has been let in and shut out from the interface
 src/pkg/asked/         requests to reach a path, waiting on an answer
@@ -793,7 +923,7 @@ src/pkg/asciicast/     reading an asciicast stream
 src/pkg/ticket/        a pairing invitation, as text, link, or QR
 src/pkg/tui/           the full-screen interface
 src/pkg/conf/          the Lua configuration
-misc/                  the systemd user unit
+misc/                  the systemd user unit, and an example config
 ```
 
 ## one node, however many commands

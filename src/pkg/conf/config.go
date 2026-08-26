@@ -52,9 +52,9 @@ type Config struct {
 	Path string
 }
 
-// Default is what a node serves with no configuration file: somewhere to put files, somewhere to
-// talk, and nothing that runs a command or shares a terminal, because those are decisions.
-// Default is what a node serves with no config at all.
+// Default is what a node serves with no configuration file: somewhere to send to, somewhere to
+// talk, and somewhere to hand a link. Nothing that walks a directory, runs a command or shares a
+// terminal, because those are decisions.
 //
 // Open to anyone paired, because a default that serves nobody is not a default — it is a node
 // that appears broken until its owner finds out a rule was needed. Pairing is already the
@@ -63,6 +63,7 @@ func Default(known *arch.Registry) *Config {
 	open := ns.Access{AnyPaired: true}
 
 	cfg := &Config{Mounts: ns.NewTable(), known: known}
+	// A share rather than a files: something may be put in the inbox, and nothing taken out of it.
 	cfg.add("/inbox", "share", settings{"dir": Inbox()}, open)
 	cfg.add("/chat", "chat", settings{}, open)
 	cfg.add("/open", "link", settings{}, open)
