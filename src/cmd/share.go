@@ -19,7 +19,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/ns"
 )
 
-// SharePath is where a handoff is served, so a sender opens `<peer>/share`.
+// SharePath is where a handoff is served, so a sender connects to `<machine>:/share`.
 const SharePath = "/share"
 
 func newShareCmd() *cobra.Command {
@@ -28,9 +28,9 @@ func newShareCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "share [dir]",
 		Short: "Take a file from somebody, once",
-		Long: "share puts a path up at <this device>/share for as long as this command runs,\n" +
-			"says where to send to and who may, and takes it down again once something has\n" +
-			"come through it.\n\n" +
+		Long: "share puts a path up at /share on this machine for as long as this command runs,\n" +
+			"says where to send to and who may, and takes it down again once something has come\n" +
+			"through it.\n\n" +
 			"Nothing is written to the config: the path is there while you are waiting for\n" +
 			"the file and not a moment longer, and it takes one transfer.\n\n" +
 			"With no directory it takes things into the one you are in.",
@@ -138,7 +138,7 @@ func handoffDir(dir string) (string, error) {
 // whereToSend says where to send and who may.
 func whereToSend(dir string, to []string, id node.ID) {
 	fmt.Printf("\n%s%s  →  %s\n\n", node.DisplayName(), SharePath, dir)
-	fmt.Printf("  drop to %s%s <file>...\n\n", node.Brief(id), SharePath)
+	fmt.Printf("  drop connect %s:%s <file>...\n\n", node.Brief(id), SharePath)
 
 	who := mayReach(to)
 	if len(who) == 0 {

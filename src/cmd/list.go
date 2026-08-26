@@ -9,47 +9,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 )
 
-func newListCmd() *cobra.Command {
-	var wait time.Duration
-
-	cmd := &cobra.Command{
-		Use:   "ls [device[/path]]",
-		Short: "What a device shares with you",
-		Long: "ls asks a device what it serves, and shows what you may reach.\n\n" +
-			"What comes back is filtered by that device: a path shared with someone else is\n" +
-			"absent rather than refused, so this is what you have, not what exists.\n\n" +
-			"A path that lands in a directory somebody shares lists what is in it instead,\n" +
-			"and keeps going: `drop ls orin/work/deep` is that directory.\n\n" +
-			"With no argument, it lists what this device serves.",
-		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return showOwnTable(reading())
-			}
-			peer, under := splitTarget(args[0])
-			return listThere(cmd.Context(), peer, under, wait)
-		},
-	}
-
-	cmd.Flags().DurationVarP(&wait, "wait", "w", 30*time.Second, "how long to spend finding the device")
-
-	return cmd
-}
-
-func listThere(parent context.Context, peer, under string, wait time.Duration) error {
-	entry, err := book.Resolve(peer)
-	if err != nil {
-		return err
-	}
-
+// listThere asks a machine what it serves and shows what may be reached.
+func listThere(parent context.Context, at ns.Address, entry book.Entry, wait time.Duration) error {
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -69,28 +37,16 @@ func listThere(parent context.Context, peer, under string, wait time.Duration) e
 		return err
 	}
 
-	// A path that lands inside a directory namespace is a directory rather than a list of
-	// namespaces. A bare device is never that: it is asking what it may reach at all.
-	if at, rest, ok := insideFiles(hello.Serves, under); ok && under != "/" {
-		b, done, err := browse(find, n, lan, entry, at)
-		if err != nil {
-			return err
-		}
-		defer done()
-
-		return listInside(b, entry, at, rest)
-	}
-
 	shown := make([]proto.Served, 0, len(hello.Serves))
 	for _, served := range hello.Serves {
-		if under == "/" || covers(under, served.Path) {
+		if covers(at.Path, served.Path) {
 			shown = append(shown, served)
 		}
 	}
 
 	if len(shown) == 0 {
-		if under != "/" {
-			fmt.Printf("\n%s shares nothing with you under %s\n\n", entry.Name, under)
+		if at.Path != ns.Root {
+			fmt.Printf("\n%s shares nothing with you under %s\n\n", entry.Name, at.Path)
 		} else {
 			fmt.Printf("\n%s shares nothing with you\n\n", entry.Name)
 		}

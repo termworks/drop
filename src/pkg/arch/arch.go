@@ -102,9 +102,9 @@ type Archetype interface {
 
 // Registry is which implementation answers to which name.
 //
-// A value rather than a package variable: `drop serve` registers everything, `drop chat` registers
-// one archetype, and a test registers a fake. Which archetypes a process serves is a property of
-// that process.
+// A value rather than a package variable: `drop serve` registers everything, a chat window
+// registers one archetype, and a test registers a fake. Which archetypes a process serves is a
+// property of that process.
 type Registry struct {
 	mu sync.RWMutex
 	// by is keyed by name and version, and newest is the version a config gets when it names none.

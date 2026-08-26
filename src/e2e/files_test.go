@@ -47,7 +47,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	pair(t, holder, walker)
 
 	t.Run("a device still lists its namespaces", func(t *testing.T) {
-		out := walker.must("ls", "holder")
+		out := walker.must("path", "ls", "holder")
 		for _, path := range []string{"/chat", "/work", "/read"} {
 			if !strings.Contains(out, path) {
 				t.Errorf("%s is not listed:\n%s", path, out)
@@ -56,7 +56,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	})
 
 	t.Run("a path that is a directory lists what is in it", func(t *testing.T) {
-		out := walker.must("ls", "holder/work")
+		out := walker.must("file", "ls", "holder:/work")
 		if !strings.Contains(out, "note.txt") {
 			t.Errorf("the file in it is not listed:\n%s", out)
 		}
@@ -66,7 +66,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	})
 
 	t.Run("and it keeps walking", func(t *testing.T) {
-		out := walker.must("ls", "holder/work/deep")
+		out := walker.must("file", "ls", "holder:/work/deep")
 		if !strings.Contains(out, "inner.txt") {
 			t.Errorf("the directory below was not walked into:\n%s", out)
 		}
@@ -77,7 +77,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 
 	t.Run("one file is copied out", func(t *testing.T) {
 		into := filepath.Join(t.TempDir(), "taken.txt")
-		walker.must("get", "holder/work/deep/inner.txt", into)
+		walker.must("file", "get", "holder:/work/deep/inner.txt", into)
 
 		if got := read(t, into); got != "deeper\n" {
 			t.Errorf("what arrived is %q", got)
@@ -85,7 +85,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	})
 
 	t.Run("and lands under its own name when nowhere was said", func(t *testing.T) {
-		walker.must("get", "holder/work/note.txt")
+		walker.must("file", "get", "holder:/work/note.txt")
 
 		// A command runs in the node's home, which is where a bare name lands.
 		if got := read(t, filepath.Join(walker.home, "note.txt")); got != "the note\n" {
@@ -97,7 +97,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		up := filepath.Join(t.TempDir(), "sent.txt")
 		writeAt(t, up, "from the walker\n")
 
-		walker.must("put", "holder/work/deep", up)
+		walker.must("file", "put", "holder:/work/deep", up)
 
 		if got := read(t, filepath.Join(work, "deep", "sent.txt")); got != "from the walker\n" {
 			t.Errorf("what landed is %q", got)
@@ -105,7 +105,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	})
 
 	t.Run("standard input is copied in under a name", func(t *testing.T) {
-		if _, err := walker.runIn(within(t), "typed in\n", "put", "holder/work", "-", "--as", "typed.txt"); err != nil {
+		if _, err := walker.runIn(within(t), "typed in\n", "file", "put", "holder:/work", "-", "--as", "typed.txt"); err != nil {
 			t.Fatalf("put -: %v", err)
 		}
 		if got := read(t, filepath.Join(work, "typed.txt")); got != "typed in\n" {
@@ -114,22 +114,22 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	})
 
 	t.Run("a directory is made and something is moved into place", func(t *testing.T) {
-		walker.must("mkdir", "holder/work/made")
+		walker.must("file", "mkdir", "holder:/work/made")
 
 		stat, err := os.Stat(filepath.Join(work, "made"))
 		if err != nil || !stat.IsDir() {
 			t.Fatalf("the directory was not made: %v", err)
 		}
 
-		walker.must("mv", "holder/work/typed.txt", "made/typed.txt")
+		walker.must("file", "mv", "holder:/work/typed.txt", "made/typed.txt")
 		if got := read(t, filepath.Join(work, "made", "typed.txt")); got != "typed in\n" {
 			t.Errorf("what was moved is %q", got)
 		}
 	})
 
 	t.Run("and taken away again", func(t *testing.T) {
-		walker.must("rm", "holder/work/made/typed.txt")
-		walker.must("rm", "holder/work/made")
+		walker.must("file", "rm", "holder:/work/made/typed.txt")
+		walker.must("file", "rm", "holder:/work/made")
 
 		if _, err := os.Stat(filepath.Join(work, "made")); err == nil {
 			t.Error("the directory outlived the removal")
@@ -140,15 +140,15 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		up := filepath.Join(t.TempDir(), "nope.txt")
 		writeAt(t, up, "no\n")
 
-		if out := walker.must("ls", "holder/read"); !strings.Contains(out, "note.txt") {
+		if out := walker.must("file", "ls", "holder:/read"); !strings.Contains(out, "note.txt") {
 			t.Errorf("a read-only directory could not be listed:\n%s", out)
 		}
 
 		for _, refused := range [][]string{
-			{"put", "holder/read", up},
-			{"rm", "holder/read/note.txt"},
-			{"mkdir", "holder/read/made"},
-			{"mv", "holder/read/note.txt", "moved.txt"},
+			{"file", "put", "holder:/read", up},
+			{"file", "rm", "holder:/read/note.txt"},
+			{"file", "mkdir", "holder:/read/made"},
+			{"file", "mv", "holder:/read/note.txt", "moved.txt"},
 		} {
 			if out, err := walker.run(refused...); err == nil {
 				t.Errorf("drop %s was allowed:\n%s", strings.Join(refused, " "), out)
@@ -161,10 +161,10 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 
 	t.Run("nothing outside the directory is reachable", func(t *testing.T) {
 		for _, leaving := range [][]string{
-			{"ls", "holder/work/../.."},
-			{"get", "holder/work/../../../etc/passwd", filepath.Join(t.TempDir(), "taken")},
-			{"mkdir", "holder/work/../made-outside"},
-			{"rm", "holder/work/../../work"},
+			{"file", "ls", "holder:/work/../.."},
+			{"file", "get", "holder:/work/../../../etc/passwd", filepath.Join(t.TempDir(), "taken")},
+			{"file", "mkdir", "holder:/work/../made-outside"},
+			{"file", "rm", "holder:/work/../../work"},
 		} {
 			if out, err := walker.run(leaving...); err == nil {
 				t.Errorf("drop %s was allowed:\n%s", strings.Join(leaving, " "), out)
@@ -198,7 +198,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	pair(t, taker, sender)
 
 	// Nothing is at that path until somebody asks for it.
-	if out := sender.must("ls", "taker"); strings.Contains(out, "/share") {
+	if out := sender.must("path", "ls", "taker"); strings.Contains(out, "/share") {
 		t.Fatalf("a handoff was there before anybody opened one:\n%s", out)
 	}
 
@@ -207,7 +207,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		t.Fatal(err)
 	}
 
-	_, shareSaid, stopShare := taker.background("share", into)
+	_, shareSaid, stopShare := taker.background("path", "share", into)
 	defer stopShare()
 
 	waitFor(t, "the handoff to open", 30*time.Second, func() bool {
@@ -218,12 +218,12 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	}
 
 	waitFor(t, "the handoff to be listed", 30*time.Second, func() bool {
-		return strings.Contains(sender.must("ls", "taker"), "/share")
+		return strings.Contains(sender.must("path", "ls", "taker"), "/share")
 	})
 
 	up := filepath.Join(t.TempDir(), "hello.txt")
 	writeAt(t, up, "into the handoff\n")
-	sender.must("to", "taker/share", up)
+	sender.must("connect", "taker:/share", up)
 
 	waitFor(t, "the file to land", 30*time.Second, func() bool {
 		_, err := os.Stat(filepath.Join(into, "hello.txt"))
@@ -237,7 +237,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	waitFor(t, "the handoff to close", 30*time.Second, func() bool {
 		return strings.Contains(takerSaid.String(), "closed")
 	})
-	if out := sender.must("ls", "taker"); strings.Contains(out, "/share") {
+	if out := sender.must("path", "ls", "taker"); strings.Contains(out, "/share") {
 		t.Errorf("the handoff outlived the transfer:\n%s", out)
 	}
 	if !strings.Contains(shareSaid.String(), "a transfer finished") {

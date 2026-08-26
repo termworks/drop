@@ -220,7 +220,7 @@ func pair(t *testing.T, showing, taking *node) { pairing(t, showing, taking) }
 func pairing(t *testing.T, showing, taking *node, flags ...string) {
 	t.Helper()
 
-	_, said, stop := showing.background("pair", "--code", "e2e-test-code", "--wait", "3m")
+	_, said, stop := showing.background("peer", "pair", "--code", "e2e-test-code", "--wait", "3m")
 	defer stop()
 
 	var ticket string
@@ -229,7 +229,7 @@ func pairing(t *testing.T, showing, taking *node, flags ...string) {
 		return ticket != ""
 	})
 
-	out := taking.must(append([]string{"pair", ticket}, flags...)...)
+	out := taking.must(append([]string{"peer", "pair", ticket}, flags...)...)
 	if !strings.Contains(out, "reach the other") {
 		t.Fatalf("pairing did not finish:\n%s", out)
 	}
@@ -239,7 +239,7 @@ func pairing(t *testing.T, showing, taking *node, flags ...string) {
 	})
 }
 
-// ticketIn finds the ticket in what `drop pair` printed.
+// ticketIn finds the ticket in what `drop peer pair` printed.
 func ticketIn(said string) string {
 	for _, line := range strings.Split(said, "\n") {
 		if _, rest, found := strings.Cut(line, "ticket:"); found {

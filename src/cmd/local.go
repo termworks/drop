@@ -33,8 +33,8 @@ import (
 // over a socket on this machine, and there stays one node, one listener, and one address that
 // always means the same thing.
 //
-// The first line says which it is: "cast", "share <who> <dir>", "pair <code> <name>", or
-// "via <device> <protocol>".
+// The first line says which it is: "cast", "share <who> <dir>", "pair <code> <name>",
+// "via <device> <protocol>", or "held".
 
 // pairHost is the pairing offer open on this node, if any.
 //
@@ -405,8 +405,35 @@ func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, offers *
 	case "via":
 		name, alpn, _ := strings.Cut(rest, " ")
 		return takeVia(ctx, held, conn, name, alpn)
+
+	case "held":
+		return takeHeld(held, conn)
 	}
 	return fmt.Errorf("a local connection asked for %q, which is nothing", what)
+}
+
+// takeHeld answers with the devices this node has a connection to, one id a line.
+//
+// Read out of what is already open rather than dialled, so a command asking which of somebody's
+// machines to use spends nothing finding out.
+func takeHeld(held *dial.Kept, conn net.Conn) error {
+	if held == nil {
+		return nil
+	}
+
+	pinned, err := book.Load()
+	if err != nil {
+		return err
+	}
+	for _, entry := range pinned.All() {
+		if !held.Reaching(entry.ID) {
+			continue
+		}
+		if _, err := fmt.Fprintln(conn, entry.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // takeShare holds a handoff open for as long as whoever asked for it stays connected, and takes it

@@ -69,11 +69,6 @@ func deliverOver(ctx context.Context, over reaches, entry book.Entry, path, arch
 	return 0, err
 }
 
-// deliver sends into the default chat namespace.
-func deliver(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.Entry) (int, error) {
-	return deliverTo(ctx, n, lan, entry, "/chat", "chat")
-}
-
 // compose queues a message for a peer without needing the network.
 func compose(entry book.Entry, kind byte, body, extra string) (convo.Message, error) {
 	store, err := convo.Open(entry.ID)
@@ -162,7 +157,7 @@ func render(who string, m convo.Message) string {
 	}
 }
 
-// noteFile records a file changing hands, so `drop log` reads as the whole story.
+// noteFile records a file changing hands, so `drop me log` reads as the whole story.
 func noteFile(with node.ID, dir byte, name string, size int64) {
 	store, err := convo.Open(with)
 	if err != nil {

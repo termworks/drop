@@ -55,14 +55,20 @@ func TestCleanBoundsDepthAndLength(t *testing.T) {
 
 func TestParseAddress(t *testing.T) {
 	cases := []struct {
-		text string
-		peer string
-		path string
+		text    string
+		user    string
+		machine string
+		path    string
+		here    bool
 	}{
-		{"laptop", "laptop", Root},
-		{"laptop/inbox", "laptop", "/inbox"},
-		{"laptop/stream/of/one/specific/namespace", "laptop", "/stream/of/one/specific/namespace"},
-		{"12D3KooWCK6Vkp/chat", "12D3KooWCK6Vkp", "/chat"},
+		{"laptop", "", "laptop", Root, false},
+		{"laptop:/inbox", "", "laptop", "/inbox", false},
+		{"bob:laptop:/chat", "bob", "laptop", "/chat", false},
+		{"bob::/chat", "bob", "", "/chat", false},
+		{"laptop:/stream/of/one/specific/namespace", "", "laptop", "/stream/of/one/specific/namespace", false},
+		{"12D3KooWCK6Vkp:/chat", "", "12D3KooWCK6Vkp", "/chat", false},
+		{"/chat", "", "", "/chat", true},
+		{":/chat", "", "", "/chat", true},
 	}
 
 	for _, c := range cases {
@@ -71,12 +77,13 @@ func TestParseAddress(t *testing.T) {
 			t.Errorf("ParseAddress(%q): %v", c.text, err)
 			continue
 		}
-		if got.Peer != c.peer || got.Path != c.path {
-			t.Errorf("ParseAddress(%q) = %+v, want %s %s", c.text, got, c.peer, c.path)
+		if got.User != c.user || got.Machine != c.machine || got.Path != c.path || got.Here != c.here {
+			t.Errorf("ParseAddress(%q) = %+v, want %s %s %s here=%v", c.text, got, c.user, c.machine, c.path, c.here)
 		}
 	}
 
-	for _, bad := range []string{"", "   ", "/inbox"} {
+	// A slash where a name goes is the old form, and it is not this one.
+	for _, bad := range []string{"", "   ", "laptop/inbox", "bob:laptop:chat", "::"} {
 		if _, err := ParseAddress(bad); err == nil {
 			t.Errorf("ParseAddress(%q) succeeded, want an error", bad)
 		}
@@ -199,5 +206,27 @@ func mustAdd(t *testing.T, table *Table, m Mount) {
 	t.Helper()
 	if err := table.Add(m); err != nil {
 		t.Fatalf("Add(%q): %v", m.Path, err)
+	}
+}
+
+// What an address prints as has to read back as the same address: it is what an error message
+// quotes back at somebody, and a form they cannot retype is worse than no form at all.
+func TestAnAddressReadsBackAsItself(t *testing.T) {
+	for _, text := range []string{
+		"bob:laptop:/chat", "laptop:/chat", "bob::/chat", "/chat",
+		"bob:laptop", "laptop", "orin:/work/deep",
+	} {
+		at, err := ParseAddress(text)
+		if err != nil {
+			t.Errorf("ParseAddress(%q): %v", text, err)
+			continue
+		}
+		if got := at.String(); got != text {
+			t.Errorf("ParseAddress(%q).String() = %q", text, got)
+		}
+		again, err := ParseAddress(at.String())
+		if err != nil || again != at {
+			t.Errorf("%q printed as %q, which reads back as %+v (%v)", text, at.String(), again, err)
+		}
 	}
 }

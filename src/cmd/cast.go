@@ -24,7 +24,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/proto"
 )
 
-// CastPath is where a cast is served, so a watcher opens `<peer>/cast`.
+// CastPath is where a cast is served, so a watcher connects to `<machine>:/cast`.
 const CastPath = "/cast"
 
 func newCastCmd() *cobra.Command {
@@ -111,11 +111,12 @@ func runCast(parent context.Context, addressFile string) error {
 		fmt.Fprintf(os.Stderr, "drop: local discovery unavailable: %v\n", err)
 	}
 
+	mounts := castMounts(known)
 	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
 			_ = proto.Handle(ctx, s, from, proto.Policy{
-				Mounts:     castMounts(known),
+				Mounts:     mounts,
 				Archetypes: known,
 				Allow:      accepting(pinned, false),
 				Who:        whoIs(pinned),
@@ -123,8 +124,8 @@ func runCast(parent context.Context, addressFile string) error {
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
-			_ = proto.AnswerHello(s, from, func(proto.Badged) proto.Hello {
-				return proto.Hello{Name: node.DisplayName(), Version: version}
+			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
+				return greeting(pinned, mounts, known, from, badge)
 			})
 		},
 	})
@@ -138,7 +139,7 @@ func runCast(parent context.Context, addressFile string) error {
 	defer os.Remove(addressFile)
 
 	fmt.Println(address)
-	fmt.Fprintf(os.Stderr, "drop: casting %dx%d; watch with `drop to %s%s`\n",
+	fmt.Fprintf(os.Stderr, "drop: casting %dx%d; watch with `drop connect %s:%s`\n",
 		head.Width, head.Height, node.Brief(n.ID()), CastPath)
 
 	return pump(ctx, reader, stage)
@@ -284,7 +285,7 @@ func castThroughDaemon(ctx context.Context, addressFile string) error {
 	}
 
 	fmt.Println(address)
-	fmt.Fprintf(os.Stderr, "drop: casting through this node; watch with `drop to %s%s`\n",
+	fmt.Fprintf(os.Stderr, "drop: casting through this node; watch with `drop connect %s:%s`\n",
 		node.Brief(id), CastPath)
 
 	// Closed when standard input runs out, which is what tells the daemon the cast is over.

@@ -5,17 +5,16 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/bresilla/drop/src/pkg/asked"
-	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/grant"
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 )
 
@@ -23,10 +22,11 @@ func newAskCmd() *cobra.Command {
 	var why string
 
 	cmd := &cobra.Command{
-		Use:   "ask <device>/<path>",
+		Use:   "ask <address>",
 		Short: "Ask to be let into a path you can see but cannot open",
 		Long: "A path can be visible without being shared: it appears in a listing, marked locked,\n" +
 			"and opening it is refused. This rings the bell on it.\n\n" +
+			"  drop path ask orin:/vault --why \"for the thing we discussed\"\n\n" +
 			"Nothing is granted by asking. The request is written down on the other machine for\n" +
 			"somebody to look at, and they decide.",
 		Args: cobra.ExactArgs(1),
@@ -40,13 +40,15 @@ func newAskCmd() *cobra.Command {
 }
 
 func askFor(parent context.Context, target, why string) error {
-	name, path, found := strings.Cut(target, "/")
-	if !found || path == "" {
-		return fmt.Errorf("say which path: drop ask <device>/<path>")
+	at, err := ns.ParseAddress(target)
+	if err != nil {
+		return err
 	}
-	path = "/" + strings.TrimPrefix(path, "/")
+	if at.Path == ns.Root {
+		return fmt.Errorf("say which path: drop path ask <machine>:/<path>")
+	}
 
-	entry, err := book.Resolve(name)
+	entry, err := resolve(at)
 	if err != nil {
 		return err
 	}
@@ -71,11 +73,11 @@ func askFor(parent context.Context, target, why string) error {
 	defer done.Close()
 	defer s.Close()
 
-	if err := proto.Ask(ctx, s, path, why, node.DisplayName()); err != nil {
+	if err := proto.Ask(ctx, s, at.Path, why, node.DisplayName()); err != nil {
 		return err
 	}
 
-	fmt.Printf("asked %s for %s\n", entry.Name, path)
+	fmt.Printf("asked %s for %s\n", entry.Name, at.Path)
 	fmt.Printf("nothing is granted by asking: somebody there decides.\n")
 	return nil
 }
@@ -118,8 +120,8 @@ func showRequests() error {
 		fmt.Printf("    when  %s\n", one.At.Local().Format("2 Jan 15:04"))
 	}
 
-	fmt.Printf("\n  drop requests allow  <path> <who>\n")
-	fmt.Printf("  drop requests refuse <path> <who>\n\n")
+	fmt.Printf("\n  drop path requests allow  <path> <who>\n")
+	fmt.Printf("  drop path requests refuse <path> <who>\n\n")
 	return nil
 }
 

@@ -136,7 +136,7 @@ func runServe(parent context.Context, quiet bool) error {
 		Asked:      taking(),
 	}
 
-	// The address book is re-read before answering anybody, because `drop pair` is a separate
+	// The address book is re-read before answering anybody, because `drop peer pair` is a separate
 	// process: without this, a device paired while this was running stays a stranger to it.
 	// Every connection that arrives is kept, and whatever is queued for whoever opened it goes
 	// down the same pipe. A device nothing can dial is still a device that dials, and until now
@@ -169,7 +169,7 @@ func runServe(parent context.Context, quiet bool) error {
 				return greeting(pinned, cfg.Mounts, known, from, badge)
 			})
 		},
-		// Pairing is answered by whoever holds the address, which is this. A separate `drop pair`
+		// Pairing is answered by whoever holds the address, which is this. A separate `drop peer pair`
 		// process on this machine asks for a code to be shown; it cannot answer for the node.
 		node.ALPNPair: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
@@ -295,7 +295,7 @@ func kindOf(archetype string) string {
 //
 // A message to a device that was off is kept rather than lost, and the thing that notices it coming
 // back has to be the thing that is always running. Until this, a backlog only moved while somebody
-// had `drop chat` open, which is the one moment they do not need it to.
+// had a chat window open, which is the one moment they do not need it to.
 func backlog(ctx context.Context, n *node.Node, lan *discovery.LAN, pinned *book.Book, held *dial.Kept) {
 	tick := time.NewTicker(flushEvery)
 	defer tick.Stop()

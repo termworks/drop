@@ -211,7 +211,7 @@ func readAll(path, peer string) ([]Message, error) {
 }
 
 // known is the set of ids in the history, walking the log only when it has changed under this
-// process -- a `drop chat` in another terminal appending to the same conversation.
+// process -- a chat window in another terminal appending to the same conversation.
 func (s *Store) known() error {
 	var size int64
 	at, err := os.Stat(s.history)

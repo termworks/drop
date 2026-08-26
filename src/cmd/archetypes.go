@@ -20,8 +20,8 @@ import (
 // What a process can be asked for.
 //
 // Which archetypes a process registers is a property of that process: the daemon answers everything
-// a config can name, `drop chat` answers one, and a cast answers the terminal it is showing. So a
-// registry is built where it is needed and handed in, rather than kept as a package variable.
+// a config can name, a chat window answers one, and a cast answers the terminal it is showing. So
+// a registry is built where it is needed and handed in, rather than kept as a package variable.
 
 // doings is what the archetypes a process registers report back to.
 type doings struct {

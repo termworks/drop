@@ -2,27 +2,12 @@ package cmd
 
 import (
 	"fmt"
-
 	"strings"
-
-	"github.com/spf13/cobra"
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/conf"
 	"github.com/bresilla/drop/src/pkg/ns"
 )
-
-func newNamespacesCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:     "ns",
-		Aliases: []string{"namespaces"},
-		Short:   "Show the namespaces this node serves",
-		Args:    cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return showOwnTable(reading())
-		},
-	}
-}
 
 // showOwnTable prints what this node serves.
 //

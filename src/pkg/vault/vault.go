@@ -282,7 +282,7 @@ const (
 
 // Peek reports what a vault is doing without touching anything.
 //
-// Asking a question must not answer it by generating a key: `drop vault` on a machine that has
+// Asking a question must not answer it by generating a key: `drop me vault` on a machine that has
 // never run one would otherwise leave a key file behind and report a vault that did not exist a
 // moment earlier.
 func Peek(to []string) (State, error) {

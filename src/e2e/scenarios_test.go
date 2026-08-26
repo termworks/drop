@@ -39,13 +39,13 @@ drop.mount("/inbox", { type = "share", access = "paired", dir = "` + alpha.inbox
 `)
 
 	t.Run("a node knows its own identity", func(t *testing.T) {
-		if id := strings.TrimSpace(alpha.must("id")); len(id) != 64 {
+		if id := strings.TrimSpace(alpha.must("me", "id")); len(id) != 64 {
 			t.Fatalf("id = %q, want 64 hex characters", id)
 		}
 	})
 
 	t.Run("a node lists what it serves", func(t *testing.T) {
-		out := beta.must("ns")
+		out := beta.must("path", "ls")
 		for _, path := range []string{"/chat", "/inbox", "/open", "/ticks", "/term"} {
 			if !strings.Contains(out, path) {
 				t.Errorf("%s is not served:\n%s", path, out)
@@ -70,16 +70,16 @@ drop.mount("/inbox", { type = "share", access = "paired", dir = "` + alpha.inbox
 	t.Run("two devices pair", func(t *testing.T) {
 		pair(t, beta, alpha)
 
-		if out := alpha.must("peers"); !strings.Contains(out, "beta") {
+		if out := alpha.must("peer", "ls"); !strings.Contains(out, "beta") {
 			t.Errorf("alpha does not know beta:\n%s", out)
 		}
-		if out := beta.must("peers"); !strings.Contains(out, "alpha") {
+		if out := beta.must("peer", "ls"); !strings.Contains(out, "alpha") {
 			t.Errorf("beta does not know alpha:\n%s", out)
 		}
 	})
 
 	t.Run("one device asks what the other shares", func(t *testing.T) {
-		out := alpha.must("ls", "beta")
+		out := alpha.must("path", "ls", "beta")
 		for _, path := range []string{"/chat", "/inbox", "/open", "/ticks", "/term"} {
 			if !strings.Contains(out, path) {
 				t.Errorf("beta did not offer %s:\n%s", path, out)
@@ -88,18 +88,18 @@ drop.mount("/inbox", { type = "share", access = "paired", dir = "` + alpha.inbox
 	})
 
 	t.Run("a message is sent and arrives", func(t *testing.T) {
-		alpha.must("to", "beta/chat", "the eagle has landed")
+		alpha.must("connect", "beta:/chat", "the eagle has landed")
 
 		waitFor(t, "the message to arrive", 30*time.Second, func() bool {
-			return strings.Contains(beta.must("log", "alpha"), "the eagle has landed")
+			return strings.Contains(beta.must("me", "log", "alpha"), "the eagle has landed")
 		})
 	})
 
 	t.Run("a reply comes back the other way", func(t *testing.T) {
-		beta.must("to", "alpha/chat", "roger that")
+		beta.must("connect", "alpha:/chat", "roger that")
 
 		waitFor(t, "the reply to arrive", 30*time.Second, func() bool {
-			return strings.Contains(alpha.must("log", "beta"), "roger that")
+			return strings.Contains(alpha.must("me", "log", "beta"), "roger that")
 		})
 	})
 
@@ -109,7 +109,7 @@ drop.mount("/inbox", { type = "share", access = "paired", dir = "` + alpha.inbox
 			t.Fatal(err)
 		}
 
-		alpha.must("to", "beta/inbox", file)
+		alpha.must("connect", "beta:/inbox", file)
 
 		landed := filepath.Join(beta.inbox(), "report.txt")
 		waitFor(t, "the file to land", 30*time.Second, func() bool {
@@ -132,7 +132,7 @@ drop.mount("/inbox", { type = "share", access = "paired", dir = "` + alpha.inbox
 			t.Fatal(err)
 		}
 
-		beta.must("to", "alpha/inbox", file)
+		beta.must("connect", "alpha:/inbox", file)
 
 		waitFor(t, "the file to land", 30*time.Second, func() bool {
 			_, err := os.Stat(filepath.Join(alpha.inbox(), "answer.txt"))
@@ -144,7 +144,7 @@ drop.mount("/inbox", { type = "share", access = "paired", dir = "` + alpha.inbox
 		ctx, stop := context.WithTimeout(context.Background(), 60*time.Second)
 		defer stop()
 
-		if out, err := alpha.runIn(ctx, "piped in\n", "to", "beta/inbox", "-", "--as", "piped.txt"); err != nil {
+		if out, err := alpha.runIn(ctx, "piped in\n", "connect", "beta:/inbox", "-", "--as", "piped.txt"); err != nil {
 			t.Fatalf("sending standard input: %v\n%s", err, out)
 		}
 
@@ -164,15 +164,15 @@ drop.mount("/inbox", { type = "share", access = "paired", dir = "` + alpha.inbox
 	})
 
 	t.Run("a link is sent and recorded", func(t *testing.T) {
-		alpha.must("to", "beta/open", "https://iroh.computer/docs")
+		alpha.must("connect", "beta:/open", "https://iroh.computer/docs")
 
 		waitFor(t, "the link to arrive", 30*time.Second, func() bool {
-			return strings.Contains(beta.must("log", "alpha"), "https://iroh.computer/docs")
+			return strings.Contains(beta.must("me", "log", "alpha"), "https://iroh.computer/docs")
 		})
 	})
 
 	t.Run("a stream is read until it ends", func(t *testing.T) {
-		out := alpha.must("to", "beta/ticks")
+		out := alpha.must("connect", "beta:/ticks")
 
 		for _, want := range []string{"tick 1", "tick 2", "tick 3"} {
 			if !strings.Contains(out, want) {
@@ -190,7 +190,7 @@ drop.mount("/inbox", { type = "share", access = "paired", dir = "` + alpha.inbox
 		ctx, stop := context.WithTimeout(context.Background(), 60*time.Second)
 		defer stop()
 
-		out, err := alpha.runIn(ctx, "echo marker-from-the-far-side\nexit\n", "to", "beta/term")
+		out, err := alpha.runIn(ctx, "echo marker-from-the-far-side\nexit\n", "connect", "beta:/term")
 		if err != nil {
 			t.Fatalf("opening a terminal: %v\n%s", err, out)
 		}
@@ -200,7 +200,7 @@ drop.mount("/inbox", { type = "share", access = "paired", dir = "` + alpha.inbox
 	})
 
 	t.Run("the conversation remembers all of it", func(t *testing.T) {
-		out := alpha.must("log", "beta")
+		out := alpha.must("me", "log", "beta")
 
 		for _, want := range []string{"the eagle has landed", "roger that", "report.txt"} {
 			if !strings.Contains(out, want) {
@@ -210,9 +210,9 @@ drop.mount("/inbox", { type = "share", access = "paired", dir = "` + alpha.inbox
 	})
 
 	t.Run("a device can be forgotten", func(t *testing.T) {
-		alpha.must("peers", "rm", "beta")
+		alpha.must("peer", "forget", "beta")
 
-		if out := alpha.must("peers"); strings.Contains(out, "beta") {
+		if out := alpha.must("peer", "ls"); strings.Contains(out, "beta") {
 			t.Errorf("beta survived being forgotten:\n%s", out)
 		}
 	})

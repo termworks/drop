@@ -51,7 +51,7 @@ func Unlock(key []byte) {
 // Unlocking says how to get the data key, without getting it.
 //
 // Most commands never touch a conversation, and opening a vault means parsing a config and
-// unwrapping a key -- work that would be done by `drop id` for no reason. So the way to the key is
+// unwrapping a key -- work that would be done by `drop me id` for no reason. So the way to the key is
 // handed over at startup and followed the first time something actually reads or writes history.
 func Unlocking(get func() ([]byte, error)) {
 	held.Lock()

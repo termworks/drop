@@ -40,13 +40,13 @@ func newPairCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "pair [ticket]",
-		Short: "Link a device to this one, once and for good",
-		Long: "Run `drop pair` on one device to get a ticket, then `drop pair <ticket>` on the other.\n" +
-			"The two derive a shared secret and can reach each other from then on.\n\n" +
+		Short: "Link a machine to this one, once and for good",
+		Long: "Run `drop peer pair` on one machine to get a ticket, then `drop peer pair <ticket>` on\n" +
+			"the other. The two derive a shared secret and can reach each other from then on.\n\n" +
 			"A ticket is this node's address and a one-time code. The address is what iroh dials;\n" +
 			"the code is what proves the far end was actually invited.\n\n" +
 			"Pairing is with a person: their user key is learnt, and machines they sign later work\n" +
-			"without pairing again. --machine pairs with this device and no other, which is what a\n" +
+			"without pairing again. --machine pairs with this machine and no other, which is what a\n" +
 			"build server wants, or a deliberate refusal to trust the rest of somebody's machines.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -478,5 +478,5 @@ func showTicket(invite string, wait time.Duration, showQR bool) {
 
 	fmt.Printf("\n  ticket:  %s\n", invite)
 	fmt.Printf("  link:    %s\n\n", tickets.Link(invite))
-	fmt.Printf("run this on the other device, within %s:\n\n  drop pair %s\n\nwaiting...\n", wait, invite)
+	fmt.Printf("run this on the other machine, within %s:\n\n  drop peer pair %s\n\nwaiting...\n", wait, invite)
 }

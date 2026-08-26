@@ -12,154 +12,41 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/bresilla/drop/src/pkg/arch/files"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
-// The verbs for a directory somebody else is serving.
-//
-// Top-level, the way `ls` is, rather than under a `drop files` of their own. A person typing
-// `drop get orin/work/report.pdf` is not thinking about archetypes: they are copying a file, and
-// which kind of namespace happens to be at that path is the address book's business. Putting them
-// under a noun would also split one idea in half, because `drop ls` already walks these paths.
-
-func newGetCmd() *cobra.Command {
-	var wait time.Duration
-
-	cmd := &cobra.Command{
-		Use:   "get <device>/<path>/<name> [into]",
-		Short: "Copy a file out of a directory somebody shares",
-		Long: "get reads one file out of a directory another device serves.\n\n" +
-			"With no destination it lands here under its own name. A destination that is a\n" +
-			"directory takes it under its own name too; anything else is the file to write.",
-		Args: cobra.RangeArgs(1, 2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			into := ""
-			if len(args) == 2 {
-				into = args[1]
-			}
-			return getFrom(cmd.Context(), args[0], into, wait)
-		},
-	}
-
-	cmd.Flags().DurationVarP(&wait, "wait", "w", 90*time.Second, "how long to spend reaching the device")
-
-	return cmd
-}
-
-func newPutCmd() *cobra.Command {
-	var (
-		as   string
-		wait time.Duration
-	)
-
-	cmd := &cobra.Command{
-		Use:   "put <device>/<path> <file>...",
-		Short: "Copy files into a directory somebody shares",
-		Long: "put writes files into a directory another device serves, if that directory\n" +
-			"takes anything back.\n\n" +
-			"  drop put orin/work report.pdf      one file at the top of it\n" +
-			"  drop put orin/work/deep a b c      into a directory inside it\n" +
-			"  drop put orin/work - --as note.txt and - is standard input",
-		Args: cobra.MinimumNArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return putInto(cmd.Context(), args[0], args[1:], as, wait)
-		},
-	}
-
-	cmd.Flags().StringVar(&as, "as", "stdin", "the name to give standard input")
-	cmd.Flags().DurationVarP(&wait, "wait", "w", 90*time.Second, "how long to spend reaching the device")
-
-	return cmd
-}
-
-func newRemoveCmd() *cobra.Command {
-	var wait time.Duration
-
-	cmd := &cobra.Command{
-		Use:   "rm <device>/<path>/<name>",
-		Short: "Remove a file from a directory somebody shares",
-		Long:  "rm removes one file, or one directory that is already empty.",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return changeThere(cmd.Context(), args[0], wait, func(w *walking) error {
-				return w.Remove(w.rest)
-			}, "removed")
-		},
-	}
-
-	cmd.Flags().DurationVarP(&wait, "wait", "w", 90*time.Second, "how long to spend reaching the device")
-
-	return cmd
-}
-
-func newMkdirCmd() *cobra.Command {
-	var wait time.Duration
-
-	cmd := &cobra.Command{
-		Use:   "mkdir <device>/<path>/<name>",
-		Short: "Make a directory inside one somebody shares",
-		Long:  "mkdir makes one directory. Its parent has to be there already.",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return changeThere(cmd.Context(), args[0], wait, func(w *walking) error {
-				return w.Mkdir(w.rest)
-			}, "made")
-		},
-	}
-
-	cmd.Flags().DurationVarP(&wait, "wait", "w", 90*time.Second, "how long to spend reaching the device")
-
-	return cmd
-}
-
-func newMoveCmd() *cobra.Command {
-	var wait time.Duration
-
-	cmd := &cobra.Command{
-		Use:   "mv <device>/<path>/<from> <to>",
-		Short: "Move something inside a directory somebody shares",
-		Long: "mv renames something without it ever leaving that device.\n\n" +
-			"The destination is named from the top of the same directory, so\n" +
-			"`drop mv orin/work/deep/old.txt deep/new.txt` leaves it where it is.",
-		Args: cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			to := strings.Trim(args[1], "/")
-			return changeThere(cmd.Context(), args[0], wait, func(w *walking) error {
-				return w.Move(w.rest, to)
-			}, "moved")
-		},
-	}
-
-	cmd.Flags().DurationVarP(&wait, "wait", "w", 90*time.Second, "how long to spend reaching the device")
-
-	return cmd
-}
-
 // walking is a directory open on another device, and the path that was named inside it.
 type walking struct {
 	*files.Browsing
-	// at is the namespace, and rest is what was named below it. Empty rest is the namespace itself.
-	at   string
-	rest string
-	stop func()
+	// entry is the machine, at is the address with the namespace on it, and rest is what was named
+	// below that namespace. Empty rest is the namespace itself.
+	entry book.Entry
+	at    ns.Address
+	rest  string
+	stop  func()
 }
+
+// where is the namespace as it would be typed.
+func (w *walking) where() string { return w.at.String() }
 
 // walk finds the namespace a typed path lands in and opens it.
 //
-// Two questions, in that order: what does this device serve, and which of those holds the path.
+// Two questions, in that order: what does this machine serve, and which of those holds the path.
 // Only the first half of the path is a drop path — the rest is a filename on the far machine, with
 // whatever capitals and spaces that filesystem takes, and it travels exactly as it was typed.
 func walk(parent context.Context, target string, wait time.Duration) (*walking, error) {
-	peer, under := splitTarget(target)
+	at, under, err := splitAddress(target)
+	if err != nil {
+		return nil, err
+	}
 
-	entry, err := book.Resolve(peer)
+	entry, err := resolve(at)
 	if err != nil {
 		return nil, err
 	}
@@ -187,18 +74,19 @@ func walk(parent context.Context, target string, wait time.Duration) (*walking, 
 		return nil, err
 	}
 
-	at, rest, ok := insideFiles(hello.Serves, under)
+	found, rest, ok := insideFiles(hello.Serves, under)
 	if !ok {
 		giveUp()
 		return nil, fmt.Errorf("%s shares no directory holding %s", entry.Name, under)
 	}
+	at.Path = found
 
-	b, done, err := browse(find, n, lan, entry, at)
+	b, done, err := browse(find, n, lan, entry, found)
 	if err != nil {
 		giveUp()
 		return nil, err
 	}
-	return &walking{Browsing: b, at: at, rest: rest, stop: func() { done(); giveUp() }}, nil
+	return &walking{Browsing: b, entry: entry, at: at, rest: rest, stop: func() { done(); giveUp() }}, nil
 }
 
 // browse opens one files namespace on a device already reachable.
@@ -235,15 +123,6 @@ func serving(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.E
 	defer s.Close()
 
 	return proto.AskHello(s)
-}
-
-// splitTarget takes the device off the front of what was typed.
-//
-// What is left is not put through ns.Clean: below a directory namespace these are real filenames,
-// which that spelling is right to refuse and wrong to be handed.
-func splitTarget(text string) (string, string) {
-	peer, under, _ := strings.Cut(strings.TrimSpace(text), "/")
-	return peer, "/" + strings.Trim(under, "/")
 }
 
 // insideFiles finds the directory namespace a path lands in: the deepest one that covers it, and
@@ -306,8 +185,7 @@ func putInto(parent context.Context, target string, sources []string, stdinName 
 	defer w.stop()
 
 	if !w.Writable() {
-		peer, _ := splitTarget(target)
-		return fmt.Errorf("%s%s takes nothing: it is read-only", peer, w.at)
+		return fmt.Errorf("%s takes nothing: it is read-only", w.where())
 	}
 
 	bar := &progress{}
@@ -357,16 +235,12 @@ func below(rest, name string) string {
 }
 
 // listInside prints one directory of a namespace, rather than the namespaces themselves.
-func listInside(b *files.Browsing, entry book.Entry, at, rest string) error {
+func listInside(b *files.Browsing, id node.ID, where, rest string) error {
 	items, err := b.List(rest)
 	if err != nil {
 		return err
 	}
 
-	where := entry.Name + at
-	if rest != "" {
-		where += "/" + rest
-	}
 	if len(items) == 0 {
 		fmt.Printf("\n%s is empty\n\n", where)
 		return nil
@@ -386,7 +260,7 @@ func listInside(b *files.Browsing, entry book.Entry, at, rest string) error {
 	}
 	width := widest(0, names)
 
-	fmt.Printf("\n%s  %s\n\n", where, node.Brief(entry.ID))
+	fmt.Printf("\n%s  %s\n\n", where, node.Brief(id))
 	for _, item := range items {
 		fmt.Printf("  %-*s  %10s  %s\n", width, shownAs(item), sizeOf(item), changed(item.At))
 	}

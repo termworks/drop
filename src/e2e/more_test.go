@@ -40,7 +40,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	stopBeta()
 
 	// Nothing is listening now, so this cannot be delivered.
-	out := alpha.must("to", "beta/chat", "said while you were out")
+	out := alpha.must("connect", "beta:/chat", "said while you were out")
 	if !strings.Contains(out, "queued") {
 		t.Fatalf("a message to a device that is off was not queued:\n%s", out)
 	}
@@ -54,11 +54,11 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	})
 
 	waitFor(t, "the backlog to go out", 90*time.Second, func() bool {
-		return strings.Contains(beta.must("log", "alpha"), "said while you were out")
+		return strings.Contains(beta.must("me", "log", "alpha"), "said while you were out")
 	})
 }
 
-// A terminal shared with `drop cast` is watched at <peer>/cast, while the daemon is running.
+// A terminal shared with `drop path cast` is watched at <machine>:/cast, while the daemon runs.
 //
 // That last part is the whole test. A cast used to stand up a node of its own, which cannot have
 // the address the daemon already holds, so a watcher dialling the address in its address book
@@ -87,7 +87,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 
 	// Nothing is being cast yet, so there is nothing to watch and it says so.
 	early, stopEarly := context.WithTimeout(context.Background(), 30*time.Second)
-	said, _ := watcher.runIn(early, "", "to", "casting/cast", "--wait", "10s")
+	said, _ := watcher.runIn(early, "", "connect", "casting:/cast", "--wait", "10s")
 	stopEarly()
 	if strings.Contains(said, "hello from a recorded terminal") {
 		t.Fatalf("something was watchable before anything was cast:\n%s", said)
@@ -95,7 +95,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 
 	// asciicast v2: a header, then timed writes. Standard input is held open, because a cast lasts
 	// exactly as long as whatever is being recorded.
-	into, _, stopCast := casting.backgroundWriting("cast", "--address-file", casting.home+"/cast-address")
+	into, _, stopCast := casting.backgroundWriting("path", "cast", "--address-file", casting.home+"/cast-address")
 	defer stopCast()
 
 	for _, line := range []string{
@@ -117,7 +117,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		read, stopRead := context.WithTimeout(context.Background(), 15*time.Second)
 		defer stopRead()
 
-		said, _ := watcher.runIn(read, "", "to", "casting/cast", "--wait", "10s")
+		said, _ := watcher.runIn(read, "", "connect", "casting:/cast", "--wait", "10s")
 		out = said
 		return strings.Contains(said, "hello from a recorded terminal")
 	})
@@ -129,7 +129,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	}
 
 	// And the daemon goes on being a daemon while all this happens.
-	if out := watcher.must("ls", "casting"); !strings.Contains(out, "/chat") {
+	if out := watcher.must("path", "ls", "casting"); !strings.Contains(out, "/chat") {
 		t.Errorf("the node stopped serving its own namespaces while casting:\n%s", out)
 	}
 
@@ -139,7 +139,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		return strings.Contains(castingSaid.String(), "ended")
 	})
 
-	if out := watcher.must("ls", "casting"); strings.Contains(out, "/cast") {
+	if out := watcher.must("path", "ls", "casting"); strings.Contains(out, "/cast") {
 		t.Errorf("the cast path outlived the cast:\n%s", out)
 	}
 }
@@ -169,7 +169,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	pair(t, casting, watcher)
 	stopCasting()
 
-	into, castSaid, stopCast := casting.backgroundWriting("cast", "--address-file", casting.home+"/cast-address")
+	into, castSaid, stopCast := casting.backgroundWriting("path", "cast", "--address-file", casting.home+"/cast-address")
 	defer stopCast()
 
 	for _, line := range []string{
@@ -189,7 +189,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		read, stopRead := context.WithTimeout(context.Background(), 15*time.Second)
 		defer stopRead()
 
-		said, _ := watcher.runIn(read, "", "to", "casting/cast", "--wait", "10s")
+		said, _ := watcher.runIn(read, "", "connect", "casting:/cast", "--wait", "10s")
 		return strings.Contains(said, "cast on its own")
 	})
 }
@@ -219,7 +219,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	pair(t, beta, alpha)
 
 	// Whatever it was reached at is written down, and it has to be an address rather than nothing.
-	alpha.must("ls", "beta")
+	alpha.must("path", "ls", "beta")
 
 	book := filepath.Join(alpha.home, "config", "drop", "peers.json")
 	waitFor(t, "the address to be written down", 30*time.Second, func() bool {
@@ -249,7 +249,7 @@ func TestPairingLearnsWhoTheOtherMachineBelongsTo(t *testing.T) {
 	// Each side has a user, and the two are different people.
 	keys := map[string]string{}
 	for _, n := range []*node{one, two} {
-		said := n.must("user")
+		said := n.must("me", "user")
 		if !strings.Contains(said, "ssh-ed25519 ") {
 			t.Fatalf("%s has no user key:\n%s", n.name, said)
 		}
@@ -306,7 +306,7 @@ local drop = require("drop")
 drop.mount("/chat", { type = "chat", access = "paired" })
 `)
 
-	// Paired before anything is serving: `drop pair` starts an endpoint of its own, and it cannot
+	// Paired before anything is serving: `drop peer pair` starts an endpoint of its own, and it cannot
 	// have the port while a daemon on the same node is holding it.
 	pair(t, one, two)
 
@@ -314,17 +314,17 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	defer stop()
 
 	// A message gets through while nothing has been revoked.
-	two.must("to", "one/chat", "before")
+	two.must("connect", "one:/chat", "before")
 	waitFor(t, "the first message", 30*time.Second, func() bool {
-		return strings.Contains(one.must("log", "two"), "before")
+		return strings.Contains(one.must("me", "log", "two"), "before")
 	})
 
-	one.must("revoke", "/chat", "two")
+	one.must("path", "revoke", "/chat", "two")
 
 	// The far end refuses it now, and says so rather than swallowing it. What it says is the same
 	// thing it says about a path that is not there at all, so being turned away teaches nothing
 	// about what this device serves.
-	said, err := two.run("to", "one/chat", "after")
+	said, err := two.run("connect", "one:/chat", "after")
 	if err == nil {
 		t.Fatalf("a revoked device was still admitted:\n%s", said)
 	}
@@ -334,15 +334,15 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	if strings.Contains(said, "queued") {
 		t.Errorf("a refused message was queued to be retried forever:\n%s", said)
 	}
-	if got := one.must("log", "two"); strings.Contains(got, "after") {
+	if got := one.must("me", "log", "two"); strings.Contains(got, "after") {
 		t.Errorf("a message from a revoked device was stored:\n%s", got)
 	}
 
 	// And lifting it lets them back in, without restarting anything.
-	one.must("revoke", "/chat", "two", "--forget")
-	two.must("to", "one/chat", "again")
+	one.must("path", "revoke", "/chat", "two", "--forget")
+	two.must("connect", "one:/chat", "again")
 	waitFor(t, "the message after the refusal was lifted", 30*time.Second, func() bool {
-		return strings.Contains(one.must("log", "two"), "again")
+		return strings.Contains(one.must("me", "log", "two"), "again")
 	})
 }
 
@@ -368,9 +368,9 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	_, _, stop := one.background("serve")
 	defer stop()
 
-	two.must("to", "one/chat", "the eagle has landed")
+	two.must("connect", "one:/chat", "the eagle has landed")
 	waitFor(t, "the message to arrive", 30*time.Second, func() bool {
-		return strings.Contains(one.must("log", "two"), "the eagle has landed")
+		return strings.Contains(one.must("me", "log", "two"), "the eagle has landed")
 	})
 
 	// Written, read back by drop, and not there for anybody with the disk.
@@ -398,7 +398,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	}
 
 	// And the vault says what it is doing.
-	if said := one.must("vault"); !strings.Contains(said, "open") {
+	if said := one.must("me", "vault"); !strings.Contains(said, "open") {
 		t.Errorf("the vault does not report itself open:\n%s", said)
 	}
 }
@@ -419,9 +419,9 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	stopped := func() {}
 	_, _, stopped = one.background("serve")
 
-	two.must("to", "one/chat", "written in the clear")
+	two.must("connect", "one:/chat", "written in the clear")
 	waitFor(t, "the message to arrive", 30*time.Second, func() bool {
-		return strings.Contains(one.must("log", "two"), "written in the clear")
+		return strings.Contains(one.must("me", "log", "two"), "written in the clear")
 	})
 
 	// The daemon has to be out of the way: a message landing during the walk is in neither file.
@@ -453,19 +453,19 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	one.serves(plain + `
 drop.vault = "` + filepath.Join(one.home, "config", "drop", "vault.key") + `"
 `)
-	if said := one.must("vault", "seal"); !strings.Contains(said, "conversation") {
+	if said := one.must("me", "vault", "seal"); !strings.Contains(said, "conversation") {
 		t.Errorf("sealing said nothing useful:\n%s", said)
 	}
 
 	if strings.Contains(onDisk(), "written in the clear") {
 		t.Error("the message is still on disk in the clear")
 	}
-	if got := one.must("log", "two"); !strings.Contains(got, "written in the clear") {
+	if got := one.must("me", "log", "two"); !strings.Contains(got, "written in the clear") {
 		t.Errorf("drop cannot read its own sealed history:\n%s", got)
 	}
 
 	// And back again.
-	one.must("vault", "clear")
+	one.must("me", "vault", "clear")
 	if !strings.Contains(onDisk(), "written in the clear") {
 		t.Error("clearing did not put the message back")
 	}
@@ -517,10 +517,10 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	_, _, stop := host.background("serve")
 	defer stop()
 
-	id := strings.TrimSpace(host.must("id"))
+	id := strings.TrimSpace(host.must("me", "id"))
 
 	// Not paired with anybody, so this is refused — and that is the point.
-	if said, err := stranger.run("to", id+"/work", "let me in"); err == nil {
+	if said, err := stranger.run("connect", id+":/work", "let me in"); err == nil {
 		t.Fatalf("a stranger was admitted:\n%s", said)
 	}
 
@@ -534,7 +534,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), strings.TrimSpace(stranger.must("id"))) {
+	if !strings.Contains(string(raw), strings.TrimSpace(stranger.must("me", "id"))) {
 		t.Errorf("the stranger's id was not written down:\n%s", raw)
 	}
 	if !strings.Contains(string(raw), "/work") {
@@ -562,14 +562,14 @@ drop.mount("/private", { type = "chat", access = { "me" } })
 	bob.serves(shared)
 
 	// Different user keys, so different people.
-	mine := between(t, me.must("user"), "identity ", "\n")
-	his := between(t, bob.must("user"), "identity ", "\n")
+	mine := between(t, me.must("me", "user"), "identity ", "\n")
+	his := between(t, bob.must("me", "user"), "identity ", "\n")
 	if mine == his {
 		t.Fatal("a profile shares the ordinary identity")
 	}
 
 	// Different devices too.
-	if strings.TrimSpace(me.must("id")) == strings.TrimSpace(bob.must("id")) {
+	if strings.TrimSpace(me.must("me", "id")) == strings.TrimSpace(bob.must("me", "id")) {
 		t.Fatal("a profile shares the ordinary device key")
 	}
 
@@ -579,13 +579,13 @@ drop.mount("/private", { type = "chat", access = { "me" } })
 	defer stop()
 
 	// Paired, so the shared path works.
-	bob.must("to", "me/chat", "hello from somebody else")
+	bob.must("connect", "me:/chat", "hello from somebody else")
 	waitFor(t, "the message", 30*time.Second, func() bool {
-		return strings.Contains(me.must("log"), "hello from somebody else")
+		return strings.Contains(me.must("me", "log"), "hello from somebody else")
 	})
 
 	// But a path for my own machines refuses him, which is the whole point.
-	if said, err := bob.run("to", "me/private", "and this"); err == nil {
+	if said, err := bob.run("connect", "me:/private", "and this"); err == nil {
 		t.Fatalf("a different person reached a path meant for my own machines:\n%s", said)
 	}
 }
@@ -616,7 +616,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		return strings.Contains(said.String(), "ready")
 	})
 
-	_, offered, stopOffer := me.background("pair", "--code", "no-mdns-test", "--wait", "3m")
+	_, offered, stopOffer := me.background("peer", "pair", "--code", "no-mdns-test", "--wait", "3m")
 	defer stopOffer()
 
 	var ticket string
@@ -632,7 +632,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	}
 
 	// No --at, no address of any kind: only the id in the ticket.
-	out, err := them.run("pair", ticket)
+	out, err := them.run("peer", "pair", ticket)
 	if err != nil {
 		t.Fatalf("pairing without the local wire failed:\n%s", out)
 	}
@@ -644,9 +644,9 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	}
 
 	// And it can be used afterwards, which is the point of having paired.
-	them.must("to", "me/chat", "found you the long way round")
+	them.must("connect", "me:/chat", "found you the long way round")
 	waitFor(t, "the message", 60*time.Second, func() bool {
-		return strings.Contains(me.must("log"), "found you the long way round")
+		return strings.Contains(me.must("me", "log"), "found you the long way round")
 	})
 }
 
@@ -682,10 +682,10 @@ drop.mount("/inbox", { type = "share", access = "paired", dir = "%s" })
 
 	// No restart of anything: what the far end shares has to be visible now.
 	waitFor(t, "the paths to show up", 30*time.Second, func() bool {
-		return strings.Contains(them.must("ls", "me"), "/chat")
+		return strings.Contains(them.must("path", "ls", "me"), "/chat")
 	})
 
-	if said := them.must("ls", "me"); !strings.Contains(said, "/inbox") {
+	if said := them.must("path", "ls", "me"); !strings.Contains(said, "/inbox") {
 		t.Errorf("a device that just paired was told too little:\n%s", said)
 	}
 }
@@ -716,7 +716,7 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	defer stop()
 
 	// Seen, and said to be locked. The one nothing mentions is not seen at all.
-	said := them.must("ls", "me")
+	said := them.must("path", "ls", "me")
 	if !strings.Contains(said, "/vault") {
 		t.Fatalf("a visible path was not listed:\n%s", said)
 	}
@@ -728,34 +728,34 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	}
 
 	// Seen is not open.
-	if out, err := them.run("to", "me/vault", "let me in"); err == nil {
+	if out, err := them.run("connect", "me:/vault", "let me in"); err == nil {
 		t.Fatalf("a visible path was opened:\n%s", out)
 	} else if !strings.Contains(out, "ask") {
 		t.Errorf("the refusal did not say it could be asked for:\n%s", out)
 	}
 
 	// Ringing the bell.
-	if out := them.must("ask", "me/vault", "--why", "for the thing we discussed"); !strings.Contains(out, "asked") {
+	if out := them.must("path", "ask", "me:/vault", "--why", "for the thing we discussed"); !strings.Contains(out, "asked") {
 		t.Fatalf("asking said nothing useful:\n%s", out)
 	}
 
 	waitFor(t, "the request to be written down", 30*time.Second, func() bool {
-		return strings.Contains(me.must("requests"), "/vault")
+		return strings.Contains(me.must("path", "requests"), "/vault")
 	})
-	if got := me.must("requests"); !strings.Contains(got, "for the thing we discussed") {
+	if got := me.must("path", "requests"); !strings.Contains(got, "for the thing we discussed") {
 		t.Errorf("what they said about it was lost:\n%s", got)
 	}
 
 	// Answering it is a grant, and it takes effect on the next connection.
-	me.must("requests", "allow", "/vault", "them")
+	me.must("path", "requests", "allow", "/vault", "them")
 
 	waitFor(t, "the path to open", 30*time.Second, func() bool {
-		_, err := them.run("to", "me/vault", "thank you")
+		_, err := them.run("connect", "me:/vault", "thank you")
 		return err == nil
 	})
 
 	// And the request is off the list, because it has been dealt with.
-	if got := me.must("requests"); strings.Contains(got, "/vault") {
+	if got := me.must("path", "requests"); strings.Contains(got, "/vault") {
 		t.Errorf("an answered request is still pending:\n%s", got)
 	}
 }
@@ -825,8 +825,8 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	})
 
 	// Written down while they are not even running.
-	me.must("to", "them/chat", "waiting for you to say something")
-	if got := them.must("log"); strings.Contains(got, "waiting for you") {
+	me.must("connect", "them:/chat", "waiting for you to say something")
+	if got := them.must("me", "log"); strings.Contains(got, "waiting for you") {
 		t.Fatal("it arrived before the far end existed")
 	}
 
@@ -838,6 +838,6 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	})
 
 	waitFor(t, "the queue to empty over their connection", 90*time.Second, func() bool {
-		return strings.Contains(them.must("log"), "waiting for you to say something")
+		return strings.Contains(them.must("me", "log"), "waiting for you to say something")
 	})
 }

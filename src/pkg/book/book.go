@@ -64,7 +64,7 @@ type Book struct {
 
 // Refresh re-reads the address book if the file has changed since it was loaded.
 //
-// A long-running node has to notice a pairing it did not make itself: `drop pair` is a separate
+// A long-running node has to notice a pairing it did not make itself: `drop peer pair` is a separate
 // process, and without this a device paired while the daemon was up stays a stranger to it until
 // the daemon is restarted — which looks exactly like pairing not working.
 func (b *Book) Refresh() error {

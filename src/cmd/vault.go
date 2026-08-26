@@ -91,7 +91,7 @@ func unlock(cfg *conf.Config) error {
 // unlocking says how to reach the data key, without reaching it.
 //
 // Every command goes through here, and most of them never touch a conversation. Opening a vault
-// means parsing a config and unwrapping a key, which is real work to do for `drop id`.
+// means parsing a config and unwrapping a key, which is real work to do for `drop me id`.
 func unlocking() {
 	convo.Unlocking(func() ([]byte, error) {
 		cfg, err := conf.Load(reading())

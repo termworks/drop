@@ -318,7 +318,7 @@ func mount(c *rt.GoCont, cfg *Config) (rt.Cont, error) {
 	// A password written in plain is one a config leak hands over. Say so at load time rather than
 	// letting it never match and look like a broken rule.
 	if access.Password != "" && !passwd.Looks(access.Password) {
-		return nil, fmt.Errorf("drop.mount(%q): the password must be a hash from `drop passwd`, not the word itself", path)
+		return nil, fmt.Errorf("drop.mount(%q): the password must be a hash from `drop me passwd`, not the word itself", path)
 	}
 
 	m := ns.Mount{

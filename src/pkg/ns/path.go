@@ -63,40 +63,95 @@ func checkSegment(part string) error {
 	return nil
 }
 
-// Address is a peer and a path under it: `laptop/stream/1`.
+// Address is somewhere to reach: whose machine, which machine, and what on it.
+//
+//	bob:laptop:/chat   bob's laptop, its /chat
+//	laptop:/chat       the machine called laptop
+//	bob::/chat         bob, whichever machine of his answers
+//	:/chat  /chat      this machine
+//	bob:laptop         the machine itself
+//	laptop             a machine itself
+//
+// The three parts are read from the right, so leaving one out leaves out the one on the left. The
+// namespace keeps its leading slash, which is what makes it unmistakable for a name and what makes
+// what you type the same string the config and `drop path ls` show you.
 type Address struct {
-	Peer string
+	// User is who the machine belongs to, empty when the address did not say.
+	User string
+	// Machine is what the machine is filed under here, empty when the address named only a user.
+	Machine string
+	// Path is the namespace, Root when the address named only a machine.
 	Path string
+	// Here says the address is this machine rather than somebody else's.
+	Here bool
 }
 
-// ParseAddress splits `peer/path`. A bare peer addresses its root.
+// ParseAddress reads user:machine:/namespace, and the shorter forms of it.
 //
-// The peer half is left as written, because it may be a local name or a peer id, and only the
-// address book knows which.
+// The names are left as written: a machine may be a local name or a peer id, and only the address
+// book knows which. The path is cleaned, because it is the half that becomes a real path.
 func ParseAddress(text string) (Address, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return Address{}, fmt.Errorf("no address given")
 	}
 
-	peer, rest, found := strings.Cut(text, "/")
-	if peer == "" {
-		return Address{}, fmt.Errorf("%q has no peer before the path", text)
-	}
-	if !found {
-		return Address{Peer: peer, Path: Root}, nil
+	parts := strings.Split(text, ":")
+
+	// The namespace is the last part, and only when it looks like one. A trailing colon with
+	// nothing after it names no namespace, which is how `bob:laptop:` says the machine itself.
+	rest := ""
+	if last := parts[len(parts)-1]; strings.HasPrefix(last, "/") || last == "" {
+		rest, parts = last, parts[:len(parts)-1]
 	}
 
-	path, err := Clean(rest)
-	if err != nil {
-		return Address{}, err
+	// What is left are names, and they fill from the right: a machine, then whose it is.
+	var user, machine string
+	switch len(parts) {
+	case 0:
+	case 1:
+		machine = parts[0]
+	case 2:
+		user, machine = parts[0], parts[1]
+	default:
+		return Address{}, fmt.Errorf("%q has more parts than user:machine:/namespace", text)
 	}
-	return Address{Peer: peer, Path: path}, nil
+
+	for _, name := range []string{user, machine} {
+		if strings.Contains(name, "/") {
+			return Address{}, fmt.Errorf("%q: a name cannot hold a slash, and a namespace starts with one", text)
+		}
+	}
+	if user == "" && machine == "" && rest == "" {
+		return Address{}, fmt.Errorf("%q names nobody", text)
+	}
+
+	at := Address{User: user, Machine: machine, Path: Root, Here: user == "" && machine == ""}
+	if rest != "" {
+		path, err := Clean(rest)
+		if err != nil {
+			return Address{}, err
+		}
+		at.Path = path
+	}
+	return at, nil
 }
 
+// Named reports whether the address says which machine, rather than only whose.
+func (a Address) Named() bool { return a.Machine != "" }
+
+// String writes an address the shortest way it can still be read back.
 func (a Address) String() string {
-	if a.Path == Root {
-		return a.Peer
+	if a.Here {
+		return a.Path
 	}
-	return a.Peer + a.Path
+
+	who := a.Machine
+	if a.User != "" {
+		who = a.User + ":" + a.Machine
+	}
+	if a.Path == Root {
+		return who
+	}
+	return who + ":" + a.Path
 }

@@ -192,7 +192,7 @@ func path(it pathItem, width, index int, selected bool) string {
 			cell(base, muted, inner-10, "this path itself", false, false))
 
 		last := fill(stripe(base, selected) +
-			cell(base, muted, inner, "drop to "+it.on+it.step.at, false, false))
+			cell(base, muted, inner, "drop connect "+it.on+":"+it.step.at, false, false))
 
 		return first + "\n" + rest + "\n" + last
 	}
@@ -241,7 +241,7 @@ func path(it pathItem, width, index int, selected bool) string {
 		cell(base, muted, inner-10, it.step.served.About, false, false))
 
 	last := fill(stripe(base, selected) +
-		cell(base, muted, inner, "drop to "+it.on+it.step.at, false, false))
+		cell(base, muted, inner, "drop connect "+it.on+":"+it.step.at, false, false))
 
 	return first + "\n" + rest + "\n" + last
 }
@@ -305,7 +305,7 @@ func held(it heldItem, width, index int, selected bool) string {
 		cell(base, muted, inner-10, when, false, false))
 
 	last := fill(stripe(base, selected) +
-		cell(base, muted, inner, it.on+it.at, false, false))
+		cell(base, muted, inner, it.on+":"+it.at, false, false))
 
 	return first + "\n" + rest + "\n" + last
 }

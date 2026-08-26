@@ -6,8 +6,8 @@ Pair two devices once, by key. After that either can reach the other from anywhe
 across networks, through address changes — with no account and no server holding your data.
 
 ```
-drop pair                      # on one device: prints a ticket
-drop pair 9363f77d…#qxwo-e62y  # on the other: done, forever
+drop peer pair                      # on one machine: prints a ticket
+drop peer pair 9363f77d…#qxwo-e62y  # on the other: done, forever
 ```
 
 ## how it addresses things
@@ -80,59 +80,75 @@ unpack, which is why it is not the default.
 whichever of these you are looking at.
 
 ```
-drop ls beta          the command line: what beta shares with you
+drop path ls beta     the command line: what beta shares with you
 drop                  a full-screen interface: enter a device, then a path
 ```
 
 ## commands
 
-```
-drop ls [device[/path]]        what a device shares with you, and — inside a files
-                               namespace — what is in it, one directory at a time
-drop to <device>/<path> [args] open a path; what is there decides what happens
+An address is whose machine, which machine, and what on it. The three parts read from the right,
+so leaving one out leaves out the one on the left:
 
-drop get <device>/<path>/<name> [into]   copy one file out of a files namespace
-drop put <device>/<path> <file>...       copy files into one; - is standard input
-drop rm <device>/<path>/<name>           remove a file, or an empty directory
-drop mkdir <device>/<path>/<name>        make a directory
-drop mv <device>/<path>/<from> <to>      move something inside one
-drop share [dir]               take a file from somebody, once: a path is up for as
-                               long as the command runs, and gone once something lands
+```
+bob:laptop:/chat   bob's laptop, its /chat
+laptop:/chat       the machine called laptop
+bob::/chat         bob, whichever machine of his answers
+/chat              this machine
+bob:laptop         the machine itself
+laptop             a machine itself
+```
+
+Everything else is grouped by the noun it is about:
+
+```
+drop connect <address> [args]  open whatever is at an address
+drop serve                     serve what the config declares, and stay reachable
 drop                           all of it, in a full-screen terminal
                                the first device in the list is this one
                                paths nest: enter walks in, esc walks out
                                p shows a pairing code, t takes one
                                a conversation scrolls with the wheel, ↑↓, pgup/pgdn
 
-drop pair [ticket]             link a device to this one; --qr to show a code
-drop passwd                    hash a password, to guard a path with
+drop file ls <address>                what is in a directory somebody serves
+drop file get <address> [into]        copy one file out of it
+drop file put <address> <file>...     copy files into it; - is standard input
+drop file rm <address>                remove a file, or an empty directory
+drop file mkdir <address>             make a directory
+drop file mv <address> <to>           move something inside it
 
-drop serve                     serve what the config declares, and stay reachable
-drop ns                        what this node serves, and who to
-drop peers                     the devices this one knows
-drop chat <device>             talk to one
-drop log [device]              a conversation, or all of them
-drop cast                      serve a terminal read from stdin as asciicast
-drop id                        this node's identity
-drop user                      who this machine belongs to
-drop grant <path> <who>        let somebody reach a path
-drop revoke <path> <who>       stop them
-drop grants                    what has been allowed and refused
-drop ask <device>/<path>       ask to be let into a path you can see
-drop requests                  who has asked to be let in
-drop vault                     whether what is kept on this disk is encrypted
+drop peer pair [ticket]        link a machine to this one; --qr to show a code
+drop peer ls                   the machines this one knows
+drop peer trust <name>         say you would show this person things without thinking
+drop peer forget <name>        drop a machine from the address book
+drop peer whois <name|id>      what this machine knows about another
+
+drop path ls [address]         what a machine serves, and to whom
+drop path grant <path> <who>   let somebody reach a path
+drop path revoke <path> <who>  stop them
+drop path grants               what has been allowed and refused
+drop path requests             who has asked to be let in
+drop path ask <address>        ask to be let into a path you can see
+drop path share [dir]          take a file from somebody, once: a path is up for as
+                               long as the command runs, and gone once something lands
+drop path cast                 serve a terminal read from stdin as asciicast
+
+drop me id                     this machine's identity
+drop me user                   who this machine belongs to
+drop me vault                  whether what is kept on this disk is encrypted
+drop me passwd                 hash a password, to guard a path with
+drop me log [name]             a conversation, or all of them
 ```
 
 ## namespaces and archetypes
 
-One identity per device, and named paths under it. An address is a peer and a path:
+One identity per machine, and named paths under it. An address is a machine and a path:
 
 ```
-   workstation/inbox
-   workstation/inbox/photos
-   workstation/stream/of/one/specific/namespace
-   ╰────┬────╯╰──────────────┬───────────────╯
-     who                   what
+   workstation:/inbox
+   workstation:/inbox/photos
+   workstation:/stream/of/one/specific/namespace
+   ╰─────┬────╯╰──────────────┬───────────────╯
+      who                   what
 ```
 
 Each of those paths is a **namespace**: an address, an access rule, and the name of the
@@ -163,18 +179,24 @@ Which archetype a path belongs to is declared here, on the side that serves it, 
 flag at the far end — so there is one verb:
 
 ```
-drop to laptop/inbox report.pdf     a share namespace, so this sends a file
-drop to laptop/inbox -              and - is standard input, whose length is unknown
-drop to laptop/logs                 a stream namespace, so this reads it
-drop to laptop/term                 a tty namespace, so this watches it
-drop to laptop/chat "on my way"     a chat namespace, so this is a message
-drop to laptop/open https://…       a link namespace, so that opens over there
+drop connect laptop:/inbox report.pdf  a share namespace, so this sends a file
+drop connect laptop:/inbox -           and - is standard input, whose length is unknown
+drop connect laptop:/logs              a stream namespace, so this reads it
+drop connect laptop:/term              a tty namespace, so this attaches to it
+drop connect laptop:/chat "on my way"  a chat namespace, so this is a message
+drop connect laptop:/chat              with nothing to say, so this is the window
+drop connect laptop:/open https://…    a link namespace, so that opens over there
+drop connect laptop:/work              a files namespace, so this lists it
 ```
+
+How it decides is one lookup: connect asks the machine what it serves, finds the archetype at the
+path, and looks that name up in a table of how to open each kind from a terminal. A kind this
+build has never heard of is named and refused, rather than half-opened.
 
 Asking a namespace for something it is not is refused with the reason, rather than half-working:
 
 ```
-$ drop to laptop/chat report.pdf
+$ drop connect laptop:/chat report.pdf
 drop: 12D3KooW… declined: /chat is a chat namespace
 ```
 
@@ -249,7 +271,7 @@ describe your namespace without a case for it. `Serve` is given a framed connect
 and what is said on it from there is yours alone — no other part of drop reads a byte of it.
 
 Register it in [`src/cmd/archetypes.go`](src/cmd/archetypes.go), which is where a process says
-which archetypes it answers for — the daemon registers all six, `drop chat` registers one, and a
+which archetypes it answers for — the daemon registers all six, a chat window registers one, and a
 test registers whatever it is testing. Nothing in `ns`, `conf`, `proto` or `wire` changes, and
 nothing in them may be made to: a path that resolves an access rule and a wire that frames bytes
 have no business knowing what your archetype is.
@@ -307,7 +329,7 @@ identity from.
 
 A password is the weak one: the other two bind to a key nobody else holds, and a password
 binds to knowledge, which spreads. It earns its place because it is the only one that works
-before you know who is coming. `drop passwd` prints the hash to put in the config — the
+before you know who is coming. `drop me passwd` prints the hash to put in the config — the
 plaintext never goes in a file, so a leaked config is not a leaked password.
 
 ### paired is not the same as trusted
@@ -388,10 +410,10 @@ question: access says who gets in, visible says who is told there is a door. A p
 shared with one person, merely visible to another, who then asks.
 
 ```console
-$ drop ls beta
+$ drop path ls beta
   /vault   share    locked
 
-$ drop ask beta/vault --why "for the thing we discussed"
+$ drop path ask beta:/vault --why "for the thing we discussed"
 asked beta for /vault
 nothing is granted by asking: somebody there decides.
 ```
@@ -399,12 +421,12 @@ nothing is granted by asking: somebody there decides.
 On the other machine the request waits until somebody answers it:
 
 ```console
-$ drop requests
+$ drop path requests
   /vault
     from  carol
     why   for the thing we discussed
 
-$ drop requests allow /vault carol
+$ drop path requests allow /vault carol
 ```
 
 In the interface it is the same two keys as everything else: `a` on a locked path asks for it, and
@@ -422,10 +444,10 @@ the same split as `sshd_config` and `authorized_keys`, so that a program editing
 the other.
 
 ```console
-$ drop grant  /work carol@laptop     # on top of whatever the config says
-$ drop revoke /work bob@phone        # against it
-$ drop revoke /work bob@phone --forget
-$ drop grants
+$ drop path grant  /work carol@laptop     # on top of whatever the config says
+$ drop path revoke /work bob@phone        # against it
+$ drop path revoke /work bob@phone --forget
+$ drop path grants
 ```
 
 The interface does the same thing: on one of your own paths, `w` opens **who may reach it** --
@@ -438,7 +460,7 @@ the path they are written at, so refusing somebody at `/` refuses them everywher
 
 ### listings are filtered, not refused
 
-`drop ls beta` shows what beta shares **with you**. A path shared with someone else is absent,
+`drop path ls beta` shows what beta shares **with you**. A path shared with someone else is absent,
 not marked refused: a listing that showed the whole tree would tell someone which machine has
 a terminal worth attacking.
 
@@ -458,10 +480,10 @@ says *which machine*, never *whose*. A **user key** says whose.
 
 An ed25519 SSH key, generated on first run if you do not point drop at one, and read through
 `ssh-agent` if you do — so a key on a YubiKey, in a PIV slot, or in a file all work the same way.
-`drop user` shows what this machine is using.
+`drop me user` shows what this machine is using.
 
 ```console
-$ drop user
+$ drop me user
   key      ~/.config/drop/user
   identity ssh-ed25519 AAAAC3Nza…
   as       SHA256:nkTYln1x9SMCjQxJCxVC9ng4829/4DxcU6CK+iKNHaw
@@ -480,8 +502,8 @@ user key. A machine of theirs you have never met then presents its own badge and
 without pairing again: *pair once per person, not once per pair of machines*.
 
 ```console
-drop pair <ticket>             the user key is learnt; their other machines work later
-drop pair <ticket> --machine   this device and no other
+drop peer pair <ticket>             the user key is learnt; their other machines work later
+drop peer pair <ticket> --machine   this machine and no other
 ```
 
 `--machine` is for a build server, a box that is nobody's personal identity, or a deliberate
@@ -524,10 +546,10 @@ once. Two profiles are strangers who must pair, which is how a rule that names s
 tried without a second computer.
 
 ```console
-$ DROP_PROFILE=bob drop user      # a different person, called tron-bob
+$ DROP_PROFILE=bob drop me user   # a different person, called tron-bob
 $ DROP_PROFILE=bob drop serve     # alongside your own, on its own port
-$ drop pair                       # then pair them, as you would two machines
-$ DROP_PROFILE=bob drop pair <ticket>
+$ drop peer pair                  # then pair them, as you would two machines
+$ DROP_PROFILE=bob drop peer pair <ticket>
 ```
 
 A profile that sets `drop.user_key` to the same key you use is *you* again — leave it out of a
@@ -536,7 +558,7 @@ profile's config for a genuinely separate person.
 
 **Revocation** is expiry and a local refusal, and nothing more honest is possible without a server.
 A badge lasts ninety days, so a lost machine stops being trusted within ninety days rather than
-today; `drop peers rm bob@laptop` stops this machine trusting it immediately, and tells nobody
+today; `drop peer forget bob@laptop` stops this machine trusting it immediately, and tells nobody
 else.
 
 ## configuration
@@ -625,7 +647,7 @@ namespaces is worse than not starting. With no file at all, drop serves a small 
 to send to, `/chat` to talk in, `/open` for links — and nothing that hands over a directory, runs a
 command or shares a terminal, because those are decisions.
 
-`drop ns` prints what this node serves, and what each archetype says about itself.
+`drop path ls` prints what this machine serves, and what each archetype says about itself.
 [`misc/init.lua`](misc/init.lua) is a worked example with one namespace of every archetype in it.
 
 ## conversations
@@ -634,8 +656,8 @@ Everything drop does is a **conversation with an endpoint id**. Files, chat, lin
 endless streams are modalities inside it, not separate features that happen to share a binary:
 
 ```
-drop chat laptop                        # talk
-drop log laptop                         # the whole story, in one place
+drop connect laptop:/chat               # talk
+drop me log laptop                      # the whole story, in one place
 ```
 
 and the log reads as one thing, because it is:
@@ -650,8 +672,8 @@ and the log reads as one thing, because it is:
 ### saying something to a device that is off
 
 A message is recorded the moment it is composed. What is uncertain is whether it *arrived*, not
-whether it was said, so `drop say` never fails because the far end is asleep — it queues, and goes
-out when the device appears. `drop chat` retries in the background while you keep typing.
+whether it was said, so sending never fails because the far end is asleep — it queues, and goes
+out when the device appears. a chat window retries in the background while you keep typing.
 
 Delivery is acknowledged **per message, after it is on the far end's disk**. Acknowledging before
 storing turns a crash into silent loss: the sender drops it from its outbox and then nobody has it.
@@ -698,9 +720,9 @@ Always name more than one when you name hardware: a data key wrapped only to a Y
 that dies with the YubiKey.
 
 ```console
-drop vault           what it is doing, creating nothing
-drop vault seal      encrypt what is already on this disk
-drop vault clear     put it back in the clear
+drop me vault        what it is doing, creating nothing
+drop me vault seal   encrypt what is already on this disk
+drop me vault clear  put it back in the clear
 ```
 
 Both walks read every record and write it back — sealed or not — so turning a vault on does not
@@ -823,17 +845,17 @@ drop.mount("/term", { type = "tty", access = { "laptop" }, shell = "/bin/sh", in
 ```
 
 ```
-drop to laptop/term            open it; what you type goes there if it takes input
+drop connect laptop:/term      open it; what you type goes there if it takes input
 ```
 
 A **cast** is the terminal you are already sitting at, shown to whoever is watching. It reads
 asciicast v2 on standard input, so anything that writes asciicast will do:
 
 ```
-asciinema rec --stdout | drop cast
-HEXE_SHARE_BACKEND="drop cast" hexe ...
+asciinema rec --stdout | drop path cast
+HEXE_SHARE_BACKEND="drop path cast" hexe ...
 
-drop to laptop/cast            watch it
+drop connect laptop:/cast      watch it
 ```
 
 A cast is served by the node that is already running, if one is: it hands the recording to
@@ -914,7 +936,8 @@ install -m 0644 misc/drop.service ~/.config/systemd/user/
 systemctl --user enable --now drop
 ```
 
-Without a daemon, `--to laptop` only connects while someone is running `drop recv` on the laptop.
+Without a daemon, `drop connect laptop:/…` only reaches the laptop while somebody there is
+running something that serves.
 
 ## layout
 
@@ -954,10 +977,10 @@ The difference is the whole cost of reaching somebody: a rendezvous lookup, a re
 handshake — seconds — against a stream on a connection that already exists.
 
 ```
-drop ls laptop        55ms with a daemon running, seconds without
+drop path ls laptop   55ms with a daemon running, seconds without
 ```
 
-The same socket carries `drop cast` and the pairing offer, for the same reason: two processes
+The same socket carries `drop path cast` and the pairing offer, for the same reason: two processes
 cannot share one address, so the one holding it does the work.
 
 With nothing running, every command dials for itself, exactly as before.
