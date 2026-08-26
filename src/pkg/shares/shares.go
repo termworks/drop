@@ -28,6 +28,7 @@ import (
 type stored struct {
 	Path      string `json:"path"`
 	Archetype string `json:"archetype"`
+	Shape     string `json:"shape,omitempty"`
 	Version   int    `json:"version,omitempty"`
 	Writable  bool   `json:"writable,omitempty"`
 	About     string `json:"about,omitempty"`
@@ -53,6 +54,7 @@ func Remember(peer node.ID, what []proto.Served) error {
 		out = append(out, stored{
 			Path:      s.Path,
 			Archetype: s.Archetype,
+			Shape:     s.Shape,
 			Version:   s.Version,
 			Writable:  s.Writable,
 			About:     s.About,
@@ -97,6 +99,7 @@ func Recall(peer node.ID) ([]proto.Served, error) {
 		out = append(out, proto.Served{
 			Path:      s.Path,
 			Archetype: s.Archetype,
+			Shape:     s.Shape,
 			Version:   s.Version,
 			Writable:  s.Writable,
 			About:     s.About,

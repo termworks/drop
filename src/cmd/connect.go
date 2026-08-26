@@ -86,6 +86,19 @@ func openerFor(archetype string) (opener, bool) {
 	return how, ok
 }
 
+// openerAt is how the command line opens what is at a path, falling back to the archetype the far
+// end says this one speaks the protocol of.
+//
+// A kind of namespace written in lua lives in a file, and the machine serving it has that file
+// while this one may not. The shape is what it says it sounds like from out here, which is all a
+// caller ever needed: what to say down the stream.
+func openerAt(served proto.Served) (opener, bool) {
+	if how, ok := openerFor(served.Archetype); ok {
+		return how, true
+	}
+	return openerFor(served.Shape)
+}
+
 func newConnectCmd() *cobra.Command {
 	var (
 		as   string
@@ -202,9 +215,9 @@ func choose(serves []proto.Served, at ns.Address, args []string) (proto.Served, 
 		return proto.Served{}, "", opener{}, fmt.Errorf("%s holds other namespaces and is none itself: `drop path ls %s`", at, at)
 	}
 
-	how, ok := openerFor(served.Archetype)
+	how, ok := openerAt(served)
 	if !ok {
-		return proto.Served{}, "", opener{}, fmt.Errorf("%s is a %s namespace, which this build cannot open from the command line", at, served.Archetype)
+		return proto.Served{}, "", opener{}, fmt.Errorf("%s is a %s namespace, and this machine has no such thing: a kind of namespace written in lua is a file both machines need", at, served.Archetype)
 	}
 	if how.takes == "" && len(args) > 0 {
 		return proto.Served{}, "", opener{}, fmt.Errorf("%s is a %s namespace, and takes nothing after the address", at, served.Archetype)

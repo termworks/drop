@@ -66,7 +66,7 @@ func TestEveryViewHasAGlyph(t *testing.T) {
 			t.Errorf("the view for %q draws a send screen but names nothing to send", name)
 		}
 	}
-	if viewOf("nothing anybody registered").glyph == "" {
+	if viewOf(proto.Served{Archetype: "nothing anybody registered"}).glyph == "" {
 		t.Error("an archetype with no view has no glyph either")
 	}
 }

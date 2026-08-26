@@ -171,17 +171,19 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 		return policy.Met(Meeting{Mount: mount, Who: caller, From: from, Conn: conn})
 	}
 
-	// The caller may say what it expects to find. An empty name asks for whatever is here, which is
-	// what somebody who typed a path rather than read a listing is doing.
-	if open.Archetype != "" && open.Archetype != mount.Archetype {
-		return decided(fmt.Sprintf("%s is a %s namespace", mount.Path, mount.Archetype))
-	}
 	if policy.Archetypes == nil {
 		return refuse("this node serves no namespace types")
 	}
 	answers, known := policy.Archetypes.Lookup(mount.Archetype, mount.Version)
 	if !known {
 		return refuse(policy.Archetypes.Missing(mount.Archetype, mount.Version).Error())
+	}
+
+	// The caller may say what it expects to find. An empty name asks for whatever is here, which is
+	// what somebody who typed a path rather than read a listing is doing, and the archetype this
+	// one speaks the protocol of is the same conversation under a name the caller has heard of.
+	if open.Archetype != "" && open.Archetype != mount.Archetype && open.Archetype != answers.Note(mount.Config).Shape {
+		return decided(fmt.Sprintf("%s is a %s namespace", mount.Path, mount.Archetype))
 	}
 
 	if err := conn.WriteFrame(wire.KindAccept, nil); err != nil {

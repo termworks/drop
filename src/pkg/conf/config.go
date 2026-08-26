@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/bresilla/drop/src/pkg/arch"
+	"github.com/bresilla/drop/src/pkg/arch/lua"
 	"github.com/bresilla/drop/src/pkg/grant"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
@@ -148,6 +149,12 @@ func FilePath() (string, error) {
 func Load(known *arch.Registry) (*Config, error) {
 	path, err := FilePath()
 	if err != nil {
+		return nil, err
+	}
+
+	// Archetypes written beside the config are registered before it is read, because a mount may
+	// name one and a mount is refused where it is written.
+	if err := lua.Load(filepath.Join(filepath.Dir(path), lua.Beside), known); err != nil {
 		return nil, err
 	}
 

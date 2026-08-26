@@ -25,6 +25,10 @@ type Served struct {
 	// branch, which is a path that holds others and serves nothing.
 	Archetype string
 	Version   int
+	// Shape is another archetype whose protocol this one speaks, and is empty for one that
+	// invented its own. It is what a caller that has never heard of the archetype falls back to,
+	// and the whole of what it needs: what to say down the stream.
+	Shape string
 	// Writable says the far end may put something into it.
 	Writable bool
 	// Locked says this path can be seen but not opened. It is here to be asked for.
@@ -65,6 +69,7 @@ func (h Hello) encode() []byte {
 	for _, s := range h.Serves {
 		w.String(s.Path)
 		w.String(s.Archetype)
+		w.String(s.Shape)
 		w.Uint(uint64(s.Version))
 		w.Bool(s.Writable)
 		w.Bool(s.Locked)
@@ -111,6 +116,10 @@ func decodeHello(body []byte) (Hello, error) {
 		if err != nil {
 			return out, err
 		}
+		shape, err := r.String(256)
+		if err != nil {
+			return out, err
+		}
 		version, err := r.Uint()
 		if err != nil {
 			return out, err
@@ -138,6 +147,7 @@ func decodeHello(body []byte) (Hello, error) {
 		out.Serves = append(out.Serves, Served{
 			Path:      path,
 			Archetype: archetype,
+			Shape:     shape,
 			Version:   int(version),
 			Writable:  writable,
 			Locked:    locked,
@@ -229,7 +239,7 @@ func Describe(table *ns.Table, known *arch.Registry, caller ns.Caller) []Served 
 		if answers, ok := lookup(known, m); ok {
 			note := answers.Note(m.Config)
 			said.Version = answers.Version()
-			said.Writable, said.About = open && note.Writable, note.About
+			said.Writable, said.About, said.Shape = open && note.Writable, note.About, note.Shape
 		}
 		out = append(out, said)
 	}

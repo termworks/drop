@@ -893,7 +893,7 @@ func (m Model) putKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyTab:
 		// Completion is for paths. A URL has nothing on this machine to complete against.
 		at, ok := m.path()
-		if !ok || !viewOf(at.Archetype).onDisk {
+		if !ok || !viewOf(at).onDisk {
 			return m, nil
 		}
 
@@ -921,7 +921,7 @@ func (m Model) putKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		m.putting, m.typing, m.options, m.trouble, m.said = false, "", nil, "", ""
 
-		of := viewOf(at.Archetype)
+		of := viewOf(at)
 		if !of.onDisk {
 			return m, putLink(m.back, with, at.Path, at.Archetype, of.kind, body)
 		}

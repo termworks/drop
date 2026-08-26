@@ -57,6 +57,14 @@ type Note struct {
 	About string
 	// Glyph is one character, for a list that has no room for a word.
 	Glyph string
+	// Shape is another archetype whose protocol this one speaks, and is empty for one that
+	// invented its own.
+	//
+	// It is what a machine that has never heard of this archetype falls back to: a camera whose
+	// shape is a chat is opened with the chat opener and drawn with the chat glyph, because the
+	// far end only ever needed to know what to say down the stream. An archetype that names none
+	// is one nobody else can open, which is honest and is sometimes the point.
+	Shape string
 }
 
 // Changed is how an archetype says something in a namespace has moved, so that whoever else holds

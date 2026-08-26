@@ -79,7 +79,8 @@ func TestConnectOpensTheNamespaceAPathLandsIn(t *testing.T) {
 	}
 }
 
-// An archetype this build has never heard of is not a crash: it is named, and so is the reason.
+// An archetype this build has never heard of is not a crash: it is named, and so is the reason —
+// which is that the file it is written in is on the other machine and not on this one.
 func TestConnectRefusesAnArchetypeItCannotOpen(t *testing.T) {
 	far := offers(proto.Served{Path: "/eye", Archetype: "camera"})
 
@@ -87,10 +88,27 @@ func TestConnectRefusesAnArchetypeItCannotOpen(t *testing.T) {
 	if err == nil {
 		t.Fatal("an archetype with no opener was opened anyway")
 	}
-	for _, want := range []string{"camera", "cannot open"} {
+	for _, want := range []string{"camera", "no such thing", "lua"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("%q is not in %q", want, err)
 		}
+	}
+}
+
+// One that says what protocol it speaks is opened by that, because that is the whole of what a
+// caller ever needed to know about it.
+func TestConnectOpensAnUnknownArchetypeByItsShape(t *testing.T) {
+	far := offers(proto.Served{Path: "/eye", Archetype: "camera", Shape: "note"})
+
+	served, _, how, err := choose(far, typed(t, "orin:/eye"), nil)
+	if err != nil {
+		t.Fatalf("choose(): %v", err)
+	}
+	if served.Archetype != "camera" {
+		t.Errorf("it landed on a %q", served.Archetype)
+	}
+	if how.does != openers["note"].does {
+		t.Errorf("it was opened with something other than the note opener")
 	}
 }
 

@@ -232,7 +232,7 @@ func path(it pathItem, width, index int, selected bool) string {
 
 	sendCol := 16
 	first := fill(stripe(base, selected) +
-		cell(base, second, 2, viewOf(archetype).glyph, false, false) +
+		cell(base, second, 2, viewOf(it.step.served).glyph, false, false) +
 		cell(base, name, inner-2-sendCol, shown, false, true) +
 		cell(base, sendColour, sendCol, send, true, false))
 

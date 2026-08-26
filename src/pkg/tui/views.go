@@ -65,11 +65,18 @@ var views = map[string]view{
 	"": {glyph: "▸"},
 }
 
-// viewOf is how the interface behaves for an archetype, and honestly for one it has never heard of:
-// the name, whatever the far end said it is for, and nothing to press.
-func viewOf(archetype string) view {
-	if at, ok := views[archetype]; ok {
-		return at
+// viewOf is how the interface behaves for a namespace.
+//
+// An archetype it has never heard of falls back to the one the far end says that archetype speaks
+// the protocol of, because a kind of namespace written in lua lives in a file the machine serving
+// it has and this one may not. Failing that, honestly: the name, whatever the far end said it is
+// for, and nothing to press.
+func viewOf(at proto.Served) view {
+	if of, ok := views[at.Archetype]; ok {
+		return of
+	}
+	if of, ok := views[at.Shape]; ok {
+		return of
 	}
 	return view{glyph: "·"}
 }
@@ -77,7 +84,7 @@ func viewOf(archetype string) view {
 // showing is what the open namespace draws. One of this machine's own is not a conversation with
 // anybody, so it is asked about separately.
 func (m Model) showing(at proto.Served) shows {
-	of := viewOf(at.Archetype)
+	of := viewOf(at)
 	if m.onSelf {
 		return of.mine
 	}

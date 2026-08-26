@@ -341,6 +341,58 @@ archetype written entirely inside one test file — declared in lua, read into s
 mounted, listed, opened over a pipe and served, speaking a protocol nobody else has heard of. Read
 it as the shortest complete answer to "what would mine have to look like".
 
+### an archetype written in lua
+
+You do not have to rebuild drop to add one. A file in `archetypes/` beside your `init.lua`
+declares an archetype, and it is registered in the same registry as the six, under the same
+interface, before the config that mounts it is read:
+
+```lua
+drop.archetype{
+  name    = "camera",
+  version = 1,
+  shape   = "note",                                 -- optional; see below
+  read    = function(d) return { device = d.device } end,
+  note    = function(c) return { detail = c.device, glyph = "◉" } end,
+  serve   = function(s, c) s:write("looking at " .. c.device) end,
+}
+```
+
+`read` is handed the mount table — `d.device` is whatever `device =` said, and a setting the config
+never wrote is `nil` — and returns that namespace's settings, which come back as `c` later. It runs
+while the config is being read, so `error("a camera needs a device")` is a mistake with a file and a
+line on it. `note` is what a listing may say. `serve` is one session, and it is straight-line code:
+the waiting happens outside it.
+
+| in a session | what it is |
+| --- | --- |
+| `s:read()` | the next frame and what kind it was; nothing at all once the far end has finished |
+| `s:write(bytes[, kind])` | a frame back; `item` unless you say otherwise |
+| `s:who()` | who is calling: `id`, `name`, `label`, `person`, `paired`, `trusted` |
+| `s:path()` | the namespace this is |
+| `s:open(name[, "r"\|"w"\|"a"])` | a file in this namespace's own directory; `:read([n])`, `:write(b)`, `:close()` |
+| `s:run{ "program", "argument" }` | a process, its output read back, killed with the session |
+| `drop.log(text)` | a line in the daemon's output, attributed to the plugin |
+
+`s:open` takes a **name and never a path**. It is resolved inside a directory drop holds open for
+that one namespace, one component at a time, and leaves it for nothing — not by climbing and not by
+following a link already there. Nothing else on this disk is reachable, and neither is `io`, `os`,
+`debug`, `package`, `require`, `load` or the global table: a plugin's world is built by listing what
+goes into it. Each session gets a runtime of its own and a budget of its own, and a session that
+spends it — a loop that never ends, a table that never stops growing — is stopped, alone, with the
+daemon still standing.
+
+`shape` is for the other machine. Two machines need the same file to speak an archetype nobody else
+has heard of; naming a `shape` says *and if you have not got it, this sounds like a note* — so a
+stock peer opens it with the note opener, draws it with the note glyph, and is served by your
+plugin, which is all it ever needed. Say nothing and yours is unopenable from anywhere it is not
+installed, which is honest and sometimes the point.
+
+[`misc/archetypes/camera.lua`](misc/archetypes/camera.lua) is a whole one, and
+[`src/pkg/arch/spoken_test.go`](src/pkg/arch/spoken_test.go) is the same claim tested: a camera in
+lua, declared in a config, mounted, listed, opened over a pipe and served, with `ns`, `conf`,
+`proto` and `wire` containing not one line that knows it exists.
+
 ### the longest prefix wins
 
 A mount serves everything below it, so `/stream` answers

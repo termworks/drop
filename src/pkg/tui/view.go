@@ -353,7 +353,7 @@ func (m Model) aboutView(at proto.Served) string {
 // One shape for all of them, because it is one act. What differs is the word for the thing and
 // whether what is typed can be completed, and the view says both.
 func (m Model) putView(at proto.Served) string {
-	of := viewOf(at.Archetype)
+	of := viewOf(at)
 	if m.putting {
 		return m.naming(of.sends, of.onDisk)
 	}
