@@ -2,7 +2,6 @@ package tty
 
 import (
 	"io"
-	"sync"
 	"time"
 
 	"github.com/bresilla/drop/src/pkg/cast"
@@ -31,9 +30,11 @@ func attach(d *live.Duplex, stage *cast.Caster, into io.Writer, resize func(cols
 
 	sending := make(chan error, 1)
 	go func() {
-		writing := pacing(d)
+		writing := live.Pacing(d, stalledAfter)
+		defer writing.Give()
+
 		for chunk := range viewer.Frames() {
-			if err := writing.write(chunk, stalledAfter); err != nil {
+			if _, err := writing.Write(chunk); err != nil {
 				sending <- err
 				return
 			}
@@ -43,7 +44,20 @@ func attach(d *live.Duplex, stage *cast.Caster, into io.Writer, resize func(cols
 
 	d.OnResize = resize
 
-	if err := d.Pump(into); err != nil {
+	// Both directions are waited on, because either one ending ends the session. A watcher whose
+	// feed has stopped is not watching the terminal any more, whatever it is still typing into it,
+	// and the read side is ended so the pump comes back rather than sitting on a peer that has no
+	// reason to say anything else.
+	pumped := make(chan error, 1)
+	go func() { pumped <- d.Pump(into) }()
+
+	select {
+	case err := <-pumped:
+		if err != nil {
+			return err
+		}
+	case err := <-sending:
+		d.Stop()
 		return err
 	}
 
@@ -55,57 +69,4 @@ func attach(d *live.Duplex, stage *cast.Caster, into io.Writer, resize func(cols
 	case <-time.After(partingWithin):
 		return nil
 	}
-}
-
-// paced writes to one watcher on a goroutine of its own, so that a write which is going nowhere can
-// be given up on rather than pinning whoever handed it over.
-type paced struct {
-	chunks chan []byte
-	sent   chan error
-	// once, so that giving up twice is not a closed channel being closed again.
-	once sync.Once
-}
-
-func pacing(to io.Writer) *paced {
-	p := &paced{chunks: make(chan []byte), sent: make(chan error, 1)}
-
-	go func() {
-		for chunk := range p.chunks {
-			_, err := to.Write(chunk)
-			p.sent <- err
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	return p
-}
-
-// write hands over one chunk and waits the bound for it to land. Expiry ends this writer: the
-// channel is closed, so the goroutine leaves as soon as the write it is stuck in gives way.
-func (p *paced) write(chunk []byte, within time.Duration) error {
-	timer := time.NewTimer(within)
-	defer timer.Stop()
-
-	select {
-	case p.chunks <- chunk:
-	case <-timer.C:
-		p.give()
-		return errStalled
-	}
-
-	select {
-	case err := <-p.sent:
-		return err
-	case <-timer.C:
-		p.give()
-		return errStalled
-	}
-}
-
-// give stops the writer. Whatever it is stuck in finishes into a channel nobody is reading, and
-// then it leaves.
-func (p *paced) give() {
-	p.once.Do(func() { close(p.chunks) })
 }

@@ -25,10 +25,28 @@ type Stream interface {
 	SetReadDeadline(t time.Time) error
 }
 
+// A terminal's shape, as far as one is believed. Zero is not a size anything can be drawn on, and a
+// grid is kept cell by cell at both ends of this, so a number past any real screen is an allocation
+// somebody else asked for rather than a terminal.
+const (
+	leastSide = 1
+	mostSide  = 1000
+)
+
 // Resize reports a new terminal size.
 type Resize struct {
 	Cols uint16
 	Rows uint16
+}
+
+// shape is the reported size as it is passed on. ok is false when there is no size in it at all: a
+// namespace with no terminal behind it says zero, and a window that has just been hung up says it
+// too.
+func (z Resize) shape() (cols, rows uint16, ok bool) {
+	if z.Cols < leastSide || z.Rows < leastSide {
+		return 0, 0, false
+	}
+	return min(z.Cols, mostSide), min(z.Rows, mostSide), true
 }
 
 func (z Resize) encode() []byte {
@@ -116,6 +134,16 @@ func (d *Duplex) Close() error {
 	return nil
 }
 
+// Stop ends the read direction, so a Pump waiting on the far end comes back. What it is waiting for
+// is a peer that has a reason to say something, and once this end is finished with the session there
+// is none.
+func (d *Duplex) Stop() {
+	if d.stream == nil {
+		return
+	}
+	_ = d.stream.SetReadDeadline(time.Now())
+}
+
 // Linger waits for the far end to close, so the last frames written are not lost to a teardown.
 // Bounded, because a peer that never closes must not hold this end open.
 func (d *Duplex) Linger() {
@@ -168,8 +196,9 @@ func (d *Duplex) Pump(out io.Writer) error {
 			if err != nil {
 				return err
 			}
-			if d.OnResize != nil {
-				d.OnResize(resize.Cols, resize.Rows)
+			cols, rows, ok := resize.shape()
+			if ok && d.OnResize != nil {
+				d.OnResize(cols, rows)
 			}
 
 		case wire.KindEnd:

@@ -8,7 +8,6 @@ package tty
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -37,9 +36,6 @@ const (
 	// writing, the way a duplex bounds its own linger.
 	partingWithin = 5 * time.Second
 )
-
-// errStalled says a watcher took nothing for long enough to be dropped.
-var errStalled = errors.New("a watcher stopped reading")
 
 // Config is what a tty namespace was told: what to start, and whether the far end may type.
 type Config struct {
@@ -168,6 +164,7 @@ func (t *TTY) at(path string, cfg Config) (*terminal, error) {
 	}
 
 	cmd := exec.Command(shell)
+	cmd.Env = environ()
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -187,19 +184,31 @@ func (t *TTY) at(path string, cfg Config) (*terminal, error) {
 	go func() {
 		_, _ = io.Copy(term.stage, ptmx)
 
-		// The shell is gone: end every feed, wait for the process so it is not left a zombie, and
-		// let the next watcher start a fresh one.
+		// Out of the map before it is taken apart, so the next watcher starts a fresh shell rather
+		// than being handed this one with its feeds ended and its pty closed.
+		t.mu.Lock()
+		delete(t.open, path)
+		t.mu.Unlock()
+
+		// The shell is gone: end every feed, and wait for the process so it is not left a zombie.
 		term.stage.Stop()
 		_ = ptmx.Close()
 		_ = cmd.Wait()
 		close(term.reaped)
-
-		t.mu.Lock()
-		delete(t.open, path)
-		t.mu.Unlock()
 	}()
 
 	return term, nil
+}
+
+// environ is what the shell is started with: this process's own environment, with a terminal type
+// in it. A daemon started by a service manager has none, and a shell that inherits that has curses
+// programs refusing to start in a terminal somebody is watching.
+func environ() []string {
+	env := os.Environ()
+	if os.Getenv("TERM") == "" {
+		env = append(env, "TERM=xterm-256color")
+	}
+	return env
 }
 
 // Stop ends every terminal, which is what ends the watchers attached to them.

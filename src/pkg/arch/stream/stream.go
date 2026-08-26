@@ -9,10 +9,20 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/live"
 	"github.com/bresilla/drop/src/pkg/node"
+)
+
+const (
+	// stalledAfter is how long one chunk may take to reach the far end before it is given up on. A
+	// reader that has stopped reading takes nothing at all, and the command behind it keeps running
+	// for as long as anything waits on it.
+	stalledAfter = 10 * time.Second
+	// partingWithin bounds the wait for the read side to come back once the command is done.
+	partingWithin = 5 * time.Second
 )
 
 // Config is what a stream namespace was told: the command it runs and reads.
@@ -84,11 +94,27 @@ func (s *Stream) Serve(ctx context.Context, at arch.Session) error {
 	done := make(chan error, 1)
 	go func() { done <- d.Pump(io.Discard) }()
 
-	if _, err := io.Copy(asTerminal{d}, out); err != nil {
+	// Nothing the far end sends is read into anything, so the session lasts exactly as long as the
+	// command's output does. The read side is ended on the way out rather than waited on: a peer
+	// that opened a stream and went quiet would otherwise hold this goroutine and the command with
+	// it for as long as it kept the connection.
+	defer func() {
+		d.Stop()
+		select {
+		case <-done:
+		case <-time.After(partingWithin):
+		}
+	}()
+
+	// Bounded, because a far end that has stopped reading takes nothing at all, and the copy that
+	// feeds it is what keeps the command running.
+	writing := live.Pacing(asTerminal{d}, stalledAfter)
+	defer writing.Give()
+
+	if _, err := io.Copy(writing, out); err != nil {
 		return err
 	}
-	_ = d.Close()
-	return <-done
+	return d.Close()
 }
 
 // asTerminal turns bare newlines into carriage return and newline.

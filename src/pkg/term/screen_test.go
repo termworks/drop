@@ -405,3 +405,46 @@ func TestAnUnterminatedSequenceIsGivenUpOn(t *testing.T) {
 		})
 	}
 }
+
+// The shape of the grid is a number somebody else sent. Every cell of it is allocated and written,
+// so a screen nobody could be looking at is a way to take the memory of whichever end was told it.
+func TestAGridIsNoLargerThanAScreen(t *testing.T) {
+	s := New(80, 24)
+	s.Resize(4096, 4096)
+
+	cols, rows := s.Size()
+	if cols > MaxCols || rows > MaxRows {
+		t.Fatalf("a 4096x4096 terminal left a %dx%d grid", cols, rows)
+	}
+	if got := len(s.Row(rows - 1)); got != cols {
+		t.Fatalf("the last row holds %d cells, the grid is %d wide", got, cols)
+	}
+}
+
+// And a shape with nothing in it still leaves somewhere to draw.
+func TestAGridAlwaysHasACell(t *testing.T) {
+	s := New(80, 24)
+	s.Resize(0, 0)
+
+	if cols, rows := s.Size(); cols < 1 || rows < 1 {
+		t.Fatalf("a 0x0 terminal left a %dx%d grid", cols, rows)
+	}
+}
+
+// A program behind a watched terminal writes sequences whose body is a string: a graphics payload,
+// a terminfo reply, a message meant for an application. Printing the body scrolls whatever was on
+// the screen off it, for everyone looking at it.
+func TestStringSequencesAreConsumedNotPrinted(t *testing.T) {
+	for what, out := range map[string]string{
+		"a device control string": "\x1bPtmux;payload\x1b\\",
+		"an application command":  "\x1b_Gf=100,a=T;AAAABBBBCCCC\x1b\\",
+		"a privacy message":       "\x1b^status line\x1b\\",
+	} {
+		s := New(40, 4)
+		write(t, s, "keep"+out+"me")
+
+		if got := line(s, 0); got != "keepme" {
+			t.Errorf("%s: row 0 = %q", what, got)
+		}
+	}
+}

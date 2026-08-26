@@ -93,15 +93,22 @@ func (s *Screen) Row(y int) []Cell {
 	return s.grid[y]
 }
 
+// MaxCols and MaxRows are as large a grid as is kept. The shape comes from whatever is being
+// watched and every cell of it is allocated and written, so a number past any screen somebody could
+// be looking at is memory rather than a terminal.
+const (
+	MaxCols = 1000
+	MaxRows = 1000
+)
+
 // Resize starts a grid of a new size. The contents do not survive: reflowing a terminal is a
 // different problem, and the far end redraws after a resize anyway.
+//
+// The size is taken no further than a screen goes, in either direction: nothing can be drawn on a
+// grid with no cells, and nothing is looking at one the size of a machine's memory.
 func (s *Screen) Resize(cols, rows int) {
-	if cols < 1 {
-		cols = 1
-	}
-	if rows < 1 {
-		rows = 1
-	}
+	cols = min(max(cols, 1), MaxCols)
+	rows = min(max(rows, 1), MaxRows)
 
 	s.cols, s.rows = cols, rows
 	s.grid = make([][]Cell, rows)
@@ -237,9 +244,10 @@ func (s *Screen) escape(buf []byte) (int, bool) {
 		s.csi(string(buf[2:i]), buf[i])
 		return i + 1, true
 
-	case ']':
-		// An operating-system command sets things like the window title. Nothing here shows one,
-		// so it is consumed and dropped; leaving it would print the title onto the grid.
+	case ']', 'P', '_', '^':
+		// A sequence carrying a string: a window title, a device control reply, a message for an
+		// application or for nobody. Nothing here shows one, so the body is consumed and dropped;
+		// leaving it prints the payload onto the grid a cell at a time.
 		end := min(len(buf), maxPending)
 		for i := 2; i < end; i++ {
 			if buf[i] == 0x07 {
