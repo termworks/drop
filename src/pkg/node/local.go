@@ -1,9 +1,11 @@
 package node
 
 import (
+	"context"
 	"net"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/netaddr"
@@ -124,6 +126,32 @@ func (n *Node) Pin() bool {
 
 	n.pinned = now
 	return changed
+}
+
+// repin is how often a node looks at its own addresses again.
+//
+// Often enough that a laptop that joined another network is advertising the address it has now
+// within a moment of having it, and rare enough to be a handful of syscalls a minute.
+const repin = 20 * time.Second
+
+// repinning keeps what the endpoint advertises in step with the networks this machine is on.
+//
+// Nothing else does it for every node: the rendezvous re-pins on its own tick, but it only runs
+// when publishing is turned on, and a pairing offer only while a code is up. Without this a `drop
+// chat` left open, or a daemon with the rendezvous off, goes on offering peers the address it had
+// when it started — which after a move belongs to somebody else's machine.
+func (n *Node) repinning(ctx context.Context, every time.Duration) {
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			n.Pin()
+		}
+	}
 }
 
 func among(all []netip.AddrPort, one netip.AddrPort) bool {

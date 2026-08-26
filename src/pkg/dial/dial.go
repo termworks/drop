@@ -1,8 +1,9 @@
 // Package dial turns a device you know into a connection to it.
 //
-// The ladder lives here rather than in a command, because a phone climbs the same one: this wire,
-// then — only if it did not answer — a rendezvous, which is the one step that involves anybody
-// else, and what the book remembers when neither of them knows.
+// The ladder lives here rather than in a command, because a phone climbs the same one: what this
+// wire says and what the book remembers, neither of which costs anybody anything, and then — only
+// if nothing there answered — a rendezvous, which is the one step that involves somebody else and
+// the only one that comes back with a relay.
 package dial
 
 import (
@@ -17,7 +18,6 @@ import (
 	"github.com/tmc/go-iroh/netaddr"
 
 	"github.com/bresilla/drop/src/pkg/book"
-	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
 )
 
@@ -26,45 +26,81 @@ type Finder interface {
 	Find(ctx context.Context, entry book.Entry) (netaddr.EndpointAddr, bool)
 }
 
+// Wire is the local network, which knows where a device is while it is on the same one. Nil is
+// fine, and so is a discovery.LAN that never started: both mean nothing is heard.
+type Wire interface {
+	Find(ctx context.Context, id node.ID) (netaddr.EndpointAddr, bool)
+}
+
 // To reaches a device and opens a stream on it.
-func To(ctx context.Context, n *node.Node, lan *discovery.LAN, moved Finder, entry book.Entry, alpn string) (*iroh.Conn, *iroh.Stream, error) {
-	return At(ctx, n, lan, moved, entry, alpn, nil)
+func To(ctx context.Context, n *node.Node, wire Wire, moved Finder, entry book.Entry, alpn string) (*iroh.Conn, *iroh.Stream, error) {
+	return At(ctx, n, wire, moved, entry, alpn, nil)
 }
 
 // At is the same, with addresses the caller already has — which is how pairing works, before there
 // is anything written down to look up.
-func At(ctx context.Context, n *node.Node, lan *discovery.LAN, moved Finder, entry book.Entry, alpn string, known []netip.AddrPort) (*iroh.Conn, *iroh.Stream, error) {
+func At(ctx context.Context, n *node.Node, wire Wire, moved Finder, entry book.Entry, alpn string, known []netip.AddrPort) (*iroh.Conn, *iroh.Stream, error) {
 	at := node.AddrFor(entry.ID, known...)
 
 	if len(known) == 0 {
-		// What the book remembers is the floor, not the preference: it needs nothing running to
-		// resolve, and anything that answers below replaces it outright. A remembered address whose
-		// mapping has expired is worse than no address at all — it is a timeout somebody waits for
-		// before the address that would have worked is ever tried.
-		if remembered := Addrs(entry.Addrs); len(remembered) > 0 {
-			at = node.AddrFor(entry.ID, remembered...)
-		}
-
-		onWire := false
-		if lan != nil {
-			if found, ok := lan.Find(ctx, entry.ID); ok {
-				at, onWire = found, true
+		// What the book wrote down and what the wire says are the addresses nobody had to be asked
+		// for, and neither outranks the other. The book needs nothing running to resolve; the wire
+		// answers in milliseconds but is unsigned, so anybody able to put a datagram on the port can
+		// put an address here. Both are guesses, so both go in the same set and the ladder below
+		// sorts them by how near they are.
+		nearby := Addrs(entry.Addrs)
+		if wire != nil {
+			if seen, ok := wire.Find(ctx, entry.ID); ok {
+				nearby = append(nearby, seen.IPAddrs()...)
 			}
 		}
+		at = node.AddrFor(entry.ID, nearby...)
 
-		// Only when this wire did not answer, because it is the one step that asks a third party. A
-		// peer standing next to you is reached without telling a relay anything about it.
-		if !onWire && usable(moved) {
+		if usable(moved) {
+			// Tried before anybody is asked, because a peer standing next to you is reached without
+			// telling a relay anything about it — and for a bounded time, because a wrong address
+			// here has to cost a wait and not the connection. The rendezvous is the only step that
+			// comes back with a relay, and it has to still happen.
+			if len(nearby) > 0 {
+				soon, stop := context.WithTimeout(ctx, nearbyWait)
+				conn, s, err := climb(soon, n, entry, at, alpn)
+				stop()
+
+				if err == nil {
+					return conn, s, nil
+				}
+			}
+
 			if found, ok := moved.Find(ctx, entry); ok {
-				at = found
+				// Added to what is already known rather than put in its place. A rendezvous record
+				// carries the relay, which is the only path to a device nothing can dial; the
+				// addresses carry the paths that answer straight away. Taking either one for the
+				// answer throws away the other.
+				at = alsoAt(found, nearby...)
 			}
 		}
 	}
 
-	// One address at a time first, best guess downwards. A transport handed every address a
-	// machine has does not race them: the one that would answer waits behind the ones that never
-	// will, and a device on the same wire takes ten seconds instead of five milliseconds. If every
-	// guess is wrong, the whole set is still tried below.
+	conn, s, err := climb(ctx, n, entry, at, alpn)
+	if err != nil {
+		return nil, nil, unreachable(n.Trouble(), entry, at, err)
+	}
+	return conn, s, nil
+}
+
+// nearbyWait is how long the addresses nobody had to be asked for get before somebody is.
+//
+// Every short attempt and one on the whole set. A device that is really at one of them answers in
+// milliseconds; past this it is not there, and what remains to try is the relay.
+const nearbyWait = straightAway * (atMost + 1)
+
+// climb tries the nearest addresses one at a time and then everything at once.
+//
+// One address at a time first, best guess downwards. A transport handed every address a machine has
+// does not race them: the one that would answer waits behind the ones that never will, and a device
+// on the same wire takes ten seconds instead of five milliseconds. If every guess is wrong, the
+// whole set is still tried after.
+func climb(ctx context.Context, n *node.Node, entry book.Entry, at netaddr.EndpointAddr, alpn string) (*iroh.Conn, *iroh.Stream, error) {
 	for _, best := range worthTrying(at, entry) {
 		quick, stop := context.WithTimeout(ctx, straightAway)
 		conn, s, err := openFresh(quick, n, node.AddrFor(entry.ID, best), alpn)
@@ -75,12 +111,15 @@ func At(ctx context.Context, n *node.Node, lan *discovery.LAN, moved Finder, ent
 			return conn, s, nil
 		}
 	}
+	return openFresh(ctx, n, at, alpn)
+}
 
-	conn, s, err := openFresh(ctx, n, at, alpn)
-	if err != nil {
-		return nil, nil, unreachable(n.Trouble(), entry, at, err)
+// alsoAt adds addresses to one already built, keeping whatever else it carries.
+func alsoAt(at netaddr.EndpointAddr, more ...netip.AddrPort) netaddr.EndpointAddr {
+	for _, one := range more {
+		at = at.WithIP(one)
 	}
-	return conn, s, nil
+	return at
 }
 
 // openFresh dials, starting over when the far end refuses a resumed session.

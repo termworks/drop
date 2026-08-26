@@ -56,6 +56,14 @@ const (
 // Nothing publishes on its own: the endpoint resolves through the lookup services but never writes
 // to them, so what to say and when to say it is drop's to decide.
 func Findable(ctx context.Context, n *Node) error {
+	// Nothing is published by a device that was told not to tell a relay it exists. The record
+	// would go up under this device's own endpoint id, which says that id is alive and what address
+	// the machine writing it came from — and with the rendezvous off it carries no relay, so that
+	// is the whole of what it says. The code still reaches the wire this device is on.
+	if !Rendezvous() {
+		return nil
+	}
+
 	sk, err := Identity()
 	if err != nil {
 		return err
@@ -84,6 +92,11 @@ func Findable(ctx context.Context, n *Node) error {
 	say(true)
 
 	go func() {
+		// The publisher has a loop of its own that goes on writing the record every few minutes for
+		// as long as it is open. Closing it is what makes an offer that ended stop saying where this
+		// device is.
+		defer func() { _ = publisher.Close() }()
+
 		slow := time.NewTicker(republish)
 		defer slow.Stop()
 

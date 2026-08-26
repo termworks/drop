@@ -95,7 +95,8 @@ func Rendezvous() bool {
 // offering to pair it publishes under its own id, which anybody holding a ticket can read. Such a
 // record says 192.168.1.24, or whatever a VPN or an overlay gave this machine, so a reader learns
 // which networks this device is on and can watch them change as it moves. Off leaves the relay and
-// the reflexive address, which say a great deal less.
+// nothing else — not even the address a relay saw this device arrive from — which says a great deal
+// less and is still enough to be reached.
 func SetDirect(on bool) {
 	settingsMu.Lock()
 	defer settingsMu.Unlock()

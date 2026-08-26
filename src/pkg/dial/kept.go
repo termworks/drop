@@ -9,7 +9,6 @@ import (
 	"github.com/tmc/go-iroh/iroh"
 
 	"github.com/bresilla/drop/src/pkg/book"
-	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
 )
 
@@ -22,7 +21,7 @@ import (
 // multiplexes, so a held connection costs one socket and carries as many streams as are asked of it.
 type Kept struct {
 	node *node.Node
-	lan  *discovery.LAN
+	wire Wire
 	find Finder
 
 	mu   sync.Mutex
@@ -38,12 +37,16 @@ type Kept struct {
 	// dialled cannot say anything back on the same pipe -- it opens a stream and nobody is
 	// listening. That is the whole of what makes a device behind a NAT reachable.
 	serve func(node.ID, string, *iroh.Stream)
+
+	// bookMu guards known, which is the address book as this last read it.
+	bookMu sync.Mutex
+	known  *book.Book
 }
 
-func Hold(n *node.Node, lan *discovery.LAN, find Finder) *Kept {
+func Hold(n *node.Node, wire Wire, find Finder) *Kept {
 	return &Kept{
 		node:     n,
-		lan:      lan,
+		wire:     wire,
 		find:     find,
 		open:     map[string]*iroh.Conn{},
 		dialling: map[string]*flight{},
@@ -139,7 +142,7 @@ func (k *Kept) dial(ctx context.Context, entry book.Entry, alpn string) (*iroh.C
 	k.dialling[at] = ours
 	k.mu.Unlock()
 
-	conn, s, err := To(ctx, k.node, k.lan, k.find, entry, alpn)
+	conn, s, err := To(ctx, k.node, k.wire, k.find, entry, alpn)
 	if err == nil {
 		// The stream was only what proves the connection carries anything. Every caller opens its
 		// own, so this one is done with.
@@ -184,6 +187,7 @@ func (k *Kept) keep(id node.ID, alpn string, conn *iroh.Conn) {
 		was.Close()
 	}
 	k.open[key(id, alpn)] = conn
+
 	answering := k.serve != nil
 
 	k.mu.Unlock()
@@ -249,8 +253,13 @@ func (k *Kept) Reaching(id node.ID) bool {
 //
 // Without this, a queue for such a device never empties: whatever is waiting is waiting for a dial
 // that cannot succeed, while the device itself is connected and idle.
+//
+// Only a device the book has. Nothing ever looks for a connection to anybody else — every caller of
+// To, Reach and Existing hands in an entry read out of the book — so a stranger's connection is one
+// nobody can use, and an id costs a keypair to mint, so keeping one entry per stranger that ever
+// connected is a map anybody can grow for as long as this runs.
 func (k *Kept) Adopt(id node.ID, alpn string, conn *iroh.Conn) {
-	if conn == nil {
+	if conn == nil || !k.knows(id) {
 		return
 	}
 
@@ -267,6 +276,28 @@ func (k *Kept) Adopt(id node.ID, alpn string, conn *iroh.Conn) {
 		return
 	}
 	k.open[key(id, alpn)] = conn
+}
+
+// knows reports whether the address book has this device.
+//
+// Read again whenever the file has changed, because pairing is a separate process: without that a
+// device paired while this was running stays a stranger to it until the daemon is restarted.
+func (k *Kept) knows(id node.ID) bool {
+	k.bookMu.Lock()
+	defer k.bookMu.Unlock()
+
+	if k.known == nil {
+		pinned, err := book.Load()
+		if err != nil {
+			return false
+		}
+		k.known = pinned
+	} else {
+		_ = k.known.Refresh()
+	}
+
+	_, ok := k.known.ByID(id)
+	return ok
 }
 
 // Reach makes sure a connection to a device exists, without asking it anything.

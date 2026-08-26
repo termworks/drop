@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tmc/go-iroh/netaddr"
 )
@@ -224,4 +225,58 @@ func TestWhatIsPinnedIsWhatIsPublished(t *testing.T) {
 	}
 
 	SetDirect(true)
+}
+
+// A machine moves while it is running: a laptop joins another network, a VPN comes up. Nothing else
+// looks again for every node — the rendezvous only when publishing is on, a pairing offer only
+// while a code is up — so without a tick of its own a node goes on advertising the address it had
+// when it started, and peers punch at whatever now holds it.
+func TestAddressesArePinnedAgainWhileRunning(t *testing.T) {
+	n := started(t)
+
+	n.mu.Lock()
+	had := len(n.pinned)
+	n.pinned = nil
+	n.mu.Unlock()
+
+	if had == 0 {
+		t.Skip("this machine has no addresses of its own to pin")
+	}
+
+	ctx, stop := context.WithCancel(t.Context())
+	defer stop()
+	go n.repinning(ctx, time.Millisecond)
+
+	until := time.Now().Add(2 * time.Second)
+	for time.Now().Before(until) {
+		n.mu.Lock()
+		again := len(n.pinned)
+		n.mu.Unlock()
+
+		if again > 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("a node that has been running never looked at its own addresses again")
+}
+
+// started brings up a node that tells nobody anything, under an identity of its own.
+func started(t *testing.T) *Node {
+	t.Helper()
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("DROP_PORT", "0")
+
+	was := Rendezvous()
+	SetRendezvous(false)
+	t.Cleanup(func() { SetRendezvous(was) })
+
+	n, err := Start(t.Context())
+	if err != nil {
+		t.Fatalf("starting a node: %v", err)
+	}
+	t.Cleanup(func() { n.Close() })
+
+	return n
 }

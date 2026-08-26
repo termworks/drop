@@ -105,8 +105,10 @@ func Start(ctx context.Context) (*Node, error) {
 	n := &Node{Endpoint: ep, borrowed: borrowed, wanted: Port()}
 
 	// Before anything reads Addr(), so the first record written already carries somewhere a peer
-	// on the same wire can dial.
+	// on the same wire can dial. Then again on a tick, because a machine moves between networks
+	// while it is running and nothing else looks.
 	n.Pin()
+	go n.repinning(ctx, repin)
 
 	return n, nil
 }

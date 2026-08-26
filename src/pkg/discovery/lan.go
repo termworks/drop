@@ -40,12 +40,23 @@ const LANWindow = 5 * time.Second
 // Stale is how long an announcement is trusted after it was last heard.
 const Stale = 30 * time.Second
 
+// Peers is how many devices this wire is remembered as holding.
+//
+// Larger than any real network, and small enough that a stream of made-up ids costs a bounded
+// amount of memory rather than the machine. An announcement is unsigned and anybody who can put a
+// datagram on the port can send one, so the number of them that arrive is not this node's to decide.
+const Peers = 512
+
 // LAN is this node's view of the local network.
 type LAN struct {
 	mu    sync.RWMutex
 	peers map[string]sighting
 	conn  *net.UDPConn
-	self  string
+	// out is the same socket, for saying which interface an announcement goes out of.
+	out *ipv4.PacketConn
+	// on is every interface that joined the group, which is where announcements are written.
+	on   []net.Interface
+	self string
 }
 
 type sighting struct {
@@ -77,17 +88,17 @@ func StartLAN(ctx context.Context, n *node.Node) (*LAN, error) {
 	// Joined on every interface that can, because which one reaches the other device is not
 	// knowable here: a laptop on wifi and a desktop on ethernet are the ordinary case.
 	p := ipv4.NewPacketConn(conn)
-	joined := 0
+	var joined []net.Interface
 	ifaces, _ := net.Interfaces()
 	for i := range ifaces {
 		if ifaces[i].Flags&net.FlagUp == 0 || ifaces[i].Flags&net.FlagMulticast == 0 {
 			continue
 		}
 		if err := p.JoinGroup(&ifaces[i], group); err == nil {
-			joined++
+			joined = append(joined, ifaces[i])
 		}
 	}
-	if joined == 0 {
+	if len(joined) == 0 {
 		if err := p.JoinGroup(nil, group); err != nil {
 			_ = conn.Close()
 			return nil, fmt.Errorf("joining the local group: %w", err)
@@ -95,7 +106,7 @@ func StartLAN(ctx context.Context, n *node.Node) (*LAN, error) {
 	}
 	_ = p.SetMulticastLoopback(true)
 
-	lan := &LAN{peers: map[string]sighting{}, conn: conn, self: n.ID().String()}
+	lan := &LAN{peers: map[string]sighting{}, conn: conn, out: p, on: joined, self: n.ID().String()}
 
 	go lan.listen(ctx)
 	go lan.announce(ctx, n, group)
@@ -117,7 +128,7 @@ func (l *LAN) announce(ctx context.Context, n *node.Node, group *net.UDPAddr) {
 		// Rebuilt each time, so a node that changed network announces where it is now rather than
 		// repeating where it used to be.
 		if packet := encodeAnnounce(l.self, LocalAddrs(n)); len(packet) > 0 {
-			_, _ = l.conn.WriteToUDP(packet, group)
+			l.say(packet, group)
 		}
 
 		select {
@@ -128,25 +139,84 @@ func (l *LAN) announce(ctx context.Context, n *node.Node, group *net.UDPAddr) {
 	}
 }
 
+// say writes one copy of an announcement per interface the group was joined on.
+//
+// A socket bound to 0.0.0.0 emits one copy, on whichever interface the route table picks for the
+// group — the default route. A laptop on wifi with a cable to a desktop announces only on the wifi,
+// and a machine whose default route is a tunnel announces only into the tunnel, while both of them
+// listen on everything. So the interface is named per write rather than left to the route.
+func (l *LAN) say(packet []byte, group *net.UDPAddr) {
+	if len(l.on) == 0 {
+		_, _ = l.conn.WriteToUDP(packet, group)
+		return
+	}
+
+	for i := range l.on {
+		if err := l.out.SetMulticastInterface(&l.on[i]); err != nil {
+			continue
+		}
+		_, _ = l.out.WriteTo(packet, nil, group)
+	}
+}
+
 // listen records what other nodes announce.
 func (l *LAN) listen(ctx context.Context) {
 	buf := make([]byte, 4096)
 
 	for {
-		n, _, err := l.conn.ReadFromUDP(buf)
+		n, from, err := l.conn.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			return
 		}
 
-		id, addrs, ok := decodeAnnounce(buf[:n])
-		if !ok || id == l.self || len(addrs) == 0 {
-			continue
-		}
-
-		l.mu.Lock()
-		l.peers[id] = sighting{addrs: addrs, seen: time.Now()}
-		l.mu.Unlock()
+		l.heard(buf[:n], from.Addr().Unmap())
 	}
+}
+
+// heard writes down one announcement, if it is one worth believing.
+//
+// Two things are asked of it, and neither of them is who sent it: the id has to be an id, so that a
+// packet cannot make up map keys, and the addresses have to include the one the packet arrived
+// from, so that a machine can say where it is and not where somebody else is. Beyond that an
+// announcement stays a hint — the dial that follows is what proves anything.
+func (l *LAN) heard(packet []byte, from netip.Addr) {
+	id, addrs, ok := decodeAnnounce(packet)
+	if !ok || id == l.self {
+		return
+	}
+	if _, err := node.ParseID(id); err != nil {
+		return
+	}
+	if !claims(addrs, from) {
+		return
+	}
+
+	now := time.Now()
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if _, seen := l.peers[id]; !seen && len(l.peers) >= Peers {
+		for at, old := range l.peers {
+			if now.Sub(old.seen) >= Stale {
+				delete(l.peers, at)
+			}
+		}
+		if len(l.peers) >= Peers {
+			return
+		}
+	}
+	l.peers[id] = sighting{addrs: addrs, seen: now}
+}
+
+// claims reports whether an announcement includes the address it came from.
+func claims(addrs []netip.AddrPort, from netip.Addr) bool {
+	for _, at := range addrs {
+		if at.Addr() == from {
+			return true
+		}
+	}
+	return false
 }
 
 // Find asks the local network where a peer is, giving up after LANWindow.
