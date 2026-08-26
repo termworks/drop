@@ -201,6 +201,11 @@ type Model struct {
 
 	typing  string
 	writing bool
+
+	// helping is whether the keys are being shown. They are behind a press rather than along the
+	// bottom of every screen: what they are changes with where you are, and a line of them is a
+	// line the thing you came to look at does not get.
+	helping bool
 }
 
 // New builds the interface over a backend.

@@ -357,6 +357,12 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// A ticket being typed owns the keyboard the same way: it is one field and two ways out.
+	// The keys, while they are up, take the keyboard: any key puts them away again.
+	if m.helping {
+		m.helping = false
+		return m, nil
+	}
+
 	if m.joining {
 		return m.joinKey(msg)
 	}
@@ -396,6 +402,10 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
+	case "?":
+		m.helping = true
+		return m, nil
+
 	case "ctrl+c":
 		m.stop()
 		return m, tea.Quit

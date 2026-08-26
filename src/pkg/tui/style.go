@@ -65,52 +65,29 @@ func badge(on bool, yes, no string) string {
 	return faintStyle.Render("○ " + no)
 }
 
-// panel is a rounded box with its name written into the top edge, which is how every pane here is
-// separated from the next without a line of its own.
-func panel(title string, width, height int, body string) string {
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(surface).
-		Padding(0, 1)
-
-	if width > 2 {
-		box = box.Width(width - 2)
-	}
-	if height > 2 {
-		box = box.Height(height - 2)
-	}
-	if title != "" {
-		box = box.BorderTop(true)
-	}
-	return withTitle(box.Render(body), title)
-}
-
-// withTitle writes a name into the top border of an already-drawn box.
+// panel is a screen with its name above it.
 //
-// Lip Gloss has no titled border, and drawing the box by hand to get one would mean owning every
-// corner and join. Overwriting the top edge keeps the box the toolkit's problem.
-func withTitle(box, title string) string {
+// No box: a border costs two columns and two rows of every screen and says nothing the title does
+// not. What separates one pane from the next is the name at the top and the space around it.
+func panel(title string, width, height int, body string) string {
+	room := height
+	if title != "" {
+		room--
+	}
+
+	inside := lipgloss.NewStyle().Padding(0, 1)
+	if width > 2 {
+		inside = inside.Width(width)
+	}
+	if room > 0 {
+		inside = inside.Height(room)
+	}
+
+	shown := inside.Render(body)
 	if title == "" {
-		return box
+		return shown
 	}
-
-	lines := strings.Split(box, "\n")
-	if len(lines) == 0 {
-		return box
-	}
-
-	edge := lipgloss.NewStyle().Foreground(surface)
-	name := " " + brandStyle.Render(title) + " "
-	corner := edge.Render("╭─")
-
-	// What is left of the top edge once the corner, the name and the far corner have had theirs.
-	rest := lipgloss.Width(lines[0]) - lipgloss.Width(corner) - lipgloss.Width(name) - 1
-	if rest < 0 {
-		return box
-	}
-	lines[0] = corner + name + edge.Render(strings.Repeat("─", rest)+"╮")
-
-	return strings.Join(lines, "\n")
+	return " " + brandStyle.Render(title) + "\n" + shown
 }
 
 // fit shortens text to a width, keeping the end.

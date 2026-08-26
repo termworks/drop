@@ -21,14 +21,13 @@ func (m Model) View() string {
 	return m.frame(m.body())
 }
 
-// frame is the shape of every screen: a line saying where you are, the screen itself, and the keys
-// along the bottom.
+// frame is the shape of every screen: a line saying where you are, and the screen itself.
 //
-// The body is given exactly the room that is left and no more, so the keys sit on the last line of
-// the terminal rather than wherever the content happened to stop. A footer that floats halfway up
-// the screen reads as part of the content.
+// The body is given exactly the room that is left and no more, so a notice sits on the last line of
+// the terminal rather than wherever the content happened to stop. What the keys are is behind ?,
+// which the header says.
 func (m Model) frame(body string) string {
-	head, foot, said := m.header(), m.footer(), m.notice()
+	head, said := m.header(), m.notice()
 
 	room := m.bodyHeight()
 	middle := lipgloss.NewStyle().Height(room).MaxHeight(room).Render(body)
@@ -37,12 +36,12 @@ func (m Model) frame(body string) string {
 	if said != "" {
 		out += "\n" + said
 	}
-	return out + "\n" + foot
+	return out
 }
 
-// bodyHeight is the room a screen has: everything the header, the footer and any notice leave.
+// bodyHeight is the room a screen has: everything the header and any notice leave.
 func (m Model) bodyHeight() int {
-	room := m.height - 3
+	room := m.height - 2
 	if m.notice() != "" {
 		room--
 	}
@@ -73,9 +72,20 @@ func (m Model) notice() string {
 	return ""
 }
 
+// asking is the mark in the header saying the keys are one press away, lit while they are up.
+func (m Model) asking() string {
+	if m.helping {
+		return brandStyle.Render("?")
+	}
+	return faintStyle.Render("?")
+}
+
 // body is whatever screen is open.
 func (m Model) body() string {
 	switch {
+	case m.helping:
+		return panel("keys", m.width, m.bodyHeight(), m.keysView())
+
 	case m.joining:
 		return m.joiningView()
 
@@ -199,6 +209,7 @@ func (m Model) header() string {
 	case m.loading:
 		right = peachStyle.Render("◐ asking") + "   " + faintStyle.Render(m.me.Name)
 	}
+	right += "   " + m.asking()
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if gap < 1 {
@@ -514,10 +525,11 @@ func (m Model) joiningView() string {
 	return m.middle(panel("take a code", m.panelWidth(), 0, out.String()))
 }
 
-// hint is one key in the footer, and what pressing it does.
+// hint is one key, and what pressing it does.
 type hint struct{ key, does string }
 
-func (m Model) footer() string {
+// keys is what pressing something does on the screen that is open.
+func (m Model) keys() []hint {
 	var keys []hint
 	switch {
 	case m.removing != "":
@@ -578,11 +590,28 @@ func (m Model) footer() string {
 		}
 	}
 
-	var parts []string
-	for _, k := range keys {
-		parts = append(parts, chip(k.key, k.does))
+	return keys
+}
+
+// keysView is the keys, one to a line, for as long as ? is held open.
+func (m Model) keysView() string {
+	var out strings.Builder
+	out.WriteString("\n")
+
+	for _, k := range m.keys() {
+		out.WriteString(" " + keyStyle.Render(fitted(k.key, 8)) + "  " + faintStyle.Render(k.does) + "\n")
 	}
-	return " " + strings.Join(parts, "  ")
+
+	out.WriteString("\n " + faintStyle.Render("? closes this"))
+	return out.String()
+}
+
+// fitted pads a key out so what each one does lines up down the screen.
+func fitted(key string, width int) string {
+	if n := lipgloss.Width(key); n < width {
+		return key + strings.Repeat(" ", width-n)
+	}
+	return key
 }
 
 func fold(text string, width int) []string {
