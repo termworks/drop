@@ -19,6 +19,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/dial"
 	"github.com/bresilla/drop/src/pkg/discovery"
+	"github.com/bresilla/drop/src/pkg/made"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
@@ -69,6 +70,14 @@ func runServe(parent context.Context, quiet bool) error {
 	if _, err := cfg.Grants(); err != nil {
 		return err
 	}
+	created, err := made.Load()
+	if err != nil {
+		return err
+	}
+	skipped, err := cfg.Created(created)
+	if err != nil {
+		return err
+	}
 	if err := unlock(cfg); err != nil {
 		return err
 	}
@@ -113,9 +122,12 @@ func runServe(parent context.Context, quiet bool) error {
 		}
 		return casts.live(), true
 	}
+	// And a namespace created from the command line: written down and served until this stops, or
+	// held up for as long as the command that asked for it is connected.
+	put := newMountHost(cfg.Mounts, known)
 	offers := newPairHost(n)
 	go func() {
-		if err := hostLocal(ctx, casts, shares, offers, held); err != nil {
+		if err := hostLocal(ctx, casts, shares, put, offers, held); err != nil {
 			fmt.Fprintf(os.Stderr, "drop: casts unavailable: %v\n", err)
 		}
 	}()
@@ -215,7 +227,7 @@ func runServe(parent context.Context, quiet bool) error {
 
 	go serveLoopKeeping(ctx, n, answer, held, pushing)
 
-	describe(cfg, known, n)
+	describe(cfg, known, n, skipped)
 
 	report := time.NewTicker(time.Minute)
 	defer report.Stop()
@@ -235,7 +247,7 @@ func runServe(parent context.Context, quiet bool) error {
 }
 
 // describe prints what this node is serving, because a namespace nobody can see is one nobody uses.
-func describe(cfg *conf.Config, known *arch.Registry, n *node.Node) {
+func describe(cfg *conf.Config, known *arch.Registry, n *node.Node, skipped []made.Skipped) {
 	fmt.Printf("%s  %s\n", node.DisplayName(), n.ID())
 	if cfg.Path != "" {
 		fmt.Printf("config %s\n", cfg.Path)
@@ -247,8 +259,9 @@ func describe(cfg *conf.Config, known *arch.Registry, n *node.Node) {
 	mounts := cfg.Mounts.All()
 	kind := widest(6, kinds(mounts))
 	for _, m := range mounts {
-		fmt.Printf("  %-24s %-*s %s\n", m.Path, kind, kindOf(m.Archetype), detail(known, m))
+		fmt.Printf("  %-24s %-*s %-8s %s\n", m.Path, kind, kindOf(m.Archetype), m.Source, detail(known, m))
 	}
+	shadowed(skipped)
 
 	// Whether a device that has moved can still be found. There is no way to tell from the outside
 	// and it decides whether this works at all once a laptop leaves the building.

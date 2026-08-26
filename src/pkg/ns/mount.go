@@ -7,9 +7,39 @@ import (
 	"sync"
 )
 
+// Source is where a namespace came from.
+//
+// Lifecycle belongs to the namespace layer, so this says nothing about what the archetype means: a
+// chat, a camera and a terminal are written down or held up in exactly the same way.
+type Source uint8
+
+const (
+	// Configured is declared by hand in the config file.
+	Configured Source = iota
+	// Written is written down by a command, and is here again after a restart.
+	Written
+	// Held is up for as long as a command is running: a cast, a handoff, a namespace created
+	// without being kept. It goes when that command does.
+	Held
+)
+
+// String is what a listing calls it.
+func (s Source) String() string {
+	switch s {
+	case Written:
+		return "written"
+	case Held:
+		return "held"
+	}
+	return "config"
+}
+
 // Mount is one namespace this node serves.
 type Mount struct {
 	Path string
+	// Source is where this came from, so a listing can say why a path is here and a command knows
+	// what it may take down.
+	Source Source
 	// Archetype is what is here, by name. Empty is a branch: it serves nothing itself and exists
 	// to carry an access rule for the paths under it.
 	Archetype string

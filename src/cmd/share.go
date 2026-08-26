@@ -192,7 +192,7 @@ func sendersNamed(who string) []string {
 // waiting for, and narrowing it to trust would mean a laptop paired this morning cannot send you
 // the file you asked it for. --to is how it gets narrowed when that matters.
 func shareMount(known *arch.Registry, dir string, to []string) (ns.Mount, error) {
-	m := ns.Mount{Path: SharePath, Archetype: "share", Access: ns.Access{AnyPaired: true}}
+	m := ns.Mount{Path: SharePath, Source: ns.Held, Archetype: "share", Access: ns.Access{AnyPaired: true}}
 	if len(to) > 0 {
 		m.Access = ns.Access{Named: to}
 	}

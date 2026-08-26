@@ -4,6 +4,7 @@ import (
 	"bufio"
 
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/tmc/go-iroh/iroh"
@@ -20,6 +21,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/cast"
 	"github.com/bresilla/drop/src/pkg/dial"
+	"github.com/bresilla/drop/src/pkg/made"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
@@ -33,8 +35,8 @@ import (
 // over a socket on this machine, and there stays one node, one listener, and one address that
 // always means the same thing.
 //
-// The first line says which it is: "cast", "share <who> <dir>", "pair <code> <name>",
-// "via <device> <protocol>", or "held".
+// The first line says which it is: "cast", "share <who> <dir>", "mount <declaration>",
+// "pair <code> <name>", "via <device> <protocol>", or "held".
 
 // pairHost is the pairing offer open on this node, if any.
 //
@@ -263,6 +265,99 @@ func (h *shareHost) finished(path string) {
 	close(h.open.done)
 }
 
+// mountHost is the namespaces a command has put up through this node.
+//
+// Kept by path rather than one at a time, because two commands creating two different paths are two
+// perfectly ordinary things happening at once. One path twice is refused: whichever command ended
+// first would otherwise take down the mount the other is holding.
+type mountHost struct {
+	mu     sync.Mutex
+	up     map[string]bool
+	mounts *ns.Table
+	// known is what a created namespace is, so the mount carries the settings the archetype it
+	// names reads rather than a shape this file made up.
+	known *arch.Registry
+}
+
+func newMountHost(mounts *ns.Table, known *arch.Registry) *mountHost {
+	return &mountHost{up: map[string]bool{}, mounts: mounts, known: known}
+}
+
+// begin puts a namespace up and declares the path it is served at. It refuses a path the config
+// declares: that one carries somebody's own rule, and a command must not stand in for it.
+func (h *mountHost) begin(line made.Line) error {
+	at, err := ns.Clean(line.Path)
+	if err != nil {
+		return err
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.up[at] {
+		return fmt.Errorf("%s is already up", at)
+	}
+	if m, _, ok := h.mounts.Lookup(at); ok && m.Path == at {
+		switch {
+		case m.Source == ns.Configured:
+			return fmt.Errorf("the config declares %s already", at)
+		// One that was written down is replaced only by another that is written down. A path put
+		// up for a moment over one that is meant to outlast it would take it away on the way out.
+		case m.Source == ns.Written && !line.Keep:
+			return fmt.Errorf("%s is written down already", at)
+		}
+	}
+
+	answers, ok := h.known.Lookup(line.Archetype, line.Version)
+	if !ok {
+		return h.known.Missing(line.Archetype, line.Version)
+	}
+	settings, err := answers.Read(made.Declared(line.Settings))
+	if err != nil {
+		return err
+	}
+
+	// Written when it is in the file, held when it is not. The one that was written down stays
+	// after the command that sent it goes, which is what writing it down means.
+	source := ns.Held
+	if line.Keep {
+		source = ns.Written
+	}
+	if err := h.mounts.Add(ns.Mount{
+		Path:      at,
+		Source:    source,
+		Archetype: line.Archetype,
+		Version:   line.Version,
+		Config:    settings,
+		Access:    line.Access.Rule(),
+	}); err != nil {
+		return err
+	}
+
+	h.up[at] = true
+	return nil
+}
+
+// end takes a held namespace down, and the path with it.
+// mine reports whether this node is the one that put a path up.
+func (h *mountHost) mine(at string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return h.up[at]
+}
+
+func (h *mountHost) end(at string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if !h.up[at] {
+		return
+	}
+	delete(h.up, at)
+	h.mounts.Drop(at)
+}
+
 // castSocket is where a cast hands its output to the node.
 //
 // Named after the identity, so several nodes on one machine — which is what testing drop looks
@@ -297,7 +392,7 @@ const (
 )
 
 // hostLocal listens for whatever on this machine wants to act as this node.
-func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, offers *pairHost, held *dial.Kept) error {
+func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mountHost, offers *pairHost, held *dial.Kept) error {
 	path, err := castSocket()
 	if err != nil {
 		return err
@@ -352,7 +447,7 @@ func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, offers *
 
 		go func() {
 			defer conn.Close()
-			if err := takeLocal(ctx, casts, shares, offers, held, conn); err != nil {
+			if err := takeLocal(ctx, casts, shares, put, offers, held, conn); err != nil {
 				fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 			}
 		}()
@@ -379,7 +474,7 @@ func takeCast(ctx context.Context, host *castHost, from io.Reader) error {
 }
 
 // takeLocal reads what this connection is for and does it.
-func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, offers *pairHost, held *dial.Kept, conn net.Conn) error {
+func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mountHost, offers *pairHost, held *dial.Kept, conn net.Conn) error {
 	reading := bufio.NewReader(conn)
 
 	first, err := reading.ReadString('\n')
@@ -394,6 +489,12 @@ func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, offers *
 
 	case "share":
 		return takeShare(ctx, shares, conn, rest)
+
+	case "mount":
+		return takeMount(ctx, put, conn, rest)
+
+	case "unmount":
+		return takeUnmount(put, conn, rest)
 
 	case "pair":
 		code, as, machine, err := offerAsked(rest)
@@ -476,6 +577,78 @@ func takeShare(ctx context.Context, host *shareHost, conn net.Conn, rest string)
 		fmt.Fprintln(conn, "done")
 	}
 	return nil
+}
+
+// takeMount puts a created namespace up, and holds it for as long as whoever asked for it stays
+// connected — unless it was written down, in which case it is served until this node stops.
+//
+// The rest of the line is one JSON object: a declaration has whatever keys the archetype reads, and
+// both ends of this socket are the same binary.
+func takeMount(ctx context.Context, host *mountHost, conn net.Conn, rest string) error {
+	var line made.Line
+	if err := json.Unmarshal([]byte(strings.TrimSpace(rest)), &line); err != nil {
+		return fmt.Errorf("reading the namespace to put up: %w", err)
+	}
+
+	if err := host.begin(line); err != nil {
+		fmt.Fprintf(conn, "no %v\n", err)
+		return nil
+	}
+	if _, err := fmt.Fprintln(conn, "ok"); err != nil {
+		host.end(line.Path)
+		return err
+	}
+
+	if line.Keep {
+		fmt.Printf("  %s is up, and written down\n", line.Path)
+		return nil
+	}
+	defer host.end(line.Path)
+
+	fmt.Printf("  %s is up while whoever asked for it is here\n", line.Path)
+	defer fmt.Printf("  %s is gone\n", line.Path)
+
+	// Whoever asked going away is what takes it down, so an interrupted `drop path create` leaves
+	// nothing behind that answers when there is nothing behind it.
+	gone := make(chan struct{})
+	go func() {
+		defer close(gone)
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+
+	select {
+	case <-ctx.Done():
+	case <-gone:
+	}
+	return nil
+}
+
+// takeUnmount takes down a namespace this node put up because it was written down.
+//
+// Only one it put up itself: a path the config declares is not this node's to drop, and one another
+// command is holding goes when that command does.
+func takeUnmount(host *mountHost, conn net.Conn, rest string) error {
+	at, err := ns.Clean(strings.TrimSpace(rest))
+	if err != nil {
+		fmt.Fprintf(conn, "no %v\n", err)
+		return nil
+	}
+
+	if !host.mine(at) {
+		fmt.Fprintln(conn, "no this node did not put that up")
+		return nil
+	}
+	// Only one that was written down: a held namespace goes when the command holding it goes, and
+	// taking it out from under that command would leave it waiting on a path that is not there.
+	if m, _, ok := host.mounts.Lookup(at); ok && m.Path == at && m.Source != ns.Written {
+		fmt.Fprintln(conn, "no something is holding that open")
+		return nil
+	}
+	host.end(at)
+
+	fmt.Printf("  %s is gone\n", at)
+	_, err = fmt.Fprintln(conn, "ok")
+	return err
 }
 
 // offerAsked reads what a local `drop pair` asked for: a code, a name to file the far end under,

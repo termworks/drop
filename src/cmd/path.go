@@ -17,8 +17,11 @@ func newPathCmd() *cobra.Command {
 		Short: "The namespaces a machine serves, and who may reach them",
 		Long: "What a path is for is declared in the config. Who has been let into it since is\n" +
 			"kept apart, so granting somebody access never rewrites a file you wrote by hand.\n\n" +
+			"A namespace can also be made here and now, without editing anything: `create`\n" +
+			"puts one up for as long as it runs, and --keep writes it down beside the config.\n\n" +
 			"  drop path ls              what this machine serves, and to whom\n" +
 			"  drop path ls orin         what orin shares with you\n" +
+			"  drop path create          the types this build answers to\n" +
 			"  drop path grant /work bob\n",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
@@ -26,6 +29,8 @@ func newPathCmd() *cobra.Command {
 
 	cmd.AddCommand(
 		newPathListCmd(),
+		newCreateCmd(),
+		newPathRemoveCmd(),
 		newGrantCmd(),
 		newRevokeCmd(),
 		newGrantsCmd(),

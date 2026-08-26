@@ -6,6 +6,7 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/conf"
+	"github.com/bresilla/drop/src/pkg/made"
 	"github.com/bresilla/drop/src/pkg/ns"
 )
 
@@ -22,6 +23,15 @@ func showOwnTable(known *arch.Registry) error {
 		return err
 	}
 
+	created, err := made.Load()
+	if err != nil {
+		return err
+	}
+	skipped, err := cfg.Created(created)
+	if err != nil {
+		return err
+	}
+
 	if cfg.Path == "" {
 		fmt.Printf("no config file; serving the defaults\n\n")
 	} else {
@@ -31,10 +41,24 @@ func showOwnTable(known *arch.Registry) error {
 	mounts := cfg.Mounts.All()
 	kind := widest(6, kinds(mounts))
 	for _, m := range mounts {
-		fmt.Printf("  %-24s %-*s %-22s %s\n",
-			m.Path, kind, kindOf(m.Archetype), shared(cfg.Mounts, m), detail(known, m))
+		fmt.Printf("  %-24s %-*s %-8s %-22s %s\n",
+			m.Path, kind, kindOf(m.Archetype), m.Source, shared(cfg.Mounts, m), detail(known, m))
 	}
+	shadowed(skipped)
 	return nil
+}
+
+// shadowed says what was written down and is not being served, one line each. A path that is in the
+// file and absent from the table is otherwise a silence somebody has to go and investigate.
+func shadowed(skipped []made.Skipped) {
+	if len(skipped) == 0 {
+		return
+	}
+
+	fmt.Println()
+	for _, one := range skipped {
+		fmt.Printf("  %s\n", one)
+	}
 }
 
 // widest is how much room a column of these needs, never under a floor, so one long entry moves the
@@ -83,6 +107,9 @@ func describeRule(a ns.Access) string {
 	}
 	if a.AnyPaired {
 		parts = append(parts, "anyone paired")
+	}
+	if a.AnyTrusted {
+		parts = append(parts, "anyone trusted")
 	}
 	if len(a.Named) > 0 {
 		parts = append(parts, strings.Join(a.Named, ", "))

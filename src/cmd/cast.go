@@ -223,7 +223,7 @@ func castMounts(known *arch.Registry) *ns.Table {
 // castMount is where a cast is served: a terminal that takes no input, because a cast is somebody's
 // screen and typing into it is a different grant.
 func castMount(known *arch.Registry) ns.Mount {
-	m := ns.Mount{Path: CastPath, Archetype: "tty", Access: ns.Access{AnyPaired: true}}
+	m := ns.Mount{Path: CastPath, Source: ns.Held, Archetype: "tty", Access: ns.Access{AnyPaired: true}}
 	if answers, ok := known.Lookup(m.Archetype, 0); ok {
 		m.Config, _ = answers.Read(nothing{})
 	}
