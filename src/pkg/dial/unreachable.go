@@ -29,7 +29,10 @@ func unreachable(wrong string, entry book.Entry, at netaddr.EndpointAddr, err er
 		return fmt.Errorf("reaching %s: %s: %w", entry.Name, wrong, err)
 	}
 
-	tried := at.IPAddrs()
+	// What was actually dialled, not everything the far end said about itself: an address this
+	// machine could never have reached is not one it tried, and naming it sends somebody looking
+	// in the wrong place.
+	tried := Nearest(at.IPAddrs())
 	switch {
 	case len(tried) == 0 && len(at.RelayURLs()) == 0:
 		return fmt.Errorf("reaching %s: nowhere to try: it has never said where it is, and neither this network nor the rendezvous knows: %w", entry.Name, err)
@@ -51,15 +54,35 @@ func timedOut(err error) bool {
 	return errors.As(err, &waited) && waited.Timeout()
 }
 
+// mostNamed is how many addresses a failure reads out before it starts counting them instead.
+//
+// A machine on a laptop with a VPN, a container bridge and two overlays advertises a dozen, and a
+// dozen of them on one line is a wall nobody reads. The first few are the ones worth trying by
+// hand; the rest are a number.
+const mostNamed = 4
+
 // listing is the addresses that were tried, as somebody would read them out.
 func listing(tried []netip.AddrPort) string {
 	if len(tried) == 0 {
 		return "its relay"
 	}
 
+	rest := 0
+	if len(tried) > mostNamed {
+		rest, tried = len(tried)-mostNamed, tried[:mostNamed]
+	}
+
 	out := make([]string, 0, len(tried))
 	for _, at := range tried {
 		out = append(out, at.String())
 	}
-	return strings.Join(out, ", ")
+	said := strings.Join(out, ", ")
+
+	switch rest {
+	case 0:
+		return said
+	case 1:
+		return said + " and one more"
+	}
+	return fmt.Sprintf("%s and %d more", said, rest)
 }

@@ -152,3 +152,29 @@ func (waited) Timeout() bool   { return true }
 func (waited) Temporary() bool { return true }
 
 var _ net.Error = waited{}
+
+// A failure is read by somebody deciding what to do next, so it names what was actually dialled and
+// stops before it becomes a wall. A laptop with a VPN, a bridge and two overlays advertises a dozen
+// addresses, and a dozen on one line is a line nobody reads.
+func TestAFailureNamesWhatWasTriedAndNoMore(t *testing.T) {
+	many := advertising(18,
+		"10.0.0.1:47777", "10.0.0.2:47777", "10.0.0.3:47777",
+		"10.0.0.4:47777", "10.0.0.5:47777", "10.0.0.6:47777",
+		// Neither of these is somewhere a peer can be reached, so neither was tried.
+		"169.254.9.9:47777", "127.0.0.1:47777",
+	)
+
+	said := unreachable("", entryFor(18), many, waited{}).Error()
+
+	for _, never := range []string{"169.254.9.9", "127.0.0.1"} {
+		if strings.Contains(said, never) {
+			t.Errorf("the failure names %s, which was never dialled:\n%s", never, said)
+		}
+	}
+	if !strings.Contains(said, "and 2 more") {
+		t.Errorf("six addresses were read out in full:\n%s", said)
+	}
+	if n := strings.Count(said, "10.0.0."); n != mostNamed {
+		t.Errorf("%d addresses named, want %d:\n%s", n, mostNamed, said)
+	}
+}
