@@ -453,11 +453,6 @@ func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
 		return "", nil, err
 	}
 
-	pinned, err := book.Load()
-	if err != nil {
-		return "", nil, err
-	}
-
 	// Registered on the interface's own listener rather than starting a second one. Two accept
 	// loops on one endpoint race, and the loser hangs up on a connection it does not know.
 	l.ears.Handle(node.ALPNPair, func(from node.ID, s *iroh.Stream) {
@@ -472,13 +467,11 @@ func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
 			return
 		}
 
-		name := p.Name
-		if name == "" {
-			name = node.Brief(from)
-		}
-		pinned.Pair(name, from, p.Secret, p.Addrs...)
-		pinned.Belongs(name, p.User)
-		if err := pinned.Save(); err != nil {
+		// Written down the one way every pairing is written down. A name that is already somebody
+		// else's is refused here as it is on the command line, rather than handed, with every rule
+		// that mentions it, to whoever paired last.
+		name, err := filed(p, "", false)
+		if err != nil {
 			return
 		}
 

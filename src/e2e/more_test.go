@@ -321,12 +321,14 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 
 	one.must("revoke", "/chat", "two")
 
-	// The far end refuses it now, and says so rather than swallowing it.
+	// The far end refuses it now, and says so rather than swallowing it. What it says is the same
+	// thing it says about a path that is not there at all, so being turned away teaches nothing
+	// about what this device serves.
 	said, err := two.run("to", "one/chat", "after")
 	if err == nil {
 		t.Fatalf("a revoked device was still admitted:\n%s", said)
 	}
-	if !strings.Contains(said, "refused") {
+	if !strings.Contains(said, "not shared with you") {
 		t.Errorf("the refusal was not explained:\n%s", said)
 	}
 	if strings.Contains(said, "queued") {

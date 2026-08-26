@@ -37,6 +37,9 @@ type doings struct {
 	said func(from node.ID, m convo.Message)
 	// noticed, when set, is nudged whenever anything lands, for an interface that redraws.
 	noticed func()
+	// took, when set, is told that something arrived in a share namespace, for a dropbox that is
+	// up for one transfer.
+	took func()
 	// shown, when set, answers whether a path is a screen this process is already running rather
 	// than a shell to start.
 	shown func(path string) (*cast.Caster, bool)
@@ -55,7 +58,7 @@ func reading() *arch.Registry {
 // serving registers everything a config can name.
 func (d *doings) serving() *arch.Registry {
 	known := arch.NewRegistry()
-	known.Register(share.New(share.Into{Progress: d.moving, Landed: d.landed}))
+	known.Register(share.New(share.Into{Progress: d.moving, Landed: d.dropped}))
 	known.Register(files.New(files.Into{Progress: d.moving, Landed: d.landed}))
 	known.Register(chat.New(chat.Into{Store: d.store}))
 	known.Register(link.New(link.Into{Store: d.store}))
@@ -114,6 +117,15 @@ func (d *doings) landed(from node.ID, name string, size int64) {
 		d.cfg.FireFile(conf.File{From: nameFor(d.pinned, from), Name: name, Size: size})
 	}
 	d.knock()
+}
+
+// dropped records a file that arrived in a share namespace, which is the one kind of arrival a
+// dropbox is put up for.
+func (d *doings) dropped(from node.ID, name string, size int64) {
+	d.landed(from, name, size)
+	if d.took != nil {
+		d.took()
+	}
 }
 
 // store puts an arriving message away, and acts on the kinds that ask for it.

@@ -114,3 +114,33 @@ func TestAHalfReadHeaderIsNotAFinish(t *testing.T) {
 		t.Errorf("a stream that ended inside a frame came back as a finish: %v", err)
 	}
 }
+
+// A frame nobody can read is not worth sending.
+//
+// Every reader refuses a body over the limit at the header, which ends the session — so a writer
+// that puts one on the wire has told whoever wrote it nothing about which frame was too big, and
+// has broken a connection that was working.
+func TestAFrameOverTheLimitIsNotWritten(t *testing.T) {
+	var out bytes.Buffer
+	c := NewConn(&both{r: bytes.NewReader(nil), w: &out})
+
+	if err := c.WriteFrame(KindItem, make([]byte, MaxFrame+1)); err == nil {
+		t.Fatal("a frame over the limit was written")
+	}
+	if out.Len() != 0 {
+		t.Fatalf("%d bytes went out for a frame that was refused", out.Len())
+	}
+
+	if err := c.WriteFrame(KindItem, make([]byte, MaxFrame)); err != nil {
+		t.Fatalf("a frame of exactly the limit was refused: %v", err)
+	}
+}
+
+// both is a stream that reads from one place and writes to another.
+type both struct {
+	r io.Reader
+	w io.Writer
+}
+
+func (b *both) Read(p []byte) (int, error)  { return b.r.Read(p) }
+func (b *both) Write(p []byte) (int, error) { return b.w.Write(p) }

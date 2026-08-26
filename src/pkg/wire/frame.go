@@ -51,7 +51,14 @@ func NewConn(rw io.ReadWriter) *Conn {
 }
 
 // WriteFrame writes one frame: a kind, a length, and the body.
+//
+// A body over the limit is refused here rather than sent: every reader refuses it at the header,
+// so writing one puts bytes on the wire that end the session and tell whoever wrote them nothing
+// about which frame was too big.
 func (c *Conn) WriteFrame(kind byte, body []byte) error {
+	if len(body) > MaxFrame {
+		return fmt.Errorf("wire: a frame of kind %d is %d bytes, over the %d limit", kind, len(body), MaxFrame)
+	}
 	if err := c.writeHeader(kind, len(body)); err != nil {
 		return err
 	}

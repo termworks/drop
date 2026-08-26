@@ -130,7 +130,12 @@ func runChat(parent context.Context, target string) error {
 			}
 			// Sent in the background so a slow or absent far end does not stop the typing.
 			go func() {
-				if _, err := deliver(ctx, n, lan, entry); err != nil {
+				_, err := deliver(ctx, n, lan, entry)
+				switch {
+				case err == nil:
+				case proto.Settled(err):
+					fmt.Printf("  (not delivered: %v)\n", err)
+				default:
 					fmt.Printf("  (queued: %v)\n", err)
 				}
 			}()
@@ -139,8 +144,11 @@ func runChat(parent context.Context, target string) error {
 }
 
 // chatMounts is the one namespace a chat serves while it is open.
+//
+// Open to any paired device, and said so rather than left out: access is denied unless a rule
+// grants it, and a mount with no rule is one nobody can ever say a word into.
 func chatMounts(known *arch.Registry) *ns.Table {
-	m := ns.Mount{Path: "/chat", Archetype: "chat"}
+	m := ns.Mount{Path: "/chat", Archetype: "chat", Access: ns.Access{AnyPaired: true}}
 	if answers, ok := known.Lookup(m.Archetype, 0); ok {
 		m.Config, _ = answers.Read(nothing{})
 	}

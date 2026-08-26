@@ -178,6 +178,9 @@ type shareHost struct {
 type dropbox struct {
 	done chan struct{}
 	over bool
+	// took says something has actually come through it. A session that landed nothing — one that
+	// was refused, or that hung up mid-file — is not the transfer this was put up for.
+	took bool
 }
 
 func newShareHost(mounts *ns.Table, known *arch.Registry) *shareHost {
@@ -224,18 +227,36 @@ func (h *shareHost) end(box *dropbox) {
 	h.mounts.Drop(SharePath)
 }
 
-// finished is a session on some path having ended. A dropbox takes one transfer, so the one that
-// was open for that path is over.
+// took notes that a share namespace received something. A dropbox that is open is the one that may
+// have taken it.
+func (h *shareHost) took() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.open != nil {
+		h.open.took = true
+	}
+}
+
+// finished is a session on some path having ended. A dropbox takes one transfer, so once one has
+// come through, the one that was open for that path is over.
+//
+// The path a session named is not the path it was served at: a mount answers for everything under
+// it, so /share/anything is the dropbox too and has to end it like anything else.
 func (h *shareHost) finished(path string) {
 	at, err := ns.Clean(path)
-	if err != nil || at != SharePath {
+	if err != nil {
+		return
+	}
+	mount, _, ok := h.mounts.Lookup(at)
+	if !ok || mount.Path != SharePath {
 		return
 	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.open == nil || h.open.over {
+	if h.open == nil || h.open.over || !h.open.took {
 		return
 	}
 	h.open.over = true

@@ -161,7 +161,7 @@ func sendMessageTo(parent context.Context, entry book.Entry, path, archetype str
 	lan, _ := discovery.StartLAN(ctx, n)
 
 	sent, err := deliverTo(ctx, n, lan, entry, path, archetype)
-	if proto.WasDeclined(err) {
+	if proto.Settled(err) {
 		// An answer, not a device that is off. Queueing it would mean retrying forever against a
 		// decision somebody made, and telling the sender their message is on its way.
 		return err

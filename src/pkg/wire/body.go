@@ -73,18 +73,34 @@ func DecodeAck(body []byte) (Ack, error) {
 // Reject declines what was just asked for, and says why.
 type Reject struct {
 	Reason string
+	// Settled says the far end decided about this caller, and will decide the same way again.
+	//
+	// A refusal is not one thing. "Not accepting sessions just now" is a condition that passes;
+	// "not shared with you" is somebody's decision. Only the caller can tell what to do about
+	// either, and the difference is not in the words: a sender with something queued has to know
+	// whether to keep it or let it go, and reading English to find out is how a message gets
+	// thrown away because a sentence was reworded.
+	Settled bool
 }
 
 func (x Reject) Encode() []byte {
 	w := NewWriter()
 	w.String(x.Reason)
+	w.Bool(x.Settled)
 	return w.Body()
 }
 
 func DecodeReject(body []byte) (Reject, error) {
 	r := NewReader(body)
 	reason, err := r.String(MaxString)
-	return Reject{Reason: reason}, err
+	if err != nil {
+		return Reject{}, err
+	}
+	settled, err := r.Bool()
+	if err != nil {
+		return Reject{Reason: reason}, err
+	}
+	return Reject{Reason: reason, Settled: settled}, nil
 }
 
 // Hint bounds a pre-allocation by what a body could possibly hold: least is the fewest bytes one
