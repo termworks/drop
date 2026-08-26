@@ -109,8 +109,17 @@ func runTUI(parent context.Context) error {
 	// ones it opens to us, and push what is waiting the moment it appears. Without this the
 	// interface is only reachable by devices that can be dialled, and every message it sends costs
 	// a handshake instead of a stream.
+	//
+	// A snapshot of its own, never the map the listener is given: the listener adds and removes
+	// protocols while this reads, and a map being written to while it is read takes the program
+	// down. What a connection we dialled carries is a session or a hello, both of which are here.
+	dialled := make(map[string]func(node.ID, *iroh.Stream), len(answer))
+	for alpn, handle := range answer {
+		dialled[alpn] = handle
+	}
+
 	held.Serving(ctx, func(from node.ID, alpn string, s *iroh.Stream) {
-		if handle, ok := answer[alpn]; ok {
+		if handle, ok := dialled[alpn]; ok {
 			handle(from, s)
 		}
 	})
@@ -436,7 +445,7 @@ func (l *live) Offer(ctx context.Context) (string, <-chan string, error) {
 	l.ears.Handle(node.ALPNPair, func(from node.ID, s *iroh.Stream) {
 		defer s.Close()
 
-		p, err := proto.AnswerPairing(s, l.node.ID(), node.DisplayName(), written(discovery.LocalAddrs(l.node)))
+		p, err := proto.AnswerPairing(s, l.node.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(l.node)))
 		if err != nil {
 			return
 		}

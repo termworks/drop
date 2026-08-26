@@ -27,6 +27,9 @@ type Kept struct {
 
 	mu   sync.Mutex
 	open map[string]*iroh.Conn
+	// dialling is the dial in progress for a device and protocol, so that everybody asking for one
+	// at the same moment waits for the same connection instead of opening one each.
+	dialling map[string]*flight
 	// ctx bounds the accept loops on connections we made.
 	ctx context.Context
 	// serve is what answers streams the far end opens on a connection we made.
@@ -38,7 +41,21 @@ type Kept struct {
 }
 
 func Hold(n *node.Node, lan *discovery.LAN, find Finder) *Kept {
-	return &Kept{node: n, lan: lan, find: find, open: map[string]*iroh.Conn{}}
+	return &Kept{
+		node:     n,
+		lan:      lan,
+		find:     find,
+		open:     map[string]*iroh.Conn{},
+		dialling: map[string]*flight{},
+	}
+}
+
+// flight is one dial in progress. Whoever started it fills in the answer and closes done; everybody
+// else waits there and takes what it found.
+type flight struct {
+	done chan struct{}
+	conn *iroh.Conn
+	err  error
 }
 
 // Serving says what to do with streams the far end opens on a connection we made. Without it those
@@ -82,16 +99,62 @@ func (k *Kept) To(ctx context.Context, entry book.Entry, alpn string) (*iroh.Str
 			return s, nil
 		}
 		// It was held but is no longer good. Forgotten, and dialled again below.
-		k.drop(entry.ID, alpn)
+		k.drop(entry.ID, alpn, conn)
 	}
 
-	conn, s, err := To(ctx, k.node, k.lan, k.find, entry, alpn)
+	conn, err := k.dial(ctx, entry, alpn)
 	if err != nil {
 		return nil, err
 	}
 
-	k.keep(entry.ID, alpn, conn)
+	s, err := conn.OpenStreamSync(ctx)
+	if err != nil {
+		k.drop(entry.ID, alpn, conn)
+		return nil, fmt.Errorf("opening a stream to %s: %w", entry.Name, err)
+	}
 	return s, nil
+}
+
+// dial makes the connection, or waits for the one somebody else is already making.
+//
+// Without this, two callers reaching for the same device at the same moment each open a connection
+// and the second one takes the first one's place — closing a pipe the first caller is in the middle
+// of using.
+func (k *Kept) dial(ctx context.Context, entry book.Entry, alpn string) (*iroh.Conn, error) {
+	at := key(entry.ID, alpn)
+
+	k.mu.Lock()
+	if going, ok := k.dialling[at]; ok {
+		k.mu.Unlock()
+
+		select {
+		case <-going.done:
+			return going.conn, going.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	ours := &flight{done: make(chan struct{})}
+	k.dialling[at] = ours
+	k.mu.Unlock()
+
+	conn, s, err := To(ctx, k.node, k.lan, k.find, entry, alpn)
+	if err == nil {
+		// The stream was only what proves the connection carries anything. Every caller opens its
+		// own, so this one is done with.
+		_ = s.Close()
+		k.keep(entry.ID, alpn, conn)
+	}
+
+	ours.conn, ours.err = conn, err
+	close(ours.done)
+
+	k.mu.Lock()
+	delete(k.dialling, at)
+	k.mu.Unlock()
+
+	return conn, err
 }
 
 // held is the live connection for a device, or nil.
@@ -132,13 +195,19 @@ func (k *Kept) keep(id node.ID, alpn string, conn *iroh.Conn) {
 	}
 }
 
-func (k *Kept) drop(id node.ID, alpn string) {
+// drop lets go of a connection, and only while it is still the one being held.
+//
+// A stream failing says the connection it was opened on is finished, not that whatever is held now
+// is: another caller may have dialled a fresh one in between, and closing that would take down a
+// conversation to clean up after somebody else's failure.
+func (k *Kept) drop(id node.ID, alpn string, conn *iroh.Conn) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
-	if conn, ok := k.open[key(id, alpn)]; ok {
-		conn.Close()
-		delete(k.open, key(id, alpn))
+	at := key(id, alpn)
+	if held, ok := k.open[at]; ok && held == conn {
+		held.Close()
+		delete(k.open, at)
 	}
 }
 
@@ -211,16 +280,9 @@ func (k *Kept) Reach(ctx context.Context, entry book.Entry, alpn string) error {
 		return nil
 	}
 
-	conn, s, err := To(ctx, k.node, k.lan, k.find, entry, alpn)
-	if err != nil {
-		return err
-	}
-
-	// The stream was only the excuse to open the connection. The connection is the point.
-	_ = s.Close()
-
-	k.keep(entry.ID, alpn, conn)
-	return nil
+	// The connection is the point, and one dial serves everybody who asked for it.
+	_, err := k.dial(ctx, entry, alpn)
+	return err
 }
 
 // Existing opens a stream only on a connection already held, and refuses rather than dialling.
@@ -236,7 +298,7 @@ func (k *Kept) Existing(ctx context.Context, entry book.Entry, alpn string) (*ir
 
 	s, err := conn.OpenStreamSync(ctx)
 	if err != nil {
-		k.drop(entry.ID, alpn)
+		k.drop(entry.ID, alpn, conn)
 		return nil, err
 	}
 	return s, nil

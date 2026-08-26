@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tmc/go-iroh/iroh"
@@ -75,6 +76,13 @@ func runCast(parent context.Context, addressFile string) error {
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// The first interrupt ends the cast; the second one is the one the system handles, so somebody
+	// who presses it twice is not held by a teardown that is taking its time.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+
 	n, err := node.Start(ctx)
 	if err != nil {
 		return err
@@ -126,41 +134,71 @@ func runCast(parent context.Context, addressFile string) error {
 	return pump(ctx, reader, stage)
 }
 
-// pump turns the cast into what watchers see.
+// pump turns the cast into what watchers see, and stops when whoever started it asks.
 func pump(ctx context.Context, reader *asciicast.Reader, stage *cast.Caster) error {
+	events := reads(reader)
+
 	for {
-		if ctx.Err() != nil {
+		var next read
+		select {
+		case <-ctx.Done():
 			return nil
+		case next = <-events:
 		}
 
-		event, err := reader.Next()
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
+		if err := next.err; err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
 			return fmt.Errorf("reading the cast: %w", err)
 		}
 
-		switch event.Kind {
+		switch next.event.Kind {
 		case asciicast.Output:
-			_, _ = stage.Write([]byte(event.Data))
+			_, _ = stage.Write([]byte(next.event.Data))
 
 		case asciicast.Resize:
-			if cols, rows, ok := asciicast.Size(event.Data); ok {
+			if cols, rows, ok := asciicast.Size(next.event.Data); ok {
 				stage.Resize(cols, rows)
 			}
 
 		case asciicast.Marker:
 			// The rule a backend must not skip. Everything kept so far may already contain the
 			// prompt, so it is thrown away rather than merely paused.
-			if event.Data == asciicast.PasswordOn {
+			if next.event.Data == asciicast.PasswordOn {
 				stage.Clear()
 			}
 		}
 	}
 }
 
-// castMounts is the one namespace a cast serves while it is running.
+// read is one event off a recording, or why there will not be another.
+type read struct {
+	event asciicast.Event
+	err   error
+}
+
+// reads takes the recording apart on a goroutine of its own.
+//
+// A read of standard input cannot be cancelled: it ends when whatever is writing stops. On the
+// reading goroutine that is fine, because the one waiting on this channel can be told to stop by a
+// signal without waiting for a line that may never come.
+func reads(reader *asciicast.Reader) <-chan read {
+	out := make(chan read, 1)
+
+	go func() {
+		for {
+			event, err := reader.Next()
+			out <- read{event: event, err: err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	return out
+}
+
 // castMounts is the one namespace a cast serves.
 //
 // Open to any paired device, and said so rather than left out: access is denied unless a rule
@@ -199,8 +237,9 @@ func watchCast(pinned *book.Book, stage *cast.Caster) func(proto.Resolved, *prot
 
 		sending := make(chan error, 1)
 		go func() {
+			writing := pacing(d)
 			for chunk := range viewer.Frames() {
-				if _, err := d.Write(chunk); err != nil {
+				if err := writing.write(chunk, stalledAfter); err != nil {
 					sending <- err
 					return
 				}
@@ -211,7 +250,15 @@ func watchCast(pinned *book.Book, stage *cast.Caster) func(proto.Resolved, *prot
 		if err := d.Pump(io.Discard); err != nil {
 			return err
 		}
-		return <-sending
+
+		// Bounded: a watcher that stopped reading is still connected, and waiting on it for ever
+		// is one goroutine per watcher that went away without saying so.
+		select {
+		case err := <-sending:
+			return err
+		case <-time.After(partingWithin):
+			return nil
+		}
 	}
 }
 

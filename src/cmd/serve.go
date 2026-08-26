@@ -151,7 +151,7 @@ func runServe(parent context.Context, quiet bool) error {
 				return
 			}
 
-			p, err := proto.AnswerPairing(s, n.ID(), node.DisplayName(), written(discovery.LocalAddrs(n)))
+			p, err := proto.AnswerPairing(s, n.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(n)))
 			if err != nil {
 				return
 			}
@@ -216,8 +216,10 @@ func describe(cfg *conf.Config, n *node.Node) {
 	}
 
 	fmt.Println()
-	for _, m := range cfg.Mounts.All() {
-		fmt.Printf("  %-24s %-7s %s\n", m.Path, m.Archetype, detail(m))
+	mounts := cfg.Mounts.All()
+	kind := widest(6, archetypes(mounts))
+	for _, m := range mounts {
+		fmt.Printf("  %-24s %-*s %s\n", m.Path, kind, m.Archetype, detail(m))
 	}
 
 	// Whether a device that has moved can still be found. There is no way to tell from the outside
@@ -246,6 +248,11 @@ func detail(m ns.Mount) string {
 	switch m.Archetype {
 	case ns.Share:
 		return m.Dir
+	case ns.Files:
+		if m.Writable {
+			return m.Dir + "  read and write"
+		}
+		return m.Dir + "  read-only"
 	case ns.Stream:
 		return m.Command
 	case ns.TTY:

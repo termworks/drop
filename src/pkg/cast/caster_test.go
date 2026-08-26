@@ -3,6 +3,7 @@ package cast
 import (
 	"bytes"
 	"testing"
+	"time"
 )
 
 func drain(v *Viewer) []byte {
@@ -162,5 +163,50 @@ func TestResizeIsRememberedForLaterWatchers(t *testing.T) {
 	_, _, cols, rows := c.Join()
 	if cols != 120 || rows != 40 {
 		t.Fatalf("watcher joined at %dx%d, want 120x40", cols, rows)
+	}
+}
+
+// Joining a cast that has already stopped hands back a feed nothing will ever close, unless the
+// caster says the cast is over — and then whoever is watching reads nothing and finishes.
+func TestJoiningAfterTheCastEndedIsOver(t *testing.T) {
+	c := New(80, 24)
+	c.Stop()
+
+	v, picture, cols, rows := c.Join()
+	if len(picture) != 0 {
+		t.Errorf("a cast that ended handed out a screen: %q", picture)
+	}
+	if cols != 80 || rows != 24 {
+		t.Errorf("size came back as %dx%d, want 80x24", cols, rows)
+	}
+
+	select {
+	case _, open := <-v.Frames():
+		if open {
+			t.Fatal("a cast that ended handed out a feed with something on it")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a watcher joining a stopped cast waits for a channel nobody closes")
+	}
+
+	// And leaving is still safe, though it was never in the list.
+	c.Leave(v)
+}
+
+// Nothing written or resized after the cast is over goes anywhere.
+func TestWritingAfterTheCastEndedGoesNowhere(t *testing.T) {
+	c := New(80, 24)
+	c.Stop()
+
+	if n, err := c.Write([]byte("too late")); n != len("too late") || err != nil {
+		t.Fatalf("Write() after Stop came back %d, %v", n, err)
+	}
+	c.Resize(120, 40)
+
+	if cols, rows := c.Size(); cols != 80 || rows != 24 {
+		t.Errorf("a stopped cast resized to %dx%d", cols, rows)
+	}
+	if _, picture, _, _ := c.Join(); len(picture) != 0 {
+		t.Errorf("what was written after the cast ended is on the screen: %q", picture)
 	}
 }

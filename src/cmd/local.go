@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/asciicast"
 	"github.com/bresilla/drop/src/pkg/book"
@@ -92,10 +93,16 @@ func (h *pairHost) answered(p proto.Pairing) {
 }
 
 // castHost is the terminal being cast through this node, if any.
+//
+// One at a time, the way a pairing code is: two casts on one path are two screens behind one
+// address, and whoever is watching has no way to know which of them they were given.
 type castHost struct {
 	mu     sync.Mutex
 	stage  *cast.Caster
 	mounts *ns.Table
+	// declared says the path was in the config, so ending a cast leaves it alone. A /cast a person
+	// wrote down carries their access rule, and a cast that came and went must not replace it.
+	declared bool
 }
 
 func newCastHost(mounts *ns.Table) *castHost {
@@ -110,34 +117,47 @@ func (h *castHost) live() *cast.Caster {
 	return h.stage
 }
 
-// begin puts a cast on the air, and declares the path it is served at.
-func (h *castHost) begin(cols, rows uint16) *cast.Caster {
+// begin puts a cast on the air, and declares the path it is served at. It refuses while another
+// cast is running.
+func (h *castHost) begin(cols, rows uint16) (*cast.Caster, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if h.stage != nil {
-		h.stage.Stop()
+		return nil, errors.New("this device is already casting a terminal")
 	}
 	h.stage = cast.New(cols, rows)
 
-	_ = h.mounts.Add(ns.Mount{
-		Path:      CastPath,
-		Archetype: ns.TTY,
-		Access:    ns.Access{AnyPaired: true},
-	})
-	return h.stage
+	// The path is put up only when nothing declared it. A config that names /cast already says who
+	// may watch it, and overwriting that with "any paired device" hands out a screen its owner
+	// meant for one person.
+	mount, _, ok := h.mounts.Lookup(CastPath)
+	h.declared = ok && mount.Path == CastPath
+	if !h.declared {
+		_ = h.mounts.Add(ns.Mount{
+			Path:      CastPath,
+			Archetype: ns.TTY,
+			Access:    ns.Access{AnyPaired: true},
+		})
+	}
+	return h.stage, nil
 }
 
-// end takes it off the air, and the path with it.
-func (h *castHost) end() {
+// end takes a cast off the air, and the path with it. A cast that has already been replaced ends
+// nothing: the one running belongs to whoever started it.
+func (h *castHost) end(stage *cast.Caster) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.stage != nil {
-		h.stage.Stop()
-		h.stage = nil
+	if h.stage == nil || h.stage != stage {
+		return
 	}
-	h.mounts.Drop(CastPath)
+
+	h.stage.Stop()
+	h.stage = nil
+	if !h.declared {
+		h.mounts.Drop(CastPath)
+	}
 }
 
 // castSocket is where a cast hands its output to the node.
@@ -165,6 +185,14 @@ func castSocket() (string, error) {
 	return filepath.Join(dir, "cast-"+node.Brief(id)+".sock"), nil
 }
 
+const (
+	// firstAcceptWait is how long the socket is left alone after one failed accept.
+	firstAcceptWait = 10 * time.Millisecond
+	// slowestAcceptWait is where the doubling stops. Whatever is wrong is not going to be fixed by
+	// asking faster, and a machine that recovers waits at most this long to be noticed.
+	slowestAcceptWait = 2 * time.Second
+)
+
 // hostLocal listens for whatever on this machine wants to act as this node.
 func hostLocal(ctx context.Context, casts *castHost, offers *pairHost, held *dial.Kept) error {
 	path, err := castSocket()
@@ -187,14 +215,38 @@ func hostLocal(ctx context.Context, casts *castHost, offers *pairHost, held *dia
 		_ = os.Remove(path)
 	}()
 
+	// How long to wait after an accept that failed, doubling from there. A machine out of file
+	// descriptors fails every accept, and a loop that only ever continues spends a whole core
+	// saying so to nobody.
+	var waiting time.Duration
+
 	for {
 		conn, err := listening.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
+			}
+
+			if waiting == 0 {
+				waiting = firstAcceptWait
+				fmt.Fprintf(os.Stderr, "drop: cannot accept on %s: %v\n", path, err)
+			} else if waiting < slowestAcceptWait {
+				waiting *= 2
+			}
+
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(waiting):
 			}
 			continue
 		}
+
+		if waiting != 0 {
+			fmt.Fprintf(os.Stderr, "drop: accepting on %s again\n", path)
+			waiting = 0
+		}
+
 		go func() {
 			defer conn.Close()
 			if err := takeLocal(ctx, casts, offers, held, conn); err != nil {
@@ -211,8 +263,11 @@ func takeCast(ctx context.Context, host *castHost, from io.Reader) error {
 		return err
 	}
 
-	stage := host.begin(uint16(head.Width), uint16(head.Height))
-	defer host.end()
+	stage, err := host.begin(uint16(head.Width), uint16(head.Height))
+	if err != nil {
+		return err
+	}
+	defer host.end(stage)
 
 	fmt.Printf("  a terminal is being cast at %s (%dx%d)\n", CastPath, head.Width, head.Height)
 	defer fmt.Printf("  the cast at %s ended\n", CastPath)
@@ -279,10 +334,16 @@ func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as st
 	}
 	defer offers.close()
 
+	// A context of this offer's own, so that publishing stops when the offer does. Under the
+	// daemon's, this device goes on saying where it is for as long as the daemon runs — which is a
+	// code that was taken down still telling the world where to find it.
+	shown, done := context.WithCancel(ctx)
+	defer done()
+
 	// Findable by whoever holds the ticket, for as long as the code is up. The rendezvous cannot
 	// help here: it publishes under a key derived from a shared secret, and pairing is what makes
 	// one. Without this a code only ever reaches the same wire.
-	if err := node.Findable(ctx, offers.node); err != nil {
+	if err := node.Findable(shown, offers.node); err != nil {
 		fmt.Fprintf(os.Stderr, "drop: cannot publish where this device is: %v\n", err)
 	}
 

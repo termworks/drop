@@ -27,6 +27,9 @@ type Caster struct {
 	stage *term.Screen
 	cols  uint16
 	rows  uint16
+	// stopped says the cast is over. Everything after that is a no-op, and whoever joins is handed
+	// a feed that is already closed rather than one nothing will ever close.
+	stopped bool
 }
 
 // Viewer is one watcher's feed.
@@ -56,6 +59,10 @@ func (c *Caster) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.stopped {
+		return len(p), nil
+	}
+
 	// The pty reuses its buffer, so what is handed on has to be this call's own copy.
 	chunk := append([]byte(nil), p...)
 	_, _ = c.stage.Write(chunk)
@@ -76,9 +83,18 @@ func (c *Caster) Write(p []byte) (int, error) {
 // The whole picture, drawn from the terminal this has been keeping, rather than the last however
 // many bytes: what a watcher needs is what is on the screen now, and for anything that paints by
 // moving the cursor those are not the same thing at all.
+//
+// Joining a cast that has stopped hands back a feed that is already closed, so whoever is watching
+// it reads nothing and finishes rather than waiting on a channel with nobody behind it.
 func (c *Caster) Join() (*Viewer, []byte, uint16, uint16) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.stopped {
+		over := make(chan []byte)
+		close(over)
+		return &Viewer{out: over}, nil, c.cols, c.rows
+	}
 
 	c.nextID++
 	v := &Viewer{id: c.nextID, out: make(chan []byte, Backlog)}
@@ -115,6 +131,10 @@ func (c *Caster) Resize(cols, rows uint16) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.stopped {
+		return
+	}
+
 	c.cols, c.rows = cols, rows
 	if c.stage != nil {
 		c.stage.Resize(int(cols), int(rows))
@@ -137,11 +157,13 @@ func (c *Caster) Watching() int {
 	return len(c.viewers)
 }
 
-// Stop ends every feed, which is what tells each watcher the cast is over.
+// Stop ends every feed, which is what tells each watcher the cast is over. Nothing written or
+// resized afterwards goes anywhere.
 func (c *Caster) Stop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.stopped = true
 	for id, v := range c.viewers {
 		delete(c.viewers, id)
 		close(v.out)
