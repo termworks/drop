@@ -41,11 +41,22 @@ func showOwnTable(known *arch.Registry) error {
 	mounts := cfg.Mounts.All()
 	kind := widest(6, kinds(mounts))
 	for _, m := range mounts {
-		fmt.Printf("  %-24s %-*s %-8s %-22s %s\n",
-			m.Path, kind, kindOf(m.Archetype), m.Source, shared(cfg.Mounts, m), detail(known, m))
+		fmt.Printf("  %-24s %-*s %-8s %-22s %s%s\n",
+			m.Path, kind, kindOf(m.Archetype), m.Source, shared(cfg.Mounts, m), detail(known, m), sharedAs(m))
 	}
 	shadowed(skipped)
 	return nil
+}
+
+// sharedAs says a namespace is one several machines hold, and what they all call it.
+//
+// The name is worth showing because it is what its history is filed under, and because two machines
+// that disagree about it are holding two things.
+func sharedAs(m ns.Mount) string {
+	if !m.Shared.Declared() {
+		return ""
+	}
+	return fmt.Sprintf("  · shared %s", m.Shared.ID()[:12])
 }
 
 // shadowed says what was written down and is not being served, one line each. A path that is in the

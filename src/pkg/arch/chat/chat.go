@@ -42,9 +42,10 @@ func (c *Chat) Read(arch.Declared) (arch.Config, error) { return Config{}, nil }
 
 func (c *Chat) Note(arch.Config) arch.Note {
 	return arch.Note{
-		Writable: true,
-		About:    "messages, kept as a conversation",
-		Glyph:    "▤",
+		Writable:  true,
+		Shareable: true,
+		About:     "messages, kept as a conversation",
+		Glyph:     "▤",
 	}
 }
 

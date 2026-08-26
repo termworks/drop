@@ -16,9 +16,24 @@ import (
 //	conn, err := proto.Open(s, "/work", "files", 0, "", me)
 //	b, err := files.Browse(conn)
 func Open(s Stream, path, archetype string, version int, secret, from string) (*wire.Conn, error) {
+	open := Opening{Archetype: archetype, Version: version, Path: path, From: from, Secret: secret}
+	return start(s, open)
+}
+
+// Meet starts a catch-up on a namespace both machines hold, and answers with the framed stream once
+// the far end has accepted it. What is said afterwards is the meet package's business.
+//
+//	conn, err := proto.Meet(s, "/notes", me)
+//	caught, err := meet.Ask(conn, log, admits)
+func Meet(s Stream, path, from string) (*wire.Conn, error) {
+	return start(s, Opening{Meet: true, Path: path, From: from})
+}
+
+// start writes an opening and waits to be told yes.
+func start(s Stream, open Opening) (*wire.Conn, error) {
 	conn := wire.NewConn(s)
 
-	open := Opening{Archetype: archetype, Version: version, Path: path, From: from, Secret: secret}
+	path := open.Path
 	open.Badge, open.Signed = carried()
 
 	if err := conn.WriteFrame(wire.KindOpen, open.encode()); err != nil {

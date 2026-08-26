@@ -37,6 +37,9 @@ type Policy struct {
 	// Asked, when set, takes a request to reach a path the caller can see but not open. Returning
 	// an error refuses the request; nothing here grants anything.
 	Asked func(who Asker) error
+	// Met, when set, takes a catch-up on a namespace several machines hold. Nil says this node
+	// keeps no history, which is what a process serving one namespace for one command does.
+	Met func(m Meeting) error
 	// Refused, when set, is called when a caller is turned away. It is a note of who knocked, so
 	// that letting a bare id in later does not mean copying it out of a log by hand.
 	Refused func(from node.ID, asked, why string)
@@ -152,6 +155,22 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 		return refuse(reason)
 	}
 
+	// A caller that holds this namespace too is here to catch up rather than to open anything, so
+	// it is answered before the archetype is looked at: what is said afterwards is heads and
+	// changes, which no archetype would recognise.
+	if open.Meet {
+		if !mount.Shared.Declared() {
+			return decided(fmt.Sprintf("%s is not a namespace anybody else holds", mount.Path))
+		}
+		if policy.Met == nil {
+			return refuse("this node keeps no history")
+		}
+		if err := conn.WriteFrame(wire.KindAccept, nil); err != nil {
+			return err
+		}
+		return policy.Met(Meeting{Mount: mount, Who: caller, From: from, Conn: conn})
+	}
+
 	// The caller may say what it expects to find. An empty name asks for whatever is here, which is
 	// what somebody who typed a path rather than read a listing is doing.
 	if open.Archetype != "" && open.Archetype != mount.Archetype {
@@ -222,6 +241,19 @@ func resolve(table *ns.Table, caller ns.Caller, path string) (ns.Mount, string, 
 		return ns.Mount{}, "", &refusal{noted: held, told: held, settled: true}
 	}
 	return mount, rest, nil
+}
+
+// Meeting is one catch-up arriving: which namespace it is about, who is on the other end, and the
+// stream it runs on.
+//
+// The access rule that governs the namespace comes off the mount, because deciding whether an
+// arriving change's author was allowed to make it is the same question as deciding whether their
+// machine could have opened the path.
+type Meeting struct {
+	Mount ns.Mount
+	Who   ns.Caller
+	From  node.ID
+	Conn  *wire.Conn
 }
 
 // Asker is somebody ringing the bell on a path they can see but cannot open.

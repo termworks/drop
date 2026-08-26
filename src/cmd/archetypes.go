@@ -37,6 +37,9 @@ type doings struct {
 	said func(from node.ID, m convo.Message)
 	// noticed, when set, is nudged whenever anything lands, for an interface that redraws.
 	noticed func()
+	// changed, when set, is told that something in a namespace has moved, so that whoever else
+	// holds it hears about it rather than finding out the next time they ask.
+	changed arch.Changed
 	// took, when set, is told that something arrived in a share namespace, for a handoff that is
 	// up for one transfer.
 	took func()

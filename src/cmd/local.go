@@ -330,6 +330,7 @@ func (h *mountHost) begin(line made.Line) error {
 		Version:   line.Version,
 		Config:    settings,
 		Access:    line.Access.Rule(),
+		Shared:    line.Shared,
 	}); err != nil {
 		return err
 	}

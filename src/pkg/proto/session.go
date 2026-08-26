@@ -32,6 +32,10 @@ type Opening struct {
 	// Ask says this is not an open at all: it rings the bell on a path the caller can see and
 	// cannot open, and Secret carries whatever they said about why.
 	Ask bool
+	// Meet says this is not an open either: the caller holds the same namespace and wants to catch
+	// up with it. What is said afterwards is heads and changes rather than anything the archetype
+	// would recognise.
+	Meet bool
 	// Badge says whose machine this is, and Signed is the proof of it.
 	//
 	// The transport already proves which machine is calling. This is what turns that into a
@@ -43,6 +47,7 @@ type Opening struct {
 func (o Opening) encode() []byte {
 	w := wire.NewWriter()
 	w.Bool(o.Ask)
+	w.Bool(o.Meet)
 	w.String(o.Archetype)
 	w.Uint(uint64(o.Version))
 	w.String(o.From)
@@ -61,6 +66,10 @@ func decodeOpen(body []byte) (Opening, error) {
 
 	r := wire.NewReader(body)
 	ask, err := r.Bool()
+	if err != nil {
+		return out, err
+	}
+	meet, err := r.Bool()
 	if err != nil {
 		return out, err
 	}
@@ -96,7 +105,7 @@ func decodeOpen(body []byte) (Opening, error) {
 		return out, err
 	}
 
-	out.Ask, out.Archetype, out.Version = ask, archetype, int(version)
+	out.Ask, out.Meet, out.Archetype, out.Version = ask, meet, archetype, int(version)
 	out.From, out.Path, out.Secret = from, path, secret
 	out.Badge, out.Signed = []byte(badge), []byte(signed)
 	return out, nil

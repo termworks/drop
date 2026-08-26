@@ -47,6 +47,9 @@ type Mount struct {
 	Version int
 	// Config is what that archetype made of the declaration. Nothing here looks inside it.
 	Config any
+	// Shared says several machines hold this one namespace, and what they all call it. Undeclared
+	// is a namespace that is this machine's own.
+	Shared Shared
 	// Access is who may reach this path and everything under it, until something deeper says
 	// otherwise. Undeclared means nobody.
 	Access Access

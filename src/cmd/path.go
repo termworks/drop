@@ -22,6 +22,7 @@ func newPathCmd() *cobra.Command {
 			"  drop path ls              what this machine serves, and to whom\n" +
 			"  drop path ls orin         what orin shares with you\n" +
 			"  drop path create          the types this build answers to\n" +
+			"  drop path join orin:/notes\n" +
 			"  drop path grant /work bob\n",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
@@ -30,6 +31,7 @@ func newPathCmd() *cobra.Command {
 	cmd.AddCommand(
 		newPathListCmd(),
 		newCreateCmd(),
+		newJoinCmd(),
 		newPathRemoveCmd(),
 		newGrantCmd(),
 		newRevokeCmd(),

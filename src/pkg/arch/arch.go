@@ -46,6 +46,11 @@ type Declared interface {
 type Note struct {
 	// Writable says the far end may put something into this namespace.
 	Writable bool
+	// Shareable says several machines may hold one namespace of this archetype and see each
+	// other's changes. One that says nothing is a namespace each machine holds alone: a terminal
+	// is somebody's screen and a cast is somebody's output, and there is no sense in which two of
+	// them are the same one.
+	Shareable bool
 	// Detail is this instance in one column: where it points, what it runs.
 	Detail string
 	// About is what this archetype is for, in the words of somebody explaining it once.
@@ -53,6 +58,14 @@ type Note struct {
 	// Glyph is one character, for a list that has no room for a word.
 	Glyph string
 }
+
+// Changed is how an archetype says something in a namespace has moved, so that whoever else holds
+// it is told rather than finding out the next time they happen to ask.
+//
+// Handed in when the archetype is built, the way somewhere to put an arriving file is. What it does
+// is the business of whatever built it: this package knows nothing about a connection, and an
+// archetype that could reach for one would be an archetype that decides who hears about a change.
+type Changed func(path string)
 
 // Stream is what a session runs over: a bidirectional byte stream whose read side can be given a
 // deadline, and whose write side can be closed on its own.

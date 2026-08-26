@@ -59,10 +59,11 @@ func (f *Files) Note(c arch.Config) arch.Note {
 		detail, about = cfg.Dir+"  read and write", "a directory, to walk through and write in"
 	}
 	return arch.Note{
-		Writable: cfg.Writable,
-		Detail:   detail,
-		About:    about,
-		Glyph:    "▦",
+		Writable:  cfg.Writable,
+		Shareable: true,
+		Detail:    detail,
+		About:     about,
+		Glyph:     "▦",
 	}
 }
 

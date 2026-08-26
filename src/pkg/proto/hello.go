@@ -31,7 +31,19 @@ type Served struct {
 	Locked bool
 	// About is what this kind of path is for, in the words of whoever wrote it.
 	About string
+	// Shared says several machines hold this one namespace, and what they all call it. It is what
+	// a joiner needs and the whole of it: the name is worked out from these three facts rather
+	// than taken on trust, so nothing else has to travel for one machine to hold what another
+	// holds.
+	Shared ns.Shared
+	// Holders is who else holds it, by the key they sign with. Absent for a path the caller may
+	// see and not open: who is inside is for the people inside.
+	Holders []string
 }
+
+// MaxHolders bounds how many people a node will name as holding one namespace, so a listing stays
+// a listing.
+const MaxHolders = 64
 
 // Hello is what a node answers with when asked what it calls itself. Self-declared, so it names a
 // peer but never authenticates one; the endpoint id does that.
@@ -57,6 +69,13 @@ func (h Hello) encode() []byte {
 		w.Bool(s.Writable)
 		w.Bool(s.Locked)
 		w.String(s.About)
+		w.String(s.Shared.Creator)
+		w.String(s.Shared.At)
+		w.String(s.Shared.Nonce)
+		w.Uint(uint64(len(s.Holders)))
+		for _, key := range s.Holders {
+			w.String(key)
+		}
 	}
 	return w.Body()
 }
@@ -108,6 +127,14 @@ func decodeHello(body []byte) (Hello, error) {
 		if err != nil {
 			return out, err
 		}
+		shared, err := decodeShared(r)
+		if err != nil {
+			return out, err
+		}
+		holders, err := decodeHolders(r)
+		if err != nil {
+			return out, err
+		}
 		out.Serves = append(out.Serves, Served{
 			Path:      path,
 			Archetype: archetype,
@@ -115,7 +142,52 @@ func decodeHello(body []byte) (Hello, error) {
 			Writable:  writable,
 			Locked:    locked,
 			About:     about,
+			Shared:    shared,
+			Holders:   holders,
 		})
+	}
+	return out, nil
+}
+
+// decodeShared reads what a namespace several machines hold is called.
+func decodeShared(r *wire.Reader) (ns.Shared, error) {
+	var out ns.Shared
+
+	creator, err := r.String(wire.MaxString)
+	if err != nil {
+		return out, err
+	}
+	at, err := r.String(1024)
+	if err != nil {
+		return out, err
+	}
+	nonce, err := r.String(wire.MaxString)
+	if err != nil {
+		return out, err
+	}
+	out.Creator, out.At, out.Nonce = creator, at, nonce
+	return out, nil
+}
+
+func decodeHolders(r *wire.Reader) ([]string, error) {
+	count, err := r.Uint()
+	if err != nil {
+		return nil, err
+	}
+	if count > MaxHolders {
+		return nil, fmt.Errorf("a node named %d people holding one namespace, which is more than %d", count, MaxHolders)
+	}
+	if count == 0 {
+		return nil, nil
+	}
+
+	out := make([]string, 0, count)
+	for range count {
+		key, err := r.String(wire.MaxString)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, key)
 	}
 	return out, nil
 }
@@ -141,6 +213,12 @@ func Describe(table *ns.Table, known *arch.Registry, caller ns.Caller) []Served 
 		}
 
 		said := Served{Path: m.Path, Archetype: m.Archetype, Version: m.Version, Locked: !open}
+		// That several machines hold this is told to the people who may hold it, and not to
+		// somebody who can see the path and cannot open it: what a namespace is called is what
+		// joining it takes.
+		if open {
+			said.Shared = m.Shared
+		}
 		if m.Branch() {
 			said.About = "holds other paths, serves nothing"
 			out = append(out, said)

@@ -3,11 +3,13 @@ package proto
 import (
 	"io"
 	"os"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -19,6 +21,14 @@ func TestHelloRoundTrip(t *testing.T) {
 			{Path: "/inbox", Archetype: "share", Version: 1, Writable: true, About: "hand files over, once"},
 			{Path: "/term", Archetype: "tty", Version: 1},
 			{Path: "/logs", Archetype: "stream", Version: 2, About: "output from a command"},
+			{
+				Path:      "/notes",
+				Archetype: "chat",
+				Version:   1,
+				Writable:  true,
+				Shared:    ns.Shared{Creator: "ssh-ed25519 AAAA alice\n", At: "/notes", Nonce: "cafe"},
+				Holders:   []string{"ssh-ed25519 AAAA alice\n", "ssh-ed25519 BBBB bob\n"},
+			},
 		},
 	}
 
@@ -33,7 +43,7 @@ func TestHelloRoundTrip(t *testing.T) {
 		t.Fatalf("serves = %+v", got.Serves)
 	}
 	for i, s := range want.Serves {
-		if got.Serves[i] != s {
+		if !reflect.DeepEqual(got.Serves[i], s) {
 			t.Fatalf("serves[%d] = %+v, want %+v", i, got.Serves[i], s)
 		}
 	}

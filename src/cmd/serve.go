@@ -107,7 +107,12 @@ func runServe(parent context.Context, quiet bool) error {
 	defer held.Close()
 
 	go keepConnected(ctx, held, pinned)
-	go backlog(ctx, n, lan, pinned, held)
+	go backlog(ctx, pinned, held, cfg.Mounts)
+
+	// What an archetype calls when something in one of its namespaces moves. Set here rather than
+	// where the archetypes were registered, because reaching the machines that hold a namespace
+	// needs the connections and the address book, and neither exists until the config is read.
+	doing.changed = told(ctx, kept{held: held}, cfg.Mounts, pinned)
 
 	// A cast feeds this node over a local socket rather than standing up a second one, so a
 	// terminal can be shared while the daemon is running.
@@ -146,6 +151,7 @@ func runServe(parent context.Context, quiet bool) error {
 		Who:        whoIs(pinned),
 		Refused:    noting(pinned),
 		Asked:      taking(),
+		Met:        meeting(cfg.Mounts, pinned, doing.changed),
 	}
 
 	// The address book is re-read before answering anybody, because `drop peer pair` is a separate
@@ -220,9 +226,7 @@ func runServe(parent context.Context, quiet bool) error {
 		if !known || !entry.Paired() {
 			return
 		}
-		if _, err := deliverOver(ctx, onlyHeld{held: held}, entry, "/chat", "chat"); err != nil {
-			trace(fmt.Sprintf("pushing to %s: %v", entry.Name, err))
-		}
+		pushTo(ctx, onlyHeld{held: held}, entry, cfg.Mounts, pinned)
 	}
 
 	go serveLoopKeeping(ctx, n, answer, held, pushing)
@@ -259,7 +263,7 @@ func describe(cfg *conf.Config, known *arch.Registry, n *node.Node, skipped []ma
 	mounts := cfg.Mounts.All()
 	kind := widest(6, kinds(mounts))
 	for _, m := range mounts {
-		fmt.Printf("  %-24s %-*s %-8s %s\n", m.Path, kind, kindOf(m.Archetype), m.Source, detail(known, m))
+		fmt.Printf("  %-24s %-*s %-8s %s%s\n", m.Path, kind, kindOf(m.Archetype), m.Source, detail(known, m), sharedAs(m))
 	}
 	shadowed(skipped)
 
@@ -304,12 +308,12 @@ func kindOf(archetype string) string {
 	return archetype
 }
 
-// backlog keeps trying whatever is still queued for anybody.
+// backlog keeps trying whatever is still waiting to be said to anybody.
 //
 // A message to a device that was off is kept rather than lost, and the thing that notices it coming
 // back has to be the thing that is always running. Until this, a backlog only moved while somebody
 // had a chat window open, which is the one moment they do not need it to.
-func backlog(ctx context.Context, n *node.Node, lan *discovery.LAN, pinned *book.Book, held *dial.Kept) {
+func backlog(ctx context.Context, pinned *book.Book, held *dial.Kept, mounts *ns.Table) {
 	tick := time.NewTicker(flushEvery)
 	defer tick.Stop()
 
@@ -337,7 +341,7 @@ func backlog(ctx context.Context, n *node.Node, lan *discovery.LAN, pinned *book
 				trace(fmt.Sprintf("reaching %s: %v", entry.Name, err))
 			}
 
-			_, _ = deliverOver(ctx, kept{held: held}, entry, "/chat", "chat")
+			pushTo(ctx, kept{held: held}, entry, mounts, pinned)
 		}
 	}
 }

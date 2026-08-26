@@ -63,10 +63,19 @@ func listThere(parent context.Context, at ns.Address, entry book.Entry, wait tim
 
 	fmt.Printf("\n%s  %s\n\n", entry.Name, node.Brief(entry.ID))
 	for _, served := range shown {
-		fmt.Printf("  %-*s  %-*s %s\n", width, served.Path, kind, kindOf(served.Archetype), served.About)
+		fmt.Printf("  %-*s  %-*s %s%s\n", width, served.Path, kind, kindOf(served.Archetype), served.About, alsoHeld(served))
 	}
 	fmt.Println()
 	return nil
+}
+
+// alsoHeld is what a listing says about a namespace several machines hold: that this one may hold
+// it too, which is the whole of how somebody comes to.
+func alsoHeld(served proto.Served) string {
+	if !served.Shared.Declared() {
+		return ""
+	}
+	return "  · shared, `drop path join` it"
 }
 
 // covers reports whether a path is at or under a prefix, on segment boundaries so /friendsonly is

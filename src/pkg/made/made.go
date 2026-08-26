@@ -43,6 +43,10 @@ type Entry struct {
 	Settings Settings `json:"settings,omitempty"`
 	// Access is who may reach it, in the words a config uses for the same rule.
 	Access Access `json:"access"`
+	// Shared says several machines hold this one namespace, and what they all call it. It is
+	// written down because it is what the history is filed under: a path that came back after a
+	// restart under a different name would be a different thing.
+	Shared ns.Shared `json:"shared,omitzero"`
 }
 
 // Line is one namespace on its way to the node already running: a path, what is there, and whether

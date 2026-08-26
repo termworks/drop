@@ -15,6 +15,9 @@ import (
 	"github.com/bresilla/drop/src/pkg/proto"
 )
 
+// ChatPath is where a conversation is served, and where a queue for a peer is delivered.
+const ChatPath = "/chat"
+
 // deliverTo sends whatever is waiting for a peer and clears what the far end confirms it stored.
 //
 // Undelivered messages stay queued rather than being dropped, which is what makes sending to a

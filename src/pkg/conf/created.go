@@ -67,6 +67,7 @@ func (c *Config) Created(store *made.Store) ([]made.Skipped, error) {
 			Version:   entry.Version,
 			Config:    settings,
 			Access:    entry.Access.Rule(),
+			Shared:    entry.Shared,
 		}
 		if err := c.Mounts.Add(m); err != nil {
 			skip(err.Error())

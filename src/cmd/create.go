@@ -3,6 +3,8 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +32,7 @@ func newCreateCmd() *cobra.Command {
 		text, on, lists []string
 		access, visible string
 		version         int
-		kept            bool
+		kept, sharing   bool
 	)
 
 	cmd := &cobra.Command{
@@ -66,6 +68,11 @@ func newCreateCmd() *cobra.Command {
 				return err
 			}
 			entry := made.Entry{Archetype: args[1], Version: version, Settings: declared, Access: rule}
+			if sharing {
+				if entry.Shared, err = minted(args[0]); err != nil {
+					return err
+				}
+			}
 
 			return runCreate(cmd.Context(), known, args[0], entry, kept)
 		},
@@ -77,9 +84,31 @@ func newCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&access, "access", "", "paired, trusted, anyone, or a comma-separated list of names")
 	cmd.Flags().StringVar(&visible, "visible", "", "who may see it without being able to open it")
 	cmd.Flags().IntVar(&version, "version", 0, "which revision of the type answers; the newest by default")
+	cmd.Flags().BoolVar(&sharing, "share", false, "several machines hold it, and whoever the rule names may join it")
 	cmd.Flags().BoolVar(&kept, "keep", false, "write it down, so it is here after a restart")
 
 	return cmd
+}
+
+// minted names a namespace several machines are going to hold.
+//
+// The name is worked out from who made it, where, and a word telling one thing at that path from
+// another made there later — and a command mints that word, so a path taken down and put up again
+// is a new thing rather than the old one wearing its history.
+func minted(at string) (ns.Shared, error) {
+	path, err := ns.Clean(at)
+	if err != nil {
+		return ns.Shared{}, err
+	}
+	if myKey() == "" {
+		return ns.Shared{}, errors.New("this machine has no user key, so it cannot name what it shares")
+	}
+
+	var word [8]byte
+	if _, err := rand.Read(word[:]); err != nil {
+		return ns.Shared{}, fmt.Errorf("naming %s: %w", path, err)
+	}
+	return ns.Shared{Creator: myKey(), At: path, Nonce: hex.EncodeToString(word[:])}, nil
 }
 
 func newPathRemoveCmd() *cobra.Command {
@@ -121,8 +150,12 @@ func runCreate(parent context.Context, known *arch.Registry, at string, entry ma
 	if !ok {
 		return known.Missing(entry.Archetype, entry.Version)
 	}
-	if _, err := answers.Read(made.Declared(entry.Settings)); err != nil {
+	settings, err := answers.Read(made.Declared(entry.Settings))
+	if err != nil {
 		return fmt.Errorf("%s: %w", at, err)
+	}
+	if entry.Shared.Declared() && !answers.Note(settings).Shareable {
+		return fmt.Errorf("a %s is one machine's own, so it cannot be shared", entry.Archetype)
 	}
 
 	cfg, err := conf.Load(known)
@@ -259,13 +292,13 @@ func runRemove(at string) error {
 
 	// Out of the file and off the node, in that order. A path removed from the list and still
 	// answering is the one failure that matters here: somebody stops sharing something and it goes
-	// on being shared.
+	// on being shared, and being told so is the difference between fixing it and not knowing.
 	fmt.Printf("%s is out of %s\n", at, file)
 	switch err := unmounted(at); {
 	case err == nil:
 	case errors.Is(err, errNoNode):
 	default:
-		fmt.Printf("  it is still up on the node running here: %v\n", err)
+		fmt.Printf("  the node running here goes on serving it until it restarts: %v\n", err)
 	}
 	return nil
 }

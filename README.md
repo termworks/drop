@@ -123,6 +123,7 @@ drop peer forget <name>        drop a machine from the address book
 drop peer whois <name|id>      what this machine knows about another
 
 drop path ls [address]         what a machine serves, and to whom
+drop path join <address>       hold a namespace somebody else holds
 drop path grant <path> <who>   let somebody reach a path
 drop path revoke <path> <who>  stop them
 drop path grants               what has been allowed and refused
@@ -220,6 +221,65 @@ of an archetype's protocol; without it, the newest this build has is used.
 A declaration is read by the archetype it names, when the config is read. So a `share` with no
 `dir`, or a `type` this build has never heard of, is an error with a file and a line on it, rather
 than a namespace that turns out to answer nothing months later.
+
+Each archetype also says whether one namespace of its kind is something several machines may hold
+between them. `chat` and `files` say yes; `share`, `link`, `tty` and `stream` say nothing, and
+declaring one of those [`shared`](#a-namespace-several-machines-hold) is refused where it is
+written.
+
+### a namespace several machines hold
+
+Most namespaces are one machine's own. A terminal is somebody's screen and a drop box is somebody's
+folder, and there is no sense in which two of them are the same one. Some are not: a conversation
+and a folder are things several people may be changing at once, and then all of their machines are
+holding one thing rather than several things that share a spelling.
+
+A mount says so with `shared`:
+
+```lua
+drop.mount("/notes", { type = "chat", access = { "bob", "carol" }, shared = true })
+```
+
+Or, without editing anything:
+
+```
+drop path create /notes chat --access bob,carol --share --keep
+```
+
+What everybody calls it is worked out rather than issued: it is a hash of who made it, the path
+they made it at, and a word telling one thing at that path from another made there later. So every
+machine given those three facts arrives at the same name without anybody asking a server, and a
+config read again after a restart names the same thing it named before. Writing a different word —
+`shared = "second"` — is how you say this is a new thing at an old path.
+
+**Who else holds it is the access rule.** There is no membership list: whoever the rule admits may
+hold it, and widening the rule widens the set. Which also means it is each machine's own answer —
+yours takes changes from the people *your* rule names, so removing somebody stops their next change
+rather than unsaying their last one.
+
+**Nobody is invited.** It turns up in `drop path ls` on their machine because their rule names you,
+and you say yes to it:
+
+```
+$ drop path ls bob
+  /notes  chat   messages, kept as a conversation  · shared, `drop path join` it
+
+$ drop path join bob:/notes
+
+/notes is held here  →  chat, shared
+
+  also held by  carol
+  history       4 changes came over
+  reachable by  bob
+```
+
+It is written down, so it is here after a restart. Who may reach it *here* is this machine's own
+decision — joining names the person you joined from, and `drop path grant` names anybody else.
+
+From then on the machines keep each other level: each tells the others the changes nothing of its
+own comes after, and is sent whatever it has not seen. That happens on a connection arriving, on a
+change being made, and on a timer, because running it when there is nothing to say costs a few
+identifiers. A change from somebody your rule does not admit is refused, whoever relayed it.
 
 ### share and files are not the same thing
 
@@ -959,6 +1019,9 @@ src/pkg/seen/          devices that dialled and were turned away
 src/pkg/shares/        what each device last said it shares
 src/pkg/user/          a person, and the badge each of their machines carries
 src/pkg/convo/         the durable conversation log and outbox
+src/pkg/history/       what happened to one thing: signed changes, causally ordered
+src/pkg/among/         who else holds a namespace, read off its access rule
+src/pkg/meet/          two machines catching up on one thing: heads, and what is missing
 src/pkg/term/          a terminal screen, rebuilt from what a device sends
 src/pkg/cast/          one terminal fanned out to many watchers
 src/pkg/asciicast/     reading an asciicast stream

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bresilla/drop/src/pkg/among"
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/arch/share"
 	"github.com/bresilla/drop/src/pkg/book"
@@ -66,11 +67,22 @@ func streamOver(err error) bool {
 func greeting(pinned *book.Book, mounts *ns.Table, known *arch.Registry, from node.ID, badge proto.Badged) proto.Hello {
 	// No pairing check here any more: the rules on the paths decide, and one of them may name a
 	// bare key. What an unpaired caller can reach is usually nothing, and then the list is empty.
-	return proto.Hello{
-		Name:    node.DisplayName(),
-		Version: version,
-		Serves:  proto.Describe(mounts, known, whoIs(pinned)(from, badge)),
+	serves := proto.Describe(mounts, known, whoIs(pinned)(from, badge))
+
+	// Who else holds a shared namespace is not a list anybody keeps: it is the access rule read
+	// against the address book, worked out here because that is where both of them are.
+	for i, served := range serves {
+		if !served.Shared.Declared() {
+			continue
+		}
+		rule, found := mounts.AccessFor(served.Path)
+		if !found {
+			continue
+		}
+		serves[i].Holders = among.People(rule, pinned, myKey())
 	}
+
+	return proto.Hello{Name: node.DisplayName(), Version: version, Serves: serves}
 }
 
 // whoIs turns a caller into what the address book knows about it, for the access rules to judge.

@@ -188,6 +188,15 @@ func verify(c Change) error {
 	return nil
 }
 
+// Encode is one change as it travels, which is exactly how it is stored: nothing is added for the
+// wire and nothing is left off, so a change that arrives is written down as it came.
+func (c Change) Encode() []byte { return record(c) }
+
+// Decode reads one change off the wire, refusing one that is not written the way a change is
+// written. Whether the person it names really signed it is asked when it is taken, and whether
+// they were allowed to is asked by whoever holds the access rule.
+func Decode(raw []byte) (Change, error) { return unrecord(raw) }
+
 // record is one change as it is stored: its id, the bytes its author signed, and the signature.
 //
 // The id is written down so that reading the log back costs a hash rather than a signature check

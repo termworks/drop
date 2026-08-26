@@ -11,6 +11,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/passwd"
+	"github.com/bresilla/drop/src/pkg/user"
 )
 
 // runtime is the Lua state a config left behind.
@@ -205,6 +206,42 @@ func run(cfg *Config, path string) error {
 	}
 
 	readSettings(cfg, module)
+	if err := cfg.name(); err != nil {
+		return fail(err)
+	}
+	return nil
+}
+
+// name works out what the namespaces declared as shared are called, now that the whole file has
+// been read.
+//
+// The key this person signs with is one of the things a config may name, and the name of a shared
+// namespace is derived from it. Doing this while the file was still running would name a namespace
+// after whichever key happened to be in force at that line.
+func (c *Config) name() error {
+	if len(c.shares) == 0 {
+		return nil
+	}
+	if c.UserKey != "" {
+		user.Use(expand(c.UserKey))
+	}
+
+	key, err := user.Public()
+	if err != nil {
+		return fmt.Errorf("naming what this machine shares: %w", err)
+	}
+	creator := user.Text(key)
+
+	for at, word := range c.shares {
+		m, _, ok := c.Mounts.Lookup(at)
+		if !ok || m.Path != at {
+			continue
+		}
+		m.Shared = ns.Shared{Creator: creator, At: at, Nonce: word}
+		if err := c.Mounts.Add(m); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -328,27 +365,69 @@ func mount(c *rt.GoCont, cfg *Config) (rt.Cont, error) {
 		Access:    access,
 	}
 
+	word, wanted := sharedWord(opts)
+
 	// A mount with no type is a branch: it serves nothing and exists to carry an access rule for
 	// the paths under it. The table refuses one that is neither, so a typo is still caught.
 	if !m.Branch() {
-		settings, err := readSettingsFor(cfg.known, m.Archetype, m.Version, declared{opts})
+		answers, err := answering(cfg.known, m.Archetype, m.Version)
+		if err != nil {
+			return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
+		}
+		settings, err := answers.Read(declared{opts})
 		if err != nil {
 			return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
 		}
 		m.Config = settings
+
+		if wanted && !answers.Note(settings).Shareable {
+			return nil, fmt.Errorf("drop.mount(%q): a %s is one machine's own, so it cannot be shared", path, m.Archetype)
+		}
 	} else if !access.Declared() {
 		return nil, fmt.Errorf("drop.mount(%q): needs a type, or an access rule if it is a branch", path)
+	} else if wanted {
+		return nil, fmt.Errorf("drop.mount(%q): a path that holds others and serves nothing has nothing to share", path)
 	}
 
 	if err := cfg.Mounts.Add(m); err != nil {
 		return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
 	}
+
+	// Named after the whole file has run rather than here, because who this machine signs as is
+	// one of the things the file may say, and a name worked out before it was read would be a
+	// different name from the one everybody else uses.
+	if wanted {
+		at, err := ns.Clean(path)
+		if err != nil {
+			return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
+		}
+		if cfg.shares == nil {
+			cfg.shares = map[string]string{}
+		}
+		cfg.shares[at] = word
+	}
 	return c.Next(), nil
 }
 
-// readSettingsFor hands a declaration to the archetype it names, so a mistake is reported with a
-// file and a line rather than as silence months later.
-func readSettingsFor(known *arch.Registry, name string, version int, d arch.Declared) (arch.Config, error) {
+// sharedWord reads whether a namespace is one several machines hold, and the word that tells it
+// from another made at the same path.
+//
+//	shared = true       one thing at this path
+//	shared = "second"   a different thing at the same path
+func sharedWord(opts *rt.Table) (string, bool) {
+	value := opts.Get(rt.StringValue("shared"))
+	if value.IsNil() {
+		return "", false
+	}
+	if word, ok := value.TryString(); ok {
+		return word, word != ""
+	}
+	return "", rt.Truth(value)
+}
+
+// answering finds what a mount's type is, so a config that names one this build does not have is
+// refused where it is written.
+func answering(known *arch.Registry, name string, version int) (arch.Archetype, error) {
 	if known == nil {
 		return nil, fmt.Errorf("this build registered no namespace types")
 	}
@@ -356,7 +435,7 @@ func readSettingsFor(known *arch.Registry, name string, version int, d arch.Decl
 	if !ok {
 		return nil, known.Missing(name, version)
 	}
-	return answers.Read(d)
+	return answers, nil
 }
 
 // declared is one mount's table, read the way an archetype reads it: by name, and saying whether

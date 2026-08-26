@@ -50,6 +50,9 @@ type Config struct {
 	// known is what those namespaces can be. A mount is read by the archetype it names, so a
 	// config that names one this build does not have is refused where it is written.
 	known *arch.Registry
+	// shares is the paths declared as namespaces several machines hold, and the word each was
+	// declared with. What they are called is worked out once the whole file has run.
+	shares map[string]string
 	// rt holds the Lua state, kept alive for the handlers a config registered.
 	rt *runtime
 	// Path is the file this came from, empty when nothing was found.
