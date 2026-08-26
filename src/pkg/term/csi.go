@@ -66,6 +66,10 @@ func first(p []int) int {
 	return p[0]
 }
 
+// maxParam is as large a number as any sequence is allowed to carry. A count from the far end is
+// otherwise free to be one a cursor move overflows on, or one a loop never reaches the end of.
+const maxParam = 65535
+
 // parseParams splits "1;32" into its numbers. A private marker such as "?25" is dropped: nothing
 // here has a mode to set.
 func parseParams(text string) []int {
@@ -84,7 +88,7 @@ func parseParams(text string) []int {
 	for i := 0; i <= len(text); i++ {
 		if i == len(text) || text[i] == ';' {
 			n, _ := strconv.Atoi(text[start:i])
-			out = append(out, n)
+			out = append(out, min(max(n, 0), maxParam))
 			start = i + 1
 		}
 	}
@@ -114,49 +118,77 @@ func (s *Screen) eraseLine(mode int) {
 	from, to := 0, s.cols
 	switch mode {
 	case 0:
-		from = s.x
+		from = s.column()
 	case 1:
-		to = min(s.x+1, s.cols)
+		to = min(s.column()+1, s.cols)
 	}
 	for i := from; i < to; i++ {
 		row[i] = blank()
 	}
 }
 
+// column is the cursor's column as a position in the row. A character written into the last column
+// leaves the cursor one past it, waiting to wrap, and that is not a place a row can be indexed at.
+func (s *Screen) column() int { return min(s.x, s.cols-1) }
+
+// span is the current row and the stretch of it a count acts on, clamped to what the row holds. A
+// span of no cells means the sequence has nothing to do.
+func (s *Screen) span(count int) (row []Cell, from, n int) {
+	from = s.column()
+	return s.grid[s.y], from, min(max(count, 0), s.cols-from)
+}
+
 func (s *Screen) eraseChars(count int) {
-	row := s.grid[s.y]
-	for i := s.x; i < min(s.cols, s.x+count); i++ {
+	row, from, n := s.span(count)
+	for i := from; i < from+n; i++ {
 		row[i] = blank()
 	}
 }
 
-func (s *Screen) insertLines(count int) {
-	for range count {
-		copy(s.grid[s.y+1:], s.grid[s.y:])
-		s.grid[s.y] = blankRow(s.cols)
-	}
-}
-
-func (s *Screen) deleteLines(count int) {
-	for range count {
-		copy(s.grid[s.y:], s.grid[s.y+1:])
-		s.grid[s.rows-1] = blankRow(s.cols)
-	}
-}
-
 func (s *Screen) insertChars(count int) {
-	row := s.grid[s.y]
-	for range count {
-		copy(row[s.x+1:], row[s.x:])
-		row[s.x] = blank()
+	row, from, n := s.span(count)
+	if n == 0 {
+		return
+	}
+	copy(row[from+n:], row[from:])
+	for i := from; i < from+n; i++ {
+		row[i] = blank()
 	}
 }
 
 func (s *Screen) deleteChars(count int) {
-	row := s.grid[s.y]
-	for range count {
-		copy(row[s.x:], row[s.x+1:])
-		row[s.cols-1] = blank()
+	row, from, n := s.span(count)
+	if n == 0 {
+		return
+	}
+	copy(row[from:], row[from+n:])
+	for i := s.cols - n; i < s.cols; i++ {
+		row[i] = blank()
+	}
+}
+
+// lines is how many rows a scroll within the screen can move, counting down from the cursor.
+func (s *Screen) lines(count int) int { return min(max(count, 0), s.rows-s.y) }
+
+func (s *Screen) insertLines(count int) {
+	n := s.lines(count)
+	if n == 0 {
+		return
+	}
+	copy(s.grid[s.y+n:], s.grid[s.y:])
+	for y := s.y; y < s.y+n; y++ {
+		s.grid[y] = blankRow(s.cols)
+	}
+}
+
+func (s *Screen) deleteLines(count int) {
+	n := s.lines(count)
+	if n == 0 {
+		return
+	}
+	copy(s.grid[s.y:], s.grid[s.y+n:])
+	for y := s.rows - n; y < s.rows; y++ {
+		s.grid[y] = blankRow(s.cols)
 	}
 }
 

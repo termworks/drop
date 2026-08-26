@@ -305,3 +305,103 @@ func TestSaveAndRestoreTheCursor(t *testing.T) {
 		t.Fatalf("row 1 = %q", got)
 	}
 }
+
+// A character written into the last column leaves the cursor one past it, and every sequence that
+// edits the row has to cope with that: indexing the row there is off the end of it.
+func TestSequencesActingOnAFullRow(t *testing.T) {
+	cases := []struct {
+		name string
+		seq  string
+		want string
+	}{
+		{"delete one", "\x1b[P", "abcd"},
+		{"delete many", "\x1b[3P", "abcd"},
+		{"delete more than the row", "\x1b[999P", "abcd"},
+		{"insert one", "\x1b[@", "abcd"},
+		{"insert many", "\x1b[4@", "abcd"},
+		{"erase one", "\x1b[X", "abcd"},
+		{"erase many", "\x1b[9X", "abcd"},
+		{"erase to the end", "\x1b[K", "abcd"},
+		{"erase to the start", "\x1b[1K", ""},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := New(5, 2)
+			write(t, s, "abcde")
+			write(t, s, c.seq)
+
+			if got := line(s, 0); got != c.want {
+				t.Fatalf("row 0 = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestInsertCharsAtTheStartPushesTheRestRight(t *testing.T) {
+	s := New(6, 2)
+	write(t, s, "abcdef")
+	write(t, s, "\x1b[1;1H\x1b[2@")
+
+	if got := line(s, 0); got != "  abcd" {
+		t.Fatalf("row 0 = %q", got)
+	}
+}
+
+// A count large enough to overflow the arithmetic it is used in, or to be a loop nobody returns
+// from, is not a count any sequence may carry.
+func TestAnEnormousCountIsClamped(t *testing.T) {
+	s := New(10, 3)
+
+	write(t, s, "\x1b[99999999999999999999C")
+	if x, _ := s.Cursor(); x < 0 || x >= 10 {
+		t.Fatalf("cursor column = %d", x)
+	}
+
+	write(t, s, "\x1b[99999999999999999999B")
+	if _, y := s.Cursor(); y < 0 || y >= 3 {
+		t.Fatalf("cursor row = %d", y)
+	}
+
+	write(t, s, "\x1b[99999999999999999999P\x1b[99999999999999999999@\x1b[99999999999999999999L")
+	write(t, s, "\x1b[1;1Hx")
+	if got := line(s, 0); got != "x" {
+		t.Fatalf("row 0 = %q", got)
+	}
+}
+
+// A sequence with no end must not be held for ever: the bytes waiting for it are copied on top of
+// every arrival after them, which is the far end choosing how much memory this process uses.
+func TestAnUnterminatedSequenceIsGivenUpOn(t *testing.T) {
+	cases := []struct {
+		name string
+		head string
+	}{
+		{"csi", "\x1b["},
+		{"osc", "\x1b]0;title"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := New(20, 3)
+			write(t, s, c.head)
+
+			chunk := strings.Repeat("1", 8<<10)
+			for range 3 * maxPending / len(chunk) {
+				write(t, s, chunk)
+				if len(s.pending) > maxPending {
+					t.Fatalf("pending grew to %d bytes, past the %d cap", len(s.pending), maxPending)
+				}
+			}
+
+			s.Clear()
+			write(t, s, "\x1b[31mok")
+			if got := line(s, 0); got != "ok" {
+				t.Fatalf("row 0 = %q, the parser did not pick up again", got)
+			}
+			if got := s.Row(0)[0].FG; got != Indexed(1) {
+				t.Fatalf("colour = %+v, the parser did not pick up again", got)
+			}
+		})
+	}
+}

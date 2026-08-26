@@ -152,6 +152,10 @@ func (s *Screen) put(ch rune) {
 	s.x++
 }
 
+// maxPending is as far as a sequence is followed before it is given up on. A sequence that never
+// ends would otherwise be held for ever, and every arrival after it copied on top of the last.
+const maxPending = 64 << 10
+
 // Write feeds output from the far end into the screen.
 func (s *Screen) Write(p []byte) (int, error) {
 	n := len(p)
@@ -167,6 +171,12 @@ func (s *Screen) Write(p []byte) (int, error) {
 		if buf[i] == 0x1b {
 			used, ok := s.escape(buf[i:])
 			if !ok {
+				// Past the cap the sequence is abandoned and the escape thrown away, so what
+				// follows is read as itself rather than held for an end that is not coming.
+				if len(buf)-i > maxPending {
+					i++
+					continue
+				}
 				s.pending = append([]byte(nil), buf[i:]...)
 				return n, nil
 			}
@@ -216,11 +226,12 @@ func (s *Screen) escape(buf []byte) (int, bool) {
 
 	switch buf[1] {
 	case '[':
+		end := min(len(buf), maxPending)
 		i := 2
-		for i < len(buf) && isParam(buf[i]) {
+		for i < end && isParam(buf[i]) {
 			i++
 		}
-		if i >= len(buf) {
+		if i >= end {
 			return 0, false
 		}
 		s.csi(string(buf[2:i]), buf[i])
@@ -229,7 +240,8 @@ func (s *Screen) escape(buf []byte) (int, bool) {
 	case ']':
 		// An operating-system command sets things like the window title. Nothing here shows one,
 		// so it is consumed and dropped; leaving it would print the title onto the grid.
-		for i := 2; i < len(buf); i++ {
+		end := min(len(buf), maxPending)
+		for i := 2; i < end; i++ {
 			if buf[i] == 0x07 {
 				return i + 1, true
 			}
