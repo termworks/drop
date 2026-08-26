@@ -134,7 +134,7 @@ func runChat(parent context.Context, target string) error {
 // chatMounts is the one namespace a chat serves while it is open.
 func chatMounts() *ns.Table {
 	table := ns.NewTable()
-	_ = table.Add(ns.Mount{Path: "/chat", Kind: ns.KindChat})
+	_ = table.Add(ns.Mount{Path: "/chat", Archetype: ns.Chat})
 	return table
 }
 

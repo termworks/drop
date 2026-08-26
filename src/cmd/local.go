@@ -121,9 +121,9 @@ func (h *castHost) begin(cols, rows uint16) *cast.Caster {
 	h.stage = cast.New(cols, rows)
 
 	_ = h.mounts.Add(ns.Mount{
-		Path:   CastPath,
-		Kind:   ns.KindTTY,
-		Access: ns.Access{AnyPaired: true},
+		Path:      CastPath,
+		Archetype: ns.TTY,
+		Access:    ns.Access{AnyPaired: true},
 	})
 	return h.stage
 }

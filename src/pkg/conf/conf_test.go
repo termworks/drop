@@ -57,13 +57,13 @@ func TestSettingsAreAssigned(t *testing.T) {
 func TestMountsAreRegistered(t *testing.T) {
 	cfg := load(t, `
 		local drop = require("drop")
-		drop.mount("/inbox", { type = "files", dir = "/tmp/in" })
+		drop.mount("/inbox", { type = "share", dir = "/tmp/in" })
 		drop.mount("/logs",  { type = "stream", command = "tail -f /var/log/x" })
 		drop.mount("/term",  { type = "tty", input = true })
 	`)
 
 	m, _, ok := cfg.Mounts.Lookup("/inbox")
-	if !ok || m.Kind != ns.KindFiles || m.Dir != "/tmp/in" {
+	if !ok || m.Archetype != ns.Share || m.Dir != "/tmp/in" {
 		t.Fatalf("/inbox = %+v ok %v", m, ok)
 	}
 	m, _, _ = cfg.Mounts.Lookup("/term")
@@ -121,14 +121,14 @@ func TestMountWithoutATypeIsRefused(t *testing.T) {
 	}
 }
 
-func TestFilesMountWithoutADirIsRefused(t *testing.T) {
+func TestAShareMountWithoutADirIsRefused(t *testing.T) {
 	write(t, `
 		local drop = require("drop")
-		drop.mount("/inbox", { type = "files" })
+		drop.mount("/inbox", { type = "share" })
 	`)
 
 	if _, err := Load(); err == nil {
-		t.Fatal("Load() accepted a files namespace with no dir")
+		t.Fatal("Load() accepted a share namespace with no dir")
 	}
 }
 
@@ -155,8 +155,8 @@ func TestDefaultsWhenThereIsNoFile(t *testing.T) {
 	}
 	// The defaults must not run a command or share a terminal; those are decisions.
 	for _, m := range cfg.Mounts.All() {
-		if m.Kind == ns.KindStream || m.Kind == ns.KindTTY {
-			t.Errorf("the defaults serve a %s namespace at %s", m.Kind, m.Path)
+		if m.Archetype == ns.Stream || m.Archetype == ns.TTY {
+			t.Errorf("the defaults serve a %s namespace at %s", m.Archetype, m.Path)
 		}
 	}
 }
@@ -200,7 +200,7 @@ func TestARaisingHandlerDoesNotStopTheRest(t *testing.T) {
 func TestFileHandlersReceiveTheDetails(t *testing.T) {
 	cfg := load(t, `
 		local drop = require("drop")
-		drop.mount("/inbox", { type = "files", dir = "/tmp/x" })
+		drop.mount("/inbox", { type = "share", dir = "/tmp/x" })
 		seen = {}
 		drop.on.file(function(f) seen[#seen + 1] = f.name .. ":" .. tostring(f.size) end)
 	`)
@@ -236,7 +236,7 @@ func TestTildeIsExpanded(t *testing.T) {
 
 	cfg := load(t, `
 		local drop = require("drop")
-		drop.mount("/inbox", { type = "files", dir = "~/Downloads" })
+		drop.mount("/inbox", { type = "share", dir = "~/Downloads" })
 	`)
 
 	m, _, _ := cfg.Mounts.Lookup("/inbox")
@@ -345,7 +345,7 @@ func TestRequireAndGlobalAreTheSameTable(t *testing.T) {
 		local required = require("drop")
 		same = { tostring(required == drop) }
 		required.mount("/chat", { type = "chat" })
-		drop.mount("/inbox", { type = "files", dir = "/tmp/x" })
+		drop.mount("/inbox", { type = "share", dir = "/tmp/x" })
 	`)
 
 	got := luaStrings(t, cfg, "same")

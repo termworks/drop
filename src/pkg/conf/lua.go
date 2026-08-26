@@ -309,13 +309,13 @@ func mount(c *rt.GoCont, cfg *Config) (rt.Cont, error) {
 
 	// A mount with no type is a branch: it serves nothing and exists to carry an access rule for the
 	// paths under it. The table refuses one that is neither, so a typo is still caught.
-	var kind ns.Kind
+	var archetype ns.Archetype
 	if typeName := fieldString(opts, "type"); typeName != "" {
-		parsed, err := ns.ParseKind(typeName)
+		parsed, err := ns.ParseArchetype(typeName)
 		if err != nil {
 			return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
 		}
-		kind = parsed
+		archetype = parsed
 	} else if !access.Declared() {
 		return nil, fmt.Errorf("drop.mount(%q): needs a type, or an access rule if it is a branch", path)
 	}
@@ -327,14 +327,14 @@ func mount(c *rt.GoCont, cfg *Config) (rt.Cont, error) {
 	}
 
 	m := ns.Mount{
-		Path:    path,
-		Kind:    kind,
-		Dir:     expand(fieldString(opts, "dir")),
-		Command: fieldString(opts, "command"),
-		Shell:   fieldString(opts, "shell"),
-		Input:   fieldBool(opts, "input"),
-		Action:  fieldString(opts, "action"),
-		Access:  access,
+		Path:      path,
+		Archetype: archetype,
+		Dir:       expand(fieldString(opts, "dir")),
+		Command:   fieldString(opts, "command"),
+		Shell:     fieldString(opts, "shell"),
+		Input:     fieldBool(opts, "input"),
+		Action:    fieldString(opts, "action"),
+		Access:    access,
 	}
 
 	if err := check(m); err != nil {
@@ -349,12 +349,12 @@ func mount(c *rt.GoCont, cfg *Config) (rt.Cont, error) {
 // check catches a namespace that cannot work at load time, where the error names the file and the
 // line, rather than when somebody opens it and gets silence.
 func check(m ns.Mount) error {
-	switch m.Kind {
-	case ns.KindFiles:
+	switch m.Archetype {
+	case ns.Share, ns.Files:
 		if m.Dir == "" {
-			return fmt.Errorf("a files namespace needs a dir")
+			return fmt.Errorf("a %s namespace needs a dir", m.Archetype)
 		}
-	case ns.KindStream:
+	case ns.Stream:
 		if m.Command == "" {
 			return fmt.Errorf("a stream namespace needs a command")
 		}

@@ -24,7 +24,7 @@ func TestTwoNodes(t *testing.T) {
 local drop = require("drop")
 
 drop.mount("/chat",  { type = "chat",  access = "paired" })
-drop.mount("/inbox", { type = "files", access = "paired", dir = "` + beta.inbox() + `" })
+drop.mount("/inbox", { type = "share", access = "paired", dir = "` + beta.inbox() + `" })
 drop.mount("/open",  { type = "link",  access = "paired" })
 drop.mount("/ticks", { type = "stream", access = "paired",
   command = "sh -c 'for i in 1 2 3; do echo tick $i; sleep 1; done'" })
@@ -35,7 +35,7 @@ drop.mount("/term",  { type = "tty",   access = "paired", input = true, shell = 
 local drop = require("drop")
 
 drop.mount("/chat",  { type = "chat",  access = "paired" })
-drop.mount("/inbox", { type = "files", access = "paired", dir = "` + alpha.inbox() + `" })
+drop.mount("/inbox", { type = "share", access = "paired", dir = "` + alpha.inbox() + `" })
 `)
 
 	t.Run("a node knows its own identity", func(t *testing.T) {

@@ -59,9 +59,9 @@ func Default() *Config {
 	open := ns.Access{AnyPaired: true}
 
 	table := ns.NewTable()
-	_ = table.Add(ns.Mount{Path: "/inbox", Kind: ns.KindFiles, Dir: ".", Access: open})
-	_ = table.Add(ns.Mount{Path: "/chat", Kind: ns.KindChat, Access: open})
-	_ = table.Add(ns.Mount{Path: "/open", Kind: ns.KindLink, Access: open})
+	_ = table.Add(ns.Mount{Path: "/inbox", Archetype: ns.Share, Dir: ".", Access: open})
+	_ = table.Add(ns.Mount{Path: "/chat", Archetype: ns.Chat, Access: open})
+	_ = table.Add(ns.Mount{Path: "/open", Archetype: ns.Link, Access: open})
 
 	return &Config{Mounts: table}
 }

@@ -20,9 +20,9 @@ func paths(shown []Served) map[string]bool {
 func TestALedgerShowsOnlyWhatTheCallerMayReach(t *testing.T) {
 	table := served(t,
 		ns.Mount{Path: "/friends", Access: ns.Access{Named: []string{"bob"}}},
-		ns.Mount{Path: "/friends/chat", Kind: ns.KindChat},
+		ns.Mount{Path: "/friends/chat", Archetype: ns.Chat},
 		ns.Mount{Path: "/work", Access: ns.Access{Named: []string{"laptop"}}},
-		ns.Mount{Path: "/work/term", Kind: ns.KindTTY},
+		ns.Mount{Path: "/work/term", Archetype: ns.TTY},
 	)
 
 	bob := ns.Caller{ID: "aaaa", Name: "bob", Paired: true}
@@ -41,7 +41,7 @@ func TestALedgerShowsOnlyWhatTheCallerMayReach(t *testing.T) {
 func TestAStrangerIsShownNothing(t *testing.T) {
 	table := served(t,
 		ns.Mount{Path: "/friends", Access: ns.Access{AnyPaired: true}},
-		ns.Mount{Path: "/friends/chat", Kind: ns.KindChat},
+		ns.Mount{Path: "/friends/chat", Archetype: ns.Chat},
 	)
 
 	if shown := Describe(table, ns.Caller{ID: "zzzz"}); len(shown) != 0 {
@@ -53,8 +53,8 @@ func TestAStrangerIsShownNothing(t *testing.T) {
 func TestAPathWithNoRuleIsInNobodysListing(t *testing.T) {
 	table := served(t,
 		ns.Mount{Path: "/friends", Access: ns.Access{Named: []string{"bob"}}},
-		ns.Mount{Path: "/friends/chat", Kind: ns.KindChat},
-		ns.Mount{Path: "/secret", Kind: ns.KindFiles},
+		ns.Mount{Path: "/friends/chat", Archetype: ns.Chat},
+		ns.Mount{Path: "/secret", Archetype: ns.Share},
 	)
 
 	bob := ns.Caller{ID: "aaaa", Name: "bob", Paired: true}
@@ -72,7 +72,7 @@ func TestAPasswordPathIsNotListed(t *testing.T) {
 	}
 
 	table := served(t,
-		ns.Mount{Path: "/handoff", Kind: ns.KindFiles, Access: ns.Access{Password: hash}},
+		ns.Mount{Path: "/handoff", Archetype: ns.Share, Access: ns.Access{Password: hash}},
 	)
 
 	for _, who := range []ns.Caller{
@@ -94,8 +94,8 @@ func TestAPasswordPathIsNotListed(t *testing.T) {
 // A bare key is enough to be shown something, without any pairing.
 func TestAKeyIsShownItsOwnPath(t *testing.T) {
 	table := served(t,
-		ns.Mount{Path: "/ci", Kind: ns.KindFiles, Access: ns.Access{Keys: []string{"cccc"}}},
-		ns.Mount{Path: "/friends", Kind: ns.KindChat, Access: ns.Access{AnyPaired: true}},
+		ns.Mount{Path: "/ci", Archetype: ns.Share, Access: ns.Access{Keys: []string{"cccc"}}},
+		ns.Mount{Path: "/friends", Archetype: ns.Chat, Access: ns.Access{AnyPaired: true}},
 	)
 
 	shown := paths(Describe(table, ns.Caller{ID: "cccc"}))

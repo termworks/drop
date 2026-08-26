@@ -14,9 +14,9 @@ func TestHelloRoundTrip(t *testing.T) {
 		Name:    "laptop",
 		Version: "0.1.0",
 		Serves: []Served{
-			{Path: "/inbox", Kind: ns.KindFiles, Writable: true},
-			{Path: "/term", Kind: ns.KindTTY, Writable: false},
-			{Path: "/logs", Kind: ns.KindStream, Writable: false},
+			{Path: "/inbox", Archetype: ns.Share, Writable: true},
+			{Path: "/term", Archetype: ns.TTY, Writable: false},
+			{Path: "/logs", Archetype: ns.Stream, Writable: false},
 		},
 	}
 
@@ -68,7 +68,7 @@ func TestHelloRefusesATruncatedList(t *testing.T) {
 	w := newWriterFor("laptop", "0.1.0")
 	w.Uint(3)
 	w.String("/inbox")
-	w.Byte(byte(ns.KindFiles))
+	w.Byte(byte(ns.Share))
 	w.Bool(true)
 
 	if _, err := decodeHello(w.Body()); err == nil {
@@ -102,7 +102,7 @@ func TestHelloIsAskedThenAnswered(t *testing.T) {
 	client := pipeEnd{Reader: clientR, Writer: clientW}
 	server := pipeEnd{Reader: serverR, Writer: serverW}
 
-	want := Hello{Name: "beta", Version: "0.1.0", Serves: []Served{{Path: "/tty", Kind: ns.KindTTY}}}
+	want := Hello{Name: "beta", Version: "0.1.0", Serves: []Served{{Path: "/tty", Archetype: ns.TTY}}}
 
 	done := make(chan error, 1)
 	go func() {

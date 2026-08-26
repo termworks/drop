@@ -152,7 +152,7 @@ func tree(t *testing.T, mounts ...Mount) *Table {
 func TestAccessInheritsDownThePath(t *testing.T) {
 	table := tree(t,
 		Mount{Path: "/friends", Access: Access{Named: []string{"bob", "carol"}}},
-		Mount{Path: "/friends/chat", Kind: KindChat},
+		Mount{Path: "/friends/chat", Archetype: Chat},
 	)
 
 	if ok, why := table.Admits("/friends/chat", bob()); !ok {
@@ -168,7 +168,7 @@ func TestADeeperRuleReplacesTheOneAbove(t *testing.T) {
 	hash, _ := passwd.Hash("word")
 	table := tree(t,
 		Mount{Path: "/friends", Access: Access{Named: []string{"bob", "carol"}}},
-		Mount{Path: "/friends/scratch", Kind: KindFiles, Access: Access{Password: hash}},
+		Mount{Path: "/friends/scratch", Archetype: Share, Access: Access{Password: hash}},
 	)
 
 	// carol still has the branch
@@ -187,7 +187,7 @@ func TestADeeperRuleReplacesTheOneAbove(t *testing.T) {
 func TestAPathWithNoRuleAnywhereAboveIsClosed(t *testing.T) {
 	table := tree(t,
 		Mount{Path: "/friends", Access: Access{Named: []string{"bob"}}},
-		Mount{Path: "/private", Kind: KindFiles},
+		Mount{Path: "/private", Archetype: Share},
 	)
 
 	if ok, _ := table.Admits("/private", bob()); ok {
@@ -202,7 +202,7 @@ func TestAPathWithNoRuleAnywhereAboveIsClosed(t *testing.T) {
 func TestARuleDoesNotReachASibling(t *testing.T) {
 	table := tree(t,
 		Mount{Path: "/a", Access: Access{Named: []string{"bob"}}},
-		Mount{Path: "/b", Kind: KindChat, Access: Access{Named: []string{"carol"}}},
+		Mount{Path: "/b", Archetype: Chat, Access: Access{Named: []string{"carol"}}},
 	)
 
 	if ok, _ := table.Admits("/b", bob()); ok {
@@ -217,7 +217,7 @@ func TestARuleDoesNotReachASibling(t *testing.T) {
 func TestARuleDoesNotReachAPathThatMerelyStartsTheSame(t *testing.T) {
 	table := tree(t,
 		Mount{Path: "/friends", Access: Access{Named: []string{"bob"}}},
-		Mount{Path: "/friendsonly", Kind: KindChat},
+		Mount{Path: "/friendsonly", Archetype: Chat},
 	)
 
 	if ok, _ := table.Admits("/friendsonly", bob()); ok {
@@ -229,7 +229,7 @@ func TestTheDeepestRuleWins(t *testing.T) {
 	table := tree(t,
 		Mount{Path: "/one", Access: Access{AnyPaired: true}},
 		Mount{Path: "/one/two", Access: Access{Named: []string{"bob"}}},
-		Mount{Path: "/one/two/five/eight", Kind: KindFiles},
+		Mount{Path: "/one/two/five/eight", Archetype: Share},
 	)
 
 	if ok, _ := table.Admits("/one/two/five/eight", carol()); ok {

@@ -25,8 +25,8 @@ func served(t *testing.T) *ns.Table {
 
 	table := ns.NewTable()
 	for _, m := range []ns.Mount{
-		{Path: "/shared", Kind: ns.KindFiles, Access: ns.Access{Named: []string{"laptop"}}},
-		{Path: "/private", Kind: ns.KindTTY},
+		{Path: "/shared", Archetype: ns.Share, Access: ns.Access{Named: []string{"laptop"}}},
+		{Path: "/private", Archetype: ns.TTY},
 	} {
 		if err := table.Add(m); err != nil {
 			t.Fatalf("adding %s: %v", m.Path, err)

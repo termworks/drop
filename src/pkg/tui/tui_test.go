@@ -176,10 +176,10 @@ func withOne() *fake {
 		},
 		serves: map[string][]proto.Served{
 			"beta": {
-				{Path: "/friends/chat", Kind: ns.KindChat},
-				{Path: "/inbox", Kind: ns.KindFiles},
-				{Path: "/open", Kind: ns.KindLink},
-				{Path: "/term", Kind: ns.KindTTY},
+				{Path: "/friends/chat", Archetype: ns.Chat},
+				{Path: "/inbox", Archetype: ns.Share},
+				{Path: "/open", Archetype: ns.Link},
+				{Path: "/term", Archetype: ns.TTY},
 			},
 		},
 	}
@@ -1110,7 +1110,7 @@ func TestThisDeviceIsInTheList(t *testing.T) {
 	back := withOne()
 
 	back.mu.Lock()
-	back.mine = []proto.Served{{Path: "/inbox", Kind: ns.KindFiles}, {Path: "/chat", Kind: ns.KindChat}}
+	back.mine = []proto.Served{{Path: "/inbox", Archetype: ns.Share}, {Path: "/chat", Archetype: ns.Chat}}
 	back.mu.Unlock()
 
 	m := start(t, back)
@@ -1160,8 +1160,8 @@ func TestAPathThatIsAlsoAFolderCanBeOpened(t *testing.T) {
 
 	back.mu.Lock()
 	back.serves["beta"] = []proto.Served{
-		{Path: "/one/two", Kind: ns.KindChat},
-		{Path: "/one/two/three", Kind: ns.KindChat},
+		{Path: "/one/two", Archetype: ns.Chat},
+		{Path: "/one/two/three", Archetype: ns.Chat},
 	}
 	back.mu.Unlock()
 
@@ -1303,7 +1303,7 @@ func TestBackComesOutOneLevelAtATime(t *testing.T) {
 		self:  Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
 		peers: []book.Entry{{Name: "bob", ID: idFor(3), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"}},
 		serves: map[string][]proto.Served{
-			"bob": {{Path: "/chat", Kind: ns.KindChat}},
+			"bob": {{Path: "/chat", Archetype: ns.Chat}},
 		},
 	}
 
@@ -1366,7 +1366,7 @@ func TestWhoMayReachAPathIsShownAndChanged(t *testing.T) {
 	back := &fake{
 		self:  Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
 		peers: []book.Entry{{Name: "beta", ID: idFor(2), Secret: make([]byte, book.SecretBytes)}},
-		mine:  []proto.Served{{Path: "/work", Kind: ns.KindChat}},
+		mine:  []proto.Served{{Path: "/work", Archetype: ns.Chat}},
 		rules: map[string]Rule{
 			"/work": {Who: []Who{
 				{Name: "bob", Person: true, Machines: 2},
@@ -1412,7 +1412,7 @@ func TestWhoMayReachAPathIsShownAndChanged(t *testing.T) {
 // belongs in the config, where it can be read back, rather than behind one keystroke.
 func TestThePublicRungIsNotAKeystroke(t *testing.T) {
 	back := &fake{
-		mine:  []proto.Served{{Path: "/work", Kind: ns.KindChat}},
+		mine:  []proto.Served{{Path: "/work", Archetype: ns.Chat}},
 		rules: map[string]Rule{"/work": {}},
 	}
 
@@ -1457,7 +1457,7 @@ func TestADeviceThatIsOffStillOpens(t *testing.T) {
 	back := withOne()
 	back.refuseServes = errors.New("could not reach beta")
 	back.remembered = map[string][]proto.Served{
-		"beta": {{Path: "/chat", Kind: ns.KindChat}},
+		"beta": {{Path: "/chat", Archetype: ns.Chat}},
 	}
 
 	m := start(t, back)
@@ -1519,7 +1519,7 @@ func (f *fake) Holding(path string) ([]Held, error) {
 // that screen is for; saying what is in it is.
 func TestYourOwnFilesNamespaceListsWhatIsInIt(t *testing.T) {
 	back := &fake{
-		mine: []proto.Served{{Path: "/inbox", Kind: ns.KindFiles}},
+		mine: []proto.Served{{Path: "/inbox", Archetype: ns.Share}},
 		holding: map[string][]Held{
 			"/inbox": {
 				{Name: "report.txt", Size: 4096, At: time.Date(2026, 8, 24, 21, 5, 0, 0, time.UTC)},
@@ -1608,8 +1608,8 @@ func TestALockedPathIsShownAndCanBeAskedFor(t *testing.T) {
 		peers: []book.Entry{{Name: "beta", ID: idFor(2), Secret: make([]byte, book.SecretBytes)}},
 		serves: map[string][]proto.Served{
 			"beta": {
-				{Path: "/chat", Kind: ns.KindChat, Writable: true},
-				{Path: "/vault", Kind: ns.KindChat, Locked: true},
+				{Path: "/chat", Archetype: ns.Chat, Writable: true},
+				{Path: "/vault", Archetype: ns.Chat, Locked: true},
 			},
 		},
 	}
@@ -1648,7 +1648,7 @@ func TestALockedPathIsShownAndCanBeAskedFor(t *testing.T) {
 // answer it are the same keys that grant anything else.
 func TestARequestWaitsInTheAccessPane(t *testing.T) {
 	back := &fake{
-		mine: []proto.Served{{Path: "/vault", Kind: ns.KindChat}},
+		mine: []proto.Served{{Path: "/vault", Archetype: ns.Chat}},
 		rules: map[string]Rule{
 			"/vault": {
 				Seen: true,
@@ -1901,7 +1901,7 @@ func TestLeavingALivePathWhileItIsStillWriting(t *testing.T) {
 // A pty drawing for a window nobody has wraps every line in the wrong place.
 func TestWatchingATerminalTellsItTheWindowShape(t *testing.T) {
 	back := withOne()
-	back.serves["beta"] = []proto.Served{{Path: "/term", Kind: ns.KindTTY}}
+	back.serves["beta"] = []proto.Served{{Path: "/term", Archetype: ns.TTY}}
 
 	m := intoPeer(t, start(t, back), 0)
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
@@ -1935,7 +1935,7 @@ func TestWatchingATerminalTellsItTheWindowShape(t *testing.T) {
 // including the ones this interface would otherwise use for itself.
 func TestTypingIntoATerminalTakesEveryKey(t *testing.T) {
 	back := withOne()
-	back.serves["beta"] = []proto.Served{{Path: "/term", Kind: ns.KindTTY, Writable: true}}
+	back.serves["beta"] = []proto.Served{{Path: "/term", Archetype: ns.TTY, Writable: true}}
 
 	m := intoPeer(t, start(t, back), 0)
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
@@ -1977,7 +1977,7 @@ func TestTypingIntoATerminalTakesEveryKey(t *testing.T) {
 // A terminal that says it takes no input is not typed into: there is nothing to focus.
 func TestAReadOnlyTerminalIsNotTypedInto(t *testing.T) {
 	back := withOne()
-	back.serves["beta"] = []proto.Served{{Path: "/term", Kind: ns.KindTTY}}
+	back.serves["beta"] = []proto.Served{{Path: "/term", Archetype: ns.TTY}}
 
 	m := intoPeer(t, start(t, back), 0)
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"time"
 
@@ -255,39 +256,39 @@ func (m Model) openView() string {
 // inside is what the open path shows, without the box around it.
 func (m Model) inside(at proto.Served) string {
 	// One of this machine's own paths is not a conversation with anybody: it is what other devices
-	// reach. Only a files namespace has something of its own to show.
-	if m.onSelf && kindOf(at) != "files" {
+	// reach. Only a share namespace has something of its own to show.
+	if m.onSelf && archetypeOf(at) != ns.Share {
 		return dimStyle.Render("this is what other devices reach.") + "\n\n" +
 			faintStyle.Render("what passed over it is in the conversation with whoever it was.")
 	}
 
-	switch kindOf(at) {
-	case "chat":
+	switch archetypeOf(at) {
+	case ns.Chat:
 		return m.chatView()
 
-	case "tty", "stream":
+	case ns.TTY, ns.Stream:
 		if m.screen == nil {
 			return faintStyle.Render("not watching.")
 		}
 		return m.canvas(lines(m.screen.Draw(), m.viewHeight()))
 
-	case "files":
+	case ns.Share:
 		// Your own is a directory: say what is in it. Somebody else's is a place to send things,
 		// and the record of what has been sent there is the useful thing to show.
 		if m.onSelf {
 			return m.heldView()
 		}
-		return m.putView("a file", "files", m.transfers())
+		return m.putView("a file", ns.Share, m.transfers())
 
-	case "link", "bookmark":
-		return m.putView("a link", "link", m.links())
+	case ns.Link:
+		return m.putView("a link", ns.Link, m.links())
 
-	case "branch":
+	case ns.Branch:
 		return dimStyle.Render("holds other paths.") + "\n" +
 			faintStyle.Render("go back and pick one under it.")
 
 	default:
-		return dimStyle.Render("a " + kindOf(at) + " path.")
+		return dimStyle.Render("a " + archetypeOf(at).String() + " path.")
 	}
 }
 
@@ -295,7 +296,7 @@ func (m Model) inside(at proto.Served) string {
 //
 // The same shape for both, because they are the same act. What differs is the word for the thing
 // and whether a path can be completed, and neither is worth a second screen.
-func (m Model) putView(what, kind string, before []string) string {
+func (m Model) putView(what string, archetype ns.Archetype, before []string) string {
 	var out strings.Builder
 
 	if m.putting {
@@ -307,7 +308,7 @@ func (m Model) putView(what, kind string, before []string) string {
 		}
 
 		hint := "enter sends, esc goes back"
-		if kind == "files" {
+		if archetype == ns.Share {
 			hint = "tab completes, " + hint
 		}
 		out.WriteString("\n " + faintStyle.Render(hint))
@@ -516,11 +517,11 @@ func (m Model) footer() string {
 		keys = []hint{{"esc", "back"}}
 		if at, ok := m.path(); ok {
 			switch {
-			case kindOf(at) == "chat":
+			case archetypeOf(at) == ns.Chat:
 				keys = append([]hint{{"i", "write"}}, keys...)
-			case kindOf(at) == "tty" && at.Writable:
+			case archetypeOf(at) == ns.TTY && at.Writable:
 				keys = append([]hint{{"i", "type into it"}}, keys...)
-			case putsInto(kindOf(at)):
+			case putsInto(archetypeOf(at)):
 				keys = append([]hint{{"s", "send"}}, keys...)
 			}
 		}
@@ -872,7 +873,7 @@ func (m Model) canvas(drawn string) string {
 	return strings.Join(rows, "\n")
 }
 
-// heldView is what is in one of this machine's own files namespaces.
+// heldView is what is in one of this machine's own share namespaces.
 //
 // A directory rather than a conversation. Offering to send a file to your own disk is not what this
 // screen is for -- what somebody wants here is to see what has landed, and where.

@@ -43,7 +43,7 @@ func showOwnTable() error {
 	}
 
 	for _, m := range cfg.Mounts.All() {
-		fmt.Printf("  %-24s %-7s %-22s %s\n", m.Path, m.Kind, shared(cfg.Mounts, m), detail(m))
+		fmt.Printf("  %-24s %-7s %-22s %s\n", m.Path, m.Archetype, shared(cfg.Mounts, m), detail(m))
 	}
 	return nil
 }

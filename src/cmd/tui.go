@@ -479,11 +479,11 @@ func (l *live) Join(ctx context.Context, ticket string) (string, error) {
 	return name, err
 }
 
-// Holding is what is in one of this machine's own files namespaces.
+// Holding is what is in one of this machine's own share namespaces.
 //
 // Read from the config rather than asked over a wire: this is a directory on this disk, and asking
 // a peer what is in your own pocket would be a strange way to find out. Only files -- a directory
-// under a files namespace is not something drop serves, so listing it would promise something that
+// under a share namespace is not something drop serves, so listing it would promise something that
 // is not there.
 func (l *live) Holding(path string) ([]tui.Held, error) {
 	cfg, err := conf.Load()
@@ -493,8 +493,8 @@ func (l *live) Holding(path string) ([]tui.Held, error) {
 	defer cfg.Close()
 
 	mount, _, ok := cfg.Mounts.Lookup(path)
-	if !ok || mount.Kind != ns.KindFiles {
-		return nil, fmt.Errorf("%s is not a files namespace of this machine's", path)
+	if !ok || mount.Archetype != ns.Share {
+		return nil, fmt.Errorf("%s is not a share namespace of this machine's", path)
 	}
 
 	entries, err := os.ReadDir(mount.Dir)

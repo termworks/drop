@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 
+	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"io"
 	"strings"
@@ -175,7 +176,7 @@ func path(it pathItem, width, index int, selected bool) string {
 		return first + "\n" + rest + "\n" + last
 	}
 
-	kind := it.step.served.Kind.String()
+	archetype := it.step.served.Archetype
 
 	// The row standing for the path that was walked into, so a path with something under it can
 	// still be opened.
@@ -186,7 +187,7 @@ func path(it pathItem, width, index int, selected bool) string {
 			cell(base, green, 16, sendable(it.step.served), true, false))
 
 		rest := fill(stripe(base, selected) +
-			cell(base, second, 10, kind, false, false) +
+			cell(base, second, 10, archetype.String(), false, false) +
 			cell(base, muted, inner-10, "this path itself", false, false))
 
 		last := fill(stripe(base, selected) +
@@ -200,7 +201,7 @@ func path(it pathItem, width, index int, selected bool) string {
 	if it.step.served.Writable {
 		send, sendColour = "you may send", green
 	}
-	if kind == "branch" {
+	if archetype == ns.Branch {
 		send, sendColour = "", muted
 	}
 
@@ -214,7 +215,7 @@ func path(it pathItem, width, index int, selected bool) string {
 			cell(base, peach, lockCol, "locked", true, false))
 
 		rest := fill(stripe(base, selected) +
-			cell(base, second, 10, kind, false, false) +
+			cell(base, second, 10, archetype.String(), false, false) +
 			cell(base, muted, inner-10, "visible, not shared with you", false, false))
 
 		last := fill(stripe(base, selected) +
@@ -230,13 +231,13 @@ func path(it pathItem, width, index int, selected bool) string {
 
 	sendCol := 16
 	first := fill(stripe(base, selected) +
-		cell(base, second, 2, glyph(kind), false, false) +
+		cell(base, second, 2, glyph(archetype), false, false) +
 		cell(base, name, inner-2-sendCol, shown, false, true) +
 		cell(base, sendColour, sendCol, send, true, false))
 
 	rest := fill(stripe(base, selected) +
-		cell(base, second, 10, kind, false, false) +
-		cell(base, muted, inner-10, describe(kind), false, false))
+		cell(base, second, 10, archetype.String(), false, false) +
+		cell(base, muted, inner-10, describe(archetype), false, false))
 
 	last := fill(stripe(base, selected) +
 		cell(base, muted, inner, "drop to "+it.on+it.step.at, false, false))
@@ -262,19 +263,21 @@ func count(n int) string {
 
 // describe says what a kind of path is for, so the list is readable by someone who has not learnt
 // the vocabulary yet.
-func describe(kind string) string {
-	switch kind {
-	case "chat":
+func describe(archetype ns.Archetype) string {
+	switch archetype {
+	case ns.Chat:
 		return "messages, kept as a conversation"
-	case "files":
-		return "send and receive files"
-	case "tty":
+	case ns.Share:
+		return "hand files over, once"
+	case ns.Files:
+		return "a directory, to walk through"
+	case ns.TTY:
 		return "a terminal, as it is being used"
-	case "stream":
+	case ns.Stream:
 		return "output from a command, as it comes"
-	case "link":
+	case ns.Link:
 		return "open a link over there"
-	case "branch":
+	case ns.Branch:
 		return "holds other paths, serves nothing"
 	default:
 		return ""

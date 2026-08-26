@@ -37,7 +37,7 @@ func TestResolveHonoursTheInheritedRule(t *testing.T) {
 
 	table := served(t,
 		ns.Mount{Path: "/friends", Access: ns.Access{Named: []string{"bob"}}},
-		ns.Mount{Path: "/friends/chat", Kind: ns.KindChat},
+		ns.Mount{Path: "/friends/chat", Archetype: ns.Chat},
 	)
 
 	asBob := ns.Caller{ID: bob.String(), Name: "bob", Paired: true}
@@ -55,7 +55,7 @@ func TestResolveHonoursTheInheritedRule(t *testing.T) {
 // that is paired and otherwise trusted.
 func TestAPathWithNoRuleIsUnreachable(t *testing.T) {
 	bob := who(1)
-	table := served(t, ns.Mount{Path: "/term", Kind: ns.KindTTY})
+	table := served(t, ns.Mount{Path: "/term", Archetype: ns.TTY})
 
 	asBob := ns.Caller{ID: bob.String(), Name: "bob", Paired: true}
 	_, err := resolve(table, bob, asBob, Open{Mode: ModeDuplex, Path: "/term"})
@@ -75,7 +75,7 @@ func TestAPasswordOnTheWireOpensAPath(t *testing.T) {
 	}
 
 	stranger := who(9)
-	table := served(t, ns.Mount{Path: "/handoff", Kind: ns.KindFiles, Access: ns.Access{Password: hash}})
+	table := served(t, ns.Mount{Path: "/handoff", Archetype: ns.Share, Access: ns.Access{Password: hash}})
 
 	// Unpaired, unnamed, unknown — and still admitted, because it knew the word.
 	asStranger := ns.Caller{ID: stranger.String(), Password: "let me in"}
@@ -93,9 +93,9 @@ func TestAPasswordOnTheWireOpensAPath(t *testing.T) {
 func TestABareKeyOpensAPath(t *testing.T) {
 	ci := who(7)
 	table := served(t, ns.Mount{
-		Path:   "/ci",
-		Kind:   ns.KindFiles,
-		Access: ns.Access{Keys: []string{ci.String()}},
+		Path:      "/ci",
+		Archetype: ns.Share,
+		Access:    ns.Access{Keys: []string{ci.String()}},
 	})
 
 	asCI := ns.Caller{ID: ci.String()}
@@ -114,7 +114,7 @@ func TestABranchCannotBeOpened(t *testing.T) {
 	bob := who(1)
 	table := served(t,
 		ns.Mount{Path: "/friends", Access: ns.Access{Named: []string{"bob"}}},
-		ns.Mount{Path: "/friends/chat", Kind: ns.KindChat},
+		ns.Mount{Path: "/friends/chat", Archetype: ns.Chat},
 	)
 
 	asBob := ns.Caller{ID: bob.String(), Name: "bob", Paired: true}

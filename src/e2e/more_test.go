@@ -661,7 +661,7 @@ func TestADeviceThatJustPairedIsAnsweredAtOnce(t *testing.T) {
 	shared := `
 local drop = require("drop")
 drop.mount("/chat",  { type = "chat", access = "paired" })
-drop.mount("/inbox", { type = "files", access = "paired", dir = "%s" })
+drop.mount("/inbox", { type = "share", access = "paired", dir = "%s" })
 `
 	me.serves(fmt.Sprintf(shared, me.inbox()))
 	them.serves(fmt.Sprintf(shared, them.inbox()))

@@ -10,8 +10,8 @@ drop.open_links = true
 
 -- Files land here. A namespace is a path under this node's id, so `workstation/inbox` is an
 -- address a paired device can send to.
-drop.mount("/inbox", { type = "files", dir = "~/Downloads" })
-drop.mount("/inbox/photos", { type = "files", dir = "~/Pictures/drop" })
+drop.mount("/inbox", { type = "share", dir = "~/Downloads" })
+drop.mount("/inbox/photos", { type = "share", dir = "~/Pictures/drop" })
 
 -- A stream namespace runs a command and sends whatever it writes, for as long as it writes it.
 -- Nobody knows how much that will be, which is the point.

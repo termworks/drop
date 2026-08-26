@@ -31,7 +31,7 @@ func newToCmd() *cobra.Command {
 		Use:   "to <peer>[/path] [argument...]",
 		Short: "Open a namespace on another device",
 		Long: "What happens is decided by what is mounted there, not by a flag here.\n\n" +
-			"  drop to laptop/inbox report.pdf     a files namespace takes files\n" +
+			"  drop to laptop/inbox report.pdf     a share namespace takes files\n" +
 			"  drop to laptop/inbox -              and - is standard input\n" +
 			"  drop to laptop/chat \"on my way\"      a chat namespace takes words\n" +
 			"  drop to laptop/open https://…       a link namespace takes a URL\n" +
@@ -62,17 +62,17 @@ func openNamespace(parent context.Context, addr ns.Address, args []string, stdin
 	}
 
 	switch guess(args) {
-	case ns.KindFiles:
+	case ns.Share:
 		sources, err := gather(args, stdinName)
 		if err != nil {
 			return err
 		}
 		return sendTo(parent, entry, addr.Path, sources, wait)
 
-	case ns.KindLink:
+	case ns.Link:
 		return sendMessageTo(parent, entry, addr.Path, convo.KindLink, args[0], wait)
 
-	case ns.KindChat:
+	case ns.Chat:
 		return sendMessageTo(parent, entry, addr.Path, convo.KindText, strings.Join(args, " "), wait)
 
 	default:
@@ -82,22 +82,22 @@ func openNamespace(parent context.Context, addr ns.Address, args []string, stdin
 
 // guess reads the arguments rather than asking for a mode: a path that exists is a file, a URL is
 // a link, other words are a message, and nothing at all means "show me what is there".
-func guess(args []string) ns.Kind {
+func guess(args []string) ns.Archetype {
 	if len(args) == 0 {
-		return ns.KindStream
+		return ns.Stream
 	}
 	if len(args) == 1 && (strings.HasPrefix(args[0], "http://") || strings.HasPrefix(args[0], "https://")) {
-		return ns.KindLink
+		return ns.Link
 	}
 	for _, arg := range args {
 		if arg == "-" {
-			return ns.KindFiles
+			return ns.Share
 		}
 		if _, err := os.Stat(arg); err != nil {
-			return ns.KindChat
+			return ns.Chat
 		}
 	}
-	return ns.KindFiles
+	return ns.Share
 }
 
 func sendTo(parent context.Context, entry book.Entry, path string, sources []proto.Source, wait time.Duration) error {

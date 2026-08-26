@@ -14,6 +14,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 	tickets "github.com/bresilla/drop/src/pkg/ticket"
 	"io"
@@ -43,7 +44,7 @@ type Backend interface {
 	Serves(ctx context.Context, with book.Entry) ([]proto.Served, error)
 	// Mine is what this device serves, read from its own config rather than asked over a wire.
 	Mine() ([]proto.Served, error)
-	// Holding is what is in one of this machine's own files namespaces. Offering to send a file
+	// Holding is what is in one of this machine's own share namespaces. Offering to send a file
 	// to your own disk is not what that screen is for; saying what is in it is.
 	Holding(path string) ([]Held, error)
 	// Access is who may reach one of this machine's own paths: what the config says, and what
@@ -152,7 +153,7 @@ type Model struct {
 	loading bool
 	trouble string
 
-	// held is what is in one of this machine's own files namespaces, when one is open.
+	// held is what is in one of this machine's own share namespaces, when one is open.
 	held []Held
 	// history is the conversation being shown, when the open path is a chat.
 	history []convo.Message
@@ -306,7 +307,7 @@ func (m *Model) stop() {
 	m.screen = nil
 }
 
-func kindOf(s proto.Served) string { return s.Kind.String() }
+func archetypeOf(s proto.Served) ns.Archetype { return s.Archetype }
 
 func shortID(e book.Entry) string {
 	id := e.ID.String()
@@ -590,7 +591,7 @@ func listenFor(from <-chan struct{}) tea.Cmd {
 	}
 }
 
-// Held is one thing in a files namespace of this machine's own.
+// Held is one thing in a share namespace of this machine's own.
 type Held struct {
 	Name string
 	Size int64

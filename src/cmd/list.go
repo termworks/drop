@@ -101,12 +101,12 @@ func listThere(parent context.Context, peer, under string, wait time.Duration) e
 	for _, served := range shown {
 		note := ""
 		switch {
-		case served.Kind.String() == "branch":
+		case served.Archetype.String() == "branch":
 			note = "holds other paths"
 		case served.Writable:
 			note = "you may send"
 		}
-		fmt.Printf("  %-*s  %-8s %s\n", width, served.Path, served.Kind, note)
+		fmt.Printf("  %-*s  %-8s %s\n", width, served.Path, served.Archetype, note)
 	}
 	fmt.Println()
 	return nil

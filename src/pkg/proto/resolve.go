@@ -18,13 +18,13 @@ type Resolved struct {
 
 // wanted names the mode a namespace type is served over, so a mismatch is refused with something a
 // person can act on rather than a generic decline.
-func wanted(kind ns.Kind) byte {
-	switch kind {
-	case ns.KindFiles:
+func wanted(archetype ns.Archetype) byte {
+	switch archetype {
+	case ns.Share:
 		return ModeFiles
-	case ns.KindStream, ns.KindTTY:
+	case ns.Stream, ns.TTY:
 		return ModeDuplex
-	case ns.KindChat, ns.KindLink:
+	case ns.Chat, ns.Link:
 		return ModeMessages
 	default:
 		return 0
@@ -47,11 +47,11 @@ func resolve(table *ns.Table, from node.ID, caller ns.Caller, open Open) (Resolv
 		return Resolved{}, fmt.Errorf("nothing is mounted at %s", path)
 	}
 
-	if mount.Kind == ns.KindBranch {
+	if mount.Archetype == ns.Branch {
 		return Resolved{}, fmt.Errorf("%s holds other paths but serves nothing itself", mount.Path)
 	}
-	if want := wanted(mount.Kind); want != open.Mode {
-		return Resolved{}, fmt.Errorf("%s is a %s namespace", mount.Path, mount.Kind)
+	if want := wanted(mount.Archetype); want != open.Mode {
+		return Resolved{}, fmt.Errorf("%s is a %s namespace", mount.Path, mount.Archetype)
 	}
 	// The tree decides, from the nearest rule above this path. A branch with no type still
 	// governs what is under it, which is the whole point of letting one exist.

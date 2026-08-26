@@ -10,7 +10,7 @@ import (
 func served(paths ...string) []proto.Served {
 	out := make([]proto.Served, 0, len(paths))
 	for _, at := range paths {
-		out = append(out, proto.Served{Path: at, Kind: ns.KindChat})
+		out = append(out, proto.Served{Path: at, Archetype: ns.Chat})
 	}
 	return out
 }

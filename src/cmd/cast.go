@@ -168,9 +168,9 @@ func pump(ctx context.Context, reader *asciicast.Reader, stage *cast.Caster) err
 func castMounts() *ns.Table {
 	table := ns.NewTable()
 	_ = table.Add(ns.Mount{
-		Path:   CastPath,
-		Kind:   ns.KindTTY,
-		Access: ns.Access{AnyPaired: true},
+		Path:      CastPath,
+		Archetype: ns.TTY,
+		Access:    ns.Access{AnyPaired: true},
 	})
 	return table
 }

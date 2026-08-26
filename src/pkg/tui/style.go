@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/bresilla/drop/src/pkg/ns"
 )
 
 // The palette is the terminal's own sixteen colours, and nothing else.
@@ -115,17 +117,18 @@ func withTitle(box, title string) string {
 
 // What each kind of path looks like in a list. Glyphs rather than words: the word is already on the
 // line below, and a shape is quicker to scan down a column than a second string.
-var glyphs = map[string]string{
-	"chat":   "▤",
-	"files":  "▣",
-	"tty":    "▮",
-	"stream": "▶",
-	"link":   "◈",
-	"branch": "▸",
+var glyphs = map[ns.Archetype]string{
+	ns.Chat:   "▤",
+	ns.Share:  "▣",
+	ns.Files:  "▦",
+	ns.TTY:    "▮",
+	ns.Stream: "▶",
+	ns.Link:   "◈",
+	ns.Branch: "▸",
 }
 
-func glyph(kind string) string {
-	if g, ok := glyphs[kind]; ok {
+func glyph(archetype ns.Archetype) string {
+	if g, ok := glyphs[archetype]; ok {
 		return g
 	}
 	return "·"

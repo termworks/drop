@@ -24,11 +24,11 @@ func serveDuplex(pinned *book.Book, shells *terminals, host *castHost) func(prot
 			return fmt.Errorf("nothing is being cast")
 		}
 
-		switch at.Mount.Kind {
-		case ns.KindStream:
+		switch at.Mount.Archetype {
+		case ns.Stream:
 			fmt.Printf("  %s opened %s\n", who, at.Mount.Path)
 			return pipeCommand(at, d)
-		case ns.KindTTY:
+		case ns.TTY:
 			live, err := shells.at(at.Mount)
 			if err != nil {
 				return err

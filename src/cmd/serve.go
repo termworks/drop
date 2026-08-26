@@ -217,7 +217,7 @@ func describe(cfg *conf.Config, n *node.Node) {
 
 	fmt.Println()
 	for _, m := range cfg.Mounts.All() {
-		fmt.Printf("  %-24s %-7s %s\n", m.Path, m.Kind, detail(m))
+		fmt.Printf("  %-24s %-7s %s\n", m.Path, m.Archetype, detail(m))
 	}
 
 	// Whether a device that has moved can still be found. There is no way to tell from the outside
@@ -243,17 +243,17 @@ func describe(cfg *conf.Config, n *node.Node) {
 }
 
 func detail(m ns.Mount) string {
-	switch m.Kind {
-	case ns.KindFiles:
+	switch m.Archetype {
+	case ns.Share:
 		return m.Dir
-	case ns.KindStream:
+	case ns.Stream:
 		return m.Command
-	case ns.KindTTY:
+	case ns.TTY:
 		if m.Input {
 			return "interactive"
 		}
 		return "read-only"
-	case ns.KindLink:
+	case ns.Link:
 		if m.Action != "" {
 			return m.Action
 		}

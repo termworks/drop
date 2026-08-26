@@ -15,10 +15,10 @@ const MaxServed = 256
 
 // Served is one namespace a node offers.
 type Served struct {
-	Path string
-	Kind ns.Kind
-	// Writable says the far end may send into it: a files namespace that accepts, or a tty that
-	// takes input. It is what the page needs to know whether to offer a way to send.
+	Path      string
+	Archetype ns.Archetype
+	// Writable says the far end may put something into it: a share that accepts, a files namespace
+	// that allows writes, or a tty that takes input.
 	Writable bool
 	// Locked says this path can be seen but not opened. It is here to be asked for.
 	Locked bool
@@ -43,7 +43,7 @@ func (h Hello) encode() []byte {
 	w.Uint(uint64(len(h.Serves)))
 	for _, s := range h.Serves {
 		w.String(s.Path)
-		w.Byte(byte(s.Kind))
+		w.Byte(byte(s.Archetype))
 		w.Bool(s.Writable)
 		w.Bool(s.Locked)
 	}
@@ -77,7 +77,7 @@ func decodeHello(body []byte) (Hello, error) {
 		if err != nil {
 			return out, err
 		}
-		kind, err := r.Byte()
+		archetype, err := r.Byte()
 		if err != nil {
 			return out, err
 		}
@@ -90,10 +90,10 @@ func decodeHello(body []byte) (Hello, error) {
 			return out, err
 		}
 		out.Serves = append(out.Serves, Served{
-			Path:     path,
-			Kind:     ns.Kind(kind),
-			Writable: writable,
-			Locked:   locked,
+			Path:      path,
+			Archetype: ns.Archetype(archetype),
+			Writable:  writable,
+			Locked:    locked,
 		})
 	}
 	return out, nil
@@ -119,10 +119,10 @@ func Describe(table *ns.Table, caller ns.Caller) []Served {
 			continue
 		}
 		out = append(out, Served{
-			Path:     m.Path,
-			Kind:     m.Kind,
-			Writable: open && writable(m),
-			Locked:   !open,
+			Path:      m.Path,
+			Archetype: m.Archetype,
+			Writable:  open && writable(m),
+			Locked:    !open,
 		})
 	}
 	return out
@@ -130,10 +130,10 @@ func Describe(table *ns.Table, caller ns.Caller) []Served {
 
 // writable reports whether the far end may send into a namespace.
 func writable(m ns.Mount) bool {
-	switch m.Kind {
-	case ns.KindFiles, ns.KindChat, ns.KindLink:
+	switch m.Archetype {
+	case ns.Share, ns.Chat, ns.Link:
 		return true
-	case ns.KindTTY:
+	case ns.TTY:
 		return m.Input
 	default:
 		return false

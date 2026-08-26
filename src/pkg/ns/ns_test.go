@@ -87,8 +87,8 @@ func TestParseAddress(t *testing.T) {
 // specific one still takes precedence.
 func TestLookupPrefersTheLongestPrefix(t *testing.T) {
 	table := NewTable()
-	mustAdd(t, table, Mount{Path: "/stream", Kind: KindStream, Command: "general"})
-	mustAdd(t, table, Mount{Path: "/stream/logs", Kind: KindStream, Command: "specific"})
+	mustAdd(t, table, Mount{Path: "/stream", Archetype: Stream, Command: "general"})
+	mustAdd(t, table, Mount{Path: "/stream/logs", Archetype: Stream, Command: "specific"})
 
 	cases := []struct {
 		ask     string
@@ -116,7 +116,7 @@ func TestLookupPrefersTheLongestPrefix(t *testing.T) {
 // Without a segment-boundary check, /stream would capture /streaming.
 func TestLookupDoesNotCaptureASimilarName(t *testing.T) {
 	table := NewTable()
-	mustAdd(t, table, Mount{Path: "/stream", Kind: KindStream, Command: "x"})
+	mustAdd(t, table, Mount{Path: "/stream", Archetype: Stream, Command: "x"})
 
 	if _, _, ok := table.Lookup("/streaming"); ok {
 		t.Fatal("/stream captured /streaming")
@@ -126,8 +126,8 @@ func TestLookupDoesNotCaptureASimilarName(t *testing.T) {
 // Re-declaring a path replaces it, so a config that is re-read cannot grow the table.
 func TestAddIsKeyedByPath(t *testing.T) {
 	table := NewTable()
-	mustAdd(t, table, Mount{Path: "/inbox", Kind: KindFiles, Dir: "/first"})
-	mustAdd(t, table, Mount{Path: "/inbox", Kind: KindFiles, Dir: "/second"})
+	mustAdd(t, table, Mount{Path: "/inbox", Archetype: Share, Dir: "/first"})
+	mustAdd(t, table, Mount{Path: "/inbox", Archetype: Share, Dir: "/second"})
 
 	if table.Len() != 1 {
 		t.Fatalf("Len() = %d, want 1", table.Len())
@@ -140,7 +140,7 @@ func TestAddIsKeyedByPath(t *testing.T) {
 
 func TestAddNormalisesThePath(t *testing.T) {
 	table := NewTable()
-	mustAdd(t, table, Mount{Path: "inbox/", Kind: KindFiles, Dir: "/x"})
+	mustAdd(t, table, Mount{Path: "inbox/", Archetype: Share, Dir: "/x"})
 
 	if _, _, ok := table.Lookup("/inbox"); !ok {
 		t.Fatal("a mount declared as inbox/ is not found at /inbox")
@@ -156,7 +156,7 @@ func TestAddRefusesAnUntypedMount(t *testing.T) {
 
 func TestRootServesEverything(t *testing.T) {
 	table := NewTable()
-	mustAdd(t, table, Mount{Path: "/", Kind: KindFiles, Dir: "/x"})
+	mustAdd(t, table, Mount{Path: "/", Archetype: Share, Dir: "/x"})
 
 	m, rest, ok := table.Lookup("/anything/at/all")
 	if !ok || m.Dir != "/x" || rest != "/anything/at/all" {
@@ -164,19 +164,19 @@ func TestRootServesEverything(t *testing.T) {
 	}
 }
 
-func TestParseKind(t *testing.T) {
-	for _, name := range []string{"files", "stream", "tty", "chat", "link"} {
-		kind, err := ParseKind(name)
+func TestParseArchetype(t *testing.T) {
+	for _, name := range []string{"share", "files", "stream", "tty", "chat", "link", "branch"} {
+		archetype, err := ParseArchetype(name)
 		if err != nil {
-			t.Errorf("ParseKind(%q): %v", name, err)
+			t.Errorf("ParseArchetype(%q): %v", name, err)
 			continue
 		}
-		if kind.String() != name {
-			t.Errorf("ParseKind(%q).String() = %q", name, kind.String())
+		if archetype.String() != name {
+			t.Errorf("ParseArchetype(%q).String() = %q", name, archetype.String())
 		}
 	}
-	if _, err := ParseKind("nonsense"); err == nil {
-		t.Error("ParseKind() accepted a type that does not exist")
+	if _, err := ParseArchetype("nonsense"); err == nil {
+		t.Error("ParseArchetype() accepted a type that does not exist")
 	}
 }
 

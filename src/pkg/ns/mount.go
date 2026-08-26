@@ -7,45 +7,49 @@ import (
 	"sync"
 )
 
-// Kind is what lives at a path, and therefore what happens when someone opens it.
-type Kind byte
+// Archetype is what lives at a path, and therefore what happens when someone opens it.
+type Archetype byte
 
 const (
-	KindFiles  Kind = 1
-	KindStream Kind = 2
-	KindTTY    Kind = 3
-	KindChat   Kind = 4
-	KindLink   Kind = 5
-	// KindBranch serves nothing. It exists to carry an access rule for what is under it.
-	KindBranch Kind = 6
+	// Share is one-shot: somebody pushes items, they land in a directory, the session ends.
+	Share  Archetype = 1
+	Stream Archetype = 2
+	TTY    Archetype = 3
+	Chat   Archetype = 4
+	Link   Archetype = 5
+	// Branch serves nothing. It exists to carry an access rule for what is under it.
+	Branch Archetype = 6
+	// Files is a directory the far end walks, reads, and — when the mount allows it — writes to.
+	Files Archetype = 7
 )
 
-var kindNames = map[Kind]string{
-	KindFiles:  "files",
-	KindStream: "stream",
-	KindTTY:    "tty",
-	KindChat:   "chat",
-	KindLink:   "link",
-	KindBranch: "branch",
+var archetypeNames = map[Archetype]string{
+	Share:  "share",
+	Files:  "files",
+	Stream: "stream",
+	TTY:    "tty",
+	Chat:   "chat",
+	Link:   "link",
+	Branch: "branch",
 }
 
-func (k Kind) String() string {
-	if name, ok := kindNames[k]; ok {
+func (a Archetype) String() string {
+	if name, ok := archetypeNames[a]; ok {
 		return name
 	}
-	return fmt.Sprintf("kind(%d)", byte(k))
+	return fmt.Sprintf("archetype(%d)", byte(a))
 }
 
-// ParseKind reads the name a config writes.
-func ParseKind(name string) (Kind, error) {
-	for kind, known := range kindNames {
+// ParseArchetype reads the name a config writes.
+func ParseArchetype(name string) (Archetype, error) {
+	for archetype, known := range archetypeNames {
 		if known == name {
-			return kind, nil
+			return archetype, nil
 		}
 	}
 
-	valid := make([]string, 0, len(kindNames))
-	for _, known := range kindNames {
+	valid := make([]string, 0, len(archetypeNames))
+	for _, known := range archetypeNames {
 		valid = append(valid, known)
 	}
 	sort.Strings(valid)
@@ -54,10 +58,10 @@ func ParseKind(name string) (Kind, error) {
 
 // Mount is one namespace this node serves.
 type Mount struct {
-	Path string
-	Kind Kind
+	Path      string
+	Archetype Archetype
 
-	// Dir is where a files namespace writes.
+	// Dir is a share namespace's drop box, or the directory a files namespace serves.
 	Dir string
 	// Command is what a stream namespace runs and reads.
 	Command string
@@ -99,11 +103,11 @@ func (t *Table) Add(m Mount) error {
 	// A mount with no type is a branch: it serves nothing itself and exists to carry an access rule
 	// for the paths beneath it. One that is neither a type nor a rule is a typo, and saying so is
 	// better than quietly keeping a line that does nothing.
-	if _, ok := kindNames[m.Kind]; !ok {
+	if _, ok := archetypeNames[m.Archetype]; !ok {
 		if !m.Access.Declared() {
 			return fmt.Errorf("%s has neither a type nor an access rule, so it does nothing", path)
 		}
-		m.Kind = KindBranch
+		m.Archetype = Branch
 	}
 
 	m.Path = path

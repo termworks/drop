@@ -26,9 +26,9 @@ import (
 // stored is one path, as it is written down. The wire form is not reused: a file that has to be
 // migrated whenever a protocol field moves is a file that breaks on an upgrade.
 type stored struct {
-	Path     string `json:"path"`
-	Kind     string `json:"kind"`
-	Writable bool   `json:"writable,omitempty"`
+	Path      string `json:"path"`
+	Archetype string `json:"archetype"`
+	Writable  bool   `json:"writable,omitempty"`
 }
 
 func at(peer node.ID) (string, error) {
@@ -48,7 +48,7 @@ func Remember(peer node.ID, what []proto.Served) error {
 
 	out := make([]stored, 0, len(what))
 	for _, s := range what {
-		out = append(out, stored{Path: s.Path, Kind: s.Kind.String(), Writable: s.Writable})
+		out = append(out, stored{Path: s.Path, Archetype: s.Archetype.String(), Writable: s.Writable})
 	}
 
 	raw, err := json.MarshalIndent(out, "", "  ")
@@ -84,13 +84,15 @@ func Recall(peer node.ID) ([]proto.Served, error) {
 		return nil, fmt.Errorf("parsing %s: %w", file, err)
 	}
 
+	// A name this build does not know is skipped, not fatal. This file is a convenience: losing one
+	// line of it should cost one path, not the whole memory of what a device shares.
 	out := make([]proto.Served, 0, len(onDisk))
 	for _, s := range onDisk {
-		kind, err := ns.ParseKind(s.Kind)
+		archetype, err := ns.ParseArchetype(s.Archetype)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", file, err)
+			continue
 		}
-		out = append(out, proto.Served{Path: s.Path, Kind: kind, Writable: s.Writable})
+		out = append(out, proto.Served{Path: s.Path, Archetype: archetype, Writable: s.Writable})
 	}
 	return out, nil
 }
