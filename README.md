@@ -87,8 +87,17 @@ drop                  a full-screen interface: enter a device, then a path
 ## commands
 
 ```
-drop ls [device[/path]]        what a device shares with you
+drop ls [device[/path]]        what a device shares with you, and — inside a files
+                               namespace — what is in it, one directory at a time
 drop to <device>/<path> [args] open a path; what is there decides what happens
+
+drop get <device>/<path>/<name> [into]   copy one file out of a files namespace
+drop put <device>/<path> <file>...       copy files into one; - is standard input
+drop rm <device>/<path>/<name>           remove a file, or an empty directory
+drop mkdir <device>/<path>/<name>        make a directory
+drop mv <device>/<path>/<from> <to>      move something inside one
+drop share [dir]               put a dropbox up for as long as you are waiting for
+                               something; it takes one transfer and then it is gone
 drop                           all of it, in a full-screen terminal
                                the first device in the list is this one
                                paths nest: enter walks in, esc walks out
