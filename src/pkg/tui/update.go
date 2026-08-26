@@ -144,6 +144,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.trouble, m.said = "", "sent "+msg.what
+		if m.at == levelBrowse {
+			m.loading = true
+			return m, m.listing()
+		}
 		if at, ok := m.peer(); ok {
 			return m, loadHistory(m.back, at)
 		}
@@ -218,7 +222,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case heldLoaded:
 		m.loading = false
-		if at, ok := m.path(); !ok || at.Path != msg.path {
+
+		// The directory as well as the path: an answer for one directory of a namespace says
+		// nothing about the one that is on screen by the time it arrives.
+		at, ok := m.path()
+		if !ok || m.at != levelBrowse || at.Path != msg.path || m.dir != msg.dir {
 			return m, nil
 		}
 		if msg.err != nil {
@@ -226,7 +234,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.held, m.trouble = msg.held, ""
+		m.showBrowse()
 		return m, nil
+
+	case fetched:
+		m.offering = nil
+		if msg.err != nil {
+			m.trouble, m.said = msg.err.Error(), ""
+			return m, nil
+		}
+		m.trouble, m.said = "", msg.what+" landed in "+msg.into
+		return m, nil
+
+	case removed:
+		if msg.err != nil {
+			m.trouble, m.said = msg.err.Error(), ""
+			return m, nil
+		}
+		m.trouble, m.said, m.loading = "", "removed "+msg.what, true
+		return m, m.listing()
 
 	case historyLoaded:
 		if at, ok := m.peer(); !ok || at.Name != msg.peer {
@@ -312,6 +338,12 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// A removal on another machine waits for a yes. Every other key here acts on one keystroke,
+	// which is no way to take somebody's file off their disk.
+	if m.removing != "" {
+		return m.answering(msg.String())
+	}
+
 	// While composing, the keys are the message — except the two that end it.
 	// While a pairing is on screen it owns the keyboard: there is one thing to do, and one way
 	// out of it.
@@ -388,23 +420,34 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		switch {
-		case archetypeOf(at) == "chat":
+		switch m.showing(at) {
+		case showsTalk:
 			m.writing = true
 
-		// A terminal that takes input is typed into the same way, by saying so first. Everything
+		// A live path that takes input is typed into the same way, by saying so first. Everything
 		// after goes to it rather than to this list.
-		case archetypeOf(at) == "tty" && at.Writable && m.typingAt != nil:
-			m.atKeyboard, m.trouble = true, ""
+		case showsLive:
+			if at.Writable && m.typingAt != nil {
+				m.atKeyboard, m.trouble = true, ""
+			}
 		}
 		return m, nil
 
 	case "s":
-		// One key for both, because they are the same act: name a thing and send it there.
-		if at, ok := m.path(); ok && m.at == levelOpen && putsInto(archetypeOf(at)) {
+		// One key wherever something is sent, because it is the same act: name a thing and send it.
+		if m.at == levelBrowse {
+			return m.browsing("s")
+		}
+		if at, ok := m.path(); ok && m.at == levelOpen && m.showing(at) == showsPut {
 			m.putting, m.typing, m.options, m.said, m.trouble = true, "", nil, "", ""
 		}
 		return m, nil
+
+	case "g":
+		if m.at != levelBrowse {
+			return m, nil
+		}
+		return m.browsing("g")
 
 	case "p":
 		if m.at == levelUsers && m.linking == nil {
@@ -424,6 +467,9 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "r":
 		m.loading = true
+		if m.at == levelBrowse {
+			return m, m.listing()
+		}
 		if m.at == levelPaths {
 			if with, ok := m.peer(); ok {
 				return m, loadPaths(m.back, with)
@@ -475,8 +521,15 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "a", "x", "d":
-		// On somebody else's locked path, a is how you ask for it. Everywhere else the three keys
-		// belong to the access list.
+		// In a directory, x is what takes something off the far machine. On somebody else's locked
+		// path, a is how you ask for it. Everywhere else the three keys belong to the access list.
+		if m.at == levelBrowse {
+			if msg.String() != "x" {
+				return m, nil
+			}
+			return m.browsing("x")
+		}
+
 		if m.at == levelPaths && !m.onSelf && msg.String() == "a" {
 			// Whatever the cursor is on, not whatever was last entered.
 			row, okPath := m.list.SelectedItem().(pathItem)
@@ -631,8 +684,21 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 		}
 
 		m.atPath = m.list.Index()
+
+		// A namespace that is a directory is walked at its own level, where the list carries the
+		// arrows and the filtering.
+		if here, _ := m.path(); m.showing(here) == showsWalk {
+			m.at, m.dir, m.held = levelBrowse, "", nil
+			m.loading, m.trouble, m.said = true, "", ""
+			m.showBrowse()
+			return m, m.listing()
+		}
+
 		m.at = levelOpen
 		return m, m.openPath()
+
+	case levelBrowse:
+		return m.walkInto()
 	}
 	return m, nil
 }
@@ -663,6 +729,9 @@ func (m Model) back_() (tea.Model, tea.Cmd) {
 		m.at = levelPaths
 		m.showPaths()
 		return m, nil
+
+	case levelBrowse:
+		return m.walkOut()
 
 	case levelPaths:
 		// Out of a folder before out of the device: walking in three levels and being thrown all
@@ -734,31 +803,18 @@ func (m *Model) openPath() tea.Cmd {
 	if !okPath {
 		return nil
 	}
-
-	// This machine's own paths come first, because there is no peer behind them: a files namespace
-	// of your own is a directory on this disk, not a conversation with anybody.
-	if m.onSelf {
-		if archetypeOf(at) == "share" {
-			m.held, m.loading = nil, true
-			return loadHeld(m.back, at.Path)
-		}
-		return nil
-	}
-
 	with, okPeer := m.peer()
 	if !okPeer {
 		return nil
 	}
 
-	// By name, standing in for the view registry that belongs beside the archetype registry: what
-	// opening a path does is a property of the kind of path it is.
-	switch archetypeOf(at) {
-	case "share", "chat", "link":
-		// All three read the same conversation: what was said, what changed hands, and what was
-		// opened are one record, and a share is a view onto part of it.
+	switch m.showing(at) {
+	case showsTalk, showsPut:
+		// One conversation behind both: what was said, what changed hands and what was opened are
+		// one record, and a namespace something is sent to is a view onto part of it.
 		return loadHistory(m.back, with)
 
-	case "tty", "stream":
+	case showsLive:
 		m.screen = newScreen(m.viewWidth(), m.viewHeight())
 		m.live, m.typingAt = true, nil
 
@@ -827,7 +883,7 @@ func (m Model) putKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyTab:
 		// Completion is for paths. A URL has nothing on this machine to complete against.
 		at, ok := m.path()
-		if !ok || archetypeOf(at) != "share" {
+		if !ok || !viewOf(at.Archetype).onDisk {
 			return m, nil
 		}
 
@@ -855,16 +911,24 @@ func (m Model) putKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		m.putting, m.typing, m.options, m.trouble, m.said = false, "", nil, "", ""
 
-		if archetypeOf(at) == "share" {
-			file := expand(body)
-			if _, err := os.Stat(file); err != nil {
-				m.trouble = "no such file: " + file
-				return m, nil
-			}
-			m.offering = &moving{}
-			return m, tea.Batch(putFile(m.back, with, at.Path, file, m.offering), ticking())
+		of := viewOf(at.Archetype)
+		if !of.onDisk {
+			return m, putLink(m.back, with, at.Path, at.Archetype, of.kind, body)
 		}
-		return m, putLink(m.back, with, at.Path, at.Archetype, body)
+
+		file := expand(body)
+		if _, err := os.Stat(file); err != nil {
+			m.trouble = "no such file: " + file
+			return m, nil
+		}
+		m.offering = &moving{}
+
+		// In a directory it goes to wherever the browse level is standing; anywhere else the
+		// namespace itself is the destination.
+		if m.at == levelBrowse {
+			return m, tea.Batch(upload(m.back, with, at.Path, m.dir, file, m.offering), ticking())
+		}
+		return m, tea.Batch(putFile(m.back, with, at.Path, file, m.offering), ticking())
 
 	case tea.KeyBackspace:
 		if n := len(m.typing); n > 0 {
@@ -886,11 +950,6 @@ func (m Model) putKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// putsInto reports whether a path is somewhere you can send something.
-func putsInto(archetype string) bool {
-	return archetype == "share" || archetype == "link"
-}
-
 // reading reports whether a conversation is open and being read rather than written.
 func (m Model) reading() bool {
 	if m.at != levelOpen || m.writing || m.putting {
@@ -898,7 +957,7 @@ func (m Model) reading() bool {
 	}
 
 	at, ok := m.path()
-	return ok && archetypeOf(at) == "chat"
+	return ok && m.showing(at) == showsTalk
 }
 
 // scrollBy moves back through the conversation, or forward again. Positive is towards older.

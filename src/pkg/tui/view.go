@@ -58,6 +58,11 @@ func (m Model) bodyHeight() int {
 // given, so anything written after it falls off the bottom and is never seen.
 func (m Model) notice() string {
 	switch {
+	case m.removing != "":
+		return " " + peachStyle.Render("? ") + fit("remove "+m.removing+" over there? y takes it off, anything else leaves it", m.width-4)
+	case m.offering != nil && m.at == levelBrowse:
+		name, done, size := m.offering.read()
+		return " " + peachStyle.Render("↔ ") + fit(name+"  "+sizeOf(done)+" of "+sizeOf(size), m.width-4)
 	case m.trouble != "":
 		// Cut from the end: what went wrong is said first, and the tail of a failure is usually a
 		// node id nobody can act on.
@@ -76,6 +81,10 @@ func (m Model) body() string {
 
 	case m.linking != nil:
 		return m.pairingView()
+
+	// Naming a file to put into a directory, which has no open path to draw the line inside of.
+	case m.putting && m.at == levelBrowse:
+		return m.middle(panel("send a file", m.panelWidth(), 0, m.naming("a file", true)))
 
 	case m.at == levelOpen:
 		return m.openView()
@@ -107,6 +116,8 @@ func (m Model) emptyList() string {
 	case m.at == levelPaths:
 		return dimStyle.Render("this device shares nothing with you.") + "\n\n" +
 			faintStyle.Render("what appears here was decided over there, not here.")
+	case m.at == levelBrowse:
+		return dimStyle.Render("nothing in this directory.")
 	case m.list.FilterState() != 0:
 		return faintStyle.Render("nothing matches.")
 	}
@@ -127,6 +138,9 @@ func (m Model) listTitle() string {
 	if m.at == levelMachines {
 		return m.atUser + "  ·  machines"
 	}
+	if m.at == levelBrowse {
+		return m.walking()
+	}
 	if m.at != levelPaths {
 		return "users"
 	}
@@ -146,6 +160,27 @@ func (m Model) listTitle() string {
 		return name + "  ·  " + m.under
 	}
 	return name
+}
+
+// walking names the directory the browse level is standing in, and says when nothing may be put
+// into it — which is the difference between the two screens that look the same.
+func (m Model) walking() string {
+	at, ok := m.path()
+	if !ok {
+		return "a directory"
+	}
+
+	where := at.Path
+	if m.dir != "" {
+		where = folder(at.Path) + m.dir
+	}
+	if m.onSelf {
+		return where + "  ·  on this device"
+	}
+	if !at.Writable {
+		return where + "  ·  read only"
+	}
+	return where
 }
 
 // header is where you are and which device you are.
@@ -208,12 +243,7 @@ func (m Model) where() string {
 	}
 	if m.onSelf && m.at >= levelPaths {
 		parts = append(parts, Me, m.me.Name)
-		if m.at == levelOpen {
-			if on, ok := m.path(); ok {
-				parts = append(parts, on.Path)
-			}
-		}
-		return crumb(parts...)
+		return crumb(append(parts, m.opened()...)...)
 	}
 	if m.at == levelMachines {
 		return crumb(m.atUser)
@@ -226,12 +256,24 @@ func (m Model) where() string {
 			parts = append(parts, with.Name)
 		}
 	}
-	if m.at == levelOpen {
-		if at, ok := m.path(); ok {
-			parts = append(parts, at.Path)
-		}
+	return crumb(append(parts, m.opened()...)...)
+}
+
+// opened is the trail below a device: the path that was entered, and where in it the browse level
+// is standing.
+func (m Model) opened() []string {
+	if m.at != levelOpen && m.at != levelBrowse {
+		return nil
 	}
-	return crumb(parts...)
+
+	at, ok := m.path()
+	if !ok {
+		return nil
+	}
+	if m.at == levelBrowse && m.dir != "" {
+		return []string{at.Path, m.dir}
+	}
+	return []string{at.Path}
 }
 
 // openView is whatever is at the path that was entered.
@@ -252,73 +294,60 @@ func (m Model) openView() string {
 	return panel(title, m.width, m.bodyHeight(), m.inside(at))
 }
 
-// inside is what the open path shows, without the box around it.
-//
-// The archetype is compared by name here, and in the keys below, because the interface draws a
-// conversation differently from a terminal. A view registry belongs where the archetypes are
-// registered, so a kind of path invented next week brings its own screen; until there is one, this
-// is the switch that stands in for it.
+// inside is what the open path shows, without the box around it. Which screen that is comes from
+// the view registered for the archetype.
 func (m Model) inside(at proto.Served) string {
-	// One of this machine's own paths is not a conversation with anybody: it is what other devices
-	// reach. Only a share namespace has something of its own to show.
-	if m.onSelf && archetypeOf(at) != "share" {
-		return dimStyle.Render("this is what other devices reach.") + "\n\n" +
-			faintStyle.Render("what passed over it is in the conversation with whoever it was.")
-	}
-
-	switch archetypeOf(at) {
-	case "chat":
+	switch m.showing(at) {
+	case showsTalk:
 		return m.chatView()
 
-	case "tty", "stream":
+	case showsLive:
 		if m.screen == nil {
 			return faintStyle.Render("not watching.")
 		}
 		return m.canvas(lines(m.screen.Draw(), m.viewHeight()))
 
-	case "share":
-		// Your own is a directory: say what is in it. Somebody else's is a place to send things,
-		// and the record of what has been sent there is the useful thing to show.
-		if m.onSelf {
-			return m.heldView()
-		}
-		return m.putView("a file", "share", m.transfers())
-
-	case "link":
-		return m.putView("a link", "link", m.links())
-
-	case "":
-		return dimStyle.Render("holds other paths.") + "\n" +
-			faintStyle.Render("go back and pick one under it.")
-
-	default:
-		return dimStyle.Render("a " + archetypeOf(at) + " path.")
+	case showsPut:
+		return m.putView(at)
 	}
+	return m.aboutView(at)
 }
 
-// putView is the files and links screen: what has gone before, and the line for sending the next.
+// aboutView is a path with nothing of its own on screen: one of this machine's own, a branch, or a
+// kind of namespace this interface was built before.
 //
-// The same shape for both, because they are the same act. What differs is the word for the thing
-// and whether a path can be completed, and neither is worth a second screen.
-func (m Model) putView(what string, archetype string, before []string) string {
-	var out strings.Builder
+// The name and whatever the far end said it is for, and no keys. An archetype nobody here has heard
+// of is still a real thing on the other machine, and saying so is more honest than a blank pane.
+func (m Model) aboutView(at proto.Served) string {
+	switch {
+	case m.onSelf:
+		return dimStyle.Render("this is what other devices reach.") + "\n\n" +
+			faintStyle.Render("what passed over it is in the conversation with whoever it was.")
 
-	if m.putting {
-		out.WriteString("\n " + brandStyle.Render("send") + " " + faintStyle.Render(what) + "\n")
-		out.WriteString("\n " + kindStyle.Render(tailOf(m.typing, m.width-4)) + keyStyle.Render("▏") + "\n")
-
-		if len(m.options) > 0 {
-			out.WriteString("\n " + faintStyle.Render(strings.Join(shortly(m.options, m.width-4), "  ")) + "\n")
-		}
-
-		hint := "enter sends, esc goes back"
-		if archetype == "share" {
-			hint = "tab completes, " + hint
-		}
-		out.WriteString("\n " + faintStyle.Render(hint))
-		return out.String()
+	case at.Archetype == "":
+		return dimStyle.Render("holds other paths.") + "\n" +
+			faintStyle.Render("go back and pick one under it.")
 	}
 
+	out := dimStyle.Render("a " + at.Archetype + " path.")
+	if at.About != "" {
+		out += "\n" + faintStyle.Render(at.About)
+	}
+	return out + "\n\n" + faintStyle.Render("this interface has nothing to do with one.")
+}
+
+// putView is the screen for a namespace something is sent to: what has gone before, and the line
+// for sending the next.
+//
+// One shape for all of them, because it is one act. What differs is the word for the thing and
+// whether what is typed can be completed, and the view says both.
+func (m Model) putView(at proto.Served) string {
+	of := viewOf(at.Archetype)
+	if m.putting {
+		return m.naming(of.sends, of.onDisk)
+	}
+
+	var out strings.Builder
 	if m.offering != nil {
 		name, done, size := m.offering.read()
 		out.WriteString("\n " + goodStyle.Render("sending ") + kindStyle.Render(name) + "\n")
@@ -327,6 +356,7 @@ func (m Model) putView(what string, archetype string, before []string) string {
 		return out.String()
 	}
 
+	before := m.before(of.kind)
 	if len(before) == 0 {
 		out.WriteString(dimStyle.Render("nothing here yet.") + "\n")
 	}
@@ -334,35 +364,40 @@ func (m Model) putView(what string, archetype string, before []string) string {
 		out.WriteString(line + "\n")
 	}
 
-	out.WriteString("\n" + faintStyle.Render("press ") + keyStyle.Render("s") + faintStyle.Render(" to send "+what))
+	out.WriteString("\n" + faintStyle.Render("press ") + keyStyle.Render("s") + faintStyle.Render(" to send "+of.sends))
 	return out.String()
 }
 
-// transfers is what has changed hands on this conversation, newest last.
+// naming is the line something is typed on, and whatever this machine can complete it to.
+func (m Model) naming(what string, onDisk bool) string {
+	var out strings.Builder
+
+	out.WriteString("\n " + brandStyle.Render("send") + " " + faintStyle.Render(what) + "\n")
+	out.WriteString("\n " + kindStyle.Render(tailOf(m.typing, m.width-4)) + keyStyle.Render("▏") + "\n")
+
+	if len(m.options) > 0 {
+		out.WriteString("\n " + faintStyle.Render(strings.Join(shortly(m.options, m.width-4), "  ")) + "\n")
+	}
+
+	hint := "enter sends, esc goes back"
+	if onDisk {
+		hint = "tab completes, " + hint
+	}
+	return out.String() + "\n " + faintStyle.Render(hint)
+}
+
+// before is what has changed hands on this conversation of one kind, newest last.
 //
 // Two lines each, the way every other list here is: the name is what you look for, and when it
 // happened and how big it was are what you look at once you have found it.
-func (m Model) transfers() []string {
+func (m Model) before(kind byte) []string {
 	var out []string
 
 	for i, at := range m.history {
-		if at.Kind != convo.KindFile {
+		if at.Kind != kind {
 			continue
 		}
 		out = append(out, m.item(i, at.Dir == convo.In, at.Body, at.Extra, at.At)...)
-	}
-	return lastOf(out, m.viewHeight()-4)
-}
-
-// links is what has been sent to a link path, newest last.
-func (m Model) links() []string {
-	var out []string
-
-	for i, at := range m.history {
-		if at.Kind != convo.KindLink {
-			continue
-		}
-		out = append(out, m.item(i, at.Dir == convo.In, at.Body, "", at.At)...)
 	}
 	return lastOf(out, m.viewHeight()-4)
 }
@@ -479,11 +514,15 @@ func (m Model) joiningView() string {
 	return m.middle(panel("take a code", m.panelWidth(), 0, out.String()))
 }
 
-func (m Model) footer() string {
-	type hint struct{ key, does string }
+// hint is one key in the footer, and what pressing it does.
+type hint struct{ key, does string }
 
+func (m Model) footer() string {
 	var keys []hint
 	switch {
+	case m.removing != "":
+		keys = []hint{{"y", "take it off"}, {"any key", "leave it"}}
+
 	case m.writing:
 		keys = []hint{{"enter", "send"}, {"esc", "cancel"}}
 
@@ -508,6 +547,9 @@ func (m Model) footer() string {
 			keys = append([]hint{{"a", "ask for it"}}, keys...)
 		}
 
+	case m.at == levelBrowse:
+		keys = m.walkKeys()
+
 	case m.at == levelAccess:
 		keys = []hint{{"↑↓", "move"}, {"a", "allow"}, {"x", "refuse"}, {"d", "config decides"}, {"esc", "back"}}
 
@@ -520,12 +562,14 @@ func (m Model) footer() string {
 	default:
 		keys = []hint{{"esc", "back"}}
 		if at, ok := m.path(); ok {
-			switch {
-			case archetypeOf(at) == "chat":
+			switch m.showing(at) {
+			case showsTalk:
 				keys = append([]hint{{"i", "write"}}, keys...)
-			case archetypeOf(at) == "tty" && at.Writable:
-				keys = append([]hint{{"i", "type into it"}}, keys...)
-			case putsInto(archetypeOf(at)):
+			case showsLive:
+				if at.Writable {
+					keys = append([]hint{{"i", "type into it"}}, keys...)
+				}
+			case showsPut:
 				keys = append([]hint{{"s", "send"}}, keys...)
 			}
 		}
@@ -877,32 +921,23 @@ func (m Model) canvas(drawn string) string {
 	return strings.Join(rows, "\n")
 }
 
-// heldView is what is in one of this machine's own share namespaces.
-//
-// A directory rather than a conversation. Offering to send a file to your own disk is not what this
-// screen is for -- what somebody wants here is to see what has landed, and where.
-func (m Model) heldView() string {
-	if m.loading {
-		return faintStyle.Render("reading…")
-	}
-	if len(m.held) == 0 {
-		return dimStyle.Render("nothing here yet.") + "\n\n" +
-			faintStyle.Render("what a paired device sends to this path lands in it.")
+// walkKeys is what a directory offers, which is what the far end said it will take.
+func (m Model) walkKeys() []hint {
+	moving := []hint{{"↑↓", "move"}, {"enter", "go in"}, {"esc", "back"}, {"r", "reload"}}
+	if m.putting {
+		return []hint{{"tab", "complete"}, {"enter", "send"}, {"esc", "cancel"}}
 	}
 
-	name := m.viewWidth() - 26
-	if name < 12 {
-		name = 12
+	at, ok := m.path()
+	if !ok || m.onSelf {
+		return moving
 	}
 
-	var out []string
-	for _, at := range m.held {
-		out = append(out,
-			nameStyle.Render(fit(at.Name, name))+
-				"  "+dimStyle.Render(fmt.Sprintf("%9s", bytesOf(at.Size)))+
-				"  "+faintStyle.Render(at.At.Format("2 Jan 15:04")))
+	acts := []hint{{"g", "download"}}
+	if at.Writable {
+		acts = append(acts, hint{"s", "send"}, hint{"x", "remove"})
 	}
-	return strings.Join(lastOf(out, m.viewHeight()-1), "\n")
+	return append(acts, moving...)
 }
 
 // bytesOf is a size as somebody reads it rather than as a machine counts it.

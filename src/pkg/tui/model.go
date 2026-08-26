@@ -43,9 +43,18 @@ type Backend interface {
 	Serves(ctx context.Context, with book.Entry) ([]proto.Served, error)
 	// Mine is what this device serves, read from its own config rather than asked over a wire.
 	Mine() ([]proto.Served, error)
-	// Holding is what is in one of this machine's own share namespaces. Offering to send a file
-	// to your own disk is not what that screen is for; saying what is in it is.
-	Holding(path string) ([]Held, error)
+	// Holding is what is in one directory of one of this machine's own namespaces, the empty
+	// directory being its root. Read off this disk: your own namespace is a directory here, and
+	// asking a peer what is in your own pocket would be a strange way to find out.
+	Holding(path, dir string) ([]Held, error)
+	// Listing is what is in a files namespace on another device, at one directory inside it.
+	Listing(ctx context.Context, on book.Entry, path, dir string) ([]Held, error)
+	// Fetch copies one thing out of a files namespace onto this disk, and says where it landed.
+	Fetch(ctx context.Context, from book.Entry, path, dir, name string, progress func(name string, done, size int64)) (string, error)
+	// Put copies one thing from this disk into a files namespace on another device.
+	Put(ctx context.Context, to book.Entry, path, dir, from string, progress func(name string, done, size int64)) error
+	// Remove deletes one thing from a files namespace on another device.
+	Remove(ctx context.Context, on book.Entry, path, dir, name string) error
 	// Access is who may reach one of this machine's own paths: what the config says, and what
 	// has been granted here.
 	Access(path string) (Rule, error)
@@ -101,6 +110,9 @@ const (
 	levelMachines
 	levelPaths
 	levelOpen
+	// levelBrowse is one directory inside a namespace that is a directory, on this machine or on
+	// another. A level of its own, so it stands on the list the way every other screen does.
+	levelBrowse
 	// levelAccess is who may reach one of this machine's own paths, and where that is changed.
 	levelAccess
 	// levelManage is one person or machine: who they are, and what they have been given.
@@ -153,8 +165,12 @@ type Model struct {
 	loading bool
 	trouble string
 
-	// held is what is in one of this machine's own share namespaces, when one is open.
+	// held is the directory the browse level is standing in, and dir is where in the namespace
+	// that is, "" being its root.
 	held []Held
+	dir  string
+	// removing is what has been asked about before it is taken off another machine.
+	removing string
 	// history is the conversation being shown, when the open path is a chat.
 	history []convo.Message
 	// waiting is which of those have not been acknowledged yet, by id.
@@ -306,8 +322,6 @@ func (m *Model) stop() {
 	m.live = false
 	m.screen = nil
 }
-
-func archetypeOf(s proto.Served) string { return s.Archetype }
 
 func shortID(e book.Entry) string {
 	id := e.ID.String()
@@ -591,29 +605,6 @@ func listenFor(from <-chan struct{}) tea.Cmd {
 			return nil
 		}
 		return arrived{}
-	}
-}
-
-// Held is one thing in a share namespace of this machine's own.
-type Held struct {
-	Name string
-	Size int64
-	// At is when it was last written, for a list that reads newest first.
-	At time.Time
-}
-
-// heldLoaded carries a directory listing back.
-type heldLoaded struct {
-	path string
-	held []Held
-	err  error
-}
-
-// loadHeld reads what is in one of this machine's own files namespaces.
-func loadHeld(back Backend, path string) tea.Cmd {
-	return func() tea.Msg {
-		held, err := back.Holding(path)
-		return heldLoaded{path: path, held: held, err: err}
 	}
 }
 

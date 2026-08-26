@@ -113,28 +113,6 @@ func withTitle(box, title string) string {
 	return strings.Join(lines, "\n")
 }
 
-// What each kind of path looks like in a list. Glyphs rather than words: the word is already on the
-// line below, and a shape is quicker to scan down a column than a second string.
-//
-// Keyed by archetype name, which is a view registry standing in for one that does not exist yet: a
-// kind of path invented next week draws with the fallback until somebody registers a look for it.
-var glyphs = map[string]string{
-	"chat":   "▤",
-	"share":  "▣",
-	"files":  "▦",
-	"tty":    "▮",
-	"stream": "▶",
-	"link":   "◈",
-	"":       "▸",
-}
-
-func glyph(archetype string) string {
-	if g, ok := glyphs[archetype]; ok {
-		return g
-	}
-	return "·"
-}
-
 // fit shortens text to a width, keeping the end.
 //
 // The end is what tells two paths apart — /friends/chat and /friends/files share everything but

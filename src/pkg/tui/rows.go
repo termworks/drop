@@ -93,6 +93,8 @@ func (d rows) Render(w io.Writer, m list.Model, index int, item list.Item) {
 		fmt.Fprint(w, knock(it, width, index, selected))
 	case manageItem:
 		fmt.Fprint(w, manage(it, width, index, selected))
+	case heldItem:
+		fmt.Fprint(w, held(it, width, index, selected))
 	}
 }
 
@@ -230,7 +232,7 @@ func path(it pathItem, width, index int, selected bool) string {
 
 	sendCol := 16
 	first := fill(stripe(base, selected) +
-		cell(base, second, 2, glyph(archetype), false, false) +
+		cell(base, second, 2, viewOf(archetype).glyph, false, false) +
 		cell(base, name, inner-2-sendCol, shown, false, true) +
 		cell(base, sendColour, sendCol, send, true, false))
 
@@ -267,6 +269,45 @@ func kindOf(archetype string) string {
 		return "branch"
 	}
 	return archetype
+}
+
+// held draws one thing in a directory: what it is called, how big it is, and where it sits.
+//
+// Glyphs rather than words, the same as a path row: what tells a directory from a file at a glance
+// is a shape, and the word is on the line below anyway.
+func held(it heldItem, width, index int, selected bool) string {
+	base := row(index, selected)
+	fill := func(s string) string { return base.Width(width).Render(s) }
+	inner := width - 2
+
+	var name lipgloss.TerminalColor = plain
+	if selected {
+		name = accent
+	}
+
+	mark, what, size := "▪", "file", bytesOf(it.held.Size)
+	if it.held.Dir {
+		mark, what, size = "▸", "directory", ""
+	}
+
+	sizeCol := 12
+	first := fill(stripe(base, selected) +
+		cell(base, second, 2, mark, false, false) +
+		cell(base, name, inner-2-sizeCol, it.held.Name, false, true) +
+		cell(base, muted, sizeCol, size, true, false))
+
+	when := "when it was written is not known"
+	if !it.held.At.IsZero() {
+		when = "last written " + it.held.At.Format("2 Jan 15:04")
+	}
+	rest := fill(stripe(base, selected) +
+		cell(base, second, 10, what, false, false) +
+		cell(base, muted, inner-10, when, false, false))
+
+	last := fill(stripe(base, selected) +
+		cell(base, muted, inner, it.on+it.at, false, false))
+
+	return first + "\n" + rest + "\n" + last
 }
 
 // userItem is one user on the first screen: you, somebody you have paired with, or anon.

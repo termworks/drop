@@ -56,6 +56,11 @@ type fake struct {
 	refuseServes error
 	reaching     map[string]bool
 	holding      map[string][]Held
+	listed       []string
+	fetched      []string
+	uploaded     []string
+	removedIt    []string
+	refuseWalk   error
 	knocked      []Knock
 	askedFor     []string
 	manages      map[string]Managed
@@ -1507,11 +1512,64 @@ func TestTheListSaysWhoIsReachable(t *testing.T) {
 	}
 }
 
-func (f *fake) Holding(path string) ([]Held, error) {
+func (f *fake) Holding(path, dir string) ([]Held, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	return f.holding[path], nil
+	return f.holding[inside(path, dir)], nil
+}
+
+func (f *fake) Listing(ctx context.Context, on book.Entry, path, dir string) ([]Held, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.listed = append(f.listed, on.Name+" "+inside(path, dir))
+	if f.refuseWalk != nil {
+		return nil, f.refuseWalk
+	}
+	return f.holding[inside(path, dir)], nil
+}
+
+func (f *fake) Fetch(ctx context.Context, from book.Entry, path, dir, name string, progress func(string, int64, int64)) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.fetched = append(f.fetched, inside(path, dir)+"/"+name)
+	return "/somewhere/drop/" + name, nil
+}
+
+func (f *fake) Put(ctx context.Context, to book.Entry, path, dir, from string, progress func(string, int64, int64)) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.uploaded = append(f.uploaded, inside(path, dir)+"/"+filepath.Base(from))
+	return nil
+}
+
+func (f *fake) Remove(ctx context.Context, on book.Entry, path, dir, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.removedIt = append(f.removedIt, inside(path, dir)+"/"+name)
+
+	// Taken off for real, so what the screen shows next is what happened rather than what was asked.
+	at := inside(path, dir)
+	var left []Held
+	for _, one := range f.holding[at] {
+		if one.Name != name {
+			left = append(left, one)
+		}
+	}
+	f.holding[at] = left
+	return nil
+}
+
+// inside names one directory of one namespace, which is how the fake files a listing.
+func inside(path, dir string) string {
+	if dir == "" {
+		return path
+	}
+	return path + "/" + dir
 }
 
 // Your own files namespace is a directory. Offering to send a file to your own disk is not what
