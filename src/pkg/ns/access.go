@@ -137,6 +137,12 @@ type Caller struct {
 	Trusted bool
 	// Password is what was offered, empty if nothing was.
 	Password string
+	// Tried is where the answer to a guess is remembered for as long as this caller exists.
+	//
+	// One path asks whether it admits somebody and then, when it does not, whether they may know
+	// it is there; both reach the same hash with the same guess, and each costs 64 MiB and three
+	// passes. Nil is allowed and merely pays the cost again.
+	Tried *passwd.Tried
 	// User is who owns this machine, as their user key is written down. Empty when the badge did
 	// not check out.
 	User string
@@ -179,7 +185,7 @@ func (a Access) Admits(c Caller) (bool, string) {
 		rules = append(rules, rule{"key", hasFold(a.Keys, c.ID)})
 	}
 	if a.Password != "" {
-		rules = append(rules, rule{"password", c.Password != "" && passwd.Verify(a.Password, c.Password)})
+		rules = append(rules, rule{"password", c.Password != "" && c.Tried.Says(a.Password, c.Password)})
 	}
 
 	passed, failed := 0, ""

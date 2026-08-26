@@ -3,6 +3,7 @@ package proto
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tmc/go-iroh/key"
 
@@ -74,6 +75,7 @@ func TestAPasswordOnTheWireOpensAPath(t *testing.T) {
 		t.Fatalf("hashing: %v", err)
 	}
 
+	// Paired, so the path is one they may know about and ask for; the password is still wrong.
 	stranger := who(9)
 	table := served(t, ns.Mount{Path: "/handoff", Archetype: "share", Access: ns.Access{Password: hash}})
 
@@ -140,5 +142,57 @@ func TestTheOpenSurvivesEncoding(t *testing.T) {
 	}
 	if got.Path != "/handoff" || got.From != "bob" || got.Archetype != "share" || got.Version != 2 {
 		t.Fatalf("the rest of the frame did not survive: %+v", got)
+	}
+}
+
+// A password path is reachable by anybody who knows this device's id — that is what it is for — so
+// every guess costs this machine 64 MiB and three passes of argon2. It must cost that once per
+// session, not once per question asked about the same guess.
+func TestAGuessIsPaidForOnce(t *testing.T) {
+	hash, err := passwd.Hash("let me in")
+	if err != nil {
+		t.Fatalf("hashing: %v", err)
+	}
+
+	// Paired, so the path is one they may know about and ask for; the password is still wrong.
+	stranger := who(9)
+	table := served(t, ns.Mount{
+		Path:      "/handoff",
+		Archetype: "share",
+		Access:    ns.Access{Password: hash, AnyVisible: true},
+	})
+
+	// One caller, one memory. The wrong guess is put to the rule and then, on the way to saying
+	// the path may be asked for, to the same rule again.
+	caller := ns.Caller{ID: stranger.String(), Paired: true, Password: "nope", Tried: passwd.NewTried()}
+
+	first := time.Now()
+	if ok, _ := table.Admits("/handoff", caller); ok {
+		t.Fatal("a wrong password opened the path")
+	}
+	one := time.Since(first)
+
+	second := time.Now()
+	if !table.Sees("/handoff", caller) {
+		t.Fatal("a visible path was not visible")
+	}
+	two := time.Since(second)
+
+	if two > one {
+		t.Errorf("asking the second time cost %v against %v for the first", two, one)
+	}
+}
+
+// What a peer may offer as a password is bounded before any of it is hashed.
+func TestAnEnormousSecretIsRefusedBeforeItIsHashed(t *testing.T) {
+	open := Opening{Path: "/handoff", Secret: strings.Repeat("a", MaxSecret+1)}
+
+	if _, err := decodeOpen(open.encode()); err == nil {
+		t.Fatalf("a %d byte password was taken off the wire", MaxSecret+1)
+	}
+
+	fits := Opening{Path: "/handoff", Secret: strings.Repeat("a", MaxSecret)}
+	if _, err := decodeOpen(fits.encode()); err != nil {
+		t.Fatalf("a password of the length that is allowed was refused: %v", err)
 	}
 }

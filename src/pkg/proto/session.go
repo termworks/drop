@@ -7,6 +7,13 @@ import (
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
+// MaxSecret bounds what may be offered as a password.
+//
+// A password is a thing somebody types, and checking one costs 64 MiB and three passes of argon2 —
+// so the length is worth refusing before any of that work is done. This field also carries what an
+// ask says about itself, which MaxWhy cuts shorter still.
+const MaxSecret = 1024
+
 // Opening is the first frame of a session, and the only one this package writes on the way in.
 //
 // It names a path and, when the caller knows what it expects to find there, an archetype. What is
@@ -76,7 +83,7 @@ func decodeOpen(body []byte) (Opening, error) {
 	if err != nil {
 		return out, err
 	}
-	secret, err := r.String(wire.MaxString)
+	secret, err := r.String(MaxSecret)
 	if err != nil {
 		return out, err
 	}
