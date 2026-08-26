@@ -12,7 +12,9 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tmc/go-iroh/iroh"
 
+	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/book"
+	"github.com/bresilla/drop/src/pkg/cast"
 	"github.com/bresilla/drop/src/pkg/conf"
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/dial"
@@ -43,10 +45,27 @@ func newServeCmd() *cobra.Command {
 }
 
 func runServe(parent context.Context, quiet bool) error {
-	cfg, err := conf.Load()
+	pinned, err := book.Load()
 	if err != nil {
 		return err
 	}
+
+	// The archetypes come first: reading a config is what needs them, because each mount is read
+	// by the archetype it names.
+	bar := &progress{}
+	doing := &doings{
+		pinned: pinned,
+		bar:    bar,
+		notes:  func(text string) { fmt.Printf("  %s\n", text) },
+	}
+	known := doing.serving()
+	defer doing.stop()
+
+	cfg, err := conf.Load(known)
+	if err != nil {
+		return err
+	}
+	doing.cfg = cfg
 	if _, err := cfg.Grants(); err != nil {
 		return err
 	}
@@ -66,11 +85,6 @@ func runServe(parent context.Context, quiet bool) error {
 	}
 	defer n.Close()
 
-	pinned, err := book.Load()
-	if err != nil {
-		return err
-	}
-
 	startRendezvous(ctx, n)
 
 	lan, err := discovery.StartLAN(ctx, n)
@@ -88,7 +102,13 @@ func runServe(parent context.Context, quiet bool) error {
 
 	// A cast feeds this node over a local socket rather than standing up a second one, so a
 	// terminal can be shared while the daemon is running.
-	casts := newCastHost(cfg.Mounts)
+	casts := newCastHost(cfg.Mounts, known)
+	doing.shown = func(path string) (*cast.Caster, bool) {
+		if path != CastPath {
+			return nil, false
+		}
+		return casts.live(), true
+	}
 	offers := newPairHost(n)
 	go func() {
 		if err := hostLocal(ctx, casts, offers, held); err != nil {
@@ -96,29 +116,20 @@ func runServe(parent context.Context, quiet bool) error {
 		}
 	}()
 
-	shells := newTerminals()
-	defer shells.stop()
+	doing.said = func(from node.ID, m convo.Message) {
+		fmt.Println(render(nameFor(pinned, from), m))
+		cfg.FireMessage(conf.Message{
+			From: nameFor(pinned, from), Kind: kindName(m.Kind), Body: m.Body, Path: "/chat",
+		})
+	}
 
-	bar := &progress{}
 	policy := proto.Policy{
-		Mounts:   cfg.Mounts,
-		Allow:    accepting(pinned, false),
-		Who:      whoIs(pinned),
-		Progress: bar.update,
-		Done: func(from node.ID, name string, size int64) {
-			fmt.Printf("  received %s (%s)\n", name, bytes(size))
-			noteFile(from, convo.In, name, size)
-			cfg.FireFile(conf.File{From: nameFor(pinned, from), Name: name, Size: size})
-		},
-		Message: receiving(pinned, cfg.OpenLinks, func(from node.ID, m convo.Message) {
-			fmt.Println(render(nameFor(pinned, from), m))
-			cfg.FireMessage(conf.Message{
-				From: nameFor(pinned, from), Kind: kindName(m.Kind), Body: m.Body, Path: "/chat",
-			})
-		}),
-		Duplex:  serveDuplex(pinned, shells, casts),
-		Refused: noting(pinned),
-		Asked:   taking(),
+		Mounts:     cfg.Mounts,
+		Archetypes: known,
+		Allow:      accepting(pinned, false),
+		Who:        whoIs(pinned),
+		Refused:    noting(pinned),
+		Asked:      taking(),
 	}
 
 	// The address book is re-read before answering anybody, because `drop pair` is a separate
@@ -130,7 +141,7 @@ func runServe(parent context.Context, quiet bool) error {
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
 			_ = pinned.Refresh()
-			if err := proto.Handle(s, from, policy); err != nil {
+			if err := proto.Handle(ctx, s, from, policy); err != nil {
 				fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 			}
 		},
@@ -138,7 +149,7 @@ func runServe(parent context.Context, quiet bool) error {
 			defer s.Close()
 			_ = pinned.Refresh()
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
-				return greeting(pinned, cfg.Mounts, from, badge)
+				return greeting(pinned, cfg.Mounts, known, from, badge)
 			})
 		},
 		// Pairing is answered by whoever holds the address, which is this. A separate `drop pair`
@@ -180,14 +191,14 @@ func runServe(parent context.Context, quiet bool) error {
 		if !known || !entry.Paired() {
 			return
 		}
-		if _, err := deliverOver(ctx, onlyHeld{held: held}, entry, "/chat"); err != nil {
+		if _, err := deliverOver(ctx, onlyHeld{held: held}, entry, "/chat", "chat"); err != nil {
 			trace(fmt.Sprintf("pushing to %s: %v", entry.Name, err))
 		}
 	}
 
 	go serveLoopKeeping(ctx, n, answer, held, pushing)
 
-	describe(cfg, n)
+	describe(cfg, known, n)
 
 	report := time.NewTicker(time.Minute)
 	defer report.Stop()
@@ -207,7 +218,7 @@ func runServe(parent context.Context, quiet bool) error {
 }
 
 // describe prints what this node is serving, because a namespace nobody can see is one nobody uses.
-func describe(cfg *conf.Config, n *node.Node) {
+func describe(cfg *conf.Config, known *arch.Registry, n *node.Node) {
 	fmt.Printf("%s  %s\n", node.DisplayName(), n.ID())
 	if cfg.Path != "" {
 		fmt.Printf("config %s\n", cfg.Path)
@@ -217,9 +228,9 @@ func describe(cfg *conf.Config, n *node.Node) {
 
 	fmt.Println()
 	mounts := cfg.Mounts.All()
-	kind := widest(6, archetypes(mounts))
+	kind := widest(6, kinds(mounts))
 	for _, m := range mounts {
-		fmt.Printf("  %-24s %-*s %s\n", m.Path, kind, m.Archetype, detail(m))
+		fmt.Printf("  %-24s %-*s %s\n", m.Path, kind, kindOf(m.Archetype), detail(known, m))
 	}
 
 	// Whether a device that has moved can still be found. There is no way to tell from the outside
@@ -244,30 +255,23 @@ func describe(cfg *conf.Config, n *node.Node) {
 	fmt.Println("\nready; ctrl-c to stop")
 }
 
-func detail(m ns.Mount) string {
-	switch m.Archetype {
-	case ns.Share:
-		return m.Dir
-	case ns.Files:
-		if m.Writable {
-			return m.Dir + "  read and write"
-		}
-		return m.Dir + "  read-only"
-	case ns.Stream:
-		return m.Command
-	case ns.TTY:
-		if m.Input {
-			return "interactive"
-		}
-		return "read-only"
-	case ns.Link:
-		if m.Action != "" {
-			return m.Action
-		}
-		return "recorded, not opened"
-	default:
+// detail is one namespace in a column: where it points, what it runs. What it says comes from the
+// archetype, which is the only thing that knows what its own settings mean.
+func detail(known *arch.Registry, m ns.Mount) string {
+	answers, ok := known.Lookup(m.Archetype, m.Version)
+	if !ok {
 		return ""
 	}
+	return answers.Note(m.Config).Detail
+}
+
+// kindOf is what a mount's type is called in a listing. A path with no archetype is a branch: it
+// holds others and serves nothing itself.
+func kindOf(archetype string) string {
+	if archetype == "" {
+		return "branch"
+	}
+	return archetype
 }
 
 // backlog keeps trying whatever is still queued for anybody.
@@ -303,7 +307,7 @@ func backlog(ctx context.Context, n *node.Node, lan *discovery.LAN, pinned *book
 				trace(fmt.Sprintf("reaching %s: %v", entry.Name, err))
 			}
 
-			_, _ = deliverOver(ctx, kept{held: held}, entry, "/chat")
+			_, _ = deliverOver(ctx, kept{held: held}, entry, "/chat", "chat")
 		}
 	}
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
-	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 )
 
@@ -31,7 +30,7 @@ func newListCmd() *cobra.Command {
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return showOwnTable()
+				return showOwnTable(reading())
 			}
 			peer, under, _ := strings.Cut(args[0], "/")
 			return listThere(cmd.Context(), peer, "/"+strings.Trim(under, "/"), wait)
@@ -92,36 +91,19 @@ func listThere(parent context.Context, peer, under string, wait time.Duration) e
 	}
 
 	paths := make([]string, 0, len(shown))
-	kinds := make([]string, 0, len(shown))
+	column := make([]string, 0, len(shown))
 	for _, served := range shown {
 		paths = append(paths, served.Path)
-		kinds = append(kinds, served.Archetype.String())
+		column = append(column, kindOf(served.Archetype))
 	}
-	width, kind := widest(0, paths), widest(6, kinds)
+	width, kind := widest(0, paths), widest(6, column)
 
 	fmt.Printf("\n%s  %s\n\n", entry.Name, node.Brief(entry.ID))
 	for _, served := range shown {
-		fmt.Printf("  %-*s  %-*s %s\n", width, served.Path, kind, served.Archetype, note(served))
+		fmt.Printf("  %-*s  %-*s %s\n", width, served.Path, kind, kindOf(served.Archetype), served.About)
 	}
 	fmt.Println()
 	return nil
-}
-
-// note says in a few words what a path is for, from the little a listing carries.
-func note(served proto.Served) string {
-	switch served.Archetype {
-	case ns.Branch:
-		return "holds other paths"
-	case ns.Files:
-		if served.Writable {
-			return "you may walk it, and write in it"
-		}
-		return "you may walk it and read"
-	}
-	if served.Writable {
-		return "you may send"
-	}
-	return ""
 }
 
 // covers reports whether a path is at or under a prefix, on segment boundaries so /friendsonly is

@@ -10,11 +10,11 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tmc/go-iroh/iroh"
 
+	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/asciicast"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/cast"
@@ -97,6 +97,16 @@ func runCast(parent context.Context, addressFile string) error {
 	stage := cast.New(uint16(head.Width), uint16(head.Height))
 	defer stage.Stop()
 
+	doing := &doings{
+		pinned: pinned,
+		notes:  func(text string) { fmt.Fprintf(os.Stderr, "drop: %s\n", text) },
+		shown: func(path string) (*cast.Caster, bool) {
+			return stage, path == CastPath
+		},
+	}
+	known := doing.watching()
+	defer doing.stop()
+
 	if _, err := discovery.StartLAN(ctx, n); err != nil {
 		fmt.Fprintf(os.Stderr, "drop: local discovery unavailable: %v\n", err)
 	}
@@ -104,11 +114,11 @@ func runCast(parent context.Context, addressFile string) error {
 	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
-			_ = proto.Handle(s, from, proto.Policy{
-				Mounts: castMounts(),
-				Allow:  accepting(pinned, false),
-				Who:    whoIs(pinned),
-				Duplex: watchCast(pinned, stage),
+			_ = proto.Handle(ctx, s, from, proto.Policy{
+				Mounts:     castMounts(known),
+				Archetypes: known,
+				Allow:      accepting(pinned, false),
+				Who:        whoIs(pinned),
 			})
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
@@ -203,64 +213,28 @@ func reads(reader *asciicast.Reader) <-chan read {
 //
 // Open to any paired device, and said so rather than left out: access is denied unless a rule
 // grants it, and a mount with no rule is one nobody can ever watch.
-func castMounts() *ns.Table {
+func castMounts(known *arch.Registry) *ns.Table {
 	table := ns.NewTable()
-	_ = table.Add(ns.Mount{
-		Path:      CastPath,
-		Archetype: ns.TTY,
-		Access:    ns.Access{AnyPaired: true},
-	})
+	_ = table.Add(castMount(known))
 	return table
 }
 
-// watchCast attaches a watcher to the running cast. Read-only: a cast is somebody's screen, and
-// typing into it is a different grant.
-func watchCast(pinned *book.Book, stage *cast.Caster) func(proto.Resolved, *proto.Duplex) error {
-	return func(at proto.Resolved, d *proto.Duplex) error {
-		fmt.Fprintf(os.Stderr, "drop: %s is watching (%d total)\n",
-			nameFor(pinned, at.From), stage.Watching()+1)
-
-		viewer, replay, cols, rows := stage.Join()
-		defer stage.Leave(viewer)
-
-		if err := d.Resize(cols, rows); err != nil {
-			return err
-		}
-		if _, err := d.Write([]byte("\x1b[2J\x1b[H")); err != nil {
-			return err
-		}
-		if len(replay) > 0 {
-			if _, err := d.Write(replay); err != nil {
-				return err
-			}
-		}
-
-		sending := make(chan error, 1)
-		go func() {
-			writing := pacing(d)
-			for chunk := range viewer.Frames() {
-				if err := writing.write(chunk, stalledAfter); err != nil {
-					sending <- err
-					return
-				}
-			}
-			sending <- d.Close()
-		}()
-
-		if err := d.Pump(io.Discard); err != nil {
-			return err
-		}
-
-		// Bounded: a watcher that stopped reading is still connected, and waiting on it for ever
-		// is one goroutine per watcher that went away without saying so.
-		select {
-		case err := <-sending:
-			return err
-		case <-time.After(partingWithin):
-			return nil
-		}
+// castMount is where a cast is served: a terminal that takes no input, because a cast is somebody's
+// screen and typing into it is a different grant.
+func castMount(known *arch.Registry) ns.Mount {
+	m := ns.Mount{Path: CastPath, Archetype: "tty", Access: ns.Access{AnyPaired: true}}
+	if answers, ok := known.Lookup(m.Archetype, 0); ok {
+		m.Config, _ = answers.Read(nothing{})
 	}
+	return m
 }
+
+// nothing is a declaration that says nothing, for a namespace drop puts up itself.
+type nothing struct{}
+
+func (nothing) String(string) (string, bool)    { return "", false }
+func (nothing) Bool(string) (bool, bool)        { return false, false }
+func (nothing) Strings(string) ([]string, bool) { return nil, false }
 
 // publishAddress writes the address where hexe will look for it.
 func publishAddress(path, address string) error {

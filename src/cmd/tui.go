@@ -14,11 +14,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tmc/go-iroh/iroh"
 
+	"github.com/bresilla/drop/src/pkg/arch"
+	"github.com/bresilla/drop/src/pkg/arch/chat"
+	"github.com/bresilla/drop/src/pkg/arch/share"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/conf"
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/dial"
 	"github.com/bresilla/drop/src/pkg/discovery"
+	"github.com/bresilla/drop/src/pkg/live"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
@@ -28,7 +32,16 @@ import (
 )
 
 func runTUI(parent context.Context) error {
-	cfg, err := conf.Load()
+	pinned, err := book.Load()
+	if err != nil {
+		return err
+	}
+
+	doing := &doings{pinned: pinned}
+	known := doing.serving()
+	defer doing.stop()
+
+	cfg, err := conf.Load(known)
 	if err != nil {
 		return err
 	}
@@ -50,17 +63,17 @@ func runTUI(parent context.Context) error {
 	}
 	defer n.Close()
 
-	pinned, err := book.Load()
-	if err != nil {
-		return err
-	}
-
 	lan, _ := discovery.StartLAN(ctx, n)
 	startRendezvous(ctx, n)
 
 	// Depth one, and a full channel is left alone: the signal carries nothing, so one pending
 	// knock means the same as ten, and a device that says a great deal at once still redraws once.
 	arriving := make(chan struct{}, 1)
+
+	// What arrives while the interface is open belongs in the conversation the same way it would
+	// with the daemon running, and the screen is nudged so it is drawn as it happens.
+	doing.cfg = cfg
+	doing.noticed = func() { knock(arriving) }
 
 	// One connection per device, kept for as long as the interface is open.
 	held := dial.Hold(n, lan, finder(n))
@@ -77,22 +90,13 @@ func runTUI(parent context.Context) error {
 			// stranger until the interface is restarted, which looks exactly like pairing failing.
 			_ = pinned.Refresh()
 
-			_ = proto.Handle(s, from, proto.Policy{
-				Mounts:  cfg.Mounts,
-				Allow:   accepting(pinned, false),
-				Who:     whoIs(pinned),
-				Refused: noting(pinned),
-				Asked:   taking(),
-				Message: receiving(pinned, cfg.OpenLinks, func(node.ID, convo.Message) {
-					knock(arriving)
-				}),
-				// A file that lands while the interface is open belongs in the conversation the
-				// same way it would with the daemon running.
-				Done: func(from node.ID, name string, size int64) {
-					noteFile(from, convo.In, name, size)
-					cfg.FireFile(conf.File{From: nameFor(pinned, from), Name: name, Size: size})
-					knock(arriving)
-				},
+			_ = proto.Handle(ctx, s, from, proto.Policy{
+				Mounts:     cfg.Mounts,
+				Archetypes: known,
+				Allow:      accepting(pinned, false),
+				Who:        whoIs(pinned),
+				Refused:    noting(pinned),
+				Asked:      taking(),
 			})
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
@@ -100,7 +104,7 @@ func runTUI(parent context.Context) error {
 			_ = pinned.Refresh()
 
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
-				return greeting(pinned, cfg.Mounts, from, badge)
+				return greeting(pinned, cfg.Mounts, known, from, badge)
 			})
 		},
 	}
@@ -131,7 +135,7 @@ func runTUI(parent context.Context) error {
 		if !known || !entry.Paired() {
 			return
 		}
-		if _, err := deliverOver(ctx, onlyHeld{held: held}, entry, "/chat"); err == nil {
+		if _, err := deliverOver(ctx, onlyHeld{held: held}, entry, "/chat", "chat"); err == nil {
 			knock(arriving)
 		}
 	})
@@ -139,7 +143,7 @@ func runTUI(parent context.Context) error {
 	go holding(ctx, pinned, held)
 
 	program := tea.NewProgram(
-		tui.New(&live{node: n, lan: lan, ears: ears, arriving: arriving, held: held}),
+		tui.New(&running{node: n, lan: lan, ears: ears, arriving: arriving, held: held, known: known}),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 		tea.WithContext(ctx),
@@ -149,8 +153,8 @@ func runTUI(parent context.Context) error {
 	return err
 }
 
-// live is the interface's view of a running node.
-type live struct {
+// running is the interface's view of a running node.
+type running struct {
 	ears     *listener
 	node     *node.Node
 	lan      *discovery.LAN
@@ -158,10 +162,12 @@ type live struct {
 	// held keeps a connection per device, so a conversation costs one handshake rather than one
 	// for every line typed.
 	held *dial.Kept
+	// known is what this machine's own namespaces are, for describing them back to itself.
+	known *arch.Registry
 }
 
 // Arrivals is how the interface learns that something landed while it was sitting there.
-func (l *live) Arrivals() <-chan struct{} { return l.arriving }
+func (l *running) Arrivals() <-chan struct{} { return l.arriving }
 
 // knock says something happened, without ever waiting for anybody to be listening: a device
 // sending a file must not be held up because nothing is on screen to care.
@@ -177,7 +183,7 @@ func knock(at chan struct{}) {
 // What is held, not what could be reached: dialling the whole address book to draw a list would
 // spend a handshake per device per redraw, and a device that answered a moment ago is the useful
 // thing to say anyway.
-func (l *live) Reaching() map[string]bool {
+func (l *running) Reaching() map[string]bool {
 	pinned, err := book.Load()
 	if err != nil {
 		return nil
@@ -192,7 +198,7 @@ func (l *live) Reaching() map[string]bool {
 	return out
 }
 
-func (l *live) Peers() ([]book.Entry, error) {
+func (l *running) Peers() ([]book.Entry, error) {
 	pinned, err := book.Load()
 	if err != nil {
 		return nil, err
@@ -206,7 +212,7 @@ func (l *live) Peers() ([]book.Entry, error) {
 // still the best guess at what it shares, and without it there is no way into a conversation that
 // is sitting on this disk. The error comes back as well, so the interface can say the list is from
 // memory rather than from the device.
-func (l *live) Serves(ctx context.Context, with book.Entry) ([]proto.Served, error) {
+func (l *running) Serves(ctx context.Context, with book.Entry) ([]proto.Served, error) {
 	asked, err := l.askShares(ctx, with)
 	if err == nil {
 		_ = shares.Remember(with.ID, asked)
@@ -220,7 +226,7 @@ func (l *live) Serves(ctx context.Context, with book.Entry) ([]proto.Served, err
 	return remembered, err
 }
 
-func (l *live) askShares(ctx context.Context, with book.Entry) ([]proto.Served, error) {
+func (l *running) askShares(ctx context.Context, with book.Entry) ([]proto.Served, error) {
 	s, err := l.held.To(ctx, with, node.ALPNHello)
 	if err != nil {
 		return nil, err
@@ -234,7 +240,7 @@ func (l *live) askShares(ctx context.Context, with book.Entry) ([]proto.Served, 
 	return hello.Serves, nil
 }
 
-func (l *live) History(with book.Entry) ([]convo.Message, error) {
+func (l *running) History(with book.Entry) ([]convo.Message, error) {
 	store, err := convo.Open(with.ID)
 	if err != nil {
 		return nil, err
@@ -244,19 +250,19 @@ func (l *live) History(with book.Entry) ([]convo.Message, error) {
 
 // Compose writes a message into the conversation. Nothing is dialled: it is a disk write, and the
 // interface can draw it before anybody has been reached.
-func (l *live) Compose(to book.Entry, body string) error {
+func (l *running) Compose(to book.Entry, body string) error {
 	_, err := compose(to, convo.KindText, body, "")
 	return err
 }
 
 // Deliver sends whatever is queued for a device, over the connection this interface is holding.
-func (l *live) Deliver(ctx context.Context, to book.Entry) error {
-	_, err := deliverOver(ctx, kept{held: l.held}, to, "/chat")
+func (l *running) Deliver(ctx context.Context, to book.Entry) error {
+	_, err := deliverOver(ctx, kept{held: l.held}, to, "/chat", "chat")
 	return err
 }
 
 // Waiting is which messages are still in the outbox, by id.
-func (l *live) Waiting(with book.Entry) (map[string]bool, error) {
+func (l *running) Waiting(with book.Entry) (map[string]bool, error) {
 	store, err := convo.Open(with.ID)
 	if err != nil {
 		return nil, err
@@ -276,8 +282,8 @@ func (l *live) Waiting(with book.Entry) (map[string]bool, error) {
 
 // Mine is what this device serves. No network: it is this machine's own config, and asking the
 // wire what this machine shares would be asking somebody else what is in your own pocket.
-func (l *live) Mine() ([]proto.Served, error) {
-	cfg, err := conf.Load()
+func (l *running) Mine() ([]proto.Served, error) {
+	cfg, err := conf.Load(l.known)
 	if err != nil {
 		return nil, err
 	}
@@ -287,14 +293,14 @@ func (l *live) Mine() ([]proto.Served, error) {
 
 	// Described as they would be to somebody paired, which is what the list is for: seeing what a
 	// device you have paired with would be offered.
-	return proto.Describe(cfg.Mounts, ns.Caller{ID: l.node.ID().String(), Paired: true}), nil
+	return proto.Describe(cfg.Mounts, l.known, ns.Caller{ID: l.node.ID().String(), Paired: true}), nil
 }
 
 // Send copies files to a path on the far device.
 //
 // The same call the command line makes, over the interface's own node: a long-lived process should
 // not stand up a second endpoint to send a file, and the far end should not see a stranger.
-func (l *live) Send(ctx context.Context, to book.Entry, path string, files []string, progress func(string, int64, int64)) error {
+func (l *running) Send(ctx context.Context, to book.Entry, path string, files []string, progress func(string, int64, int64)) error {
 	sources, err := gather(files, "")
 	if err != nil {
 		return err
@@ -306,7 +312,11 @@ func (l *live) Send(ctx context.Context, to book.Entry, path string, files []str
 	}
 	defer s.Close()
 
-	if err := proto.SendFiles(ctx, s, path, sources, node.DisplayName(), progress); err != nil {
+	conn, err := proto.Open(s, path, "share", 0, "", node.DisplayName())
+	if err != nil {
+		return err
+	}
+	if err := share.Send(conn, sources, progress); err != nil {
 		return err
 	}
 	for _, src := range sources {
@@ -316,7 +326,7 @@ func (l *live) Send(ctx context.Context, to book.Entry, path string, files []str
 }
 
 // Post sends one message to a path.
-func (l *live) Post(ctx context.Context, to book.Entry, path string, kind byte, body string) error {
+func (l *running) Post(ctx context.Context, to book.Entry, path, archetype string, kind byte, body string) error {
 	m, err := compose(to, kind, body, "")
 	if err != nil {
 		return err
@@ -328,21 +338,26 @@ func (l *live) Post(ctx context.Context, to book.Entry, path string, kind byte, 
 	}
 	defer s.Close()
 
-	_, err = proto.SendMessages(ctx, s, path, []convo.Message{m}, node.DisplayName())
+	conn, err := proto.Open(s, path, archetype, 0, "", node.DisplayName())
+	if err != nil {
+		return err
+	}
+	_, err = chat.Send(conn, []convo.Message{m})
 	return err
 }
 
 // Watch reads a live path into a screen, nudging the interface whenever the picture changes.
-func (l *live) Watch(ctx context.Context, w tui.Watching) error {
+func (l *running) Watch(ctx context.Context, w tui.Watching) error {
 	s, err := l.held.To(ctx, w.On, node.ALPNSession)
 	if err != nil {
 		return err
 	}
 
-	d, err := proto.OpenDuplex(ctx, s, w.Path, w.Path, node.DisplayName())
+	conn, err := proto.Open(s, w.Path, w.Archetype, 0, "", node.DisplayName())
 	if err != nil {
 		return err
 	}
+	d := live.New(conn, s)
 	d.OnResize = func(cols, rows uint16) { w.Sized(int(cols), int(rows)) }
 
 	// The write side stays open. Closing it here used to be how a viewer was kept from typing, but
@@ -380,7 +395,7 @@ func (l *live) Watch(ctx context.Context, w tui.Watching) error {
 const stopWithin = 2 * time.Second
 
 // saying is a live path the interface can speak to.
-type saying struct{ d *proto.Duplex }
+type saying struct{ d *live.Duplex }
 
 func (s saying) Resize(cols, rows int) error {
 	if cols < 1 || rows < 1 {
@@ -399,7 +414,7 @@ func (s saying) Type(p []byte) error {
 
 var _ = fmt.Sprintf
 
-func (l *live) Self() (tui.Identity, error) {
+func (l *running) Self() (tui.Identity, error) {
 	// Which process is the node matters to whoever is reading: if the daemon holds the address,
 	// this is a view onto something that goes on running after the interface is closed.
 	reach := tui.ReachServing
@@ -419,7 +434,7 @@ func (l *live) Self() (tui.Identity, error) {
 //
 // The interface shows the ticket and the code while this waits, which is the whole point: a device
 // with nothing paired is a dead end, and reaching for a second terminal to fix that is not a design.
-func (l *live) Offer(ctx context.Context) (string, <-chan string, error) {
+func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
 	code, err := proto.NewCode()
 	if err != nil {
 		return "", nil, err
@@ -483,7 +498,7 @@ func (l *live) Offer(ctx context.Context) (string, <-chan string, error) {
 // The same join the command line does, over the endpoint this interface already has up. Not a
 // second implementation: when it was one, the two drifted and pairing worked from one and not the
 // other.
-func (l *live) Join(ctx context.Context, ticket string) (string, error) {
+func (l *running) Join(ctx context.Context, ticket string) (string, error) {
 	_, name, err := join(ctx, l.node, l.lan, ticket, "", false, nil)
 	return name, err
 }
@@ -494,24 +509,28 @@ func (l *live) Join(ctx context.Context, ticket string) (string, error) {
 // a peer what is in your own pocket would be a strange way to find out. Only files -- a directory
 // under a share namespace is not something drop serves, so listing it would promise something that
 // is not there.
-func (l *live) Holding(path string) ([]tui.Held, error) {
-	cfg, err := conf.Load()
+func (l *running) Holding(path string) ([]tui.Held, error) {
+	cfg, err := conf.Load(l.known)
 	if err != nil {
 		return nil, err
 	}
 	defer cfg.Close()
 
 	mount, _, ok := cfg.Mounts.Lookup(path)
-	if !ok || mount.Archetype != ns.Share {
+	if !ok || mount.Archetype != "share" {
 		return nil, fmt.Errorf("%s is not a share namespace of this machine's", path)
 	}
+	held, ok := mount.Config.(share.Config)
+	if !ok {
+		return nil, fmt.Errorf("%s has nowhere to hold anything", path)
+	}
 
-	entries, err := os.ReadDir(mount.Dir)
+	entries, err := os.ReadDir(held.Dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", mount.Dir, err)
+		return nil, fmt.Errorf("reading %s: %w", held.Dir, err)
 	}
 
 	var out []tui.Held
@@ -532,7 +551,7 @@ func (l *live) Holding(path string) ([]tui.Held, error) {
 }
 
 // Knocked is what has dialled this device and been turned away.
-func (l *live) Knocked() ([]tui.Knock, error) {
+func (l *running) Knocked() ([]tui.Knock, error) {
 	all, err := seen.All()
 	if err != nil {
 		return nil, err

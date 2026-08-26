@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/bresilla/drop/src/pkg/node"
-	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -14,9 +13,9 @@ func TestHelloRoundTrip(t *testing.T) {
 		Name:    "laptop",
 		Version: "0.1.0",
 		Serves: []Served{
-			{Path: "/inbox", Archetype: ns.Share, Writable: true},
-			{Path: "/term", Archetype: ns.TTY, Writable: false},
-			{Path: "/logs", Archetype: ns.Stream, Writable: false},
+			{Path: "/inbox", Archetype: "share", Version: 1, Writable: true, About: "hand files over, once"},
+			{Path: "/term", Archetype: "tty", Version: 1},
+			{Path: "/logs", Archetype: "stream", Version: 2, About: "output from a command"},
 		},
 	}
 
@@ -68,7 +67,8 @@ func TestHelloRefusesATruncatedList(t *testing.T) {
 	w := newWriterFor("laptop", "0.1.0")
 	w.Uint(3)
 	w.String("/inbox")
-	w.Byte(byte(ns.Share))
+	w.String("share")
+	w.Uint(1)
 	w.Bool(true)
 
 	if _, err := decodeHello(w.Body()); err == nil {
@@ -102,7 +102,7 @@ func TestHelloIsAskedThenAnswered(t *testing.T) {
 	client := pipeEnd{Reader: clientR, Writer: clientW}
 	server := pipeEnd{Reader: serverR, Writer: serverW}
 
-	want := Hello{Name: "beta", Version: "0.1.0", Serves: []Served{{Path: "/tty", Archetype: ns.TTY}}}
+	want := Hello{Name: "beta", Version: "0.1.0", Serves: []Served{{Path: "/tty", Archetype: "tty"}}}
 
 	done := make(chan error, 1)
 	go func() {

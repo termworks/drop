@@ -95,7 +95,7 @@ func TestARefusalBeatsTheConfig(t *testing.T) {
 	s := empty(t)
 
 	table := ns.NewTable()
-	if err := table.Add(ns.Mount{Path: "/work", Archetype: ns.Chat, Access: ns.Access{Named: []string{"bob"}}}); err != nil {
+	if err := table.Add(ns.Mount{Path: "/work", Archetype: "chat", Access: ns.Access{Named: []string{"bob"}}}); err != nil {
 		t.Fatal(err)
 	}
 	table.Granted(s)
@@ -124,7 +124,7 @@ func TestAGrantOpensAPathTheConfigDidNot(t *testing.T) {
 	s := empty(t)
 
 	table := ns.NewTable()
-	if err := table.Add(ns.Mount{Path: "/work", Archetype: ns.Chat, Access: ns.Access{Named: []string{"bob"}}}); err != nil {
+	if err := table.Add(ns.Mount{Path: "/work", Archetype: "chat", Access: ns.Access{Named: []string{"bob"}}}); err != nil {
 		t.Fatal(err)
 	}
 	table.Granted(s)
@@ -148,7 +148,7 @@ func TestARefusalNamesABareID(t *testing.T) {
 	s := empty(t)
 
 	table := ns.NewTable()
-	if err := table.Add(ns.Mount{Path: "/wide", Archetype: ns.Chat, Access: ns.Access{Anyone: true}}); err != nil {
+	if err := table.Add(ns.Mount{Path: "/wide", Archetype: "chat", Access: ns.Access{Anyone: true}}); err != nil {
 		t.Fatal(err)
 	}
 	table.Granted(s)

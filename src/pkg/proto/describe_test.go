@@ -20,13 +20,13 @@ func paths(shown []Served) map[string]bool {
 func TestALedgerShowsOnlyWhatTheCallerMayReach(t *testing.T) {
 	table := served(t,
 		ns.Mount{Path: "/friends", Access: ns.Access{Named: []string{"bob"}}},
-		ns.Mount{Path: "/friends/chat", Archetype: ns.Chat},
+		ns.Mount{Path: "/friends/chat", Archetype: "chat"},
 		ns.Mount{Path: "/work", Access: ns.Access{Named: []string{"laptop"}}},
-		ns.Mount{Path: "/work/term", Archetype: ns.TTY},
+		ns.Mount{Path: "/work/term", Archetype: "tty"},
 	)
 
 	bob := ns.Caller{ID: "aaaa", Name: "bob", Paired: true}
-	shown := paths(Describe(table, bob))
+	shown := paths(Describe(table, nil, bob))
 
 	if !shown["/friends/chat"] {
 		t.Fatal("bob was not shown his own path")
@@ -41,10 +41,10 @@ func TestALedgerShowsOnlyWhatTheCallerMayReach(t *testing.T) {
 func TestAStrangerIsShownNothing(t *testing.T) {
 	table := served(t,
 		ns.Mount{Path: "/friends", Access: ns.Access{AnyPaired: true}},
-		ns.Mount{Path: "/friends/chat", Archetype: ns.Chat},
+		ns.Mount{Path: "/friends/chat", Archetype: "chat"},
 	)
 
-	if shown := Describe(table, ns.Caller{ID: "zzzz"}); len(shown) != 0 {
+	if shown := Describe(table, nil, ns.Caller{ID: "zzzz"}); len(shown) != 0 {
 		t.Fatalf("an unpaired caller was shown %+v", shown)
 	}
 }
@@ -53,12 +53,12 @@ func TestAStrangerIsShownNothing(t *testing.T) {
 func TestAPathWithNoRuleIsInNobodysListing(t *testing.T) {
 	table := served(t,
 		ns.Mount{Path: "/friends", Access: ns.Access{Named: []string{"bob"}}},
-		ns.Mount{Path: "/friends/chat", Archetype: ns.Chat},
-		ns.Mount{Path: "/secret", Archetype: ns.Share},
+		ns.Mount{Path: "/friends/chat", Archetype: "chat"},
+		ns.Mount{Path: "/secret", Archetype: "share"},
 	)
 
 	bob := ns.Caller{ID: "aaaa", Name: "bob", Paired: true}
-	if paths(Describe(table, bob))["/secret"] {
+	if paths(Describe(table, nil, bob))["/secret"] {
 		t.Fatal("a path with no rule was listed")
 	}
 }
@@ -72,14 +72,14 @@ func TestAPasswordPathIsNotListed(t *testing.T) {
 	}
 
 	table := served(t,
-		ns.Mount{Path: "/handoff", Archetype: ns.Share, Access: ns.Access{Password: hash}},
+		ns.Mount{Path: "/handoff", Archetype: "share", Access: ns.Access{Password: hash}},
 	)
 
 	for _, who := range []ns.Caller{
 		{ID: "aaaa", Name: "bob", Paired: true},
 		{ID: "zzzz"},
 	} {
-		if len(Describe(table, who)) != 0 {
+		if len(Describe(table, nil, who)) != 0 {
 			t.Fatalf("%s was shown a password path", who.ID)
 		}
 	}
@@ -94,11 +94,11 @@ func TestAPasswordPathIsNotListed(t *testing.T) {
 // A bare key is enough to be shown something, without any pairing.
 func TestAKeyIsShownItsOwnPath(t *testing.T) {
 	table := served(t,
-		ns.Mount{Path: "/ci", Archetype: ns.Share, Access: ns.Access{Keys: []string{"cccc"}}},
-		ns.Mount{Path: "/friends", Archetype: ns.Chat, Access: ns.Access{AnyPaired: true}},
+		ns.Mount{Path: "/ci", Archetype: "share", Access: ns.Access{Keys: []string{"cccc"}}},
+		ns.Mount{Path: "/friends", Archetype: "chat", Access: ns.Access{AnyPaired: true}},
 	)
 
-	shown := paths(Describe(table, ns.Caller{ID: "cccc"}))
+	shown := paths(Describe(table, nil, ns.Caller{ID: "cccc"}))
 	if !shown["/ci"] {
 		t.Fatal("the key was not shown its own path")
 	}
@@ -108,7 +108,7 @@ func TestAKeyIsShownItsOwnPath(t *testing.T) {
 }
 
 func TestDescribeHandlesNoTable(t *testing.T) {
-	if got := Describe(nil, ns.Caller{ID: "aaaa"}); got != nil {
+	if got := Describe(nil, nil, ns.Caller{ID: "aaaa"}); got != nil {
 		t.Fatalf("got %+v", got)
 	}
 }

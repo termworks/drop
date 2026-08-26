@@ -96,7 +96,7 @@ func showGrants() error {
 		return nil
 	}
 
-	cfg, err := conf.Load()
+	cfg, err := conf.Load(reading())
 	if err != nil {
 		return err
 	}

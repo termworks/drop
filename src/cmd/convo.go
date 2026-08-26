@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/bresilla/drop/src/pkg/arch/chat"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/discovery"
@@ -18,8 +19,8 @@ import (
 //
 // Undelivered messages stay queued rather than being dropped, which is what makes sending to a
 // device that is asleep work: it goes out when the device comes back.
-func deliverTo(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.Entry, path string) (int, error) {
-	return deliverOver(ctx, best(n, lan), entry, path)
+func deliverTo(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.Entry, path, archetype string) (int, error) {
+	return deliverOver(ctx, best(n, lan), entry, path, archetype)
 }
 
 // deliverOver sends what is queued over whatever connection the caller has.
@@ -27,7 +28,7 @@ func deliverTo(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book
 // A held one where there is one. Finding a device and standing up a relay session is five seconds;
 // a message on a connection that already exists is eight milliseconds. Dialling again for every
 // line somebody types throws that away.
-func deliverOver(ctx context.Context, over reaches, entry book.Entry, path string) (int, error) {
+func deliverOver(ctx context.Context, over reaches, entry book.Entry, path, archetype string) (int, error) {
 	store, err := convo.Open(entry.ID)
 	if err != nil {
 		return 0, err
@@ -48,27 +49,27 @@ func deliverOver(ctx context.Context, over reaches, entry book.Entry, path strin
 	defer done.Close()
 	defer s.Close()
 
-	stored, err := proto.SendMessages(ctx, s, path, waiting, node.DisplayName())
+	conn, err := proto.Open(s, path, archetype, 0, "", node.DisplayName())
+	if err == nil {
+		var stored []string
+		if stored, err = chat.Send(conn, waiting); err == nil {
+			return len(stored), store.Delivered(stored...)
+		}
+	}
+
+	// A refusal is an answer. Leaving these queued would retry them against a decision on every
+	// connection from now on, and go on telling the sender they are on their way.
 	if proto.WasDeclined(err) {
-		// A refusal is an answer. Leaving these queued would retry them against a decision on
-		// every connection from now on, and go on telling the sender they are on their way.
 		if done := ids(waiting); len(done) > 0 {
 			_ = store.Delivered(done...)
 		}
-		return 0, err
 	}
-	if err != nil {
-		return 0, err
-	}
-	if err := store.Delivered(stored...); err != nil {
-		return 0, err
-	}
-	return len(stored), nil
+	return 0, err
 }
 
 // deliver sends into the default chat namespace.
 func deliver(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.Entry) (int, error) {
-	return deliverTo(ctx, n, lan, entry, "/chat")
+	return deliverTo(ctx, n, lan, entry, "/chat", "chat")
 }
 
 // compose queues a message for a peer without needing the network.

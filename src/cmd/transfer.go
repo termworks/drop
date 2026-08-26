@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bresilla/drop/src/pkg/proto"
+	"github.com/bresilla/drop/src/pkg/wire"
 )
 
 // progress prints one line per item, rewritten in place, at a rate a terminal can keep up with.
@@ -31,7 +31,7 @@ func (p *progress) update(name string, done, total int64) {
 
 	// An item with no length can only report what has arrived, because there is no total to be a
 	// share of.
-	if total == proto.SizeUnknown {
+	if total == wire.SizeUnknown {
 		fmt.Printf("\r  %-28s %s   ", name, bytes(done))
 		return
 	}

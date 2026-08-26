@@ -1,7 +1,12 @@
-package proto
+// Package live is a stream both ends write on.
+//
+// Neither end knows how much will pass and neither has to stop when the other does, the way a pipe
+// closing its input does not stop it producing output. A terminal being watched and a command being
+// read are both this, which is why it sits under the archetypes that serve them rather than inside
+// one of them.
+package live
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -14,24 +19,57 @@ import (
 // lingerFor bounds the wait for the far end to close after both sides have stopped writing.
 const lingerFor = 5 * time.Second
 
-// Stream is what a session runs over: a bidirectional byte stream whose write side can be
-// closed on its own, which is what a half-close needs.
+// Stream is what a session runs over: a bidirectional byte stream whose write side can be closed on
+// its own, which is what a half-close needs.
 type Stream interface {
 	io.ReadWriteCloser
 	SetReadDeadline(t time.Time) error
 }
 
+// Resize reports a new terminal size.
+type Resize struct {
+	Cols uint16
+	Rows uint16
+}
+
+func (z Resize) encode() []byte {
+	w := wire.NewWriter()
+	w.Uint(uint64(z.Cols))
+	w.Uint(uint64(z.Rows))
+	return w.Body()
+}
+
+func decodeResize(body []byte) (Resize, error) {
+	var out Resize
+
+	r := wire.NewReader(body)
+	cols, err := r.Uint()
+	if err != nil {
+		return out, err
+	}
+	rows, err := r.Uint()
+	if err != nil {
+		return out, err
+	}
+	out.Cols, out.Rows = uint16(cols), uint16(rows)
+	return out, nil
+}
+
 // Duplex is a live stream between two nodes: both ends write whenever they have something, and
-// neither knows how much will pass. Terminal sessions and pipes are this.
+// neither knows how much will pass.
 //
-// The two directions are independent. One end finishing does not end the other, the same way a
-// pipe closing its input does not stop it producing output.
+// The two directions are independent. One end finishing does not end the other.
 type Duplex struct {
 	conn   *wire.Conn
 	stream Stream
 	mu     sync.Mutex // one writer at a time, so frames do not interleave mid-body
 	// OnResize, when set, is called when the far end reports a new terminal size.
 	OnResize func(cols, rows uint16)
+}
+
+// New takes a stream that has already been accepted and runs a duplex over it.
+func New(conn *wire.Conn, s Stream) *Duplex {
+	return &Duplex{conn: conn, stream: s}
 }
 
 // Write sends bytes, split into data frames.
@@ -69,7 +107,7 @@ func (d *Duplex) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if err := d.conn.WriteFrame(wire.KindEnd, End{Size: SizeUnknown}.encode()); err != nil {
+	if err := d.conn.WriteFrame(wire.KindEnd, wire.End{Size: wire.SizeUnknown}.Encode()); err != nil {
 		return err
 	}
 	if d.stream != nil {
@@ -154,42 +192,5 @@ func (d *Duplex) Pump(out io.Writer) error {
 				return err
 			}
 		}
-	}
-}
-
-// OpenDuplex starts a live stream to a peer. Name describes what it is, for the far end to show.
-func OpenDuplex(ctx context.Context, s Stream, path, name, from string) (*Duplex, error) {
-	conn := wire.NewConn(s)
-	open := Open{
-		Mode:  ModeDuplex,
-		Path:  path,
-		From:  from,
-		Items: []Item{{Name: name, Size: SizeUnknown}},
-	}
-	open.Badge, open.Signed = carried()
-
-	if err := conn.WriteFrame(wire.KindOpen, open.encode()); err != nil {
-		_ = s.Close()
-		return nil, err
-	}
-
-	kind, body, err := conn.ReadFrame()
-	if err != nil {
-		_ = s.Close()
-		return nil, fmt.Errorf("reading the answer: %w", err)
-	}
-	switch kind {
-	case wire.KindAccept:
-		return &Duplex{conn: conn, stream: s}, nil
-	case wire.KindReject:
-		reject, derr := decodeReject(body)
-		_ = s.Close()
-		if derr != nil {
-			return nil, derr
-		}
-		return nil, Declined{Reason: reject.Reason}
-	default:
-		_ = s.Close()
-		return nil, fmt.Errorf("expected an answer, got frame kind %d", kind)
 	}
 }

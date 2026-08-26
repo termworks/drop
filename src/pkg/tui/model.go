@@ -14,7 +14,6 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/node"
-	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 	tickets "github.com/bresilla/drop/src/pkg/ticket"
 	"io"
@@ -79,8 +78,9 @@ type Backend interface {
 	// the request is written down on the far machine for somebody there to answer.
 	AskFor(ctx context.Context, on book.Entry, path, why string) error
 
-	// Post sends one message to a path: a line of text to a chat, a URL to a link.
-	Post(ctx context.Context, to book.Entry, path string, kind byte, body string) error
+	// Post sends one message to a path: a line of text to a chat, a URL to a link. The archetype
+	// is what the far end said is there, so a path is opened as the thing it is.
+	Post(ctx context.Context, to book.Entry, path, archetype string, kind byte, body string) error
 
 	// Arrivals reports when something lands from another device, so what is on screen is what
 	// has happened rather than what had happened when it was last drawn.
@@ -307,7 +307,7 @@ func (m *Model) stop() {
 	m.screen = nil
 }
 
-func archetypeOf(s proto.Served) ns.Archetype { return s.Archetype }
+func archetypeOf(s proto.Served) string { return s.Archetype }
 
 func shortID(e book.Entry) string {
 	id := e.ID.String()
@@ -354,14 +354,15 @@ type delivered struct{ err error }
 //
 // The screen is written from this goroutine and read from the interface's, which is why the nudge
 // carries nothing: by the time the interface reacts, what it reads is whatever is there now.
-func watch(back Backend, on book.Entry, path string, into *screen, ctx context.Context, ready func(Talk)) tea.Cmd {
+func watch(back Backend, on book.Entry, at proto.Served, into *screen, ctx context.Context, ready func(Talk)) tea.Cmd {
 	return func() tea.Msg {
 		err := back.Watch(ctx, Watching{
-			On:    on,
-			Path:  path,
-			Into:  into,
-			Sized: into.Resize,
-			Ready: ready,
+			On:        on,
+			Path:      at.Path,
+			Archetype: at.Archetype,
+			Into:      into,
+			Sized:     into.Resize,
+			Ready:     ready,
 		})
 		into.Finish()
 
@@ -456,6 +457,8 @@ type Identity struct {
 type Watching struct {
 	On   book.Entry
 	Path string
+	// Archetype is what the far end said is at that path.
+	Archetype string
 	// Into is where what arrives is written.
 	Into io.Writer
 	// Sized is called when the far end reports the shape of its terminal.

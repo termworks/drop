@@ -1,44 +1,47 @@
-package proto
+package files
 
 import (
 	"bytes"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/node"
-	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
+// readWriter is the two halves of a stream a test has in two buffers.
+type readWriter struct {
+	io.Reader
+	io.Writer
+}
+
 // opened runs a files namespace over a pipe and hands back the caller's side of it.
-func opened(t *testing.T, dir string, writable bool, policy Policy) *Browsing {
+func opened(t *testing.T, dir string, writable bool, hooks Into) *Browsing {
 	t.Helper()
 
-	at := Resolved{
-		From:  who(7),
-		Mount: ns.Mount{Path: "/files", Archetype: ns.Files, Dir: dir, Writable: writable},
-	}
-
 	caller, server := net.Pipe()
+	t.Cleanup(func() { caller.Close() })
+
 	go func() {
 		defer server.Close()
 
-		conn := wire.NewConn(server)
-		// The open is what Handle would have read before dispatching.
-		if _, _, err := conn.ReadFrame(); err != nil {
-			return
+		at := arch.Session{
+			Path:   "/files",
+			Config: Config{Dir: dir, Writable: writable},
+			Conn:   wire.NewConn(server),
 		}
-		_ = serveFiles(conn, at, policy)
+		_ = New(hooks).Serve(t.Context(), at)
 	}()
 
-	b, err := Browse(caller, at.Mount.Path, "tester")
+	b, err := Browse(wire.NewConn(caller))
 	if err != nil {
 		t.Fatalf("Browse(): %v", err)
 	}
-	t.Cleanup(func() { b.Close() })
 	return b
 }
 
@@ -51,7 +54,7 @@ func TestBrowseListsAndReadsAFile(t *testing.T) {
 		t.Fatalf("making the directory: %v", err)
 	}
 
-	b := opened(t, dir, false, Policy{})
+	b := opened(t, dir, false, Into{})
 	if b.Writable() {
 		t.Error("a read-only mount said it was writable")
 	}
@@ -97,7 +100,7 @@ func TestBrowseKeepsGoingAfterEveryRound(t *testing.T) {
 		}
 	}
 
-	b := opened(t, dir, false, Policy{})
+	b := opened(t, dir, false, Into{})
 	landing := t.TempDir()
 
 	for range 2 {
@@ -120,7 +123,7 @@ func TestBrowseKeepsGoingAfterEveryRound(t *testing.T) {
 
 func TestBrowseWritesWhenTheMountSaysSo(t *testing.T) {
 	dir := t.TempDir()
-	b := opened(t, dir, true, Policy{})
+	b := opened(t, dir, true, Into{})
 
 	if !b.Writable() {
 		t.Fatal("a writable mount said it was not")
@@ -129,8 +132,8 @@ func TestBrowseWritesWhenTheMountSaysSo(t *testing.T) {
 		t.Fatalf("Mkdir(): %v", err)
 	}
 
-	src := Source{Name: "report", Size: int64(len("the numbers")), Mode: 0o777, Reader: strings.NewReader("the numbers")}
-	if err := b.Put("uploads/report", src, nil); err != nil {
+	sent := "the numbers"
+	if err := b.Put("uploads/report", strings.NewReader(sent), int64(len(sent)), 0o777, nil); err != nil {
 		t.Fatalf("Put(): %v", err)
 	}
 
@@ -176,10 +179,9 @@ func TestBrowseRefusesEveryWriteOnAReadOnlyMount(t *testing.T) {
 		t.Fatalf("writing the file: %v", err)
 	}
 
-	b := opened(t, dir, false, Policy{})
+	b := opened(t, dir, false, Into{})
 
-	src := Source{Name: "sneaky", Size: 1, Reader: strings.NewReader("x")}
-	if err := b.Put("sneaky", src, nil); err == nil {
+	if err := b.Put("sneaky", strings.NewReader("x"), 1, 0o644, nil); err == nil {
 		t.Error("Put() worked on a read-only namespace")
 	}
 	if err := b.Remove("kept"); err == nil {
@@ -205,11 +207,10 @@ func TestBrowseReportsAnUploadThatLands(t *testing.T) {
 
 	var name string
 	var size int64
-	policy := Policy{Done: func(_ node.ID, n string, s int64) { name, size = n, s }}
+	hooks := Into{Landed: func(_ node.ID, n string, s int64) { name, size = n, s }}
 
-	b := opened(t, dir, true, policy)
-	src := Source{Name: "log", Size: 4, Reader: strings.NewReader("ping")}
-	if err := b.Put("log", src, nil); err != nil {
+	b := opened(t, dir, true, hooks)
+	if err := b.Put("log", strings.NewReader("ping"), 4, 0o644, nil); err != nil {
 		t.Fatalf("Put(): %v", err)
 	}
 	// One more round, so the note the far end makes after acknowledging has been made.
@@ -301,9 +302,8 @@ func TestABrowsedWriteWillNotFollowALink(t *testing.T) {
 		t.Fatalf("making the link: %v", err)
 	}
 
-	b := opened(t, dir, true, Policy{})
-	src := Source{Name: "planted", Size: 5, Reader: strings.NewReader("wrote")}
-	if err := b.Put("planted", src, nil); err == nil {
+	b := opened(t, dir, true, Into{})
+	if err := b.Put("planted", strings.NewReader("wrote"), 5, 0o644, nil); err == nil {
 		t.Fatal("Put() wrote through a planted symlink")
 	}
 
@@ -358,21 +358,6 @@ func TestReplyRefusesAnImpossibleCount(t *testing.T) {
 	}
 }
 
-func TestOpenRefusesAnImpossibleCount(t *testing.T) {
-	w := wire.NewWriter()
-	w.Byte(ModeShare)
-	w.String("bob")
-	w.String("/inbox")
-	w.String("")
-	w.Uint(maxItems)
-	if _, err := decodeOpen(w.Body()); err == nil {
-		t.Fatal("decodeOpen() accepted an offer whose items are not there")
-	}
-	if got := hint(maxItems, w.Body(), 3); got > len(w.Body()) {
-		t.Errorf("hint() = %d from a %d byte body", got, len(w.Body()))
-	}
-}
-
 // The bytes of a transfer are checked, not taken on trust.
 func TestTakeBodyRefusesACorruptedTransfer(t *testing.T) {
 	var buf bytes.Buffer
@@ -381,8 +366,8 @@ func TestTakeBodyRefusesACorruptedTransfer(t *testing.T) {
 	if err := conn.WriteData([]byte("hello")); err != nil {
 		t.Fatalf("writing the data: %v", err)
 	}
-	end := End{Size: 5, Digest: bytes.Repeat([]byte{0}, 32)}
-	if err := conn.WriteFrame(wire.KindEnd, end.encode()); err != nil {
+	end := wire.End{Size: 5, Digest: bytes.Repeat([]byte{0}, 32)}
+	if err := conn.WriteFrame(wire.KindEnd, end.Encode()); err != nil {
 		t.Fatalf("writing the end: %v", err)
 	}
 

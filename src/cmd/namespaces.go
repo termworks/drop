@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/conf"
 	"github.com/bresilla/drop/src/pkg/ns"
 )
@@ -18,7 +19,7 @@ func newNamespacesCmd() *cobra.Command {
 		Short:   "Show the namespaces this node serves",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return showOwnTable()
+			return showOwnTable(reading())
 		},
 	}
 }
@@ -27,8 +28,8 @@ func newNamespacesCmd() *cobra.Command {
 //
 // Unfiltered, deliberately: you are not a guest on your own machine, and this is where you check
 // that a rule says what you meant it to.
-func showOwnTable() error {
-	cfg, err := conf.Load()
+func showOwnTable(known *arch.Registry) error {
+	cfg, err := conf.Load(known)
 	if err != nil {
 		return err
 	}
@@ -43,9 +44,10 @@ func showOwnTable() error {
 	}
 
 	mounts := cfg.Mounts.All()
-	kind := widest(6, archetypes(mounts))
+	kind := widest(6, kinds(mounts))
 	for _, m := range mounts {
-		fmt.Printf("  %-24s %-*s %-22s %s\n", m.Path, kind, m.Archetype, shared(cfg.Mounts, m), detail(m))
+		fmt.Printf("  %-24s %-*s %-22s %s\n",
+			m.Path, kind, kindOf(m.Archetype), shared(cfg.Mounts, m), detail(known, m))
 	}
 	return nil
 }
@@ -62,11 +64,11 @@ func widest(floor int, of []string) int {
 	return width
 }
 
-// archetypes is the archetype column of a table of mounts.
-func archetypes(mounts []ns.Mount) []string {
+// kinds is the archetype column of a table of mounts.
+func kinds(mounts []ns.Mount) []string {
 	out := make([]string, 0, len(mounts))
 	for _, m := range mounts {
-		out = append(out, m.Archetype.String())
+		out = append(out, kindOf(m.Archetype))
 	}
 	return out
 }

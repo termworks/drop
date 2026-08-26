@@ -26,7 +26,7 @@ func configured(t *testing.T, body string) *Config {
 		t.Fatalf("writing the config: %v", err)
 	}
 
-	cfg, err := Load()
+	cfg, err := Load(known())
 	if err != nil {
 		t.Fatalf("loading: %v", err)
 	}
@@ -84,10 +84,10 @@ func TestTheDefaultsAreOpenToAPairedDevice(t *testing.T) {
 	stranger := ns.Caller{ID: "zzzz"}
 
 	for _, path := range []string{"/inbox", "/chat", "/open"} {
-		if ok, why := Default().Mounts.Admits(path, paired); !ok {
+		if ok, why := Default(known()).Mounts.Admits(path, paired); !ok {
 			t.Fatalf("%s is closed to a paired device: %s", path, why)
 		}
-		if ok, _ := Default().Mounts.Admits(path, stranger); ok {
+		if ok, _ := Default(known()).Mounts.Admits(path, stranger); ok {
 			t.Fatalf("%s is open to a stranger", path)
 		}
 	}

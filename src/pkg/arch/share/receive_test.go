@@ -1,7 +1,8 @@
-package proto
+package share
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,8 +33,8 @@ func spoken(t *testing.T, items ...spoke) *bytes.Buffer {
 		}
 		digest := blake3.New(32, nil)
 		digest.Write(item.whole)
-		end := End{Size: int64(len(item.whole)), Digest: digest.Sum(nil)}
-		if err := conn.WriteFrame(wire.KindEnd, end.encode()); err != nil {
+		end := wire.End{Size: int64(len(item.whole)), Digest: digest.Sum(nil)}
+		if err := conn.WriteFrame(wire.KindEnd, end.Encode()); err != nil {
 			t.Fatalf("writing the end: %v", err)
 		}
 	}
@@ -41,16 +42,31 @@ func spoken(t *testing.T, items ...spoke) *bytes.Buffer {
 }
 
 // taking runs a receiving session against a directory and hands back what was answered.
+//
+// The offer goes in front of what the sender wrote, because that is the first thing on the stream.
 func taking(t *testing.T, dir string, items []Item, sent *bytes.Buffer, done *[]string) (*bytes.Buffer, error) {
 	t.Helper()
 
-	var out bytes.Buffer
-	policy := Policy{Dir: dir}
-	if done != nil {
-		policy.Done = func(_ node.ID, name string, _ int64) { *done = append(*done, name) }
+	var offering bytes.Buffer
+	if err := wire.NewConn(readWriter{&offering, &offering}).WriteFrame(wire.KindItem, offer{Items: items}.encode()); err != nil {
+		t.Fatalf("writing the offer: %v", err)
 	}
-	err := receiveFiles(wire.NewConn(readWriter{sent, &out}), policy, node.ID{}, Open{Mode: ModeShare, Items: items})
+	offering.Write(sent.Bytes())
+
+	var hooks Into
+	if done != nil {
+		hooks.Landed = func(_ node.ID, name string, _ int64) { *done = append(*done, name) }
+	}
+
+	var out bytes.Buffer
+	err := receive(wire.NewConn(readWriter{&offering, &out}), dir, node.ID{}, hooks)
 	return &out, err
+}
+
+// readWriter is the two halves of a stream a test has in two buffers.
+type readWriter struct {
+	io.Reader
+	io.Writer
 }
 
 // answered reads back the frames a receiving session wrote.
@@ -85,7 +101,7 @@ func read(t *testing.T, path string) []byte {
 // truncation its tail stays under the new bytes, and the digest -- taken over the stream -- passes.
 func TestAStalePartIsNotLeftUnderTheItem(t *testing.T) {
 	dir := t.TempDir()
-	item := Item{Name: "notes", Size: SizeUnknown, Mode: 0o644}
+	item := Item{Name: "notes", Size: wire.SizeUnknown, Mode: 0o644}
 
 	stale := bytes.Repeat([]byte("x"), 4096)
 	if err := os.WriteFile(filepath.Join(dir, partName(item)), stale, 0o600); err != nil {
@@ -118,12 +134,12 @@ func TestResumeOnlyPicksUpTheSameOffer(t *testing.T) {
 		t.Fatalf("receiving: %v", err)
 	}
 
-	accept, err := decodeAccept(answered(t, out))
+	picked, err := decodeResume(answered(t, out))
 	if err != nil {
-		t.Fatalf("decoding the accept: %v", err)
+		t.Fatalf("decoding the answer: %v", err)
 	}
-	if accept.Resume[0] != 0 {
-		t.Fatalf("resumed at %d against another offer's part", accept.Resume[0])
+	if picked.At[0] != 0 {
+		t.Fatalf("resumed at %d against another offer's part", picked.At[0])
 	}
 	if got := read(t, filepath.Join(dir, "a.txt")); !bytes.Equal(got, whole) {
 		t.Fatalf("landed %q, expected %q", got, whole)
@@ -145,12 +161,12 @@ func TestResumeContinuesTheSameOffer(t *testing.T) {
 		t.Fatalf("receiving: %v", err)
 	}
 
-	accept, err := decodeAccept(answered(t, out))
+	picked, err := decodeResume(answered(t, out))
 	if err != nil {
-		t.Fatalf("decoding the accept: %v", err)
+		t.Fatalf("decoding the answer: %v", err)
 	}
-	if accept.Resume[0] != 6 {
-		t.Fatalf("resumed at %d, expected 6", accept.Resume[0])
+	if picked.At[0] != 6 {
+		t.Fatalf("resumed at %d, expected 6", picked.At[0])
 	}
 	if got := read(t, filepath.Join(dir, "b.bin")); !bytes.Equal(got, whole) {
 		t.Fatalf("landed %q, expected %q", got, whole)
@@ -254,7 +270,7 @@ func TestASymlinkedPartIsNotWrittenThrough(t *testing.T) {
 		t.Fatalf("writing the file outside: %v", err)
 	}
 
-	item := Item{Name: "notes", Size: SizeUnknown}
+	item := Item{Name: "notes", Size: wire.SizeUnknown}
 	if err := os.Symlink(outside, filepath.Join(dir, partName(item))); err != nil {
 		t.Fatalf("planting a symlink: %v", err)
 	}

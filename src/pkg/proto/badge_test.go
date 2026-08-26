@@ -46,7 +46,7 @@ func TestABadgeSaysWhoseMachineIsCalling(t *testing.T) {
 	device := idFrom(1)
 	signer, badge, sig := badgeFor(t, device, "laptop")
 
-	shown := vouched(device, Open{Badge: badge, Signed: sig})
+	shown := vouched(device, Opening{Badge: badge, Signed: sig})
 	if !shown.Shown() {
 		t.Fatal("a good badge was not believed")
 	}
@@ -63,7 +63,7 @@ func TestABadgeSaysWhoseMachineIsCalling(t *testing.T) {
 func TestABadgeForAnotherMachineIsNotBelieved(t *testing.T) {
 	_, badge, sig := badgeFor(t, idFrom(1), "laptop")
 
-	if shown := vouched(idFrom(2), Open{Badge: badge, Signed: sig}); shown.Shown() {
+	if shown := vouched(idFrom(2), Opening{Badge: badge, Signed: sig}); shown.Shown() {
 		t.Fatal("a badge was believed on the wrong machine")
 	}
 }
@@ -72,7 +72,7 @@ func TestRubbishIsNotABadge(t *testing.T) {
 	device := idFrom(1)
 	_, badge, sig := badgeFor(t, device, "laptop")
 
-	for what, open := range map[string]Open{
+	for what, open := range map[string]Opening{
 		"nothing at all":   {},
 		"no signature":     {Badge: badge},
 		"a bent signature": {Badge: badge, Signed: append([]byte("x"), sig...)},
@@ -137,11 +137,12 @@ func TestPairingCarriesABadge(t *testing.T) {
 // declared. This is the assertion that the tolerance is gone and stays gone.
 func TestAFrameWithNoBadgeInItIsRefused(t *testing.T) {
 	short := wire.NewWriter()
-	short.Byte(ModeMessages)
+	short.Bool(false)
+	short.String("chat")
+	short.Uint(1)
 	short.String("laptop")
 	short.String("/chat")
 	short.String("")
-	short.Uint(0)
 
 	if _, err := decodeOpen(short.Body()); err == nil {
 		t.Error("an open with no badge fields decoded")

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/wire"
@@ -14,14 +15,21 @@ import (
 const MaxServed = 256
 
 // Served is one namespace a node offers.
+//
+// What is said about it comes from the archetype it belongs to, so a kind of path invented next
+// week describes itself here without this frame learning a word about it.
 type Served struct {
-	Path      string
-	Archetype ns.Archetype
-	// Writable says the far end may put something into it: a share that accepts, a files namespace
-	// that allows writes, or a tty that takes input.
+	Path string
+	// Archetype is what is there, by name, and Version which revision of it. Both empty for a
+	// branch, which is a path that holds others and serves nothing.
+	Archetype string
+	Version   int
+	// Writable says the far end may put something into it.
 	Writable bool
 	// Locked says this path can be seen but not opened. It is here to be asked for.
 	Locked bool
+	// About is what this kind of path is for, in the words of whoever wrote it.
+	About string
 }
 
 // Hello is what a node answers with when asked what it calls itself. Self-declared, so it names a
@@ -43,9 +51,11 @@ func (h Hello) encode() []byte {
 	w.Uint(uint64(len(h.Serves)))
 	for _, s := range h.Serves {
 		w.String(s.Path)
-		w.Byte(byte(s.Archetype))
+		w.String(s.Archetype)
+		w.Uint(uint64(s.Version))
 		w.Bool(s.Writable)
 		w.Bool(s.Locked)
+		w.String(s.About)
 	}
 	return w.Body()
 }
@@ -77,7 +87,11 @@ func decodeHello(body []byte) (Hello, error) {
 		if err != nil {
 			return out, err
 		}
-		archetype, err := r.Byte()
+		archetype, err := r.String(256)
+		if err != nil {
+			return out, err
+		}
+		version, err := r.Uint()
 		if err != nil {
 			return out, err
 		}
@@ -89,11 +103,17 @@ func decodeHello(body []byte) (Hello, error) {
 		if err != nil {
 			return out, err
 		}
+		about, err := r.String(wire.MaxString)
+		if err != nil {
+			return out, err
+		}
 		out.Serves = append(out.Serves, Served{
 			Path:      path,
-			Archetype: ns.Archetype(archetype),
+			Archetype: archetype,
+			Version:   int(version),
 			Writable:  writable,
 			Locked:    locked,
+			About:     about,
 		})
 	}
 	return out, nil
@@ -107,7 +127,7 @@ func decodeHello(body []byte) (Hello, error) {
 //
 // A path guarded by a password is therefore never listed — nobody offers a secret to ask what
 // exists — so whoever is given one needs the path as well as the word.
-func Describe(table *ns.Table, caller ns.Caller) []Served {
+func Describe(table *ns.Table, known *arch.Registry, caller ns.Caller) []Served {
 	if table == nil {
 		return nil
 	}
@@ -118,28 +138,31 @@ func Describe(table *ns.Table, caller ns.Caller) []Served {
 		if !open && !table.Sees(m.Path, caller) {
 			continue
 		}
-		out = append(out, Served{
-			Path:      m.Path,
-			Archetype: m.Archetype,
-			Writable:  open && writable(m),
-			Locked:    !open,
-		})
+
+		said := Served{Path: m.Path, Archetype: m.Archetype, Version: m.Version, Locked: !open}
+		if m.Branch() {
+			said.About = "holds other paths, serves nothing"
+			out = append(out, said)
+			continue
+		}
+		// What may be said about it comes from the archetype, including which revision of itself
+		// will answer when a mount pinned none.
+		if answers, ok := lookup(known, m); ok {
+			note := answers.Note(m.Config)
+			said.Version = answers.Version()
+			said.Writable, said.About = open && note.Writable, note.About
+		}
+		out = append(out, said)
 	}
 	return out
 }
 
-// writable reports whether the far end may send into a namespace.
-func writable(m ns.Mount) bool {
-	switch m.Archetype {
-	case ns.Share, ns.Chat, ns.Link:
-		return true
-	case ns.Files:
-		return m.Writable
-	case ns.TTY:
-		return m.Input
-	default:
-		return false
+// lookup finds what answers for a mount, and nothing at all when this build has no idea.
+func lookup(known *arch.Registry, m ns.Mount) (arch.Archetype, bool) {
+	if known == nil {
+		return nil, false
 	}
+	return known.Lookup(m.Archetype, m.Version)
 }
 
 // AnswerHello reads the ask and writes this node's description back.

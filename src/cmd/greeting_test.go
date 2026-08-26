@@ -25,8 +25,8 @@ func served(t *testing.T) *ns.Table {
 
 	table := ns.NewTable()
 	for _, m := range []ns.Mount{
-		{Path: "/shared", Archetype: ns.Share, Access: ns.Access{Named: []string{"laptop"}}},
-		{Path: "/private", Archetype: ns.TTY},
+		{Path: "/shared", Archetype: "share", Access: ns.Access{Named: []string{"laptop"}}},
+		{Path: "/private", Archetype: "tty"},
 	} {
 		if err := table.Add(m); err != nil {
 			t.Fatalf("adding %s: %v", m.Path, err)
@@ -46,7 +46,7 @@ func TestAStrangerLearnsNothingAboutNamespaces(t *testing.T) {
 		t.Fatalf("book.Load(): %v", err)
 	}
 
-	hello := greeting(pinned, served(t), idFor(9), proto.Badged{})
+	hello := greeting(pinned, served(t), reading(), idFor(9), proto.Badged{})
 	if len(hello.Serves) != 0 {
 		t.Fatalf("an unpaired caller was told about %+v", hello.Serves)
 	}
@@ -67,7 +67,7 @@ func TestAKnownButUnpairedDeviceLearnsNothing(t *testing.T) {
 	id := idFor(4)
 	pinned.Pin("seen", id)
 
-	if hello := greeting(pinned, served(t), id, proto.Badged{}); len(hello.Serves) != 0 {
+	if hello := greeting(pinned, served(t), reading(), id, proto.Badged{}); len(hello.Serves) != 0 {
 		t.Fatalf("a pinned but unpaired caller was told about %+v", hello.Serves)
 	}
 }
@@ -85,7 +85,7 @@ func TestAPairedDeviceIsToldOnlyItsOwnPaths(t *testing.T) {
 	id := idFor(5)
 	pinned.Pair("laptop", id, make([]byte, book.SecretBytes))
 
-	hello := greeting(pinned, served(t), id, proto.Badged{})
+	hello := greeting(pinned, served(t), reading(), id, proto.Badged{})
 
 	shown := map[string]bool{}
 	for _, s := range hello.Serves {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/grant"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
@@ -42,6 +43,9 @@ type Config struct {
 	OpenLinks bool
 	// Mounts is every namespace this node serves.
 	Mounts *ns.Table
+	// known is what those namespaces can be. A mount is read by the archetype it names, so a
+	// config that names one this build does not have is refused where it is written.
+	known *arch.Registry
 	// rt holds the Lua state, kept alive for the handlers a config registered.
 	rt *runtime
 	// Path is the file this came from, empty when nothing was found.
@@ -55,15 +59,47 @@ type Config struct {
 // Open to anyone paired, because a default that serves nobody is not a default — it is a node
 // that appears broken until its owner finds out a rule was needed. Pairing is already the
 // deliberate act: nothing reaches these without one.
-func Default() *Config {
+func Default(known *arch.Registry) *Config {
 	open := ns.Access{AnyPaired: true}
 
-	table := ns.NewTable()
-	_ = table.Add(ns.Mount{Path: "/inbox", Archetype: ns.Share, Dir: Inbox(), Access: open})
-	_ = table.Add(ns.Mount{Path: "/chat", Archetype: ns.Chat, Access: open})
-	_ = table.Add(ns.Mount{Path: "/open", Archetype: ns.Link, Access: open})
+	cfg := &Config{Mounts: ns.NewTable(), known: known}
+	cfg.add("/inbox", "share", settings{"dir": Inbox()}, open)
+	cfg.add("/chat", "chat", settings{}, open)
+	cfg.add("/open", "link", settings{}, open)
+	return cfg
+}
 
-	return &Config{Mounts: table}
+// add declares one namespace of drop's own. An archetype this build does not register is left out
+// rather than mounted as something that cannot answer.
+func (c *Config) add(path, archetype string, of settings, access ns.Access) {
+	answers, ok := c.known.Lookup(archetype, 0)
+	if !ok {
+		return
+	}
+	made, err := answers.Read(of)
+	if err != nil {
+		return
+	}
+	_ = c.Mounts.Add(ns.Mount{Path: path, Archetype: archetype, Config: made, Access: access})
+}
+
+// settings is a declaration drop writes itself, for the namespaces it serves when nobody wrote a
+// config. The keys are the ones a person would have typed.
+type settings map[string]any
+
+func (s settings) String(key string) (string, bool) {
+	v, ok := s[key].(string)
+	return v, ok
+}
+
+func (s settings) Bool(key string) (bool, bool) {
+	v, ok := s[key].(bool)
+	return v, ok
+}
+
+func (s settings) Strings(key string) ([]string, bool) {
+	v, ok := s[key].([]string)
+	return v, ok
 }
 
 // Inbox is where a default share puts what arrives: a drop folder inside the downloads directory,
@@ -101,7 +137,7 @@ func FilePath() (string, error) {
 //
 // A file that exists and does not parse is fatal rather than ignored: a typo that silently drops
 // half the namespaces is worse than not starting.
-func Load() (*Config, error) {
+func Load(known *arch.Registry) (*Config, error) {
 	path, err := FilePath()
 	if err != nil {
 		return nil, err
@@ -109,13 +145,13 @@ func Load() (*Config, error) {
 
 	_, err = os.Stat(path)
 	if os.IsNotExist(err) {
-		return Default(), nil
+		return Default(known), nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 
-	cfg := &Config{Mounts: ns.NewTable(), Path: path}
+	cfg := &Config{Mounts: ns.NewTable(), known: known, Path: path}
 	if err := run(cfg, path); err != nil {
 		return nil, err
 	}
@@ -171,8 +207,8 @@ func (c *Config) Apply() {
 // allowed — but only the ones that serve need the namespaces and handlers. An unreadable config is
 // ignored here rather than reported, because the command that actually depends on it loads it
 // again and says so properly.
-func ApplySettings() {
-	cfg, err := Load()
+func ApplySettings(known *arch.Registry) {
+	cfg, err := Load(known)
 	if err != nil {
 		return
 	}

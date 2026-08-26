@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bresilla/drop/src/pkg/arch"
+	"github.com/bresilla/drop/src/pkg/arch/share"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
@@ -22,20 +24,20 @@ import (
 // It no longer asks about pairing. Which paths a caller may reach is decided by the access rule
 // on the path, and a rule may name a bare key or a password — neither of which involves being
 // paired. Refusing here first would make those grants unreachable.
-func accepting(pinned *book.Book, any bool) func(node.ID, proto.Open) (bool, string) {
-	return func(from node.ID, open proto.Open) (bool, string) { return true, "" }
+func accepting(pinned *book.Book, any bool) func(node.ID, proto.Opening) (bool, string) {
+	return func(from node.ID, open proto.Opening) (bool, string) { return true, "" }
 }
 
 // gather turns command line arguments into sources, with - meaning standard input.
-func gather(args []string, stdinName string) ([]proto.Source, error) {
-	var sources []proto.Source
+func gather(args []string, stdinName string) ([]share.Source, error) {
+	var sources []share.Source
 
 	for _, path := range args {
 		if path == "-" {
-			sources = append(sources, proto.FileFromReader(stdinName, os.Stdin))
+			sources = append(sources, share.FileFromReader(stdinName, os.Stdin))
 			continue
 		}
-		src, err := proto.FileFromPath(path)
+		src, err := share.FileFromPath(path)
 		if err != nil {
 			return nil, err
 		}
@@ -61,13 +63,13 @@ func streamOver(err error) bool {
 //
 // The namespace list goes only to a peer that is paired: what a device serves says a great deal
 // about it, and hello is answered by anyone who dials.
-func greeting(pinned *book.Book, mounts *ns.Table, from node.ID, badge proto.Badged) proto.Hello {
+func greeting(pinned *book.Book, mounts *ns.Table, known *arch.Registry, from node.ID, badge proto.Badged) proto.Hello {
 	// No pairing check here any more: the rules on the paths decide, and one of them may name a
 	// bare key. What an unpaired caller can reach is usually nothing, and then the list is empty.
 	return proto.Hello{
 		Name:    node.DisplayName(),
 		Version: version,
-		Serves:  proto.Describe(mounts, whoIs(pinned)(from, badge)),
+		Serves:  proto.Describe(mounts, known, whoIs(pinned)(from, badge)),
 	}
 }
 

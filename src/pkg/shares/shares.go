@@ -19,7 +19,6 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/node"
-	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 )
 
@@ -28,7 +27,9 @@ import (
 type stored struct {
 	Path      string `json:"path"`
 	Archetype string `json:"archetype"`
+	Version   int    `json:"version,omitempty"`
 	Writable  bool   `json:"writable,omitempty"`
+	About     string `json:"about,omitempty"`
 }
 
 func at(peer node.ID) (string, error) {
@@ -48,7 +49,13 @@ func Remember(peer node.ID, what []proto.Served) error {
 
 	out := make([]stored, 0, len(what))
 	for _, s := range what {
-		out = append(out, stored{Path: s.Path, Archetype: s.Archetype.String(), Writable: s.Writable})
+		out = append(out, stored{
+			Path:      s.Path,
+			Archetype: s.Archetype,
+			Version:   s.Version,
+			Writable:  s.Writable,
+			About:     s.About,
+		})
 	}
 
 	raw, err := json.MarshalIndent(out, "", "  ")
@@ -84,15 +91,18 @@ func Recall(peer node.ID) ([]proto.Served, error) {
 		return nil, fmt.Errorf("parsing %s: %w", file, err)
 	}
 
-	// A name this build does not know is skipped, not fatal. This file is a convenience: losing one
-	// line of it should cost one path, not the whole memory of what a device shares.
+	// A kind of path this build has never heard of is kept, not skipped: what a device serves is
+	// its business, and a listing that quietly loses a row is worse than one naming something this
+	// end cannot open yet.
 	out := make([]proto.Served, 0, len(onDisk))
 	for _, s := range onDisk {
-		archetype, err := ns.ParseArchetype(s.Archetype)
-		if err != nil {
-			continue
-		}
-		out = append(out, proto.Served{Path: s.Path, Archetype: archetype, Writable: s.Writable})
+		out = append(out, proto.Served{
+			Path:      s.Path,
+			Archetype: s.Archetype,
+			Version:   s.Version,
+			Writable:  s.Writable,
+			About:     s.About,
+		})
 	}
 	return out, nil
 }

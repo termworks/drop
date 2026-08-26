@@ -242,7 +242,7 @@ func finishPairing(self, from node.ID, theirs, mine pairMsg) (Pairing, error) {
 
 	// The badge is checked against the id the transport proved, so a message claiming somebody
 	// else's badge is worth exactly nothing.
-	if badge := vouched(from, Open{Badge: theirs.Badge, Signed: theirs.Signed}); badge.Shown() {
+	if badge := vouched(from, Opening{Badge: theirs.Badge, Signed: theirs.Signed}); badge.Shown() {
 		out.User, out.Machine = badge.Key, badge.As
 	}
 	return out, nil

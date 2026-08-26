@@ -69,12 +69,12 @@ func putFile(back Backend, to book.Entry, path, file string, into *moving) tea.C
 }
 
 // putLink sends a URL to a path on another device.
-func putLink(back Backend, to book.Entry, path, url string) tea.Cmd {
+func putLink(back Backend, to book.Entry, path, archetype, url string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, stop := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer stop()
 
-		err := back.Post(ctx, to, path, convo.KindLink, url)
+		err := back.Post(ctx, to, path, archetype, convo.KindLink, url)
 		return putDone{what: url, err: err}
 	}
 }

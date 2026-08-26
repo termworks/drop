@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"time"
 
@@ -254,41 +253,46 @@ func (m Model) openView() string {
 }
 
 // inside is what the open path shows, without the box around it.
+//
+// The archetype is compared by name here, and in the keys below, because the interface draws a
+// conversation differently from a terminal. A view registry belongs where the archetypes are
+// registered, so a kind of path invented next week brings its own screen; until there is one, this
+// is the switch that stands in for it.
 func (m Model) inside(at proto.Served) string {
 	// One of this machine's own paths is not a conversation with anybody: it is what other devices
 	// reach. Only a share namespace has something of its own to show.
-	if m.onSelf && archetypeOf(at) != ns.Share {
+	if m.onSelf && archetypeOf(at) != "share" {
 		return dimStyle.Render("this is what other devices reach.") + "\n\n" +
 			faintStyle.Render("what passed over it is in the conversation with whoever it was.")
 	}
 
 	switch archetypeOf(at) {
-	case ns.Chat:
+	case "chat":
 		return m.chatView()
 
-	case ns.TTY, ns.Stream:
+	case "tty", "stream":
 		if m.screen == nil {
 			return faintStyle.Render("not watching.")
 		}
 		return m.canvas(lines(m.screen.Draw(), m.viewHeight()))
 
-	case ns.Share:
+	case "share":
 		// Your own is a directory: say what is in it. Somebody else's is a place to send things,
 		// and the record of what has been sent there is the useful thing to show.
 		if m.onSelf {
 			return m.heldView()
 		}
-		return m.putView("a file", ns.Share, m.transfers())
+		return m.putView("a file", "share", m.transfers())
 
-	case ns.Link:
-		return m.putView("a link", ns.Link, m.links())
+	case "link":
+		return m.putView("a link", "link", m.links())
 
-	case ns.Branch:
+	case "":
 		return dimStyle.Render("holds other paths.") + "\n" +
 			faintStyle.Render("go back and pick one under it.")
 
 	default:
-		return dimStyle.Render("a " + archetypeOf(at).String() + " path.")
+		return dimStyle.Render("a " + archetypeOf(at) + " path.")
 	}
 }
 
@@ -296,7 +300,7 @@ func (m Model) inside(at proto.Served) string {
 //
 // The same shape for both, because they are the same act. What differs is the word for the thing
 // and whether a path can be completed, and neither is worth a second screen.
-func (m Model) putView(what string, archetype ns.Archetype, before []string) string {
+func (m Model) putView(what string, archetype string, before []string) string {
 	var out strings.Builder
 
 	if m.putting {
@@ -308,7 +312,7 @@ func (m Model) putView(what string, archetype ns.Archetype, before []string) str
 		}
 
 		hint := "enter sends, esc goes back"
-		if archetype == ns.Share {
+		if archetype == "share" {
 			hint = "tab completes, " + hint
 		}
 		out.WriteString("\n " + faintStyle.Render(hint))
@@ -517,9 +521,9 @@ func (m Model) footer() string {
 		keys = []hint{{"esc", "back"}}
 		if at, ok := m.path(); ok {
 			switch {
-			case archetypeOf(at) == ns.Chat:
+			case archetypeOf(at) == "chat":
 				keys = append([]hint{{"i", "write"}}, keys...)
-			case archetypeOf(at) == ns.TTY && at.Writable:
+			case archetypeOf(at) == "tty" && at.Writable:
 				keys = append([]hint{{"i", "type into it"}}, keys...)
 			case putsInto(archetypeOf(at)):
 				keys = append([]hint{{"s", "send"}}, keys...)

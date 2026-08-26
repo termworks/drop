@@ -39,7 +39,7 @@ func Execute(v string, exit func(int), args []string) {
 	// Settings before any command runs, so one that only dials still knows what it is allowed
 	// to do. The commands that serve load the whole config themselves.
 	root.PersistentPreRunE = func(*cobra.Command, []string) error {
-		conf.ApplySettings()
+		conf.ApplySettings(reading())
 		unlocking()
 
 		return wearBadge()

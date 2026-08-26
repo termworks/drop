@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"github.com/bresilla/drop/src/pkg/book"
-	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"os"
 	"strings"
@@ -390,12 +389,12 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		switch {
-		case archetypeOf(at) == ns.Chat:
+		case archetypeOf(at) == "chat":
 			m.writing = true
 
 		// A terminal that takes input is typed into the same way, by saying so first. Everything
 		// after goes to it rather than to this list.
-		case archetypeOf(at) == ns.TTY && at.Writable && m.typingAt != nil:
+		case archetypeOf(at) == "tty" && at.Writable && m.typingAt != nil:
 			m.atKeyboard, m.trouble = true, ""
 		}
 		return m, nil
@@ -739,7 +738,7 @@ func (m *Model) openPath() tea.Cmd {
 	// This machine's own paths come first, because there is no peer behind them: a files namespace
 	// of your own is a directory on this disk, not a conversation with anybody.
 	if m.onSelf {
-		if archetypeOf(at) == ns.Share {
+		if archetypeOf(at) == "share" {
 			m.held, m.loading = nil, true
 			return loadHeld(m.back, at.Path)
 		}
@@ -751,13 +750,15 @@ func (m *Model) openPath() tea.Cmd {
 		return nil
 	}
 
+	// By name, standing in for the view registry that belongs beside the archetype registry: what
+	// opening a path does is a property of the kind of path it is.
 	switch archetypeOf(at) {
-	case ns.Share, ns.Chat, ns.Link:
+	case "share", "chat", "link":
 		// All three read the same conversation: what was said, what changed hands, and what was
 		// opened are one record, and a share is a view onto part of it.
 		return loadHistory(m.back, with)
 
-	case ns.TTY, ns.Stream:
+	case "tty", "stream":
 		m.screen = newScreen(m.viewWidth(), m.viewHeight())
 		m.live, m.typingAt = true, nil
 
@@ -769,7 +770,7 @@ func (m *Model) openPath() tea.Cmd {
 		said := make(chan Talk, 1)
 
 		return tea.Batch(
-			watch(m.back, with, at.Path, m.screen, ctx, func(t Talk) {
+			watch(m.back, with, at, m.screen, ctx, func(t Talk) {
 				select {
 				case said <- t:
 				default:
@@ -826,7 +827,7 @@ func (m Model) putKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyTab:
 		// Completion is for paths. A URL has nothing on this machine to complete against.
 		at, ok := m.path()
-		if !ok || archetypeOf(at) != ns.Share {
+		if !ok || archetypeOf(at) != "share" {
 			return m, nil
 		}
 
@@ -854,7 +855,7 @@ func (m Model) putKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		m.putting, m.typing, m.options, m.trouble, m.said = false, "", nil, "", ""
 
-		if archetypeOf(at) == ns.Share {
+		if archetypeOf(at) == "share" {
 			file := expand(body)
 			if _, err := os.Stat(file); err != nil {
 				m.trouble = "no such file: " + file
@@ -863,7 +864,7 @@ func (m Model) putKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.offering = &moving{}
 			return m, tea.Batch(putFile(m.back, with, at.Path, file, m.offering), ticking())
 		}
-		return m, putLink(m.back, with, at.Path, body)
+		return m, putLink(m.back, with, at.Path, at.Archetype, body)
 
 	case tea.KeyBackspace:
 		if n := len(m.typing); n > 0 {
@@ -886,8 +887,8 @@ func (m Model) putKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // putsInto reports whether a path is somewhere you can send something.
-func putsInto(archetype ns.Archetype) bool {
-	return archetype == ns.Share || archetype == ns.Link
+func putsInto(archetype string) bool {
+	return archetype == "share" || archetype == "link"
 }
 
 // reading reports whether a conversation is open and being read rather than written.
@@ -897,7 +898,7 @@ func (m Model) reading() bool {
 	}
 
 	at, ok := m.path()
-	return ok && archetypeOf(at) == ns.Chat
+	return ok && archetypeOf(at) == "chat"
 }
 
 // scrollBy moves back through the conversation, or forward again. Positive is towards older.

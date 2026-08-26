@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/asciicast"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/cast"
@@ -100,13 +101,16 @@ type castHost struct {
 	mu     sync.Mutex
 	stage  *cast.Caster
 	mounts *ns.Table
+	// known is what a cast's path is, so the mount it puts up carries the settings the tty
+	// archetype reads rather than a shape this file made up.
+	known *arch.Registry
 	// declared says the path was in the config, so ending a cast leaves it alone. A /cast a person
 	// wrote down carries their access rule, and a cast that came and went must not replace it.
 	declared bool
 }
 
-func newCastHost(mounts *ns.Table) *castHost {
-	return &castHost{mounts: mounts}
+func newCastHost(mounts *ns.Table, known *arch.Registry) *castHost {
+	return &castHost{mounts: mounts, known: known}
 }
 
 // live is the cast in progress, or nil when nobody is casting.
@@ -134,11 +138,7 @@ func (h *castHost) begin(cols, rows uint16) (*cast.Caster, error) {
 	mount, _, ok := h.mounts.Lookup(CastPath)
 	h.declared = ok && mount.Path == CastPath
 	if !h.declared {
-		_ = h.mounts.Add(ns.Mount{
-			Path:      CastPath,
-			Archetype: ns.TTY,
-			Access:    ns.Access{AnyPaired: true},
-		})
+		_ = h.mounts.Add(castMount(h.known))
 	}
 	return h.stage, nil
 }

@@ -14,9 +14,6 @@ import (
 // later. Nothing is granted here and nothing is opened -- the far end says it heard, and that is
 // all the protocol promises.
 
-// ModeAsk is a session that asks to be let into a path rather than opening it.
-const ModeAsk byte = 4
-
 // MaxWhy bounds what a request may say, because it is somebody else's text landing on a disk.
 const MaxWhy = 280
 
@@ -27,7 +24,7 @@ func Ask(ctx context.Context, s Stream, path, why, from string) error {
 	}
 
 	conn := wire.NewConn(s)
-	open := Open{Mode: ModeAsk, Path: path, From: from, Secret: why}
+	open := Opening{Ask: true, Path: path, From: from, Secret: why}
 	open.Badge, open.Signed = carried()
 
 	if err := conn.WriteFrame(wire.KindOpen, open.encode()); err != nil {
@@ -39,7 +36,7 @@ func Ask(ctx context.Context, s Stream, path, why, from string) error {
 		return fmt.Errorf("asking for %s: %w", path, err)
 	}
 	if kind == wire.KindReject {
-		reject, err := decodeReject(body)
+		reject, err := wire.DecodeReject(body)
 		if err != nil {
 			return err
 		}
@@ -51,10 +48,10 @@ func Ask(ctx context.Context, s Stream, path, why, from string) error {
 // TakeAsk answers a request: it is heard, written down, and nothing is opened.
 func TakeAsk(conn *wire.Conn, policy Policy, from Asker) error {
 	if policy.Asked == nil {
-		return conn.WriteFrame(wire.KindReject, Reject{Reason: "not taking requests"}.encode())
+		return conn.WriteFrame(wire.KindReject, wire.Reject{Reason: "not taking requests"}.Encode())
 	}
 	if err := policy.Asked(from); err != nil {
-		return conn.WriteFrame(wire.KindReject, Reject{Reason: err.Error()}.encode())
+		return conn.WriteFrame(wire.KindReject, wire.Reject{Reason: err.Error()}.Encode())
 	}
 	return conn.WriteFrame(wire.KindAccept, nil)
 }

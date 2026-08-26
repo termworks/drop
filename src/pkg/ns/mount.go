@@ -7,76 +7,23 @@ import (
 	"sync"
 )
 
-// Archetype is what lives at a path, and therefore what happens when someone opens it.
-type Archetype byte
-
-const (
-	// Share is one-shot: somebody pushes items, they land in a directory, the session ends.
-	Share  Archetype = 1
-	Stream Archetype = 2
-	TTY    Archetype = 3
-	Chat   Archetype = 4
-	Link   Archetype = 5
-	// Branch serves nothing. It exists to carry an access rule for what is under it.
-	Branch Archetype = 6
-	// Files is a directory the far end walks, reads, and — when the mount allows it — writes to.
-	Files Archetype = 7
-)
-
-var archetypeNames = map[Archetype]string{
-	Share:  "share",
-	Files:  "files",
-	Stream: "stream",
-	TTY:    "tty",
-	Chat:   "chat",
-	Link:   "link",
-	Branch: "branch",
-}
-
-func (a Archetype) String() string {
-	if name, ok := archetypeNames[a]; ok {
-		return name
-	}
-	return fmt.Sprintf("archetype(%d)", byte(a))
-}
-
-// ParseArchetype reads the name a config writes.
-func ParseArchetype(name string) (Archetype, error) {
-	for archetype, known := range archetypeNames {
-		if known == name {
-			return archetype, nil
-		}
-	}
-
-	valid := make([]string, 0, len(archetypeNames))
-	for _, known := range archetypeNames {
-		valid = append(valid, known)
-	}
-	sort.Strings(valid)
-	return 0, fmt.Errorf("%q is not a namespace type: try %s", name, strings.Join(valid, ", "))
-}
-
 // Mount is one namespace this node serves.
 type Mount struct {
-	Path      string
-	Archetype Archetype
-
-	// Dir is a share namespace's drop box, or the directory a files namespace serves.
-	Dir string
-	// Command is what a stream namespace runs and reads.
-	Command string
-	// Shell is what a tty namespace starts; empty means $SHELL.
-	Shell string
-	// Input lets the far end type into a tty namespace.
-	Input bool
-	// Writable lets the far end add to, and remove from, a files namespace.
-	Writable bool
-	// Action is what a link namespace hands a URL to; empty means it only records it.
-	Action string
+	Path string
+	// Archetype is what is here, by name. Empty is a branch: it serves nothing itself and exists
+	// to carry an access rule for the paths under it.
+	Archetype string
+	// Version pins which revision of that archetype this is. Zero is whatever is newest.
+	Version int
+	// Config is what that archetype made of the declaration. Nothing here looks inside it.
+	Config any
 	// Access is who may reach this path and everything under it, until something deeper says
 	// otherwise. Undeclared means nobody.
 	Access Access
 }
+
+// Branch reports whether this serves nothing itself and is here to carry a rule.
+func (m Mount) Branch() bool { return m.Archetype == "" }
 
 // Table is every namespace this node serves.
 //
@@ -105,11 +52,8 @@ func (t *Table) Add(m Mount) error {
 	// A mount with no type is a branch: it serves nothing itself and exists to carry an access rule
 	// for the paths beneath it. One that is neither a type nor a rule is a typo, and saying so is
 	// better than quietly keeping a line that does nothing.
-	if _, ok := archetypeNames[m.Archetype]; !ok {
-		if !m.Access.Declared() {
-			return fmt.Errorf("%s has neither a type nor an access rule, so it does nothing", path)
-		}
-		m.Archetype = Branch
+	if m.Branch() && !m.Access.Declared() {
+		return fmt.Errorf("%s has neither a type nor an access rule, so it does nothing", path)
 	}
 
 	m.Path = path

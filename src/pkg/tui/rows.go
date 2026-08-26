@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 
-	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"io"
 	"strings"
@@ -187,7 +186,7 @@ func path(it pathItem, width, index int, selected bool) string {
 			cell(base, green, 16, sendable(it.step.served), true, false))
 
 		rest := fill(stripe(base, selected) +
-			cell(base, second, 10, archetype.String(), false, false) +
+			cell(base, second, 10, kindOf(archetype), false, false) +
 			cell(base, muted, inner-10, "this path itself", false, false))
 
 		last := fill(stripe(base, selected) +
@@ -201,7 +200,7 @@ func path(it pathItem, width, index int, selected bool) string {
 	if it.step.served.Writable {
 		send, sendColour = "you may send", green
 	}
-	if archetype == ns.Branch {
+	if archetype == "" {
 		send, sendColour = "", muted
 	}
 
@@ -215,7 +214,7 @@ func path(it pathItem, width, index int, selected bool) string {
 			cell(base, peach, lockCol, "locked", true, false))
 
 		rest := fill(stripe(base, selected) +
-			cell(base, second, 10, archetype.String(), false, false) +
+			cell(base, second, 10, kindOf(archetype), false, false) +
 			cell(base, muted, inner-10, "visible, not shared with you", false, false))
 
 		last := fill(stripe(base, selected) +
@@ -236,8 +235,8 @@ func path(it pathItem, width, index int, selected bool) string {
 		cell(base, sendColour, sendCol, send, true, false))
 
 	rest := fill(stripe(base, selected) +
-		cell(base, second, 10, archetype.String(), false, false) +
-		cell(base, muted, inner-10, describe(archetype), false, false))
+		cell(base, second, 10, kindOf(archetype), false, false) +
+		cell(base, muted, inner-10, it.step.served.About, false, false))
 
 	last := fill(stripe(base, selected) +
 		cell(base, muted, inner, "drop to "+it.on+it.step.at, false, false))
@@ -261,27 +260,13 @@ func count(n int) string {
 	return fmt.Sprintf("%d below", n)
 }
 
-// describe says what a kind of path is for, so the list is readable by someone who has not learnt
-// the vocabulary yet.
-func describe(archetype ns.Archetype) string {
-	switch archetype {
-	case ns.Chat:
-		return "messages, kept as a conversation"
-	case ns.Share:
-		return "hand files over, once"
-	case ns.Files:
-		return "a directory, to walk through"
-	case ns.TTY:
-		return "a terminal, as it is being used"
-	case ns.Stream:
-		return "output from a command, as it comes"
-	case ns.Link:
-		return "open a link over there"
-	case ns.Branch:
-		return "holds other paths, serves nothing"
-	default:
-		return ""
+// kindOf is what a path's type is called in a list. A path with no archetype is a branch: it holds
+// others and serves nothing itself.
+func kindOf(archetype string) string {
+	if archetype == "" {
+		return "branch"
 	}
+	return archetype
 }
 
 // userItem is one user on the first screen: you, somebody you have paired with, or anon.

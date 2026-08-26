@@ -37,16 +37,16 @@ func TestResolveHonoursTheInheritedRule(t *testing.T) {
 
 	table := served(t,
 		ns.Mount{Path: "/friends", Access: ns.Access{Named: []string{"bob"}}},
-		ns.Mount{Path: "/friends/chat", Archetype: ns.Chat},
+		ns.Mount{Path: "/friends/chat", Archetype: "chat"},
 	)
 
 	asBob := ns.Caller{ID: bob.String(), Name: "bob", Paired: true}
-	if _, err := resolve(table, bob, asBob, Open{Mode: ModeMessages, Path: "/friends/chat"}); err != nil {
+	if _, _, err := resolve(table, asBob, "/friends/chat"); err != nil {
 		t.Fatalf("bob was refused: %v", err)
 	}
 
 	asCarol := ns.Caller{ID: carol.String(), Name: "carol", Paired: true}
-	if _, err := resolve(table, carol, asCarol, Open{Mode: ModeMessages, Path: "/friends/chat"}); err == nil {
+	if _, _, err := resolve(table, asCarol, "/friends/chat"); err == nil {
 		t.Fatal("carol reached a path shared only with bob")
 	}
 }
@@ -55,10 +55,10 @@ func TestResolveHonoursTheInheritedRule(t *testing.T) {
 // that is paired and otherwise trusted.
 func TestAPathWithNoRuleIsUnreachable(t *testing.T) {
 	bob := who(1)
-	table := served(t, ns.Mount{Path: "/term", Archetype: ns.TTY})
+	table := served(t, ns.Mount{Path: "/term", Archetype: "tty"})
 
 	asBob := ns.Caller{ID: bob.String(), Name: "bob", Paired: true}
-	_, err := resolve(table, bob, asBob, Open{Mode: ModeDuplex, Path: "/term"})
+	_, _, err := resolve(table, asBob, "/term")
 	if err == nil {
 		t.Fatal("a path with no access rule was served to a paired device")
 	}
@@ -75,16 +75,16 @@ func TestAPasswordOnTheWireOpensAPath(t *testing.T) {
 	}
 
 	stranger := who(9)
-	table := served(t, ns.Mount{Path: "/handoff", Archetype: ns.Share, Access: ns.Access{Password: hash}})
+	table := served(t, ns.Mount{Path: "/handoff", Archetype: "share", Access: ns.Access{Password: hash}})
 
 	// Unpaired, unnamed, unknown — and still admitted, because it knew the word.
 	asStranger := ns.Caller{ID: stranger.String(), Password: "let me in"}
-	if _, err := resolve(table, stranger, asStranger, Open{Mode: ModeShare, Path: "/handoff"}); err != nil {
+	if _, _, err := resolve(table, asStranger, "/handoff"); err != nil {
 		t.Fatalf("the password was refused: %v", err)
 	}
 
 	wrong := ns.Caller{ID: stranger.String(), Password: "nope"}
-	if _, err := resolve(table, stranger, wrong, Open{Mode: ModeShare, Path: "/handoff"}); err == nil {
+	if _, _, err := resolve(table, wrong, "/handoff"); err == nil {
 		t.Fatal("a wrong password opened the path")
 	}
 }
@@ -94,17 +94,17 @@ func TestABareKeyOpensAPath(t *testing.T) {
 	ci := who(7)
 	table := served(t, ns.Mount{
 		Path:      "/ci",
-		Archetype: ns.Share,
+		Archetype: "share",
 		Access:    ns.Access{Keys: []string{ci.String()}},
 	})
 
 	asCI := ns.Caller{ID: ci.String()}
-	if _, err := resolve(table, ci, asCI, Open{Mode: ModeShare, Path: "/ci"}); err != nil {
+	if _, _, err := resolve(table, asCI, "/ci"); err != nil {
 		t.Fatalf("the named key was refused: %v", err)
 	}
 
 	other := who(8)
-	if _, err := resolve(table, other, ns.Caller{ID: other.String()}, Open{Mode: ModeShare, Path: "/ci"}); err == nil {
+	if _, _, err := resolve(table, ns.Caller{ID: other.String()}, "/ci"); err == nil {
 		t.Fatal("a different key was admitted")
 	}
 }
@@ -114,11 +114,11 @@ func TestABranchCannotBeOpened(t *testing.T) {
 	bob := who(1)
 	table := served(t,
 		ns.Mount{Path: "/friends", Access: ns.Access{Named: []string{"bob"}}},
-		ns.Mount{Path: "/friends/chat", Archetype: ns.Chat},
+		ns.Mount{Path: "/friends/chat", Archetype: "chat"},
 	)
 
 	asBob := ns.Caller{ID: bob.String(), Name: "bob", Paired: true}
-	_, err := resolve(table, bob, asBob, Open{Mode: ModeMessages, Path: "/friends"})
+	_, _, err := resolve(table, asBob, "/friends")
 	if err == nil {
 		t.Fatal("a branch was opened as though it served something")
 	}
@@ -127,9 +127,9 @@ func TestABranchCannotBeOpened(t *testing.T) {
 	}
 }
 
-// The secret must survive the frame it travels in.
-func TestTheSecretSurvivesEncoding(t *testing.T) {
-	open := Open{Mode: ModeShare, From: "bob", Path: "/handoff", Secret: "let me in"}
+// The secret must survive the frame it travels in, and so must what the caller expects to find.
+func TestTheOpenSurvivesEncoding(t *testing.T) {
+	open := Opening{Archetype: "share", Version: 2, From: "bob", Path: "/handoff", Secret: "let me in"}
 
 	got, err := decodeOpen(open.encode())
 	if err != nil {
@@ -138,7 +138,7 @@ func TestTheSecretSurvivesEncoding(t *testing.T) {
 	if got.Secret != "let me in" {
 		t.Fatalf("secret = %q", got.Secret)
 	}
-	if got.Path != "/handoff" || got.From != "bob" || got.Mode != ModeShare {
+	if got.Path != "/handoff" || got.From != "bob" || got.Archetype != "share" || got.Version != 2 {
 		t.Fatalf("the rest of the frame did not survive: %+v", got)
 	}
 }

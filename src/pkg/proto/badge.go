@@ -61,7 +61,7 @@ func (b Badged) Shown() bool { return b.Key != "" }
 // device has to match. What does not check out yields nothing rather than an error: refusing the
 // connection outright would turn a clock skew or an expired badge into a device that has vanished,
 // when the right answer is a caller whose person is not established and whose paths say so.
-func vouched(from node.ID, open Open) Badged {
+func vouched(from node.ID, open Opening) Badged {
 	if len(open.Badge) == 0 || len(open.Signed) == 0 {
 		return Badged{}
 	}
@@ -97,5 +97,5 @@ func showing(from node.ID, body []byte) Badged {
 	if err != nil {
 		return Badged{}
 	}
-	return vouched(from, Open{Badge: badge, Signed: signed})
+	return vouched(from, Opening{Badge: badge, Signed: signed})
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tmc/go-iroh/iroh"
 
+	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/discovery"
@@ -76,18 +77,24 @@ func runChat(parent context.Context, target string) error {
 
 	// Listening while typing: the far end can start a session at any moment, and a chat that only
 	// receives when it is sending is not a chat.
-	policy := proto.Policy{
-		Mounts: chatMounts(),
-		Allow:  accepting(pinned, false),
-		Who:    whoIs(pinned),
-		Message: receiving(pinned, false, func(from node.ID, m convo.Message) {
+	doing := &doings{
+		pinned: pinned,
+		said: func(from node.ID, m convo.Message) {
 			fmt.Printf("\r%s\n", render(nameFor(pinned, from), m))
-		}),
+		},
+	}
+	known := doing.talking()
+
+	policy := proto.Policy{
+		Mounts:     chatMounts(known),
+		Archetypes: known,
+		Allow:      accepting(pinned, false),
+		Who:        whoIs(pinned),
 	}
 	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
-			_ = proto.Handle(s, from, policy)
+			_ = proto.Handle(ctx, s, from, policy)
 		},
 	})
 
@@ -132,9 +139,14 @@ func runChat(parent context.Context, target string) error {
 }
 
 // chatMounts is the one namespace a chat serves while it is open.
-func chatMounts() *ns.Table {
+func chatMounts(known *arch.Registry) *ns.Table {
+	m := ns.Mount{Path: "/chat", Archetype: "chat"}
+	if answers, ok := known.Lookup(m.Archetype, 0); ok {
+		m.Config, _ = answers.Read(nothing{})
+	}
+
 	table := ns.NewTable()
-	_ = table.Add(ns.Mount{Path: "/chat", Archetype: ns.Chat})
+	_ = table.Add(m)
 	return table
 }
 

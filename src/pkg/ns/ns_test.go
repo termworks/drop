@@ -87,13 +87,13 @@ func TestParseAddress(t *testing.T) {
 // specific one still takes precedence.
 func TestLookupPrefersTheLongestPrefix(t *testing.T) {
 	table := NewTable()
-	mustAdd(t, table, Mount{Path: "/stream", Archetype: Stream, Command: "general"})
-	mustAdd(t, table, Mount{Path: "/stream/logs", Archetype: Stream, Command: "specific"})
+	mustAdd(t, table, Mount{Path: "/stream", Archetype: "stream", Config: "general"})
+	mustAdd(t, table, Mount{Path: "/stream/logs", Archetype: "stream", Config: "specific"})
 
 	cases := []struct {
-		ask     string
-		command string
-		rest    string
+		ask    string
+		served string
+		rest   string
 	}{
 		{"/stream", "general", "/"},
 		{"/stream/of/one/specific/namespace", "general", "/of/one/specific/namespace"},
@@ -107,8 +107,8 @@ func TestLookupPrefersTheLongestPrefix(t *testing.T) {
 			t.Errorf("Lookup(%q) found nothing", c.ask)
 			continue
 		}
-		if m.Command != c.command || rest != c.rest {
-			t.Errorf("Lookup(%q) = %s rest %q, want %s rest %q", c.ask, m.Command, rest, c.command, c.rest)
+		if m.Config != c.served || rest != c.rest {
+			t.Errorf("Lookup(%q) = %v rest %q, want %s rest %q", c.ask, m.Config, rest, c.served, c.rest)
 		}
 	}
 }
@@ -116,7 +116,7 @@ func TestLookupPrefersTheLongestPrefix(t *testing.T) {
 // Without a segment-boundary check, /stream would capture /streaming.
 func TestLookupDoesNotCaptureASimilarName(t *testing.T) {
 	table := NewTable()
-	mustAdd(t, table, Mount{Path: "/stream", Archetype: Stream, Command: "x"})
+	mustAdd(t, table, Mount{Path: "/stream", Archetype: "stream", Config: "x"})
 
 	if _, _, ok := table.Lookup("/streaming"); ok {
 		t.Fatal("/stream captured /streaming")
@@ -126,21 +126,21 @@ func TestLookupDoesNotCaptureASimilarName(t *testing.T) {
 // Re-declaring a path replaces it, so a config that is re-read cannot grow the table.
 func TestAddIsKeyedByPath(t *testing.T) {
 	table := NewTable()
-	mustAdd(t, table, Mount{Path: "/inbox", Archetype: Share, Dir: "/first"})
-	mustAdd(t, table, Mount{Path: "/inbox", Archetype: Share, Dir: "/second"})
+	mustAdd(t, table, Mount{Path: "/inbox", Archetype: "share", Config: "/first"})
+	mustAdd(t, table, Mount{Path: "/inbox", Archetype: "share", Config: "/second"})
 
 	if table.Len() != 1 {
 		t.Fatalf("Len() = %d, want 1", table.Len())
 	}
 	m, _, _ := table.Lookup("/inbox")
-	if m.Dir != "/second" {
-		t.Fatalf("Dir = %q, want the later declaration", m.Dir)
+	if m.Config != "/second" {
+		t.Fatalf("Config = %v, want the later declaration", m.Config)
 	}
 }
 
 func TestAddNormalisesThePath(t *testing.T) {
 	table := NewTable()
-	mustAdd(t, table, Mount{Path: "inbox/", Archetype: Share, Dir: "/x"})
+	mustAdd(t, table, Mount{Path: "inbox/", Archetype: "share", Config: "/x"})
 
 	if _, _, ok := table.Lookup("/inbox"); !ok {
 		t.Fatal("a mount declared as inbox/ is not found at /inbox")
@@ -156,41 +156,42 @@ func TestAddRefusesAnUntypedMount(t *testing.T) {
 
 func TestRootServesEverything(t *testing.T) {
 	table := NewTable()
-	mustAdd(t, table, Mount{Path: "/", Archetype: Share, Dir: "/x"})
+	mustAdd(t, table, Mount{Path: "/", Archetype: "share", Config: "/x"})
 
 	m, rest, ok := table.Lookup("/anything/at/all")
-	if !ok || m.Dir != "/x" || rest != "/anything/at/all" {
+	if !ok || m.Config != "/x" || rest != "/anything/at/all" {
 		t.Fatalf("Lookup() = %+v rest %q ok %v", m, rest, ok)
 	}
 }
 
-// A files namespace is read-only until the mount says otherwise.
-func TestAFilesMountIsReadOnlyUnlessItSaysSo(t *testing.T) {
-	table := NewTable()
-	mustAdd(t, table, Mount{Path: "/read", Archetype: Files, Dir: "/x"})
-	mustAdd(t, table, Mount{Path: "/write", Archetype: Files, Dir: "/y", Writable: true})
-
-	if m, _, _ := table.Lookup("/read"); m.Writable {
-		t.Error("/read is writable without being declared so")
+// A namespace knows which archetype it belongs to and nothing about what that means: whatever the
+// archetype made of the declaration is carried back untouched.
+func TestAMountCarriesItsConfigUnread(t *testing.T) {
+	type settings struct {
+		Dir      string
+		Writable bool
 	}
-	if m, _, _ := table.Lookup("/write"); !m.Writable {
-		t.Error("/write did not keep writable = true")
+
+	table := NewTable()
+	mustAdd(t, table, Mount{Path: "/work", Archetype: "files", Config: settings{Dir: "/x", Writable: true}})
+
+	m, _, ok := table.Lookup("/work")
+	if !ok {
+		t.Fatal("Lookup() found nothing")
+	}
+	if got, ok := m.Config.(settings); !ok || got.Dir != "/x" || !got.Writable {
+		t.Errorf("the config came back as %#v", m.Config)
 	}
 }
 
-func TestParseArchetype(t *testing.T) {
-	for _, name := range []string{"share", "files", "stream", "tty", "chat", "link", "branch"} {
-		archetype, err := ParseArchetype(name)
-		if err != nil {
-			t.Errorf("ParseArchetype(%q): %v", name, err)
-			continue
-		}
-		if archetype.String() != name {
-			t.Errorf("ParseArchetype(%q).String() = %q", name, archetype.String())
-		}
-	}
-	if _, err := ParseArchetype("nonsense"); err == nil {
-		t.Error("ParseArchetype() accepted a type that does not exist")
+// A mount with no archetype is a branch: it serves nothing and carries a rule for what is under it.
+func TestAMountWithNoTypeIsABranch(t *testing.T) {
+	table := NewTable()
+	mustAdd(t, table, Mount{Path: "/friends", Access: Access{AnyPaired: true}})
+
+	m, _, ok := table.Lookup("/friends")
+	if !ok || !m.Branch() {
+		t.Errorf("Lookup() = %+v, want a branch", m)
 	}
 }
 

@@ -13,9 +13,11 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/bresilla/drop/src/pkg/arch/share"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/discovery"
+	"github.com/bresilla/drop/src/pkg/live"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
@@ -62,45 +64,45 @@ func openNamespace(parent context.Context, addr ns.Address, args []string, stdin
 	}
 
 	switch guess(args) {
-	case ns.Share:
+	case "share":
 		sources, err := gather(args, stdinName)
 		if err != nil {
 			return err
 		}
 		return sendTo(parent, entry, addr.Path, sources, wait)
 
-	case ns.Link:
-		return sendMessageTo(parent, entry, addr.Path, convo.KindLink, args[0], wait)
+	case "link":
+		return sendMessageTo(parent, entry, addr.Path, "link", convo.KindLink, args[0], wait)
 
-	case ns.Chat:
-		return sendMessageTo(parent, entry, addr.Path, convo.KindText, strings.Join(args, " "), wait)
+	case "chat":
+		return sendMessageTo(parent, entry, addr.Path, "chat", convo.KindText, strings.Join(args, " "), wait)
 
 	default:
 		return readFrom(parent, entry, addr, wait)
 	}
 }
 
-// guess reads the arguments rather than asking for a mode: a path that exists is a file, a URL is
-// a link, other words are a message, and nothing at all means "show me what is there".
-func guess(args []string) ns.Archetype {
+// guess reads the arguments rather than asking for a kind: a path that exists is a file, a URL is a
+// link, other words are a message, and nothing at all means "show me what is there".
+func guess(args []string) string {
 	if len(args) == 0 {
-		return ns.Stream
+		return ""
 	}
 	if len(args) == 1 && (strings.HasPrefix(args[0], "http://") || strings.HasPrefix(args[0], "https://")) {
-		return ns.Link
+		return "link"
 	}
 	for _, arg := range args {
 		if arg == "-" {
-			return ns.Share
+			return "share"
 		}
 		if _, err := os.Stat(arg); err != nil {
-			return ns.Chat
+			return "chat"
 		}
 	}
-	return ns.Share
+	return "share"
 }
 
-func sendTo(parent context.Context, entry book.Entry, path string, sources []proto.Source, wait time.Duration) error {
+func sendTo(parent context.Context, entry book.Entry, path string, sources []share.Source, wait time.Duration) error {
 	ctx, cancel := context.WithTimeout(parent, wait)
 	defer cancel()
 
@@ -122,7 +124,11 @@ func sendTo(parent context.Context, entry book.Entry, path string, sources []pro
 	bar := &progress{}
 	defer bar.clear()
 
-	if err := proto.SendFiles(ctx, s, path, sources, node.DisplayName(), bar.update); err != nil {
+	conn, err := proto.Open(s, path, "share", 0, "", node.DisplayName())
+	if err != nil {
+		return err
+	}
+	if err := share.Send(conn, sources, bar.update); err != nil {
 		return err
 	}
 	for _, src := range sources {
@@ -132,7 +138,7 @@ func sendTo(parent context.Context, entry book.Entry, path string, sources []pro
 	return nil
 }
 
-func sendMessageTo(parent context.Context, entry book.Entry, path string, kind byte, body string, wait time.Duration) error {
+func sendMessageTo(parent context.Context, entry book.Entry, path, archetype string, kind byte, body string, wait time.Duration) error {
 	if strings.TrimSpace(body) == "" {
 		return fmt.Errorf("nothing to send")
 	}
@@ -154,7 +160,7 @@ func sendMessageTo(parent context.Context, entry book.Entry, path string, kind b
 
 	lan, _ := discovery.StartLAN(ctx, n)
 
-	sent, err := deliverTo(ctx, n, lan, entry, path)
+	sent, err := deliverTo(ctx, n, lan, entry, path, archetype)
 	if proto.WasDeclined(err) {
 		// An answer, not a device that is off. Queueing it would mean retrying forever against a
 		// decision somebody made, and telling the sender their message is on its way.
@@ -194,10 +200,13 @@ func readFrom(parent context.Context, entry book.Entry, addr ns.Address, wait ti
 	}
 	defer over.Close()
 
-	d, err := proto.OpenDuplex(ctx, s, addr.Path, addr.Path, node.DisplayName())
+	// No archetype named: a path typed rather than read off a listing may be a terminal or a
+	// command, and both are read the same way.
+	conn, err := proto.Open(s, addr.Path, "", 0, "", node.DisplayName())
 	if err != nil {
 		return err
 	}
+	d := live.New(conn, s)
 
 	// Raw mode and a size only make sense for a terminal, but what is typed goes over either way:
 	// a pipe is how a script drives a shell on another machine, and refusing its input made this

@@ -58,7 +58,7 @@ func TestACastStopsBeingAskedThoughInputNeverEnds(t *testing.T) {
 // One cast at a time. A second one behind the same path is two screens at one address, and whoever
 // is watching cannot tell which they were given.
 func TestASecondCastIsRefused(t *testing.T) {
-	host := newCastHost(ns.NewTable())
+	host := newCastHost(ns.NewTable(), reading())
 
 	stage, err := host.begin(80, 24)
 	if err != nil {
@@ -75,7 +75,7 @@ func TestASecondCastIsRefused(t *testing.T) {
 
 // A cast that has already ended must not take down the one running now.
 func TestAnEndedCastDoesNotEndTheNextOne(t *testing.T) {
-	host := newCastHost(ns.NewTable())
+	host := newCastHost(ns.NewTable(), reading())
 
 	first, err := host.begin(80, 24)
 	if err != nil {
@@ -105,13 +105,13 @@ func TestADeclaredCastPathKeepsItsRule(t *testing.T) {
 	table := ns.NewTable()
 	if err := table.Add(ns.Mount{
 		Path:      CastPath,
-		Archetype: ns.TTY,
+		Archetype: "tty",
 		Access:    ns.Access{Named: []string{"bob"}},
 	}); err != nil {
 		t.Fatalf("Add(): %v", err)
 	}
 
-	host := newCastHost(table)
+	host := newCastHost(table, reading())
 	stage, err := host.begin(80, 24)
 	if err != nil {
 		t.Fatalf("begin(): %v", err)
@@ -126,49 +126,4 @@ func TestADeclaredCastPathKeepsItsRule(t *testing.T) {
 	if _, _, ok := table.Lookup(CastPath); !ok {
 		t.Fatal("a cast ending took away a path the config declared")
 	}
-}
-
-// A watcher that stops reading takes nothing, and the write to it never returns. The shell behind
-// it is shared, so that watcher is given up on.
-func TestAWatcherThatStopsReadingIsDropped(t *testing.T) {
-	stuck := &stopped{let: make(chan struct{})}
-	defer close(stuck.let)
-
-	writing := pacing(stuck)
-	if err := writing.write([]byte("anything"), 50*time.Millisecond); err != errStalled {
-		t.Fatalf("a write that went nowhere came back with %v", err)
-	}
-}
-
-// And one that is being read lands, in order.
-func TestAWatcherThatReadsIsWrittenTo(t *testing.T) {
-	var got taken
-
-	writing := pacing(&got)
-	for _, chunk := range []string{"one ", "two ", "three"} {
-		if err := writing.write([]byte(chunk), time.Second); err != nil {
-			t.Fatalf("writing %q: %v", chunk, err)
-		}
-	}
-
-	if string(got.got) != "one two three" {
-		t.Fatalf("the watcher saw %q", got.got)
-	}
-}
-
-// taken keeps whatever was written to it.
-type taken struct{ got []byte }
-
-func (t *taken) Write(p []byte) (int, error) {
-	t.got = append(t.got, p...)
-	return len(p), nil
-}
-
-// stopped takes nothing until it is let go, which is what a window that stopped reading looks like
-// from this end.
-type stopped struct{ let chan struct{} }
-
-func (s *stopped) Write(p []byte) (int, error) {
-	<-s.let
-	return len(p), nil
 }

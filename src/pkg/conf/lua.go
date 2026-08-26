@@ -8,6 +8,7 @@ import (
 	"github.com/arnodel/golua/lib"
 	rt "github.com/arnodel/golua/runtime"
 
+	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/passwd"
 )
@@ -292,6 +293,10 @@ func listLen(t *rt.Table) int {
 }
 
 // mount is `drop.mount("/path", { type = "...", ... })`.
+//
+// Nothing here reads a setting by name except the two the namespace layer owns: what kind of thing
+// this is, and who may reach it. The rest of the table is handed to the archetype, which is the
+// only thing that knows what any of those words mean.
 func mount(c *rt.GoCont, cfg *Config) (rt.Cont, error) {
 	if err := c.CheckNArgs(2); err != nil {
 		return nil, err
@@ -307,19 +312,6 @@ func mount(c *rt.GoCont, cfg *Config) (rt.Cont, error) {
 
 	access := readAccess(opts)
 
-	// A mount with no type is a branch: it serves nothing and exists to carry an access rule for the
-	// paths under it. The table refuses one that is neither, so a typo is still caught.
-	var archetype ns.Archetype
-	if typeName := fieldString(opts, "type"); typeName != "" {
-		parsed, err := ns.ParseArchetype(typeName)
-		if err != nil {
-			return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
-		}
-		archetype = parsed
-	} else if !access.Declared() {
-		return nil, fmt.Errorf("drop.mount(%q): needs a type, or an access rule if it is a branch", path)
-	}
-
 	// A password written in plain is one a config leak hands over. Say so at load time rather than
 	// letting it never match and look like a broken rule.
 	if access.Password != "" && !passwd.Looks(access.Password) {
@@ -328,44 +320,68 @@ func mount(c *rt.GoCont, cfg *Config) (rt.Cont, error) {
 
 	m := ns.Mount{
 		Path:      path,
-		Archetype: archetype,
-		Dir:       expand(fieldString(opts, "dir")),
-		Command:   fieldString(opts, "command"),
-		Shell:     fieldString(opts, "shell"),
-		Input:     fieldBool(opts, "input"),
-		Writable:  fieldBool(opts, "writable"),
-		Action:    fieldString(opts, "action"),
+		Archetype: fieldString(opts, "type"),
+		Version:   fieldInt(opts, "version"),
 		Access:    access,
 	}
 
-	if err := check(m); err != nil {
-		return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
+	// A mount with no type is a branch: it serves nothing and exists to carry an access rule for
+	// the paths under it. The table refuses one that is neither, so a typo is still caught.
+	if !m.Branch() {
+		settings, err := readSettingsFor(cfg.known, m.Archetype, m.Version, declared{opts})
+		if err != nil {
+			return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
+		}
+		m.Config = settings
+	} else if !access.Declared() {
+		return nil, fmt.Errorf("drop.mount(%q): needs a type, or an access rule if it is a branch", path)
 	}
+
 	if err := cfg.Mounts.Add(m); err != nil {
 		return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
 	}
 	return c.Next(), nil
 }
 
-// check catches a namespace that cannot work at load time, where the error names the file and the
-// line, rather than when somebody opens it and gets silence.
-func check(m ns.Mount) error {
-	switch m.Archetype {
-	case ns.Share, ns.Files:
-		if m.Dir == "" {
-			return fmt.Errorf("a %s namespace needs a dir", m.Archetype)
-		}
-	case ns.Stream:
-		if m.Command == "" {
-			return fmt.Errorf("a stream namespace needs a command")
-		}
+// readSettingsFor hands a declaration to the archetype it names, so a mistake is reported with a
+// file and a line rather than as silence months later.
+func readSettingsFor(known *arch.Registry, name string, version int, d arch.Declared) (arch.Config, error) {
+	if known == nil {
+		return nil, fmt.Errorf("this build registered no namespace types")
 	}
-	return nil
+	answers, ok := known.Lookup(name, version)
+	if !ok {
+		return nil, known.Missing(name, version)
+	}
+	return answers.Read(d)
 }
+
+// declared is one mount's table, read the way an archetype reads it: by name, and saying whether
+// the config mentioned the setting at all, so "off" can be told from "unset".
+type declared struct {
+	t *rt.Table
+}
+
+// String reads a setting. A value beginning with ~ is a path somebody typed, and is resolved here:
+// the archetype should not have to know that a config is written by a person.
+func (d declared) String(key string) (string, bool) {
+	s, ok := optString(d.t, key)
+	return expand(s), ok
+}
+
+func (d declared) Bool(key string) (bool, bool) { return optBool(d.t, key) }
+
+func (d declared) Strings(key string) ([]string, bool) { return optStrings(d.t, key) }
 
 func fieldString(t *rt.Table, key string) string {
 	s, _ := t.Get(rt.StringValue(key)).TryString()
 	return s
+}
+
+// fieldInt reads a whole number a config wrote, which is nothing at all when it wrote none.
+func fieldInt(t *rt.Table, key string) int {
+	n, _ := t.Get(rt.StringValue(key)).TryInt()
+	return int(n)
 }
 
 func fieldBool(t *rt.Table, key string) bool {

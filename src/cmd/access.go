@@ -23,8 +23,8 @@ import (
 // config says and what has been granted here are shown together, because that is how a caller is
 // judged -- but the two are read separately, so the interface can say which is which and refuse to
 // pretend it can un-write a line somebody typed into their config.
-func (l *live) Access(path string) (tui.Rule, error) {
-	cfg, err := conf.Load()
+func (l *running) Access(path string) (tui.Rule, error) {
+	cfg, err := conf.Load(l.known)
 	if err != nil {
 		return tui.Rule{}, err
 	}
@@ -87,9 +87,9 @@ func waiting(path string) ([]tui.Wanting, error) {
 	return out, nil
 }
 
-func (l *live) Grant(path, who string) error  { return editGrant(path, who, grantAllow) }
-func (l *live) Refuse(path, who string) error { return editGrant(path, who, grantDeny) }
-func (l *live) Unset(path, who string) error  { return editGrant(path, who, grantForget) }
+func (l *running) Grant(path, who string) error  { return editGrant(path, who, grantAllow) }
+func (l *running) Refuse(path, who string) error { return editGrant(path, who, grantDeny) }
+func (l *running) Unset(path, who string) error  { return editGrant(path, who, grantForget) }
 
 // What editGrant is being asked to do.
 const (
@@ -191,7 +191,7 @@ func hasWho(all []tui.Who, name string) bool {
 }
 
 // AskFor rings the bell on a path this machine can see but not open.
-func (l *live) AskFor(ctx context.Context, on book.Entry, path, why string) error {
+func (l *running) AskFor(ctx context.Context, on book.Entry, path, why string) error {
 	stream, err := l.held.To(ctx, on, node.ALPNSession)
 	if err != nil {
 		return err
@@ -206,7 +206,7 @@ func (l *live) AskFor(ctx context.Context, on book.Entry, path, why string) erro
 // Assembled from three places that each hold a different kind of truth: the address book knows who
 // they are and whether they are trusted, the grants know what has been decided about them here, and
 // the connection pool knows whether they are answering right now.
-func (l *live) Managed(name string) (tui.Managed, error) {
+func (l *running) Managed(name string) (tui.Managed, error) {
 	pinned, err := book.Load()
 	if err != nil {
 		return tui.Managed{}, err
@@ -275,7 +275,7 @@ func decided(who string) (allowed, refused []string, err error) {
 }
 
 // Trust marks somebody trusted or not, and every machine of theirs with them.
-func (l *live) Trust(name string, trusted bool) error {
+func (l *running) Trust(name string, trusted bool) error {
 	pinned, err := book.Load()
 	if err != nil {
 		return err
@@ -294,7 +294,7 @@ func (l *live) Trust(name string, trusted bool) error {
 }
 
 // Forget drops a pairing, and everything kept about it that is now meaningless.
-func (l *live) Forget(name string) error {
+func (l *running) Forget(name string) error {
 	pinned, err := book.Load()
 	if err != nil {
 		return err

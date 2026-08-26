@@ -1,37 +1,39 @@
 package proto
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"time"
 
-	"github.com/bresilla/drop/src/pkg/convo"
+	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
+// Stream is what a session runs over: a bidirectional byte stream whose read side can be given a
+// deadline, and whose write side can be closed on its own.
+type Stream interface {
+	io.ReadWriteCloser
+	SetReadDeadline(t time.Time) error
+}
+
 // Policy decides what a receiving node does with an incoming session.
+//
+// Nothing here is about one kind of namespace. What happens once a session is accepted belongs to
+// the archetype that was registered for it, and what that archetype needs from this process was
+// given to it when it was built.
 type Policy struct {
 	// Mounts is every namespace this node serves. Without it nothing is served.
 	Mounts *ns.Table
-	// Dir is where accepted files are written when a mount does not say.
-	Dir string
+	// Archetypes is what those namespaces mean. Without it nothing can be answered.
+	Archetypes *arch.Registry
 	// Who describes a caller: what it is filed under, and whether a secret is shared with it.
 	// Nil means nothing is known about anyone, which with deny-by-default serves nobody.
 	Who func(from node.ID, badge Badged) ns.Caller
 	// Allow decides whether to take a session. Nil accepts nothing.
-	Allow func(from node.ID, open Open) (bool, string)
-	// Progress, when set, is called as bytes land. Total is SizeUnknown for an item with no length.
-	Progress func(name string, done, total int64)
-	// Done, when set, is called once an item is complete and verified.
-	Done func(from node.ID, name string, size int64)
-	// Finished, when set, is called once every item in a files session has landed.
-	Finished func(from node.ID, count int)
-	// Message, when set, stores one arriving conversation message. Returning an error means it was
-	// not stored, and the sender will send it again.
-	Message func(from node.ID, m convo.Message) error
-	// Duplex, when set, handles an accepted live stream. Without it, live streams are refused.
-	Duplex func(at Resolved, d *Duplex) error
+	Allow func(from node.ID, open Opening) (bool, string)
 	// Asked, when set, takes a request to reach a path the caller can see but not open. Returning
 	// an error refuses the request; nothing here grants anything.
 	Asked func(who Asker) error
@@ -44,9 +46,12 @@ type Policy struct {
 // otherwise holds a goroutine and its buffer for as long as it likes.
 const settleIn = 10 * time.Second
 
-// Handle takes one session stream. The transport is not its concern: anything that reads and
-// writes will do, which is what lets the endpoint underneath change without touching this.
-func Handle(s Stream, from node.ID, policy Policy) error {
+// Handle takes one session stream: it reads the open, decides whether the caller may be here, and
+// hands what is left of the stream to whichever archetype the path belongs to.
+//
+// The transport is not its concern: anything that reads and writes will do, which is what lets the
+// endpoint underneath change without touching this.
+func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 	conn := wire.NewConn(s)
 
 	_ = s.SetReadDeadline(time.Now().Add(settleIn))
@@ -64,17 +69,13 @@ func Handle(s Stream, from node.ID, policy Policy) error {
 		return fmt.Errorf("reading the open from %s: %w", node.Brief(from), err)
 	}
 
-	// The mode is settled, and what a session does next takes as long as it takes.
+	// The session is settled, and what it does next takes as long as it takes.
 	_ = s.SetReadDeadline(time.Time{})
 
-	for _, item := range open.Items {
-		if safeName(item.Name) == "" {
-			_ = conn.WriteFrame(wire.KindReject, Reject{Reason: "an offered name is not a file name"}.encode())
-			return fmt.Errorf("%s offered an unusable name %q", node.Brief(from), item.Name)
-		}
+	refuse := func(reason string) error {
+		return conn.WriteFrame(wire.KindReject, wire.Reject{Reason: reason}.Encode())
 	}
 
-	// The namespace decides what this session is, so it is resolved before anything else.
 	caller := ns.Caller{ID: from.String()}
 	if policy.Who != nil {
 		caller = policy.Who(from, vouched(from, open))
@@ -83,9 +84,9 @@ func Handle(s Stream, from node.ID, policy Policy) error {
 
 	// Asking is what somebody does *because* they are not admitted, so it is answered before the
 	// access rules turn them away — but only for a path they are allowed to know exists.
-	if open.Mode == ModeAsk {
+	if open.Ask {
 		if policy.Mounts == nil || !policy.Mounts.Sees(open.Path, caller) {
-			return conn.WriteFrame(wire.KindReject, Reject{Reason: "no such path"}.encode())
+			return refuse("no such path")
 		}
 		return TakeAsk(conn, policy, Asker{
 			From:   from,
@@ -96,7 +97,7 @@ func Handle(s Stream, from node.ID, policy Policy) error {
 		})
 	}
 
-	at, err := resolve(policy.Mounts, from, caller, open)
+	mount, rest, err := resolve(policy.Mounts, caller, open.Path)
 	if err != nil {
 		reason := err.Error()
 
@@ -107,7 +108,7 @@ func Handle(s Stream, from node.ID, policy Policy) error {
 		}
 
 		turnedAway(policy, from, open.Path, reason)
-		return conn.WriteFrame(wire.KindReject, Reject{Reason: reason}.encode())
+		return refuse(reason)
 	}
 
 	allowed, reason := false, "not accepting sessions"
@@ -116,39 +117,58 @@ func Handle(s Stream, from node.ID, policy Policy) error {
 	}
 	if !allowed {
 		turnedAway(policy, from, open.Path, reason)
-		return conn.WriteFrame(wire.KindReject, Reject{Reason: reason}.encode())
+		return refuse(reason)
 	}
 
-	switch open.Mode {
-	case ModeShare:
-		return receiveFiles(conn, withDir(policy, at.Mount.Dir), from, open)
-
-	case ModeFiles:
-		return serveFiles(conn, at, policy)
-
-	case ModeMessages:
-		return receiveMessages(conn, policy, from)
-
-	case ModeDuplex:
-		if policy.Duplex == nil {
-			return conn.WriteFrame(wire.KindReject, Reject{Reason: "not accepting live streams"}.encode())
-		}
-		if err := conn.WriteFrame(wire.KindAccept, Accept{}.encode()); err != nil {
-			return err
-		}
-		return policy.Duplex(at, &Duplex{conn: conn, stream: s})
-
-	default:
-		return conn.WriteFrame(wire.KindReject, Reject{Reason: "unknown session mode"}.encode())
+	// The caller may say what it expects to find. An empty name asks for whatever is here, which is
+	// what somebody who typed a path rather than read a listing is doing.
+	if open.Archetype != "" && open.Archetype != mount.Archetype {
+		return refuse(fmt.Sprintf("%s is a %s namespace", mount.Path, mount.Archetype))
 	}
+	if policy.Archetypes == nil {
+		return refuse("this node serves no namespace types")
+	}
+	answers, known := policy.Archetypes.Lookup(mount.Archetype, mount.Version)
+	if !known {
+		return refuse(policy.Archetypes.Missing(mount.Archetype, mount.Version).Error())
+	}
+
+	if err := conn.WriteFrame(wire.KindAccept, nil); err != nil {
+		return err
+	}
+	return answers.Serve(ctx, arch.Session{
+		Path:   mount.Path,
+		Rest:   rest,
+		Config: mount.Config,
+		From:   from,
+		Who:    caller,
+		Conn:   conn,
+		Stream: s,
+	})
 }
 
-// withDir points a policy at the directory its namespace declared.
-func withDir(policy Policy, dir string) Policy {
-	if dir != "" {
-		policy.Dir = dir
+// resolve finds the namespace an open is asking for, and whether the caller may be in it.
+func resolve(table *ns.Table, caller ns.Caller, path string) (ns.Mount, string, error) {
+	if table == nil {
+		return ns.Mount{}, "", fmt.Errorf("this node serves no namespaces")
 	}
-	return policy
+	if path == "" {
+		path = ns.Root
+	}
+
+	mount, rest, found := table.Lookup(path)
+	if !found {
+		return ns.Mount{}, "", fmt.Errorf("nothing is mounted at %s", path)
+	}
+	if mount.Branch() {
+		return ns.Mount{}, "", fmt.Errorf("%s holds other paths but serves nothing itself", mount.Path)
+	}
+	// The tree decides, from the nearest rule above this path. A branch with no type still governs
+	// what is under it, which is the whole point of letting one exist.
+	if ok, why := table.Admits(mount.Path, caller); !ok {
+		return ns.Mount{}, "", fmt.Errorf("%s: %s", mount.Path, why)
+	}
+	return mount, rest, nil
 }
 
 // Asker is somebody ringing the bell on a path they can see but cannot open.
