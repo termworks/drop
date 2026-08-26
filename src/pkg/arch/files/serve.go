@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/wire"
@@ -45,7 +46,11 @@ func (f *Files) answer(conn *wire.Conn, at arch.Session, dir *os.Root, writable 
 		if err != nil {
 			return refuse(err.Error())
 		}
-		return conn.WriteFrame(wire.KindReply, reply{OK: true, Entries: entries}.encode())
+		said := reply{OK: true, Entries: entries}.encode()
+		if len(said) > wire.MaxFrame {
+			return refuse(fmt.Sprintf("that listing is %d bytes, over the %d one reply carries", len(said), wire.MaxFrame))
+		}
+		return conn.WriteFrame(wire.KindReply, said)
 
 	case opGet:
 		return f.handGet(conn, dir, name)
@@ -90,26 +95,17 @@ func (f *Files) handGet(conn *wire.Conn, dir *os.Root, name string) error {
 	}
 
 	// A get is a regular file. A directory, a device or a pipe is not something to read down a
-	// stream, and what was opened is looked at again in case the name moved under it.
-	stat, err := dir.Stat(name)
-	if err != nil {
-		return refuse(fmt.Sprintf("cannot read %s: %v", name, unpath(err)))
-	}
-	if stat.IsDir() {
-		return refuse(fmt.Sprintf("%s is a directory", name))
-	}
-	if !stat.Mode().IsRegular() {
-		return refuse(fmt.Sprintf("%s is not a file", name))
-	}
-
-	file, err := dir.Open(name)
+	// stream, and it is the opened file that is weighed, so no name can move under the answer.
+	file, open, err := reading(dir, name)
 	if err != nil {
 		return refuse(fmt.Sprintf("cannot read %s: %v", name, unpath(err)))
 	}
 	defer file.Close()
 
-	open, err := file.Stat()
-	if err != nil || !open.Mode().IsRegular() {
+	if open.IsDir() {
+		return refuse(fmt.Sprintf("%s is a directory", name))
+	}
+	if !open.Mode().IsRegular() {
 		return refuse(fmt.Sprintf("%s is not a file", name))
 	}
 
@@ -152,19 +148,15 @@ func (f *Files) handPut(conn *wire.Conn, at arch.Session, dir *os.Root, name str
 
 // listed reads one directory of a namespace into entries.
 func listed(dir *os.Root, name string) ([]Entry, error) {
-	stat, err := dir.Stat(name)
-	if err != nil {
-		return nil, fmt.Errorf("cannot list it: %v", unpath(err))
-	}
-	if !stat.IsDir() {
-		return nil, fmt.Errorf("%s is not a directory", name)
-	}
-
-	at, err := dir.Open(name)
+	at, stat, err := reading(dir, name)
 	if err != nil {
 		return nil, fmt.Errorf("cannot list it: %v", unpath(err))
 	}
 	defer at.Close()
+
+	if !stat.IsDir() {
+		return nil, fmt.Errorf("%s is not a directory", name)
+	}
 
 	// One more than the limit is read, so a directory over it is refused rather than half answered.
 	items, err := at.ReadDir(MaxEntries + 1)
@@ -184,6 +176,46 @@ func listed(dir *os.Root, name string) ([]Entry, error) {
 		out = append(out, entryOf(stat))
 	}
 	return out, nil
+}
+
+// reading opens a name inside a namespace and hands back the file and what it turned out to be, so
+// what a caller weighs is the open file rather than a name that can move under it.
+//
+// The open does not wait: a pipe under the name would park the session in the kernel, where no
+// deadline reaches it. The descriptor comes back non-blocking, and a regular file goes back to
+// blocking on the file itself, where there is nothing left to wait for.
+func reading(dir *os.Root, name string) (*os.File, fs.FileInfo, error) {
+	file, err := dir.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	stat, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, nil, err
+	}
+	if stat.Mode().IsRegular() {
+		if err := waiting(file); err != nil {
+			file.Close()
+			return nil, nil, err
+		}
+	}
+	return file, stat, nil
+}
+
+// waiting puts an open file back to blocking reads.
+func waiting(file *os.File) error {
+	raw, err := file.SyscallConn()
+	if err != nil {
+		return err
+	}
+
+	var set error
+	if err := raw.Control(func(fd uintptr) { set = syscall.SetNonblock(int(fd), false) }); err != nil {
+		return err
+	}
+	return set
 }
 
 // entryOf turns what the filesystem says about something into an entry.

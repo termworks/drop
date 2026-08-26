@@ -2,6 +2,7 @@ package files
 
 import (
 	"bytes"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -66,30 +67,44 @@ func sendBody(conn *wire.Conn, body io.Reader, name string, size int64, progress
 
 // takeInto reads one item into a namespace and lands it on a free name, which is what it returns.
 //
-// Nothing that arrives replaces a file that was on this disk first, and nothing is written through a
-// name somebody else laid a link on.
+// Nothing that arrives replaces a file that was on this disk first, nothing is written through a
+// name somebody else laid a link on, and the part this one fills is nobody else's.
 func takeInto(conn *wire.Conn, dir *os.Root, name string, size int64, mode uint32, progress func(string, int64, int64)) (string, int64, error) {
-	part := partName(name, size)
+	part, err := partName(name)
+	if err != nil {
+		return "", 0, err
+	}
 
 	got, err := land(conn, dir, part, path.Base(name), size, mode, progress)
 	if err != nil {
 		return "", 0, err
 	}
 
-	final, err := claim(dir, name)
+	final, err := place(dir, part, name)
 	if err != nil {
-		_ = dir.Remove(part)
-		return "", 0, fmt.Errorf("making room for %s: %w", name, err)
-	}
-	if err := dir.Rename(part, final); err != nil {
-		_ = dir.Remove(final)
-		return "", 0, fmt.Errorf("renaming %s: %w", part, err)
+		return "", 0, err
 	}
 
 	if err := conn.WriteFrame(wire.KindAck, wire.Ack{OK: true}.Encode()); err != nil {
 		return "", 0, fmt.Errorf("acknowledging %s: %w", final, err)
 	}
 	return final, got, nil
+}
+
+// place moves a finished part onto a free name beside it, which is what it returns. Nothing that
+// fails here leaves the part or the name it reached for lying about.
+func place(dir *os.Root, part, name string) (string, error) {
+	final, err := claim(dir, name)
+	if err != nil {
+		_ = dir.Remove(part)
+		return "", fmt.Errorf("making room for %s: %w", name, err)
+	}
+	if err := dir.Rename(part, final); err != nil {
+		_ = dir.Remove(final)
+		_ = dir.Remove(part)
+		return "", fmt.Errorf("renaming %s: %w", part, err)
+	}
+	return final, nil
 }
 
 // takeOnto reads one item and lands it on the path this side asked for. The part waits in the
@@ -103,7 +118,10 @@ func takeOnto(conn *wire.Conn, into, name string, size int64, mode uint32, progr
 	defer dir.Close()
 
 	final := filepath.Base(into)
-	part := partName(final, size)
+	part, err := partName(final)
+	if err != nil {
+		return err
+	}
 
 	if _, err := land(conn, dir, part, name, size, mode, progress); err != nil {
 		return err
@@ -201,19 +219,23 @@ func drain(conn *wire.Conn, out *os.File, part, name string, size int64, progres
 	}
 }
 
-// partName is where an item waits while it arrives: beside where it lands, named after it and its
-// length, so what an earlier, different transfer left behind is a different file.
-func partName(name string, size int64) string {
-	sum := blake3.Sum256(fmt.Appendf(nil, "%s\x00%d", path.Base(name), size))
-	return path.Join(path.Dir(name), fmt.Sprintf(".%s.%x.part", path.Base(name), sum[:6]))
+// partName is where an item waits while it arrives: beside where it lands, named after it and a tag
+// drawn fresh for this transfer.
+//
+// The tag is what keeps two transfers of one name apart. Two peers pushing "report.bin" at once, or
+// two gets landing on one path, each fill a file of their own, and neither can name the other's in
+// advance.
+func partName(name string) (string, error) {
+	var tag [6]byte
+	if _, err := rand.Read(tag[:]); err != nil {
+		return "", fmt.Errorf("naming a part file for %s: %w", path.Base(name), err)
+	}
+	return path.Join(path.Dir(name), fmt.Sprintf(".%s.%x.part", path.Base(name), tag)), nil
 }
 
-// fresh makes the part file new. Whatever is at that name goes first, so a link planted on a
-// guessable path is unlinked rather than written through, and what comes back was made here.
+// fresh makes the part file. The name is this transfer's alone, so what is already at it is not
+// unlinked and not written through: the open simply fails and what comes back was made here.
 func fresh(dir *os.Root, part string) (*os.File, error) {
-	if err := dir.Remove(part); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, err
-	}
 	return dir.OpenFile(part, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 }
 

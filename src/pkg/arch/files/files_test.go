@@ -2,12 +2,15 @@ package files
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/node"
@@ -448,42 +451,64 @@ func TestADeeplyNestedNameIsAnsweredNotFollowed(t *testing.T) {
 	}
 }
 
-// The .part path is worked out from the name, so a link planted at it is unlinked, not written
-// through.
+// A part file is made here or not at all: what is already at the path is neither unlinked nor
+// written through.
 func TestALinkAtThePartIsNotWrittenThrough(t *testing.T) {
 	dir, elsewhere := t.TempDir(), t.TempDir()
 	outside := filepath.Join(elsewhere, "victim")
 	if err := os.WriteFile(outside, []byte("original"), 0o600); err != nil {
 		t.Fatalf("writing the file: %v", err)
 	}
-
-	body := "wrote"
-	if err := os.Symlink(outside, filepath.Join(dir, partName("planted", int64(len(body))))); err != nil {
+	if err := os.Symlink(outside, filepath.Join(dir, ".planted.abcdef012345.part")); err != nil {
 		t.Fatalf("making the link: %v", err)
 	}
 
-	b := opened(t, dir, true, Into{})
-	if err := b.Put("planted", strings.NewReader(body), int64(len(body)), 0o644, nil); err != nil {
-		t.Fatalf("Put(): %v", err)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("opening the namespace: %v", err)
+	}
+	defer root.Close()
+
+	if out, err := fresh(root, ".planted.abcdef012345.part"); err == nil {
+		out.Close()
+		t.Fatal("fresh() opened a part that was already there")
 	}
 	if got := read(t, outside); string(got) != "original" {
 		t.Errorf("the file behind the link now says %q", got)
 	}
-	if got := read(t, filepath.Join(dir, "planted")); string(got) != body {
-		t.Errorf("the upload landed as %q", got)
+}
+
+// Two transfers of one name never fill one part file, so the tag on it is drawn afresh every time.
+func TestEachTransferGetsItsOwnPart(t *testing.T) {
+	first, err := partName("sub/notes.txt")
+	if err != nil {
+		t.Fatalf("partName(): %v", err)
+	}
+	second, err := partName("sub/notes.txt")
+	if err != nil {
+		t.Fatalf("partName(): %v", err)
+	}
+
+	if first == second {
+		t.Errorf("two transfers of one name share %q", first)
+	}
+	for _, at := range []string{first, second} {
+		if want := "sub/.notes.txt."; !strings.HasPrefix(at, want) || !strings.HasSuffix(at, ".part") {
+			t.Errorf("partName() gave %q, which does not wait beside what it lands as", at)
+		}
 	}
 }
 
-// What a stopped transfer left at the .part is not part of what arrives next.
-func TestAStalePartIsNotLeftUnderTheUpload(t *testing.T) {
+// What a stopped transfer left at a .part is nothing the next one touches.
+func TestAStalePartIsNotWrittenInto(t *testing.T) {
 	dir := t.TempDir()
 
-	body := "short"
-	stale := filepath.Join(dir, partName("notes", int64(len(body))))
+	stale := filepath.Join(dir, ".notes.abcdef012345.part")
 	if err := os.WriteFile(stale, []byte("a much longer tail than this"), 0o600); err != nil {
 		t.Fatalf("writing the stale part: %v", err)
 	}
 
+	body := "short"
 	b := opened(t, dir, true, Into{})
 	if err := b.Put("notes", strings.NewReader(body), int64(len(body)), 0o644, nil); err != nil {
 		t.Fatalf("Put(): %v", err)
@@ -491,6 +516,68 @@ func TestAStalePartIsNotLeftUnderTheUpload(t *testing.T) {
 	if got := read(t, filepath.Join(dir, "notes")); string(got) != body {
 		t.Errorf("the upload landed as %q", got)
 	}
+	if got := read(t, stale); string(got) != "a much longer tail than this" {
+		t.Errorf("the stale part now says %q", got)
+	}
+}
+
+// Two peers pushing one name at once each land their own bytes: neither is acknowledged for an
+// upload the other's part file swallowed.
+func TestTwoUploadsOfOneNameDoNotShareAPart(t *testing.T) {
+	dir := t.TempDir()
+
+	// The first upload stops halfway, and is let go only once the second has landed on top of it.
+	landed, rest := make(chan struct{}), make(chan struct{})
+	first := &held{body: bytes.Repeat([]byte("A"), 8), rest: rest}
+	slow := opened(t, dir, true, Into{Progress: func(_ string, done, _ int64) {
+		if done == 4 {
+			close(landed)
+		}
+	}})
+
+	acked := make(chan error, 1)
+	go func() {
+		acked <- slow.Put("report.bin", first, 8, 0o644, nil)
+	}()
+	<-landed
+
+	// The second runs to its end while the first still has its part file open.
+	quick := opened(t, dir, true, Into{})
+	if err := quick.Put("report.bin", bytes.NewReader(bytes.Repeat([]byte("B"), 8)), 8, 0o644, nil); err != nil {
+		t.Fatalf("the second Put(): %v", err)
+	}
+
+	close(rest)
+	if err := <-acked; err != nil {
+		t.Fatalf("the first Put(): %v", err)
+	}
+
+	if got := read(t, filepath.Join(dir, "report.bin")); string(got) != "BBBBBBBB" {
+		t.Errorf("report.bin says %q", got)
+	}
+	if got := read(t, filepath.Join(dir, "report-1.bin")); string(got) != "AAAAAAAA" {
+		t.Errorf("report-1.bin says %q", got)
+	}
+}
+
+// held is a body that hands over half of itself and waits there until rest is closed.
+type held struct {
+	body []byte
+	at   int
+	rest chan struct{}
+}
+
+func (h *held) Read(p []byte) (int, error) {
+	if h.at == len(h.body) {
+		return 0, io.EOF
+	}
+	if h.at > 0 {
+		<-h.rest
+	}
+
+	n := copy(p, h.body[h.at:h.at+len(h.body)/2])
+	h.at += n
+	return n, nil
 }
 
 // What arrives never replaces a file that was on this disk first.
@@ -733,5 +820,91 @@ func TestALinkSwappedInUnderASessionIsNotFollowed(t *testing.T) {
 		if got, err := os.ReadFile(into); err == nil && string(got) == "the secret" {
 			t.Fatal("a get read the file outside the namespace")
 		}
+	}
+}
+
+// A pipe under a name is answered, not waited on: an open that waits for a writer has no deadline
+// and nothing to end it.
+func TestAPipeUnderANameIsNotWaitedOn(t *testing.T) {
+	dir := t.TempDir()
+	if err := exec.Command("mkfifo", filepath.Join(dir, "pipe")).Run(); err != nil {
+		t.Skipf("no fifos here: %v", err)
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("opening the namespace: %v", err)
+	}
+	defer root.Close()
+
+	done := make(chan os.FileMode, 1)
+	go func() {
+		file, stat, err := reading(root, "pipe")
+		if err != nil {
+			done <- 0
+			return
+		}
+		defer file.Close()
+		done <- stat.Mode()
+	}()
+
+	select {
+	case mode := <-done:
+		if mode.IsRegular() {
+			t.Errorf("a pipe came back as a regular file, mode %v", mode)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("opening a pipe waited for a writer")
+	}
+}
+
+// A listing of long names is refused rather than answered with a frame no reader will take.
+func TestAListingTooBigForOneReplyIsRefused(t *testing.T) {
+	dir := t.TempDir()
+
+	name := strings.Repeat("n", 250)
+	for i := range MaxEntries {
+		at := filepath.Join(dir, fmt.Sprintf("%06d%s", i, name[6:]))
+		if err := os.WriteFile(at, nil, 0o600); err != nil {
+			t.Fatalf("writing entry %d: %v", i, err)
+		}
+	}
+
+	b := opened(t, dir, false, Into{})
+	_, err := b.List("")
+	if err == nil {
+		t.Fatal("List() answered with a listing that does not fit in a frame")
+	}
+	if !strings.Contains(err.Error(), "over the") || strings.Contains(err.Error(), "wire:") {
+		t.Fatalf("List() failed as %v, rather than being refused", err)
+	}
+	if _, err := b.List("."); err == nil || strings.Contains(err.Error(), "wire:") {
+		t.Fatalf("the session did not survive the refusal: %v", err)
+	}
+}
+
+// A part that cannot be moved onto its name leaves neither itself nor the name behind.
+func TestAPartThatCannotBeMovedIsNotLeftBehind(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".x.abcdef012345.part"), 0o700); err != nil {
+		t.Fatalf("making the part: %v", err)
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("opening the namespace: %v", err)
+	}
+	defer root.Close()
+
+	if final, err := place(root, ".x.abcdef012345.part", "x"); err == nil {
+		t.Fatalf("place() landed on %s", final)
+	}
+
+	left, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading the directory back: %v", err)
+	}
+	for _, at := range left {
+		t.Errorf("%s was left behind", at.Name())
 	}
 }
