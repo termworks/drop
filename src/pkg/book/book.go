@@ -149,16 +149,21 @@ func Load() (*Book, error) {
 		return nil, fmt.Errorf("parsing %s: %w", file, err)
 	}
 
+	// A line that will not read is dropped and said out loud, not made everybody's problem. One
+	// unreadable id used to turn every paired peer in the file into a stranger and stop the node
+	// from starting at all, which is a far larger failure than the one that caused it.
 	for name, entry := range onDisk {
 		id, err := node.ParseID(entry.ID)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %q is not a peer id: %w", file, entry.ID, err)
+			fmt.Fprintf(os.Stderr, "drop: %s: %s is not a peer id, skipping %s\n", file, entry.ID, name)
+			continue
 		}
 		var secret []byte
 		if entry.Secret != "" {
 			secret, err = base64.StdEncoding.DecodeString(entry.Secret)
 			if err != nil {
-				return nil, fmt.Errorf("%s: %s has an unreadable secret: %w", file, name, err)
+				fmt.Fprintf(os.Stderr, "drop: %s: %s has an unreadable secret, skipping it\n", file, name)
+				continue
 			}
 		}
 		b.entries[name] = Entry{Name: name, ID: id, Secret: secret, Addrs: entry.Addrs, User: entry.User, Person: entry.Person, Trusted: entry.Trusted}

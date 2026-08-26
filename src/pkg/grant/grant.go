@@ -44,6 +44,9 @@ type Store struct {
 	// the same second of a filesystem that counts in seconds would otherwise go unnoticed.
 	read time.Time
 	size int64
+	// broken is why the file last refused to load, and nil once it has loaded. A rule set nobody
+	// can read is not a rule set that allows everything.
+	broken error
 }
 
 func path() (string, error) {
@@ -89,40 +92,56 @@ func (s *Store) Refresh() error {
 	return s.reread()
 }
 
+// reread builds the whole rule set before putting any of it in place.
+//
+// Filling the live map entry by entry and giving up partway through leaves a subset of the
+// refusals in force, and nothing says which subset. A revocation that has stopped applying to some
+// of the paths it was written for is worse than one that never loaded.
 func (s *Store) reread() error {
 	file, err := path()
 	if err != nil {
-		return err
+		return s.failed(err)
 	}
 
 	raw, err := os.ReadFile(file)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return s.failed(nil)
 	}
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", file, err)
+		return s.failed(fmt.Errorf("reading %s: %w", file, err))
 	}
 
 	var onDisk map[string]Rule
 	if err := json.Unmarshal(raw, &onDisk); err != nil {
-		return fmt.Errorf("parsing %s: %w", file, err)
+		return s.failed(fmt.Errorf("parsing %s: %w", file, err))
+	}
+
+	fresh := make(map[string]Rule, len(onDisk))
+	for at, rule := range onDisk {
+		clean, err := ns.Clean(at)
+		if err != nil {
+			return s.failed(fmt.Errorf("%s: %q is not a path: %w", file, at, err))
+		}
+		fresh[clean] = rule
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.paths = map[string]Rule{}
-	for at, rule := range onDisk {
-		clean, err := ns.Clean(at)
-		if err != nil {
-			return fmt.Errorf("%s: %q is not a path: %w", file, at, err)
-		}
-		s.paths[clean] = rule
-	}
+	s.paths, s.broken = fresh, nil
 	if stamp, err := os.Stat(file); err == nil {
 		s.read, s.size = stamp.ModTime(), stamp.Size()
 	}
 	return nil
+}
+
+// failed records why the grants could not be read and leaves what was last read in place.
+func (s *Store) failed(err error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.broken = err
+	return err
 }
 
 // Save writes the grants back.
@@ -163,10 +182,14 @@ func (s *Store) For(at string) (allow, deny []string) {
 	// Re-read here rather than leaving it to whoever is serving: a refusal that waits for a
 	// restart is a refusal that did not happen. It is one stat per session, against a file that
 	// changes when somebody presses a key.
-	_ = s.Refresh()
+	broken := s.Refresh()
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	if broken == nil {
+		broken = s.broken
+	}
 
 	for _, above := range ancestry(at) {
 		rule, ok := s.paths[above]
@@ -175,6 +198,13 @@ func (s *Store) For(at string) (allow, deny []string) {
 		}
 		allow = append(allow, rule.Allow...)
 		deny = append(deny, rule.Deny...)
+	}
+
+	// A file nobody can read closes rather than opens. Nothing it might have allowed is handed
+	// out, and every refusal that did load stays in force -- the alternative is a revocation that
+	// lapses because somebody left a comma in the wrong place.
+	if broken != nil {
+		return nil, deny
 	}
 	return allow, deny
 }

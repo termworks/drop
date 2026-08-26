@@ -53,8 +53,38 @@ func TestAnUnknownMachineOfAKnownPersonIsRecognised(t *testing.T) {
 	if !who.Paired {
 		t.Error("bob's phone was not treated as paired")
 	}
-	if who.Name != "phone" {
-		t.Errorf("the machine is called %q", who.Name)
+	// It has no local name: nobody here has filed it under anything. What it calls itself is kept
+	// for a list to show, and nothing is decided on it.
+	if who.Name != "" {
+		t.Errorf("a machine nobody filed was named %q", who.Name)
+	}
+	if who.Label != "phone" {
+		t.Errorf("the machine calls itself %q", who.Label)
+	}
+}
+
+// The narrow form of a rule names a machine this side wrote down. A machine that merely calls
+// itself that must not satisfy it, or the half of the rule that narrows it does nothing: anybody
+// holding bob's badge could set the name and walk in.
+func TestAMachineCannotNameItselfIntoANarrowRule(t *testing.T) {
+	pinned := emptyBook(t)
+	pinned.Pair("bob", idFor(1), make([]byte, book.SecretBytes))
+	pinned.Belongs("bob", bobsKey)
+
+	rule := ns.Access{Named: []string{"bob@laptop"}}
+
+	claiming := whoIs(pinned)(idFor(2), proto.Badged{Key: bobsKey, As: "laptop"})
+	if ok, _ := rule.Admits(claiming); ok {
+		t.Fatal("a machine got in by calling itself laptop")
+	}
+
+	// The same person's machine, filed here under that name, is the one the rule meant.
+	pinned.Pair("laptop", idFor(3), make([]byte, book.SecretBytes))
+	pinned.Belongs("laptop", bobsKey)
+
+	filed := whoIs(pinned)(idFor(3), proto.Badged{Key: bobsKey, As: "whatever"})
+	if ok, why := rule.Admits(filed); !ok {
+		t.Fatalf("bob's laptop was refused: %s", why)
 	}
 }
 

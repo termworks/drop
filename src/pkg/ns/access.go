@@ -124,8 +124,12 @@ type rule struct {
 type Caller struct {
 	// ID is the endpoint id the handshake proved. Never empty for a real connection.
 	ID string
-	// Name is what this device is filed under, empty if it is not in the book.
+	// Name is what this device is filed under here, empty if it is not in the book. It is the
+	// only name anything is decided on: it is what somebody on this machine wrote down.
 	Name string
+	// Label is what the device calls itself, off its badge. Nobody vouches for it and no rule may
+	// be satisfied by it -- it is there so a list can show a machine that has no local name yet.
+	Label string
 	// Paired says a shared secret exists with it.
 	Paired bool
 	// Trusted says this is somebody you decided to trust, not merely somebody you have met.

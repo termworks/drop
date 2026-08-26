@@ -71,16 +71,17 @@ func greeting(pinned *book.Book, mounts *ns.Table, from node.ID, badge proto.Bad
 	}
 }
 
-// whoIs describes a caller from the address book, for the access rules to judge.
-//
-// Nothing here decides anything: it reports what is known — the name this device is filed under, and
-// whether a secret is shared with it — and the rule on the path does the deciding.
-// whoIs turns a caller into what the address book knows about it.
+// whoIs turns a caller into what the address book knows about it, for the access rules to judge.
 //
 // There are two ways in. The machine itself may be in the book, which is how drop has always
 // worked. Or it may carry a badge signed by a person who is -- a machine of theirs this one has
 // never met, recognised without pairing again. Both may be true at once, and then the machine's
 // own entry names it and the badge says whose it is.
+//
+// Name is only ever what this machine filed the device under. The label on the badge is the far
+// end's own word for itself, so it goes in Label, where nothing is decided on it: a rule written
+// as "bob@laptop" has to mean the laptop somebody here wrote down, not whichever of bob's machines
+// calls itself that.
 func whoIs(pinned *book.Book) func(node.ID, proto.Badged) ns.Caller {
 	return func(from node.ID, badge proto.Badged) ns.Caller {
 		who := ns.Caller{ID: from.String()}
@@ -94,16 +95,12 @@ func whoIs(pinned *book.Book) func(node.ID, proto.Badged) ns.Caller {
 		if !badge.Shown() {
 			return who
 		}
-		who.User = badge.Key
+		who.User, who.Label = badge.Key, badge.As
 
 		// A machine of my own is filed under "me". Nobody writes it in the address book, because
 		// there is nothing to pair with: it is whatever my own user key has signed.
-		// A machine of my own is trusted by construction: it is me.
 		if mine := myKey(); mine != "" && badge.Key == mine {
 			who.UserName, who.Paired, who.Trusted = "me", true, true
-			if who.Name == "" {
-				who.Name = badge.As
-			}
 			return who
 		}
 
@@ -114,9 +111,6 @@ func whoIs(pinned *book.Book) func(node.ID, proto.Badged) ns.Caller {
 		who.UserName = owner.Person
 		who.Paired = who.Paired || owner.Paired()
 		who.Trusted = who.Trusted || owner.Trusted
-		if who.Name == "" {
-			who.Name = badge.As
-		}
 		return who
 	}
 }

@@ -224,7 +224,7 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, s
 		node.ALPNPair: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
 
-			p, err := proto.AnswerPairing(s, n.ID(), node.DisplayName(), written(discovery.LocalAddrs(n)))
+			p, err := proto.AnswerPairing(s, n.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(n)))
 			if err != nil {
 				return
 			}
@@ -296,6 +296,14 @@ func filed(p proto.Pairing, as string, machine bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	// A name is this machine's own label, and the far end suggested one. Letting a pairing take a
+	// name that is already somebody else's would hand that name, and every rule written against
+	// it, to whoever paired last.
+	if held, taken := b.Lookup(name); taken && held.ID != p.Peer {
+		return "", fmt.Errorf("%q is already %s here; pair with --as to choose another name", name, node.Brief(held.ID))
+	}
+
 	b.Pair(name, p.Peer, p.Secret, p.Addrs...)
 	if !machine {
 		b.Belongs(name, p.User)
@@ -383,7 +391,7 @@ func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as stri
 	defer conn.Close()
 	defer s.Close()
 
-	p, err := proto.Pair(s, n.ID(), node.DisplayName(), codeProof(code, n.ID(), id), written(discovery.LocalAddrs(n)))
+	p, err := proto.Pair(s, n.ID(), id, node.DisplayName(), codeProof(code, n.ID(), id), written(discovery.LocalAddrs(n)))
 	if err != nil {
 		return proto.Pairing{}, "", err
 	}

@@ -58,12 +58,26 @@ func (b Badge) Expired(now time.Time) bool { return now.After(b.Until) }
 // SignBy makes a badge and has a command sign it, for a key drop cannot sign with itself.
 func SignBy(command string, who ssh.PublicKey, device, name string, now time.Time) (Badge, []byte, error) {
 	badge := Badge{User: who, Device: device, Name: name, Until: now.Add(Lasts)}
+	if err := badge.writable(); err != nil {
+		return Badge{}, nil, err
+	}
 
 	sig, err := signVia(command, badge.Bytes())
 	if err != nil {
 		return Badge{}, nil, err
 	}
 	return badge, sig, nil
+}
+
+// writable reports whether a badge can be written down as one line per field and read back as the
+// same thing. A field carrying a newline would be read back as a line of its own.
+func (b Badge) writable() error {
+	for what, field := range map[string]string{"device": b.Device, "name": b.Name} {
+		if strings.ContainsAny(field, "\r\n") {
+			return fmt.Errorf("a badge's %s cannot span lines: %q", what, field)
+		}
+	}
+	return nil
 }
 
 // Sign makes a badge and signs it.
@@ -73,6 +87,9 @@ func Sign(by ssh.Signer, device, name string, now time.Time) (Badge, []byte, err
 		Device: device,
 		Name:   name,
 		Until:  now.Add(Lasts),
+	}
+	if err := badge.writable(); err != nil {
+		return Badge{}, nil, err
 	}
 
 	sig, err := signature(by, badge.Bytes())
@@ -112,6 +129,11 @@ func Read(signed []byte, sig []byte, now time.Time) (Badge, error) {
 }
 
 // parse reads a badge back from what was signed.
+//
+// One shape, and only one. A line nobody knows, a keyword said twice, or anything else that would
+// not be written back exactly as it arrived is not a badge: the signature covers bytes, and a
+// reader that quietly forgives a line is a reader that can be shown different bytes to the ones it
+// believes it checked.
 func parse(signed []byte) (Badge, error) {
 	var badge Badge
 
@@ -120,11 +142,16 @@ func parse(signed []byte) (Badge, error) {
 		return Badge{}, fmt.Errorf("that is not a badge")
 	}
 
+	said := map[string]bool{}
 	for _, line := range lines[1:] {
 		what, rest, found := strings.Cut(line, " ")
 		if !found {
 			return Badge{}, fmt.Errorf("cannot read %q", line)
 		}
+		if said[what] {
+			return Badge{}, fmt.Errorf("that badge says %q twice", what)
+		}
+		said[what] = true
 
 		switch what {
 		case "user":
@@ -146,11 +173,17 @@ func parse(signed []byte) (Badge, error) {
 				return Badge{}, fmt.Errorf("the date in that badge is unreadable: %w", err)
 			}
 			badge.Until = at
+
+		default:
+			return Badge{}, fmt.Errorf("that badge says %q, which means nothing here", what)
 		}
 	}
 
 	if badge.User == nil || badge.Device == "" {
 		return Badge{}, fmt.Errorf("that badge does not say who owns what")
+	}
+	if string(badge.Bytes()) != string(signed) {
+		return Badge{}, fmt.Errorf("that badge is not written the way a badge is written")
 	}
 	return badge, nil
 }
