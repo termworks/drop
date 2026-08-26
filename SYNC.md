@@ -1,110 +1,102 @@
-# Keeping a directory in step
+# Several people changing one thing
 
-`files` is a directory you reach into. This is a directory that keeps itself the same on two
-machines. It is a different thing, and the analysis says plainly that it has to be a different
-archetype rather than more operations on `files`.
+Not file synchronisation. Several people, on several machines, changing one thing at the same time
+and converging, with no server. Some archetypes have this and some do not: a note does, a terminal
+does not.
 
-## What was measured
+## What Anytype actually does
 
-Numbers from this machine and the Orin, not from reasoning.
+The inspiration is worth stating precisely, because the common picture of it is wrong.
+
+any-sync is **not a CRDT library**. It is a signed, content-addressed **change DAG** per object.
+A change names the heads it saw, its id is the hash of its own signed bytes, and every peer derives
+the same linear history by topological sort with ties broken on change id. That is about forty
+lines of struct, not a research project.
+
+And **any-sync defines no merge semantics at all**. The payload is opaque and encrypted; only the
+metadata is plaintext. What the ordered changes *mean* is the application's business.
+
+That is the same boundary drop already draws. The sync layer orders; the archetype interprets.
+
+Two more things that were checked rather than assumed:
+
+- **Anytype does not merge text character by character.** A block's text is carried as one whole
+  string (`BlockSetText{ string value }`), so concurrent edits to one paragraph are last-writer-wins
+  under the deterministic order. Block-granular, not Google Docs.
+- **The one thing any-sync needs a server for is permission.** Its access list is a linear chain
+  counter-signed by a network key, and a permission change without connectivity is refused. Objects
+  need no server; the ACL does. drop should not inherit that half — it already has access rules.
+
+## What drop already has, and the two things it does not
+
+Have:
+
+- a durable, encrypted, append-only, deduplicating log — `src/pkg/convo`
+- reliable pairwise delivery with an outbox and an acknowledgement of what actually landed
+- a transport where a machine behind NAT is reachable over a connection it opened — `dial.Kept`
+- real signing, reusable as-is: SSHSIG under the namespace `drop`, and badges already binding a
+  user key to a device, so "this change was authored by this person" is one `Sign` call away
+
+Missing, and these are the two that matter:
+
+1. **Causality and content-addressed identity.** A `convo.Message` has no parent and no signature,
+   its id is a sender-minted ULID unbound to its bytes, and ordering is by the sender's wall clock.
+   Fine for two people chatting; wrong the moment three machines edit one thing.
+2. **An archetype cannot initiate anything.** The interface is Name/Version/Read/Note/Serve, no
+   package under `src/pkg/arch` imports `dial`, and the daemon's push loop is hardcoded to `/chat`
+   in four places.
+
+And one place a genuinely new concept is needed: an `ns.Mount` is one machine's local declaration
+with no identity for the instance and no list of who else holds it, so "the same note on five
+machines" is today five unrelated namespaces that happen to share a spelling. ARCHESPACE does not
+forbid an instance identity; it simply never names one.
+
+## The decisions
 
 | | |
 | --- | --- |
-| walk + stat a 5,526-entry, 2.18 GB folder | **14 ms** warm, 520 ms cold |
-| hash the same folder | **3.8 s** — a 1000× gap, and the whole design rests on it |
-| blake3 on one core | 6,650 MB/s, 2.7× sha256 |
-| index of 10k files, prefix-shared, gzipped | ~410-615 KB, of which 320 KB is incompressible digest |
-| `keep.Replace` of 512 KB on real ext4 | **18.7 ms** — and 79 µs on tmpfs, so a test on `/tmp` proves nothing |
-| one append + fsync | 6.9 ms, so ~145/s: you cannot fsync per changed file |
-| rolling checksum, Go, with lookups | 447 MB/s |
-
-## Five things that are broken for sync today
-
-Each was reproduced, not inferred.
-
-1. **`Entry.At` is whole seconds.** The filesystem gives nanoseconds. Two writes 3 ms apart are
-   identical on the wire — 500/500 rapid rewrites invisible at second resolution, 0/500 at
-   nanosecond. This is the most likely way sync ships broken and looks fine in testing.
-2. **`files` put cannot replace.** `place` → `claim` numbers around a collision, so a put over
-   `notes.txt` produces `notes-1.txt`, `notes-2.txt`. There is a test asserting this. A
-   synchroniser's whole job is replacing a file with a newer one.
-3. **Nothing calls `Chtimes` anywhere in the repo.** An arriving file's mtime is the moment it
-   landed, so it looks locally modified on the next scan and wants to go back. That presents as
-   "sync never converges", not as a missing call.
-4. **Mode is flattened to 0600/0700**, measured 755 → 700. If mode is compared, two machines flap
-   forever and neither is wrong.
-5. **`files` has no resume.** `partName` uses `crypto/rand`, and a hard kill mid-get leaves an
-   orphan part — 87 MB per attempt, two orphans from two runs. Only `share` resumes, and it keys
-   on (name, size), which resumes against stale bytes and then throws the transfer away.
-
-Also found and worth fixing regardless of sync: the announced size is never enforced against what
-arrives (8388608 announced, 1835008 landed, no error), and a directory of 16385 entries cannot be
-listed at all.
+| what is collaborative | an archetype says so: `note` (new), `files`, `chat`. Not share, link, tty, stream |
+| who may change it | the access rule already says. Reaching it is changing it |
+| revocation | not retroactive — what someone already has, they keep. Same as Anytype, same as drop's existing refusals |
+| how you edit | a real file, your own editor. Merging happens at save |
+| merge grain | line-wise for text, keep-both for anything else |
+| history | a means, not a feature. Folded once every peer has caught up |
+| a peer that never returns | forgotten after a while; if they come back they take a snapshot, not the log |
+| how it starts | discovery. It appears in `drop path ls` because the rule names you, and you join it |
 
 ## The shape
 
-A new archetype, `sync`, at version 1. It reuses the wire, the containment, the transfer handshake
-and the path cleaner, and owns everything else — which is what ARCHESPACE says an archetype is for.
+**A change** is `{ heads[], author, signature, payload }`, its id the hash of its signed bytes.
+Ordering is topological with ties on id. The payload is opaque to everything but the archetype.
+This is any-sync's model, minus the parts that exist only because Anytype runs a public network.
 
-**Remember pairwise, not globally.** Syncthing's version vectors buy N-way sync with no pairwise
-state, and pay for it with tombstones that cannot be collected exactly — kept forever until 2.0,
-then six months, with documented file resurrection as the price, and indexes that reach 100 GB in
-the field. For a handful of machines one person owns, Unison's model is right: remember the last
-agreed state per pair. Tombstone collection becomes exact, because you know every peer.
+**A namespace gains an identity** — the thing five machines mean when they say they hold the same
+note — and a set of peers, which is what the access rule already names.
 
-**Detect change by digest against last-synced digest, on both sides. Never by comparing clocks.**
-drop has no clock authority, so "older mtime loses" is not available to it. Two sides differing
-from the last agreed state is a conflict by definition, and no timestamp makes it not one.
+**The archetype interprets.** `note` reads the ordered changes as edits to a file. `files` reads
+them as "this path now has this digest", with the bytes moving over the transfer path that already
+exists. `chat` already converges and mostly needs to be told that it counts.
 
-**Never guess at a conflict.** Every product answer — Dropbox, Nextcloud, Syncthing — keeps both
-and tells the person. Nobody merges. `claim` already produces the numbered name for the loser.
-
-**Content-equality is never a conflict.** That single rule handles both the change-arriving-by-two-
-routes case and the infinite-resync loop.
-
-**A rename is a delete plus a create, with a digest lookup before transferring.** That recovers
-renames, copies and moves for one map lookup and no bytes on the wire.
-
-**If the state file for a peer is missing, sync additively and delete nothing.** This is the rule
-that turns a catastrophe into clutter.
+**Merging is the archetype's, not the log's.** Line-wise three-way for text, keep-both otherwise —
+and the rule for which is which has to be written down, because drop will sometimes get it wrong
+and destroying a SQLite file by merging it line-wise is not a recoverable mistake.
 
 ## Order of work
 
-1. **The scanner, alone, with no networking.** Walk through `os.Root.FS()` — measured 1.0-1.4×
-   a plain walk, where a per-name `Root.Lstat` is 2.6-3.6×. Record path, size, mtime to the
-   nanosecond, inode, mode, and blake3 of the content.
-2. **The index**, at `DataDir()/sync/<namespace>/`, beside conversations. Not the config dir, and
-   not a cache: a tombstone recording that a file was *deleted* rather than never present cannot be
-   recomputed from the filesystem. Lose the index and every deletion is resurrected.
-3. **The digest cache**, with git's racy rule built in from the start: skip the hash when
-   (size, mtime_s, mtime_ns, inode) match, and force a re-hash for anything whose mtime is not
-   strictly older than the index's own write. Because `Chtimes`-restore defeats every tuple — a
-   restore-from-backup produces a byte-identical signature over different content — add a deep
-   re-hash on a slow timer, and make its cost visible.
-4. **The comparison.** Sequence numbers per Syncthing's model, not a Merkle tree: measured, a
-   Merkle descent was *worse* than shipping the whole index at ~10 changed files in a 4,652-file
-   folder, because one mismatched directory puts its whole child list on the wire and each level
-   is a serial round trip.
-5. **The transfer**, reusing `sendBody`/`drain` unchanged, plus a replace with a precondition —
-   "replace this path, whose content I believe is digest D" — so a concurrent change is detected
-   rather than clobbered. `opMove` already overwrites, so put-to-temp-then-move gives atomic
-   replace with no new operation.
-6. **Metadata policy, written down.** Set mtime on arrival. Preserve only the execute bit, and
-   exclude mode from the comparison.
-7. **The watcher, last and optional.** Raw inotify behind an interface, scan-only everywhere else.
-   It never reports a change; it only shortens the wait before the next scan — because the queue
-   overflows silently (60,000 files created, 16,385 events readable, 99.97% dropped) and
-   `InotifyAddWatch` fails with ENOSPC mid-walk at ~65k directories.
+1. **The change log**: signed, content-addressed, causal. Its own package, no networking. This is
+   where `convo`'s data model has to change rather than be reused — the seal binds a record to a
+   *peer*, and this one is keyed by *object*.
+2. **Instance identity and the peer set** on a namespace, and `drop path join`.
+3. **Letting an archetype speak first.** The smallest honest version of "tell everyone who is
+   interested", built on `dial.Kept`, which already holds connections both ways.
+4. **`note`**, the simplest collaborative archetype: one file, line-wise merge.
+5. **`files` collaborative**, which is where the five known defects have to be fixed first —
+   `Entry.At` is whole seconds, `put` cannot replace, nothing calls `Chtimes`, mode is flattened,
+   and there is no resume.
+6. **Compaction**, once the peer set is known and a peer can be forgotten.
 
-## Refused in writing, in version 1
+## Refused, in writing
 
-Hard links, sparse files, owner/group/xattrs, sub-file deltas, three-way merge, and any file being
-written while it is synced — a live SQLite file or a VM disk will sync torn.
-
-Sub-file deltas deserve the reasoning rather than the verdict. rsync's own manual turns the delta
-off when both ends are local, "the transfer may be faster if this option is used when the bandwidth
-between the source and destination machines is higher than the bandwidth to disk". Measured here,
-the scan runs at 447 MB/s against a ~110 MB/s LAN, so the delta only pays if it saves more than
-about a quarter of the bytes. Two machines on one wire are much closer to rsync's local case than
-to the dial-up case the algorithm was written for. blake3 is a tree hash, so per-block digests can
-be added later without changing the whole-file digest already on the wire.
+Character-level text merging. Three-way merge of anything that is not lines. Merging a file that is
+being written. Retroactive revocation — removal gives forward secrecy only, and you cannot un-share
+bytes somebody already has. A server, of any kind, for any part of it.
