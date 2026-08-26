@@ -43,11 +43,11 @@ type signed struct {
 	Digest    string
 }
 
-// Sign produces an OpenSSH signature over a message, under a namespace.
+// Signature is an OpenSSH signature over a message, under drop's namespace.
 //
 // The namespace is what stops a signature meaning two things: one made for "drop" cannot be
 // replayed as a git commit signature or an ssh login, and neither of those can become a badge.
-func signature(by ssh.Signer, message []byte) ([]byte, error) {
+func Signature(by ssh.Signer, message []byte) ([]byte, error) {
 	namespace := Namespace
 
 	sum := sha512.Sum512(message)

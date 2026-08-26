@@ -42,7 +42,7 @@ func TestABadgeSignedBySomebodyElseIsRefused(t *testing.T) {
 	claim := Badge{User: mine.PublicKey(), Device: someDevice, Name: "laptop", Until: now.Add(Lasts)}
 
 	// ...signed by theirs.
-	sig, err := signature(theirs, claim.Bytes())
+	sig, err := Signature(theirs, claim.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}

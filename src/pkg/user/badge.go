@@ -92,7 +92,7 @@ func Sign(by ssh.Signer, device, name string, now time.Time) (Badge, []byte, err
 		return Badge{}, nil, err
 	}
 
-	sig, err := signature(by, badge.Bytes())
+	sig, err := Signature(by, badge.Bytes())
 	if err != nil {
 		return Badge{}, nil, err
 	}

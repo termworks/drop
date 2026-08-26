@@ -63,7 +63,7 @@ func TestASmuggledLineIsNotBelieved(t *testing.T) {
 		Name:   "laptop\ndevice " + strings.Repeat("c", 64),
 		Until:  now.Add(Lasts),
 	}
-	sig, err := signature(by, smuggled.Bytes())
+	sig, err := Signature(by, smuggled.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}

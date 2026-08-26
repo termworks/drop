@@ -30,9 +30,9 @@ func aKey(t *testing.T) ssh.Signer {
 func TestASignatureCheckksOut(t *testing.T) {
 	by := aKey(t)
 
-	sig, err := signature(by, []byte("this machine is mine"))
+	sig, err := Signature(by, []byte("this machine is mine"))
 	if err != nil {
-		t.Fatalf("signature(): %v", err)
+		t.Fatalf("Signature(): %v", err)
 	}
 
 	who, err := Verify(sig, []byte("this machine is mine"), "drop")
@@ -46,7 +46,7 @@ func TestASignatureCheckksOut(t *testing.T) {
 
 // The point of a signature is that it stops being one when the message changes.
 func TestAChangedMessageDoesNotVerify(t *testing.T) {
-	sig, err := signature(aKey(t), []byte("this machine is mine"))
+	sig, err := Signature(aKey(t), []byte("this machine is mine"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestAChangedMessageDoesNotVerify(t *testing.T) {
 // A signature made for one purpose must not be usable for another. Without this, a badge could be
 // replayed as an ssh login, or a git commit signature could become a badge.
 func TestASignatureIsBoundToItsNamespace(t *testing.T) {
-	sig, err := signature(aKey(t), []byte("this machine is mine"))
+	sig, err := Signature(aKey(t), []byte("this machine is mine"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,9 +107,9 @@ func TestOpenSSHAgreesBothWays(t *testing.T) {
 		t.Fatalf("reading the key: %v", err)
 	}
 
-	ours, err := signature(signer, message)
+	ours, err := Signature(signer, message)
 	if err != nil {
-		t.Fatalf("signature(): %v", err)
+		t.Fatalf("Signature(): %v", err)
 	}
 	mine := filepath.Join(dir, "ours.sig")
 	if err := os.WriteFile(mine, ours, 0o644); err != nil {
