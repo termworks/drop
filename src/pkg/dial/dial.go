@@ -1,14 +1,13 @@
 // Package dial turns a device you know into a connection to it.
 //
-// The ladder lives here rather than in a command, because a phone climbs the same one: what the book
-// remembers, then this wire, then — only if neither answered — a rendezvous, which is the one step
-// that involves anybody else.
+// The ladder lives here rather than in a command, because a phone climbs the same one: this wire,
+// then — only if it did not answer — a rendezvous, which is the one step that involves anybody
+// else, and what the book remembers when neither of them knows.
 package dial
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/netip"
 	"reflect"
 	"time"
@@ -38,8 +37,10 @@ func At(ctx context.Context, n *node.Node, lan *discovery.LAN, moved Finder, ent
 	at := node.AddrFor(entry.ID, known...)
 
 	if len(known) == 0 {
-		// What the book remembers comes first: it was learned at pairing and needs nothing running
-		// to resolve it. It can also be stale, which is what the other two are for.
+		// What the book remembers is the floor, not the preference: it needs nothing running to
+		// resolve, and anything that answers below replaces it outright. A remembered address whose
+		// mapping has expired is worse than no address at all — it is a timeout somebody waits for
+		// before the address that would have worked is ever tried.
 		if remembered := Addrs(entry.Addrs); len(remembered) > 0 {
 			at = node.AddrFor(entry.ID, remembered...)
 		}
@@ -77,7 +78,7 @@ func At(ctx context.Context, n *node.Node, lan *discovery.LAN, moved Finder, ent
 
 	conn, s, err := openFresh(ctx, n, at, alpn)
 	if err != nil {
-		return nil, nil, fmt.Errorf("reaching %s: %w", entry.Name, err)
+		return nil, nil, unreachable(n.Trouble(), entry, at, err)
 	}
 	return conn, s, nil
 }
@@ -111,28 +112,65 @@ func openFresh(ctx context.Context, n *node.Node, at netaddr.EndpointAddr, alpn 
 // being wrong costs less than the full attempt saves.
 const straightAway = 3 * time.Second
 
+// atMost is how many addresses get a short attempt of their own before the whole set is tried at
+// once. Two: a best guess and one alternative, so being wrong twice costs six seconds rather than
+// the length of whatever list a peer happens to advertise.
+const atMost = 2
+
 // worthTrying is the addresses to try on their own, best first.
 //
-// The one that answered last time comes first: finding a device is expensive and the answer rarely
-// changes between two conversations. Then the one on our own wire, which is the best guess when
-// there is no memory to go on.
+// Nearest first. An address on our own wire is the only one known to mean the same machine at both
+// ends, and it answers in milliseconds; everything further away is a guess that takes the whole
+// timeout to disprove. The one that answered last time goes ahead of the others it is equally near
+// as, and no further: a remembered address whose NAT mapping has expired, or that now belongs to
+// somebody else's machine, would otherwise cost a timeout on every dial before anything else was
+// tried.
+//
+// Only addresses that could plausibly answer straight away are here. The rest are left to the full
+// attempt, which has the relay as well and does not spend three seconds each finding out.
 func worthTrying(at netaddr.EndpointAddr, entry book.Entry) []netip.AddrPort {
-	candidates := at.IPAddrs()
-	if len(candidates) < 2 {
+	ranked := Nearest(at.IPAddrs())
+	if len(ranked) < 2 {
 		// One address is already the whole attempt.
 		return nil
 	}
 
+	worked, remembered := lastWorked(entry)
+	if remembered {
+		ranked = promote(ranked, worked)
+	}
+
 	var out []netip.AddrPort
+	for _, one := range ranked {
+		if len(out) == atMost {
+			break
+		}
+		if near(one.Addr()) <= nearbyEnough || (remembered && one == worked) {
+			out = append(out, one)
+		}
+	}
+	return out
+}
 
-	if worked, ok := lastWorked(entry); ok && has(candidates, worked) {
-		out = append(out, worked)
+// nearbyEnough is how far away an address may be and still be worth a short attempt of its own:
+// our own wire, or any private range, which is where an overlay and a VPN put a device.
+const nearbyEnough = 1
+
+// promote moves one address ahead of every address it is equally near as, and no further.
+func promote(ranked []netip.AddrPort, one netip.AddrPort) []netip.AddrPort {
+	from := indexOf(ranked, one)
+	if from < 0 {
+		return ranked
 	}
 
-	ranked := Nearest(candidates)
-	if len(ranked) > 0 && onOurWire(ranked[0].Addr()) && !has(out, ranked[0]) {
-		out = append(out, ranked[0])
+	to := 0
+	for to < from && near(ranked[to].Addr()) < near(one.Addr()) {
+		to++
 	}
+
+	out := append([]netip.AddrPort(nil), ranked...)
+	copy(out[to+1:], out[to:from])
+	out[to] = one
 	return out
 }
 
@@ -146,13 +184,14 @@ func lastWorked(entry book.Entry) (netip.AddrPort, bool) {
 	return at, err == nil
 }
 
-func has(all []netip.AddrPort, one netip.AddrPort) bool {
-	for _, at := range all {
+// indexOf is where an address sits in a list, or -1.
+func indexOf(all []netip.AddrPort, one netip.AddrPort) int {
+	for i, at := range all {
 		if at == one {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
 }
 
 // remember writes down the address that answered, so the next conversation starts there.

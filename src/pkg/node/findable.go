@@ -68,6 +68,10 @@ func Findable(ctx context.Context, n *Node) error {
 
 	said := ""
 	say := func(whatever bool) {
+		// Where this machine is on its own networks, again: a laptop that has moved has different
+		// addresses, and the endpoint does not go looking for them.
+		n.Pin()
+
 		at := n.Endpoint.Addr()
 
 		now := fmt.Sprint(at.Addrs())
@@ -86,10 +90,14 @@ func Findable(ctx context.Context, n *Node) error {
 		watch := time.NewTicker(settle)
 		defer watch.Stop()
 
+		moved := Moved(ctx, n)
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-moved:
+				say(false)
 			case <-watch.C:
 				say(false)
 			case <-slow.C:
@@ -98,4 +106,24 @@ func Findable(ctx context.Context, n *Node) error {
 		}
 	}()
 	return nil
+}
+
+// Moved carries a word every time the endpoint's address changes.
+//
+// The ticker above only looks every couple of seconds, and only at what the endpoint already
+// believes. The endpoint itself knows the instant a network report replaces the address the world
+// sees it at — which is what a restart does, because the NAT hands out a different port — so the
+// record goes out then rather than whenever the next look happens to fall.
+func Moved(ctx context.Context, n *Node) <-chan struct{} {
+	told := make(chan struct{}, 1)
+
+	go func() {
+		for range n.Endpoint.WatchAddr().Stream(ctx) {
+			select {
+			case told <- struct{}{}:
+			default:
+			}
+		}
+	}()
+	return told
 }

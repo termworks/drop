@@ -85,6 +85,10 @@ func (s *Service) Run(ctx context.Context) {
 
 	said := ""
 	say := func(whatever bool) {
+		// Where this machine is on its own networks, again: a laptop that has moved has different
+		// addresses, and the endpoint does not go looking for them.
+		s.node.Pin()
+
 		now := whereNow(s.node.Endpoint.Addr())
 		if !whatever && now == said {
 			return
@@ -95,10 +99,14 @@ func (s *Service) Run(ctx context.Context) {
 
 	say(true)
 
+	moved := node.Moved(ctx, s.node)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-moved:
+			say(false)
 		case <-watch.C:
 			say(false)
 		case <-slow.C:

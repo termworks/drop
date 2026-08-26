@@ -236,45 +236,8 @@ func decodeAnnounce(packet []byte) (string, []netip.AddrPort, bool) {
 	return id, addrs, true
 }
 
-// LocalAddrs is where this node can be reached on this network.
-//
-// A freshly bound endpoint advertises nothing — it has not learned its own addresses yet — so on
-// the local network they are taken from the interfaces directly, paired with the port it bound.
+// LocalAddrs is where this node can be reached on this network: its own interface addresses at the
+// port the endpoint bound, which is what an announcement carries and what a pairing writes down.
 func LocalAddrs(n *node.Node) []netip.AddrPort {
-	port := n.Endpoint.LocalAddr().Port()
-	if port == 0 {
-		return nil
-	}
-
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
-
-	var out []netip.AddrPort
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, a := range addrs {
-			prefix, ok := a.(*net.IPNet)
-			if !ok {
-				continue
-			}
-			ip, ok := netip.AddrFromSlice(prefix.IP)
-			if !ok {
-				continue
-			}
-			ip = ip.Unmap()
-			if !ip.Is4() {
-				continue
-			}
-			out = append(out, netip.AddrPortFrom(ip, port))
-		}
-	}
-	return out
+	return node.OwnAddrs(n.Endpoint.LocalAddr().Port())
 }

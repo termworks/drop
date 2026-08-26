@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"strconv"
+	"sync"
 
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/netaddr"
@@ -31,10 +32,31 @@ type Node struct {
 	// another process on this machine already has it. That process is the node as far as anybody
 	// dialling is concerned; this one can still ask questions, but nobody can reach it.
 	borrowed bool
+	// wanted is the port it tried for, which is the one to name when saying so.
+	wanted uint16
+
+	mu sync.Mutex
+	// pinned is this machine's own addresses as last handed to the endpoint.
+	pinned []netip.AddrPort
 }
 
 // Own reports whether this process holds the address its identity is reached on.
 func (n *Node) Own() bool { return !n.borrowed }
+
+// Trouble is what is wrong with this node itself, or empty when nothing is.
+//
+// One thing so far, and it is the one that cannot be seen from a failed dial: another process on
+// this machine already had the port this identity is reached on, so this node bound somewhere else.
+// Nothing dialling this device arrives here, and a hole punched for it is punched at the wrong
+// port — so every connection ends in a transport timeout that says only that nothing answered.
+func (n *Node) Trouble() string {
+	if n.Own() {
+		return ""
+	}
+	return fmt.Sprintf(
+		"another process on this machine holds port %d, so this one bound elsewhere and cannot be reached; stop it, or set DROP_PORT to a free port",
+		n.wanted)
+}
 
 // Start brings up the endpoint under this node's persisted identity.
 func Start(ctx context.Context) (*Node, error) {
@@ -79,7 +101,14 @@ func Start(ctx context.Context) (*Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("starting the endpoint: %w", err)
 	}
-	return &Node{Endpoint: ep, borrowed: borrowed}, nil
+
+	n := &Node{Endpoint: ep, borrowed: borrowed, wanted: Port()}
+
+	// Before anything reads Addr(), so the first record written already carries somewhere a peer
+	// on the same wire can dial.
+	n.Pin()
+
+	return n, nil
 }
 
 // ID is this node's address.
