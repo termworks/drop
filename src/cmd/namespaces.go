@@ -42,10 +42,33 @@ func showOwnTable() error {
 		fmt.Printf("%s\n\n", cfg.Path)
 	}
 
-	for _, m := range cfg.Mounts.All() {
-		fmt.Printf("  %-24s %-7s %-22s %s\n", m.Path, m.Archetype, shared(cfg.Mounts, m), detail(m))
+	mounts := cfg.Mounts.All()
+	kind := widest(6, archetypes(mounts))
+	for _, m := range mounts {
+		fmt.Printf("  %-24s %-*s %-22s %s\n", m.Path, kind, m.Archetype, shared(cfg.Mounts, m), detail(m))
 	}
 	return nil
+}
+
+// widest is how much room a column of these needs, never under a floor, so one long entry moves the
+// column rather than pushing the rest of its row out of line.
+func widest(floor int, of []string) int {
+	width := floor
+	for _, text := range of {
+		if len(text) > width {
+			width = len(text)
+		}
+	}
+	return width
+}
+
+// archetypes is the archetype column of a table of mounts.
+func archetypes(mounts []ns.Mount) []string {
+	out := make([]string, 0, len(mounts))
+	for _, m := range mounts {
+		out = append(out, m.Archetype.String())
+	}
+	return out
 }
 
 // shared says who a path is open to, so a config can be read back rather than reasoned about.

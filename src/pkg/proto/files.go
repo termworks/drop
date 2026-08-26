@@ -3,10 +3,13 @@ package proto
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"lukechampine.com/blake3"
 
@@ -66,7 +69,7 @@ func SendFiles(ctx context.Context, s io.ReadWriteCloser, path string, sources [
 
 	conn := wire.NewConn(s)
 
-	open := Open{Mode: ModeFiles, From: from, Path: path}
+	open := Open{Mode: ModeShare, From: from, Path: path}
 	open.Badge, open.Signed = carried()
 	for _, src := range sources {
 		open.Items = append(open.Items, Item{Name: src.Name, Size: src.Size, Mode: src.Mode})
@@ -180,12 +183,47 @@ func sendOne(conn *wire.Conn, src Source, resume int64, progress func(string, in
 	return nil
 }
 
+// partName is where an item waits while it arrives. The name and the length are folded into it, so
+// what an earlier, different offer left behind is a different file and is never resumed against.
+func partName(item Item) string {
+	name := safeName(item.Name)
+	sum := blake3.Sum256(fmt.Appendf(nil, "%s\x00%d", name, item.Size))
+	return fmt.Sprintf(".%s.%x.part", name, sum[:6])
+}
+
+// offered reads an offer before anything is made for it. Two items on one name means the second
+// landing on top of the first, which nobody asked for.
+func offered(items []Item) error {
+	seen := make(map[string]bool, len(items))
+	for _, item := range items {
+		name := safeName(item.Name)
+		if seen[name] {
+			return fmt.Errorf("%s was offered twice", name)
+		}
+		seen[name] = true
+	}
+	return nil
+}
+
 // receiveFiles takes the items of an accepted files session.
 func receiveFiles(conn *wire.Conn, policy Policy, from node.ID, open Open) error {
-	if err := os.MkdirAll(policy.Dir, 0o755); err != nil {
+	if err := offered(open.Items); err != nil {
+		_ = conn.WriteFrame(wire.KindReject, Reject{Reason: err.Error()}.encode())
+		return err
+	}
+	if err := os.MkdirAll(policy.Dir, 0o700); err != nil {
 		_ = conn.WriteFrame(wire.KindReject, Reject{Reason: "cannot write here"}.encode())
 		return fmt.Errorf("creating %s: %w", policy.Dir, err)
 	}
+
+	// Everything below happens through the open directory, which follows no symlink out of it: the
+	// paths here are guessable, and the machine this runs on may have other people on it.
+	dir, err := os.OpenRoot(policy.Dir)
+	if err != nil {
+		_ = conn.WriteFrame(wire.KindReject, Reject{Reason: "cannot write here"}.encode())
+		return fmt.Errorf("opening %s: %w", policy.Dir, err)
+	}
+	defer dir.Close()
 
 	accept := Accept{Resume: make([]int64, len(open.Items))}
 	for i, item := range open.Items {
@@ -194,8 +232,8 @@ func receiveFiles(conn *wire.Conn, policy Policy, from node.ID, open Open) error
 		if !item.Known() {
 			continue
 		}
-		part := filepath.Join(policy.Dir, safeName(item.Name)+".part")
-		if stat, err := os.Stat(part); err == nil && stat.Size() <= item.Size {
+		stat, err := dir.Lstat(partName(item))
+		if err == nil && stat.Mode().IsRegular() && stat.Size() <= item.Size {
 			accept.Resume[i] = stat.Size()
 		}
 	}
@@ -204,7 +242,7 @@ func receiveFiles(conn *wire.Conn, policy Policy, from node.ID, open Open) error
 	}
 
 	for i, item := range open.Items {
-		if err := receiveOne(conn, policy, from, item, accept.Resume[i]); err != nil {
+		if err := receiveOne(conn, policy, dir, from, item, accept.Resume[i]); err != nil {
 			return err
 		}
 	}
@@ -215,31 +253,31 @@ func receiveFiles(conn *wire.Conn, policy Policy, from node.ID, open Open) error
 	return nil
 }
 
-func receiveOne(conn *wire.Conn, policy Policy, from node.ID, item Item, resume int64) error {
+func receiveOne(conn *wire.Conn, policy Policy, dir *os.Root, from node.ID, item Item, resume int64) error {
 	name := safeName(item.Name)
-	part := filepath.Join(policy.Dir, name+".part")
+	part := partName(item)
 
-	out, err := os.OpenFile(part, os.O_CREATE|os.O_WRONLY, 0o644)
+	// Truncating unless this is picking something up: a longer tail from an abandoned transfer would
+	// otherwise stay under what arrives now, and be part of the file nobody hashed.
+	flags := os.O_CREATE | os.O_RDWR
+	if resume == 0 {
+		flags |= os.O_TRUNC
+	}
+	out, err := dir.OpenFile(part, flags, 0o600)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", part, err)
 	}
 	defer out.Close()
 
-	if _, err := out.Seek(resume, io.SeekStart); err != nil {
-		return fmt.Errorf("seeking in %s: %w", part, err)
-	}
-
 	digest := blake3.New(32, nil)
 	if resume > 0 {
-		existing, err := os.Open(part)
-		if err != nil {
-			return fmt.Errorf("reading back %s: %w", part, err)
-		}
-		_, err = io.CopyN(digest, existing, resume)
-		existing.Close()
-		if err != nil {
+		if _, err := io.CopyN(digest, io.NewSectionReader(out, 0, resume), resume); err != nil {
 			return fmt.Errorf("rehashing %s: %w", part, err)
 		}
+	}
+
+	if _, err := out.Seek(resume, io.SeekStart); err != nil {
+		return fmt.Errorf("seeking in %s: %w", part, err)
 	}
 
 	// Data frames run until the item ends, which is what lets an item arrive whose length nobody
@@ -262,7 +300,7 @@ func receiveOne(conn *wire.Conn, policy Policy, from node.ID, item Item, resume 
 			if err != nil {
 				return err
 			}
-			return finishOne(conn, policy, from, item, name, part, out, digest, got, end)
+			return finishOne(conn, policy, dir, from, item, name, part, out, digest, got, end)
 		}
 		if kind != wire.KindData {
 			return fmt.Errorf("expected data for %s, got frame kind %d", name, kind)
@@ -282,9 +320,9 @@ func receiveOne(conn *wire.Conn, policy Policy, from node.ID, item Item, resume 
 	}
 }
 
-func finishOne(conn *wire.Conn, policy Policy, from node.ID, item Item, name, part string, out *os.File, digest *blake3.Hasher, got int64, end End) error {
+func finishOne(conn *wire.Conn, policy Policy, dir *os.Root, from node.ID, item Item, name, part string, out *os.File, digest *blake3.Hasher, got int64, end End) error {
 	refuse := func(reason string) error {
-		os.Remove(part)
+		_ = dir.Remove(part)
 		_ = conn.WriteFrame(wire.KindAck, Ack{Reason: reason}.encode())
 		return fmt.Errorf("%s: %s", name, reason)
 	}
@@ -296,22 +334,67 @@ func finishOne(conn *wire.Conn, policy Policy, from node.ID, item Item, name, pa
 		return refuse("arrived corrupted: digest mismatch")
 	}
 
+	// The item is the whole of this file: what was hashed is what is kept, and the mode goes on the
+	// open file rather than on a name somebody else could be holding by then.
+	if err := out.Truncate(got); err != nil {
+		return fmt.Errorf("trimming %s: %w", part, err)
+	}
+	if err := out.Chmod(landing(item.Mode)); err != nil {
+		return fmt.Errorf("setting the mode of %s: %w", part, err)
+	}
 	if err := out.Close(); err != nil {
 		return fmt.Errorf("closing %s: %w", part, err)
 	}
-	final := filepath.Join(policy.Dir, name)
-	if err := os.Rename(part, final); err != nil {
-		return fmt.Errorf("renaming %s: %w", part, err)
+
+	final, err := claim(dir, name)
+	if err != nil {
+		return fmt.Errorf("making room for %s: %w", name, err)
 	}
-	if item.Mode != 0 {
-		_ = os.Chmod(final, os.FileMode(item.Mode).Perm())
+	if err := dir.Rename(part, final); err != nil {
+		_ = dir.Remove(final)
+		return fmt.Errorf("renaming %s: %w", part, err)
 	}
 
 	if err := conn.WriteFrame(wire.KindAck, Ack{OK: true}.encode()); err != nil {
-		return fmt.Errorf("acknowledging %s: %w", name, err)
+		return fmt.Errorf("acknowledging %s: %w", final, err)
 	}
 	if policy.Done != nil {
-		policy.Done(from, name, got)
+		policy.Done(from, final, got)
 	}
 	return nil
+}
+
+// landing is what a received file is allowed to be. The sender's bits are a stranger's opinion, so
+// all that survives them is whether this is a program.
+func landing(mode uint32) os.FileMode {
+	if os.FileMode(mode).Perm()&0o111 != 0 {
+		return 0o700
+	}
+	return 0o600
+}
+
+// claim takes a free name for a finished item, numbering it when something is already there. What
+// arrives over the wire never replaces a file that was on this disk first.
+func claim(dir *os.Root, name string) (string, error) {
+	for n := 0; n < 1000; n++ {
+		at := numbered(name, n)
+		f, err := dir.OpenFile(at, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			f.Close()
+			return at, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("%s and the thousand names after it are taken", name)
+}
+
+// numbered spaces a name out: report.txt, report-1.txt, report-2.txt.
+func numbered(name string, n int) string {
+	if n == 0 {
+		return name
+	}
+	ext := filepath.Ext(name)
+	return fmt.Sprintf("%s-%d%s", strings.TrimSuffix(name, ext), n, ext)
 }

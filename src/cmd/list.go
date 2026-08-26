@@ -14,6 +14,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 )
 
@@ -90,26 +91,37 @@ func listThere(parent context.Context, peer, under string, wait time.Duration) e
 		return nil
 	}
 
-	width := 0
+	paths := make([]string, 0, len(shown))
+	kinds := make([]string, 0, len(shown))
 	for _, served := range shown {
-		if len(served.Path) > width {
-			width = len(served.Path)
-		}
+		paths = append(paths, served.Path)
+		kinds = append(kinds, served.Archetype.String())
 	}
+	width, kind := widest(0, paths), widest(6, kinds)
 
 	fmt.Printf("\n%s  %s\n\n", entry.Name, node.Brief(entry.ID))
 	for _, served := range shown {
-		note := ""
-		switch {
-		case served.Archetype.String() == "branch":
-			note = "holds other paths"
-		case served.Writable:
-			note = "you may send"
-		}
-		fmt.Printf("  %-*s  %-8s %s\n", width, served.Path, served.Archetype, note)
+		fmt.Printf("  %-*s  %-*s %s\n", width, served.Path, kind, served.Archetype, note(served))
 	}
 	fmt.Println()
 	return nil
+}
+
+// note says in a few words what a path is for, from the little a listing carries.
+func note(served proto.Served) string {
+	switch served.Archetype {
+	case ns.Branch:
+		return "holds other paths"
+	case ns.Files:
+		if served.Writable {
+			return "you may walk it, and write in it"
+		}
+		return "you may walk it and read"
+	}
+	if served.Writable {
+		return "you may send"
+	}
+	return ""
 }
 
 // covers reports whether a path is at or under a prefix, on segment boundaries so /friendsonly is

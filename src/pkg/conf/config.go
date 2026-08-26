@@ -59,11 +59,30 @@ func Default() *Config {
 	open := ns.Access{AnyPaired: true}
 
 	table := ns.NewTable()
-	_ = table.Add(ns.Mount{Path: "/inbox", Archetype: ns.Share, Dir: ".", Access: open})
+	_ = table.Add(ns.Mount{Path: "/inbox", Archetype: ns.Share, Dir: Inbox(), Access: open})
 	_ = table.Add(ns.Mount{Path: "/chat", Archetype: ns.Chat, Access: open})
 	_ = table.Add(ns.Mount{Path: "/open", Archetype: ns.Link, Access: open})
 
 	return &Config{Mounts: table}
+}
+
+// Inbox is where a default share puts what arrives: a drop folder inside the downloads directory,
+// or one in the home directory when there is none.
+//
+// Never the working directory. `drop serve` is started from wherever the person happened to be
+// standing, and a share pointed at that would let a paired device write into a source tree.
+func Inbox() string {
+	if named := os.Getenv("XDG_DOWNLOAD_DIR"); named != "" {
+		return filepath.Join(expand(named), "drop")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "drop")
+	}
+	if stat, err := os.Stat(filepath.Join(home, "Downloads")); err == nil && stat.IsDir() {
+		return filepath.Join(home, "Downloads", "drop")
+	}
+	return filepath.Join(home, "drop")
 }
 
 // FilePath is where the configuration lives: $DROP_CONFIG, else $XDG_CONFIG_HOME/drop/init.lua.
