@@ -398,7 +398,7 @@ func TestVisibilityCanFollowTrust(t *testing.T) {
 	}
 }
 
-// The table is read from a goroutine per connection while a cast goes up and a dropbox goes down on
+// The table is read from a goroutine per connection while a cast goes up and a handoff goes down on
 // another. Reading the mounts without the lock is a fatal runtime error that no recover catches, so
 // what is at stake is the whole daemon and every connection it holds.
 func TestTheTableIsJudgedWhileMountsComeAndGo(t *testing.T) {

@@ -37,7 +37,7 @@ type doings struct {
 	said func(from node.ID, m convo.Message)
 	// noticed, when set, is nudged whenever anything lands, for an interface that redraws.
 	noticed func()
-	// took, when set, is told that something arrived in a share namespace, for a dropbox that is
+	// took, when set, is told that something arrived in a share namespace, for a handoff that is
 	// up for one transfer.
 	took func()
 	// shown, when set, answers whether a path is a screen this process is already running rather
@@ -120,7 +120,7 @@ func (d *doings) landed(from node.ID, name string, size int64) {
 }
 
 // dropped records a file that arrived in a share namespace, which is the one kind of arrival a
-// dropbox is put up for.
+// handoff is put up for.
 func (d *doings) dropped(from node.ID, name string, size int64) {
 	d.landed(from, name, size)
 	if d.took != nil {

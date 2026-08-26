@@ -173,9 +173,9 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	})
 }
 
-// A dropbox is not in anybody's config: it appears when somebody is waiting for a file, takes one
+// A handoff is not in anybody's config: it appears when somebody is waiting for a file, takes one
 // transfer, and is gone.
-func TestADropboxAppearsAndIsGoneAgain(t *testing.T) {
+func TestAHandoffAppearsAndIsGoneAgain(t *testing.T) {
 	sender := newNode(t, "sender", "47853")
 	taker := newNode(t, "taker", "47854")
 
@@ -199,10 +199,10 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 
 	// Nothing is at that path until somebody asks for it.
 	if out := sender.must("ls", "taker"); strings.Contains(out, "/share") {
-		t.Fatalf("a dropbox was there before anybody opened one:\n%s", out)
+		t.Fatalf("a handoff was there before anybody opened one:\n%s", out)
 	}
 
-	into := filepath.Join(taker.home, "dropbox")
+	into := filepath.Join(taker.home, "handoff")
 	if err := os.MkdirAll(into, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -210,35 +210,35 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	_, shareSaid, stopShare := taker.background("share", into)
 	defer stopShare()
 
-	waitFor(t, "the dropbox to open", 30*time.Second, func() bool {
-		return strings.Contains(takerSaid.String(), "a dropbox is open")
+	waitFor(t, "the handoff to open", 30*time.Second, func() bool {
+		return strings.Contains(takerSaid.String(), "a handoff is open")
 	})
 	if said := shareSaid.String(); !strings.Contains(said, "sender may send") {
-		t.Errorf("the dropbox did not say who may reach it:\n%s", said)
+		t.Errorf("the handoff did not say who may reach it:\n%s", said)
 	}
 
-	waitFor(t, "the dropbox to be listed", 30*time.Second, func() bool {
+	waitFor(t, "the handoff to be listed", 30*time.Second, func() bool {
 		return strings.Contains(sender.must("ls", "taker"), "/share")
 	})
 
 	up := filepath.Join(t.TempDir(), "hello.txt")
-	writeAt(t, up, "into the dropbox\n")
+	writeAt(t, up, "into the handoff\n")
 	sender.must("to", "taker/share", up)
 
 	waitFor(t, "the file to land", 30*time.Second, func() bool {
 		_, err := os.Stat(filepath.Join(into, "hello.txt"))
 		return err == nil
 	})
-	if got := read(t, filepath.Join(into, "hello.txt")); got != "into the dropbox\n" {
+	if got := read(t, filepath.Join(into, "hello.txt")); got != "into the handoff\n" {
 		t.Errorf("what landed is %q", got)
 	}
 
 	// One transfer, and the path goes with it rather than answering with nothing behind it.
-	waitFor(t, "the dropbox to close", 30*time.Second, func() bool {
+	waitFor(t, "the handoff to close", 30*time.Second, func() bool {
 		return strings.Contains(takerSaid.String(), "closed")
 	})
 	if out := sender.must("ls", "taker"); strings.Contains(out, "/share") {
-		t.Errorf("the dropbox outlived the transfer:\n%s", out)
+		t.Errorf("the handoff outlived the transfer:\n%s", out)
 	}
 	if !strings.Contains(shareSaid.String(), "a transfer finished") {
 		t.Errorf("`drop share` did not say the transfer was over:\n%s", shareSaid.String())

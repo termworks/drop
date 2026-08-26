@@ -268,7 +268,7 @@ func (t *Table) AccessFor(path string) (Access, bool) {
 		return Access{}, false
 	}
 
-	// The mounts and the grants are read under one hold: a cast going up or a dropbox going down
+	// The mounts and the grants are read under one hold: a cast going up or a handoff going down
 	// happens on another goroutine while connections are being judged.
 	t.mu.RLock()
 	best, bestLen, found := Access{}, -1, false

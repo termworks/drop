@@ -103,7 +103,7 @@ func runServe(parent context.Context, quiet bool) error {
 	// A cast feeds this node over a local socket rather than standing up a second one, so a
 	// terminal can be shared while the daemon is running.
 	casts := newCastHost(cfg.Mounts, known)
-	// A dropbox is put up the same way: mounted while somebody is waiting for a file, and gone
+	// A handoff is put up the same way: mounted while somebody is waiting for a file, and gone
 	// again the moment they are not.
 	shares := newShareHost(cfg.Mounts, known)
 	doing.took = shares.took

@@ -19,7 +19,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/ns"
 )
 
-// SharePath is where a dropbox is served, so a sender opens `<peer>/share`.
+// SharePath is where a handoff is served, so a sender opens `<peer>/share`.
 const SharePath = "/share"
 
 func newShareCmd() *cobra.Command {
@@ -27,12 +27,12 @@ func newShareCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "share [dir]",
-		Short: "Open a dropbox for as long as you are waiting for something",
-		Long: "share asks the node already running here to put a dropbox up at\n" +
-			"<this device>/share, prints where to send to and who may, and takes it down\n" +
-			"again when a transfer has come through it.\n\n" +
-			"Nothing is written to the config. The path exists while this command does, and\n" +
-			"it takes one transfer: when that is over, so is the path.\n\n" +
+		Short: "Take a file from somebody, once",
+		Long: "share puts a path up at <this device>/share for as long as this command runs,\n" +
+			"says where to send to and who may, and takes it down again once something has\n" +
+			"come through it.\n\n" +
+			"Nothing is written to the config: the path is there while you are waiting for\n" +
+			"the file and not a moment longer, and it takes one transfer.\n\n" +
 			"With no directory it takes things into the one you are in.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -50,13 +50,13 @@ func newShareCmd() *cobra.Command {
 }
 
 func runShare(parent context.Context, dir string, to []string) error {
-	dir, err := dropboxDir(dir)
+	dir, err := handoffDir(dir)
 	if err != nil {
 		return err
 	}
 
 	// Through the node that is already running, and only that one. A second endpoint on this
-	// identity is not reachable at the address everybody has written down, so a dropbox it served
+	// identity is not reachable at the address everybody has written down, so a handoff it served
 	// would be one nobody could find.
 	path, err := castSocket()
 	if err != nil {
@@ -78,10 +78,10 @@ func runShare(parent context.Context, dir string, to []string) error {
 	reading := bufio.NewReader(conn)
 	said, err := reading.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("asking this node for a dropbox: %w", err)
+		return fmt.Errorf("asking this node for a handoff: %w", err)
 	}
 	if what, why, _ := strings.Cut(strings.TrimSpace(said), " "); what != "ok" {
-		return fmt.Errorf("this node will not open a dropbox: %s", why)
+		return fmt.Errorf("this node will not open a handoff: %s", why)
 	}
 
 	id, err := node.LocalID()
@@ -100,19 +100,19 @@ func runShare(parent context.Context, dir string, to []string) error {
 
 	select {
 	case <-ctx.Done():
-		fmt.Printf("\nthe dropbox at %s is closed\n", SharePath)
+		fmt.Printf("\nthe handoff at %s is closed\n", SharePath)
 		return nil
 	case line := <-over:
 		if line != "done" {
-			return fmt.Errorf("the node holding the dropbox stopped")
+			return fmt.Errorf("the node holding the handoff stopped")
 		}
-		fmt.Printf("\na transfer finished; the dropbox at %s is closed\n", SharePath)
+		fmt.Printf("\na transfer finished; the handoff at %s is closed\n", SharePath)
 		return nil
 	}
 }
 
-// dropboxDir is where a dropbox takes things: the directory named, or the one you are in.
-func dropboxDir(dir string) (string, error) {
+// handoffDir is where a handoff takes things: the directory named, or the one you are in.
+func handoffDir(dir string) (string, error) {
 	if dir == "" {
 		here, err := os.Getwd()
 		if err != nil {
@@ -151,7 +151,7 @@ func whereToSend(dir string, to []string, id node.ID) {
 	fmt.Println("\nwaiting; ctrl-c to stop")
 }
 
-// mayReach is who the dropbox is open to, by name, so it can be read rather than reasoned about.
+// mayReach is who the handoff is open to, by name, so it can be read rather than reasoned about.
 func mayReach(to []string) []string {
 	if len(to) > 0 {
 		return to
@@ -185,10 +185,10 @@ func sendersNamed(who string) []string {
 	return strings.Split(who, ",")
 }
 
-// shareMount is where a dropbox is served: a share namespace over the directory that was named.
+// shareMount is where a handoff is served: a share namespace over the directory that was named.
 //
 // The rule is any paired device unless somebody said otherwise. Pairing is the widest rule there
-// is, which for a dropbox is the point: it is up for one transfer that its owner is standing there
+// is, which for a handoff is the point: it is up for one transfer that its owner is standing there
 // waiting for, and narrowing it to trust would mean a laptop paired this morning cannot send you
 // the file you asked it for. --to is how it gets narrowed when that matters.
 func shareMount(known *arch.Registry, dir string, to []string) (ns.Mount, error) {

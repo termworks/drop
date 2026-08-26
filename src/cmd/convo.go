@@ -59,7 +59,7 @@ func deliverOver(ctx context.Context, over reaches, entry book.Entry, path, arch
 
 	// A settled refusal is an answer. Leaving those queued would retry them against a decision on
 	// every connection from now on, and go on telling the sender they are on their way. A device
-	// answering with one namespace up — a chat, a cast, a dropbox — says no to everything else it
+	// answering with one namespace up — a chat, a cast, a handoff — says no to everything else it
 	// will serve again a minute later, and that is not settled.
 	if proto.Settled(err) {
 		if done := ids(waiting); len(done) > 0 {

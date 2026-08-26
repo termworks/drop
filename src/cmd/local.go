@@ -161,21 +161,21 @@ func (h *castHost) end(stage *cast.Caster) {
 	}
 }
 
-// shareHost is the dropbox open through this node, if any.
+// shareHost is the handoff open through this node, if any.
 //
-// One at a time, the way a cast is: two dropboxes behind one path are two directories at one
+// One at a time, the way a cast is: two handoffs behind one path are two directories at one
 // address, and whoever is sending has no way to know which of them they reached.
 type shareHost struct {
 	mu     sync.Mutex
-	open   *dropbox
+	open   *handoff
 	mounts *ns.Table
-	// known is what the mount a dropbox puts up carries, so it holds the settings the share
+	// known is what the mount a handoff puts up carries, so it holds the settings the share
 	// archetype reads rather than a shape this file made up.
 	known *arch.Registry
 }
 
-// dropbox is one dropbox on the air, and how whoever asked for it learns it is over.
-type dropbox struct {
+// handoff is one handoff on the air, and how whoever asked for it learns it is over.
+type handoff struct {
 	done chan struct{}
 	over bool
 	// took says something has actually come through it. A session that landed nothing — one that
@@ -187,15 +187,15 @@ func newShareHost(mounts *ns.Table, known *arch.Registry) *shareHost {
 	return &shareHost{mounts: mounts, known: known}
 }
 
-// begin puts a dropbox up, and declares the path it is served at. It refuses while another is
+// begin puts a handoff up, and declares the path it is served at. It refuses while another is
 // open, and refuses a path the config declared: that one carries somebody's own rule over their
-// own directory, and a dropbox that came and went must not stand in for it.
-func (h *shareHost) begin(dir string, to []string) (*dropbox, error) {
+// own directory, and a handoff that came and went must not stand in for it.
+func (h *shareHost) begin(dir string, to []string) (*handoff, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if h.open != nil {
-		return nil, errors.New("this device already has a dropbox open")
+		return nil, errors.New("this device already has a handoff open")
 	}
 	if mount, _, ok := h.mounts.Lookup(SharePath); ok && mount.Path == SharePath {
 		return nil, fmt.Errorf("the config declares %s already", SharePath)
@@ -209,13 +209,13 @@ func (h *shareHost) begin(dir string, to []string) (*dropbox, error) {
 		return nil, err
 	}
 
-	h.open = &dropbox{done: make(chan struct{})}
+	h.open = &handoff{done: make(chan struct{})}
 	return h.open, nil
 }
 
-// end takes a dropbox down, and the path with it. One that has already been replaced ends nothing:
+// end takes a handoff down, and the path with it. One that has already been replaced ends nothing:
 // the one open belongs to whoever asked for it.
-func (h *shareHost) end(box *dropbox) {
+func (h *shareHost) end(box *handoff) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -227,7 +227,7 @@ func (h *shareHost) end(box *dropbox) {
 	h.mounts.Drop(SharePath)
 }
 
-// took notes that a share namespace received something. A dropbox that is open is the one that may
+// took notes that a share namespace received something. A handoff that is open is the one that may
 // have taken it.
 func (h *shareHost) took() {
 	h.mu.Lock()
@@ -238,11 +238,11 @@ func (h *shareHost) took() {
 	}
 }
 
-// finished is a session on some path having ended. A dropbox takes one transfer, so once one has
+// finished is a session on some path having ended. A handoff takes one transfer, so once one has
 // come through, the one that was open for that path is over.
 //
 // The path a session named is not the path it was served at: a mount answers for everything under
-// it, so /share/anything is the dropbox too and has to end it like anything else.
+// it, so /share/anything is the handoff too and has to end it like anything else.
 func (h *shareHost) finished(path string) {
 	at, err := ns.Clean(path)
 	if err != nil {
@@ -409,7 +409,7 @@ func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, offers *
 	return fmt.Errorf("a local connection asked for %q, which is nothing", what)
 }
 
-// takeShare holds a dropbox open for as long as whoever asked for it stays connected, and takes it
+// takeShare holds a handoff open for as long as whoever asked for it stays connected, and takes it
 // down as soon as a transfer has come through it.
 //
 // The line is who may send and then the directory, in that order, because a directory is the one
@@ -417,7 +417,7 @@ func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, offers *
 func takeShare(ctx context.Context, host *shareHost, conn net.Conn, rest string) error {
 	who, dir, _ := strings.Cut(strings.TrimSpace(rest), " ")
 	if dir == "" {
-		return errors.New("a dropbox with no directory")
+		return errors.New("a handoff with no directory")
 	}
 
 	box, err := host.begin(dir, sendersNamed(who))
@@ -431,11 +431,11 @@ func takeShare(ctx context.Context, host *shareHost, conn net.Conn, rest string)
 		return err
 	}
 
-	fmt.Printf("  a dropbox is open at %s, taking things into %s\n", SharePath, dir)
-	defer fmt.Printf("  the dropbox at %s closed\n", SharePath)
+	fmt.Printf("  a handoff is open at %s, taking things into %s\n", SharePath, dir)
+	defer fmt.Printf("  the handoff at %s closed\n", SharePath)
 
 	// Whoever asked going away is what ends it, so an interrupted `drop share` takes the path down
-	// rather than leaving a dropbox open that nobody is watching.
+	// rather than leaving a handoff open that nobody is watching.
 	gone := make(chan struct{})
 	go func() {
 		defer close(gone)
