@@ -19,6 +19,10 @@ const (
 	KindResize byte = 8
 	KindPing   byte = 9
 	KindPong   byte = 10
+	// KindRequest and KindReply are one round of a browse session: an operation on a files
+	// namespace, and what came of it.
+	KindRequest byte = 11
+	KindReply   byte = 12
 )
 
 // MaxFrame caps a single frame. Data is chunked well under this; a control frame never approaches

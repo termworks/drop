@@ -133,6 +133,8 @@ func writable(m ns.Mount) bool {
 	switch m.Archetype {
 	case ns.Share, ns.Chat, ns.Link:
 		return true
+	case ns.Files:
+		return m.Writable
 	case ns.TTY:
 		return m.Input
 	default:

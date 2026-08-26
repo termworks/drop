@@ -333,6 +333,7 @@ func mount(c *rt.GoCont, cfg *Config) (rt.Cont, error) {
 		Command:   fieldString(opts, "command"),
 		Shell:     fieldString(opts, "shell"),
 		Input:     fieldBool(opts, "input"),
+		Writable:  fieldBool(opts, "writable"),
 		Action:    fieldString(opts, "action"),
 		Access:    access,
 	}

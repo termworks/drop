@@ -69,6 +69,8 @@ type Mount struct {
 	Shell string
 	// Input lets the far end type into a tty namespace.
 	Input bool
+	// Writable lets the far end add to, and remove from, a files namespace.
+	Writable bool
 	// Action is what a link namespace hands a URL to; empty means it only records it.
 	Action string
 	// Access is who may reach this path and everything under it, until something deeper says

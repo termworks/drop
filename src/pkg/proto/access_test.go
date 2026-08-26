@@ -79,12 +79,12 @@ func TestAPasswordOnTheWireOpensAPath(t *testing.T) {
 
 	// Unpaired, unnamed, unknown — and still admitted, because it knew the word.
 	asStranger := ns.Caller{ID: stranger.String(), Password: "let me in"}
-	if _, err := resolve(table, stranger, asStranger, Open{Mode: ModeFiles, Path: "/handoff"}); err != nil {
+	if _, err := resolve(table, stranger, asStranger, Open{Mode: ModeShare, Path: "/handoff"}); err != nil {
 		t.Fatalf("the password was refused: %v", err)
 	}
 
 	wrong := ns.Caller{ID: stranger.String(), Password: "nope"}
-	if _, err := resolve(table, stranger, wrong, Open{Mode: ModeFiles, Path: "/handoff"}); err == nil {
+	if _, err := resolve(table, stranger, wrong, Open{Mode: ModeShare, Path: "/handoff"}); err == nil {
 		t.Fatal("a wrong password opened the path")
 	}
 }
@@ -99,12 +99,12 @@ func TestABareKeyOpensAPath(t *testing.T) {
 	})
 
 	asCI := ns.Caller{ID: ci.String()}
-	if _, err := resolve(table, ci, asCI, Open{Mode: ModeFiles, Path: "/ci"}); err != nil {
+	if _, err := resolve(table, ci, asCI, Open{Mode: ModeShare, Path: "/ci"}); err != nil {
 		t.Fatalf("the named key was refused: %v", err)
 	}
 
 	other := who(8)
-	if _, err := resolve(table, other, ns.Caller{ID: other.String()}, Open{Mode: ModeFiles, Path: "/ci"}); err == nil {
+	if _, err := resolve(table, other, ns.Caller{ID: other.String()}, Open{Mode: ModeShare, Path: "/ci"}); err == nil {
 		t.Fatal("a different key was admitted")
 	}
 }
@@ -129,7 +129,7 @@ func TestABranchCannotBeOpened(t *testing.T) {
 
 // The secret must survive the frame it travels in.
 func TestTheSecretSurvivesEncoding(t *testing.T) {
-	open := Open{Mode: ModeFiles, From: "bob", Path: "/handoff", Secret: "let me in"}
+	open := Open{Mode: ModeShare, From: "bob", Path: "/handoff", Secret: "let me in"}
 
 	got, err := decodeOpen(open.encode())
 	if err != nil {
@@ -138,7 +138,7 @@ func TestTheSecretSurvivesEncoding(t *testing.T) {
 	if got.Secret != "let me in" {
 		t.Fatalf("secret = %q", got.Secret)
 	}
-	if got.Path != "/handoff" || got.From != "bob" || got.Mode != ModeFiles {
+	if got.Path != "/handoff" || got.From != "bob" || got.Mode != ModeShare {
 		t.Fatalf("the rest of the frame did not survive: %+v", got)
 	}
 }

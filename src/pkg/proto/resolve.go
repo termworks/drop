@@ -21,6 +21,8 @@ type Resolved struct {
 func wanted(archetype ns.Archetype) byte {
 	switch archetype {
 	case ns.Share:
+		return ModeShare
+	case ns.Files:
 		return ModeFiles
 	case ns.Stream, ns.TTY:
 		return ModeDuplex

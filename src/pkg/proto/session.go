@@ -9,10 +9,13 @@ import (
 
 // What a session is for.
 const (
-	// ModeFiles is one side pushing items to the other, each ending with a digest.
-	ModeFiles byte = 1
+	// ModeShare is one side pushing items to the other, each ending with a digest.
+	ModeShare byte = 1
 	// ModeDuplex is both sides writing until one of them stops. No sizes, no digests.
 	ModeDuplex byte = 2
+	// ModeFiles is a directory the caller walks: many request and reply rounds on one stream,
+	// listing, reading, and — when the mount allows it — writing.
+	ModeFiles byte = 5
 )
 
 // SizeUnknown is the size of an item whose length is not known before it is sent: a pipe, a
@@ -72,6 +75,16 @@ func (o Open) encode() []byte {
 // maxItems caps how many entries one offer may carry, so a small frame cannot ask for a huge slice.
 const maxItems = 1 << 16
 
+// hint bounds a pre-allocation by what the body could possibly hold: least is the fewest bytes one
+// element can encode in. A count is a claim, and a seven-byte frame must not commit megabytes.
+func hint(count uint64, body []byte, least int) int {
+	most := uint64(len(body) / least)
+	if count > most {
+		count = most
+	}
+	return int(count)
+}
+
 func decodeOpen(body []byte) (Open, error) {
 	var out Open
 
@@ -103,7 +116,7 @@ func decodeOpen(body []byte) (Open, error) {
 	}
 
 	out.Mode, out.From, out.Path = mode, from, path
-	out.Items = make([]Item, 0, count)
+	out.Items = make([]Item, 0, hint(count, body, 3))
 	for i := uint64(0); i < count; i++ {
 		name, err := r.String(wire.MaxString)
 		if err != nil {
@@ -159,7 +172,7 @@ func decodeAccept(body []byte) (Accept, error) {
 		return out, fmt.Errorf("accept claims %d items, over the %d limit", count, maxItems)
 	}
 
-	out.Resume = make([]int64, 0, count)
+	out.Resume = make([]int64, 0, hint(count, body, 1))
 	for i := uint64(0); i < count; i++ {
 		at, err := r.Int()
 		if err != nil {

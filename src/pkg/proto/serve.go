@@ -2,6 +2,7 @@ package proto
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/node"
@@ -39,10 +40,16 @@ type Policy struct {
 	Refused func(from node.ID, asked, why string)
 }
 
+// settleIn bounds the opening handshake. A peer that sends half a frame header and then nothing
+// otherwise holds a goroutine and its buffer for as long as it likes.
+const settleIn = 10 * time.Second
+
 // Handle takes one session stream. The transport is not its concern: anything that reads and
 // writes will do, which is what lets the endpoint underneath change without touching this.
 func Handle(s Stream, from node.ID, policy Policy) error {
 	conn := wire.NewConn(s)
+
+	_ = s.SetReadDeadline(time.Now().Add(settleIn))
 
 	kind, body, err := conn.ReadFrame()
 	if err != nil {
@@ -56,6 +63,9 @@ func Handle(s Stream, from node.ID, policy Policy) error {
 	if err != nil {
 		return fmt.Errorf("reading the open from %s: %w", node.Brief(from), err)
 	}
+
+	// The mode is settled, and what a session does next takes as long as it takes.
+	_ = s.SetReadDeadline(time.Time{})
 
 	for _, item := range open.Items {
 		if safeName(item.Name) == "" {
@@ -110,8 +120,11 @@ func Handle(s Stream, from node.ID, policy Policy) error {
 	}
 
 	switch open.Mode {
-	case ModeFiles:
+	case ModeShare:
 		return receiveFiles(conn, withDir(policy, at.Mount.Dir), from, open)
+
+	case ModeFiles:
+		return serveFiles(conn, at, policy)
 
 	case ModeMessages:
 		return receiveMessages(conn, policy, from)

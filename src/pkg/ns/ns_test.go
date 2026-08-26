@@ -164,6 +164,20 @@ func TestRootServesEverything(t *testing.T) {
 	}
 }
 
+// A files namespace is read-only until the mount says otherwise.
+func TestAFilesMountIsReadOnlyUnlessItSaysSo(t *testing.T) {
+	table := NewTable()
+	mustAdd(t, table, Mount{Path: "/read", Archetype: Files, Dir: "/x"})
+	mustAdd(t, table, Mount{Path: "/write", Archetype: Files, Dir: "/y", Writable: true})
+
+	if m, _, _ := table.Lookup("/read"); m.Writable {
+		t.Error("/read is writable without being declared so")
+	}
+	if m, _, _ := table.Lookup("/write"); !m.Writable {
+		t.Error("/write did not keep writable = true")
+	}
+}
+
 func TestParseArchetype(t *testing.T) {
 	for _, name := range []string{"share", "files", "stream", "tty", "chat", "link", "branch"} {
 		archetype, err := ParseArchetype(name)

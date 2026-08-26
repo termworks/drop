@@ -60,6 +60,7 @@ func TestMountsAreRegistered(t *testing.T) {
 		drop.mount("/inbox", { type = "share", dir = "/tmp/in" })
 		drop.mount("/logs",  { type = "stream", command = "tail -f /var/log/x" })
 		drop.mount("/term",  { type = "tty", input = true })
+		drop.mount("/work",  { type = "files", dir = "/tmp/work", writable = true })
 	`)
 
 	m, _, ok := cfg.Mounts.Lookup("/inbox")
@@ -69,6 +70,10 @@ func TestMountsAreRegistered(t *testing.T) {
 	m, _, _ = cfg.Mounts.Lookup("/term")
 	if !m.Input {
 		t.Error("/term did not keep input = true")
+	}
+	m, _, ok = cfg.Mounts.Lookup("/work")
+	if !ok || m.Archetype != ns.Files || m.Dir != "/tmp/work" || !m.Writable {
+		t.Errorf("/work = %+v ok %v", m, ok)
 	}
 }
 
@@ -129,6 +134,17 @@ func TestAShareMountWithoutADirIsRefused(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() accepted a share namespace with no dir")
+	}
+}
+
+func TestAFilesMountWithoutADirIsRefused(t *testing.T) {
+	write(t, `
+		local drop = require("drop")
+		drop.mount("/work", { type = "files" })
+	`)
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted a files namespace with no dir")
 	}
 }
 
