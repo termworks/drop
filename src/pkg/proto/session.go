@@ -109,9 +109,17 @@ func decodeOpen(body []byte) (Opening, error) {
 // against a decision somebody made.
 type Declined struct {
 	Reason string
+	// Settled says the far end decided about this caller rather than being unable to answer.
+	Settled bool
 }
 
 func (d Declined) Error() string { return "declined: " + d.Reason }
+
+// Settled reports whether a refusal was a decision that asking again will not change.
+func Settled(err error) bool {
+	var declined Declined
+	return errors.As(err, &declined) && declined.Settled
+}
 
 // WasDeclined reports whether an error is a refusal rather than a failure to reach anybody.
 func WasDeclined(err error) bool {

@@ -2,7 +2,10 @@ package proto
 
 import (
 	"io"
+	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/wire"
@@ -91,7 +94,46 @@ type pipeEnd struct {
 	io.Writer
 }
 
-func (pipeEnd) Close() error { return nil }
+func (pipeEnd) Close() error                    { return nil }
+func (pipeEnd) SetReadDeadline(time.Time) error { return nil }
+
+// deadlined is a stream that will never say anything, and unblocks only when a read deadline is set
+// on it — which is what a real one does to a peer that sent nothing.
+type deadlined struct {
+	set  chan struct{}
+	once sync.Once
+}
+
+func (d *deadlined) Read([]byte) (int, error)    { <-d.set; return 0, os.ErrDeadlineExceeded }
+func (d *deadlined) Write(p []byte) (int, error) { return len(p), nil }
+func (d *deadlined) Close() error                { return nil }
+
+func (d *deadlined) SetReadDeadline(at time.Time) error {
+	if !at.IsZero() {
+		d.once.Do(func() { close(d.set) })
+	}
+	return nil
+}
+
+// A hello is answered to anybody who dials, so a stranger who opens a stream, writes nothing and
+// stays connected must not hold a goroutine and its buffers for the life of the daemon.
+func TestAHelloThatSaysNothingIsNotHeldForever(t *testing.T) {
+	silent := &deadlined{set: make(chan struct{})}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- AnswerHello(silent, node.ID{}, func(Badged) Hello { return Hello{Name: "beta"} })
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a hello that said nothing was answered")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AnswerHello is still reading a stream that will never say anything")
+	}
+}
 
 // The client speaks first and the server answers. Getting this backwards deadlocks on a real QUIC
 // stream, because a stream the client never wrote to is never handed to the server at all.

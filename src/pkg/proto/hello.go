@@ -3,6 +3,7 @@ package proto
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/node"
@@ -165,17 +166,24 @@ func lookup(known *arch.Registry, m ns.Mount) (arch.Archetype, bool) {
 	return known.Lookup(m.Archetype, m.Version)
 }
 
-// AnswerHello reads the ask and writes this node's description back.
 // AnswerHello reads the ask and answers it. Self is built from the badge the ask carried, because
 // what this node is willing to say it serves depends on who is asking.
-func AnswerHello(s io.ReadWriteCloser, from node.ID, self func(Badged) Hello) error {
+//
+// Hello is answered to anybody who dials, so the ask is bounded the way a session's open is: a peer
+// that says half a frame and then nothing otherwise holds a goroutine and its buffer for as long as
+// it likes, and it never has to say another word.
+func AnswerHello(s Stream, from node.ID, self func(Badged) Hello) error {
 	c := wire.NewConn(s)
+
+	_ = s.SetReadDeadline(time.Now().Add(settleIn))
 
 	// Reading the ask is also what keeps the two sides in step on one stream.
 	_, body, err := c.ReadFrame()
 	if err != nil {
 		return fmt.Errorf("reading the ask: %w", err)
 	}
+	_ = s.SetReadDeadline(time.Time{})
+
 	return c.WriteFrame(wire.KindOpen, self(showing(from, body)).encode())
 }
 

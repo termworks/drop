@@ -2,6 +2,7 @@ package ns
 
 import (
 	"testing"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/passwd"
 )
@@ -394,5 +395,86 @@ func TestVisibilityCanFollowTrust(t *testing.T) {
 	}
 	if ok, _ := rule.Admits(trusted); ok {
 		t.Error("being trusted enough to see it was enough to open it")
+	}
+}
+
+// The table is read from a goroutine per connection while a cast goes up and a dropbox goes down on
+// another. Reading the mounts without the lock is a fatal runtime error that no recover catches, so
+// what is at stake is the whole daemon and every connection it holds.
+func TestTheTableIsJudgedWhileMountsComeAndGo(t *testing.T) {
+	table := NewTable()
+	if err := table.Add(Mount{Path: "/work", Archetype: "files", Access: Access{AnyPaired: true}}); err != nil {
+		t.Fatalf("adding /work: %v", err)
+	}
+
+	churning := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-churning:
+				return
+			default:
+			}
+			_ = table.Add(Mount{Path: "/cast", Archetype: "tty", Access: Access{AnyTrusted: true}})
+			table.Drop("/cast")
+		}
+	}()
+
+	for range 20000 {
+		if _, found := table.AccessFor("/work/deep/enough"); !found {
+			t.Fatal("the rule on /work stopped governing what is under it")
+		}
+	}
+	close(churning)
+	<-stopped
+}
+
+// A guess costs this machine 64 MiB and three passes of argon2, and it is whoever dialled that
+// chooses when to spend them. A caller some other rule already admits must never reach the hash.
+func TestACallerAdmittedOtherwiseNeverPaysForAGuess(t *testing.T) {
+	hash, err := passwd.Hash("let me in")
+	if err != nil {
+		t.Fatalf("hashing: %v", err)
+	}
+
+	// What one guess costs here, measured rather than assumed: the machine running this decides.
+	at := time.Now()
+	passwd.Verify(hash, "nope")
+	guess := time.Since(at)
+
+	guarded := Access{AnyPaired: true, Password: hash}
+	paired := Caller{ID: "aaaa", Name: "bob", Paired: true, Password: "nope"}
+
+	at = time.Now()
+	if ok, _ := guarded.Admits(paired); !ok {
+		t.Fatal("a paired caller was refused a path shared with anyone paired")
+	}
+	if took := time.Since(at); took > guess/2 {
+		t.Errorf("admitting a paired caller took %v against %v for a guess", took, guess)
+	}
+}
+
+// Under All every rule has to pass, so one that has already failed settles it. Hashing afterwards
+// is work a stranger asked for and nothing turns on.
+func TestARuleThatAlreadyFailedDoesNotReachTheHash(t *testing.T) {
+	hash, err := passwd.Hash("let me in")
+	if err != nil {
+		t.Fatalf("hashing: %v", err)
+	}
+
+	at := time.Now()
+	passwd.Verify(hash, "let me in")
+	guess := time.Since(at)
+
+	both := Access{All: true, AnyPaired: true, Password: hash}
+
+	at = time.Now()
+	if ok, _ := both.Admits(Caller{ID: "cccc", Password: "let me in"}); ok {
+		t.Fatal("a path needing pairing and a password was opened with the password alone")
+	}
+	if took := time.Since(at); took > guess/2 {
+		t.Errorf("refusing an unpaired caller took %v against %v for a guess", took, guess)
 	}
 }

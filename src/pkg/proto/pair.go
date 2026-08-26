@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/hkdf"
 
@@ -162,10 +163,16 @@ func AnswerPairing(s Stream, self, from node.ID, name string, addrs []string) (P
 
 	conn := wire.NewConn(s)
 
+	// A pairing window is open to whoever dials during it, so the request is bounded: a stream that
+	// says nothing is a goroutine held for the rest of the process's life.
+	_ = s.SetReadDeadline(time.Now().Add(settleIn))
+
 	_, body, err := conn.ReadFrame()
 	if err != nil {
 		return out, err
 	}
+	_ = s.SetReadDeadline(time.Time{})
+
 	theirs, err := decodePairMsg(body)
 	if err != nil {
 		return out, err

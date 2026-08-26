@@ -40,7 +40,7 @@ func Ask(ctx context.Context, s Stream, path, why, from string) error {
 		if err != nil {
 			return err
 		}
-		return Declined{Reason: reject.Reason}
+		return Declined{Reason: reject.Reason, Settled: reject.Settled}
 	}
 	return nil
 }

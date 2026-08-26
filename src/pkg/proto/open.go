@@ -37,7 +37,7 @@ func Open(s Stream, path, archetype string, version int, secret, from string) (*
 		if derr != nil {
 			return nil, derr
 		}
-		return nil, Declined{Reason: reject.Reason}
+		return nil, Declined{Reason: reject.Reason, Settled: reject.Settled}
 	default:
 		return nil, fmt.Errorf("expected an answer about %s, got frame kind %d", path, kind)
 	}

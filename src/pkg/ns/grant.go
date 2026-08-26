@@ -26,11 +26,7 @@ func (t *Table) Granted(g Granting) {
 // Allowing is additive: a grant widens what the config says rather than replacing it, because the
 // config is what somebody meant and the grant is what they clicked. Refusing is not: it is the only
 // thing here that takes effect against a rule somebody wrote, which is what makes it revocation.
-func (t *Table) merge(path string, rule Access, found bool) (Access, bool) {
-	t.mu.RLock()
-	granting := t.granted
-	t.mu.RUnlock()
-
+func merge(granting Granting, path string, rule Access, found bool) (Access, bool) {
 	if granting == nil {
 		return rule, found
 	}

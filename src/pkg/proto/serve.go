@@ -76,58 +76,86 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 	// The session is settled, and what it does next takes as long as it takes.
 	_ = s.SetReadDeadline(time.Time{})
 
+	// A refusal a caller could do nothing about is answered as passing; one that is a decision
+	// about them is answered as settled, so a sender with something queued knows which.
 	refuse := func(reason string) error {
 		return conn.WriteFrame(wire.KindReject, wire.Reject{Reason: reason}.Encode())
+	}
+	decided := func(reason string) error {
+		return conn.WriteFrame(wire.KindReject, wire.Reject{Reason: reason, Settled: true}.Encode())
 	}
 
 	caller := ns.Caller{ID: from.String()}
 	if policy.Who != nil {
 		caller = policy.Who(from, vouched(from, open))
 	}
-	caller.Password = open.Secret
+
+	// The path is cleaned here and nowhere else after: what a peer wrote is a thousand arbitrary
+	// bytes, and it is answered, written down and drawn in an interface.
+	path, err := ns.Clean(open.Path)
+	if err != nil {
+		turnedAway(policy, from, "", unreadable)
+		return decided(unreadable)
+	}
+	open.Path = path
 
 	// Asking is what somebody does *because* they are not admitted, so it is answered before the
-	// access rules turn them away — but only for a path they are allowed to know exists.
+	// access rules turn them away — but only for a path they are allowed to know exists. What the
+	// frame carries here is what the caller said about the request, never a password, so nothing
+	// on this path is hashed.
 	if open.Ask {
-		if policy.Mounts == nil || !policy.Mounts.Sees(open.Path, caller) {
-			return refuse("no such path")
+		if policy.Mounts == nil || !policy.Mounts.Sees(path, caller) {
+			return decided("no such path")
 		}
 		return TakeAsk(conn, policy, Asker{
 			From:   from,
 			Name:   caller.Name,
 			Person: caller.UserName,
-			Path:   open.Path,
+			Path:   path,
 			Why:    open.Secret,
 		})
 	}
 
-	mount, rest, err := resolve(policy.Mounts, caller, open.Path)
-	if err != nil {
-		reason := err.Error()
+	caller.Password = open.Secret
+	if open.Secret != "" && !guessing.spare(from) {
+		turnedAway(policy, from, path, "too many password attempts")
+		return refuse("too many attempts, wait a while")
+	}
+
+	mount, rest, no := resolve(policy.Mounts, caller, path)
+	if no != nil {
+		told := no.told
 
 		// A path somebody can see but not open is a door with a bell on it. Saying so is the
-		// difference between "there is nothing here" and "you may ask for this".
-		if policy.Mounts != nil && policy.Mounts.Sees(open.Path, caller) {
-			reason = fmt.Sprintf("%s: you may ask for it", open.Path)
+		// difference between "there is nothing here" and "you may ask for this". Whatever was
+		// offered has already been judged by the rule, so it is left out of this one.
+		asking := caller
+		asking.Password = ""
+		if policy.Mounts != nil && policy.Mounts.Sees(path, asking) {
+			told, no.settled = fmt.Sprintf("%s: you may ask for it", path), true
 		}
 
-		turnedAway(policy, from, open.Path, reason)
-		return refuse(reason)
+		turnedAway(policy, from, path, no.noted)
+		if no.settled {
+			return decided(told)
+		}
+		return refuse(told)
 	}
+	guessing.forget(from)
 
 	allowed, reason := false, "not accepting sessions"
 	if policy.Allow != nil {
 		allowed, reason = policy.Allow(from, open)
 	}
 	if !allowed {
-		turnedAway(policy, from, open.Path, reason)
+		turnedAway(policy, from, path, reason)
 		return refuse(reason)
 	}
 
 	// The caller may say what it expects to find. An empty name asks for whatever is here, which is
 	// what somebody who typed a path rather than read a listing is doing.
 	if open.Archetype != "" && open.Archetype != mount.Archetype {
-		return refuse(fmt.Sprintf("%s is a %s namespace", mount.Path, mount.Archetype))
+		return decided(fmt.Sprintf("%s is a %s namespace", mount.Path, mount.Archetype))
 	}
 	if policy.Archetypes == nil {
 		return refuse("this node serves no namespace types")
@@ -151,26 +179,47 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 	})
 }
 
+// unreadable is what a caller is told about a path this node cannot even spell.
+const unreadable = "that is not a path this node can read"
+
+// refusal is a session that was not taken: what is written down here, and what the caller is told.
+//
+// The two are not the same. A caller who may not be here learns that and no more, because "nothing
+// is mounted there" and "that is mine, not yours" are the two halves of a map of this machine, and
+// answering a stranger's guesses draws it for them.
+type refusal struct {
+	noted string
+	told  string
+	// settled says this was a decision about the caller rather than something that may pass.
+	settled bool
+}
+
+func (r *refusal) Error() string { return r.noted }
+
 // resolve finds the namespace an open is asking for, and whether the caller may be in it.
-func resolve(table *ns.Table, caller ns.Caller, path string) (ns.Mount, string, error) {
+func resolve(table *ns.Table, caller ns.Caller, path string) (ns.Mount, string, *refusal) {
 	if table == nil {
-		return ns.Mount{}, "", fmt.Errorf("this node serves no namespaces")
+		none := "this node serves no namespaces"
+		return ns.Mount{}, "", &refusal{noted: none, told: none}
 	}
 	if path == "" {
 		path = ns.Root
 	}
+	notYours := fmt.Sprintf("%s: not shared with you", path)
 
 	mount, rest, found := table.Lookup(path)
 	if !found {
-		return ns.Mount{}, "", fmt.Errorf("nothing is mounted at %s", path)
+		return ns.Mount{}, "", &refusal{noted: fmt.Sprintf("nothing is mounted at %s", path), told: notYours, settled: true}
+	}
+	// The tree decides, from the nearest rule above the path that was asked for. A branch with no
+	// type still governs what is under it, which is the whole point of letting one exist, and a
+	// grant written below a mount governs what is under that.
+	if ok, why := table.Admits(path, caller); !ok {
+		return ns.Mount{}, "", &refusal{noted: fmt.Sprintf("%s: %s", path, why), told: notYours, settled: true}
 	}
 	if mount.Branch() {
-		return ns.Mount{}, "", fmt.Errorf("%s holds other paths but serves nothing itself", mount.Path)
-	}
-	// The tree decides, from the nearest rule above this path. A branch with no type still governs
-	// what is under it, which is the whole point of letting one exist.
-	if ok, why := table.Admits(mount.Path, caller); !ok {
-		return ns.Mount{}, "", fmt.Errorf("%s: %s", mount.Path, why)
+		held := fmt.Sprintf("%s holds other paths but serves nothing itself", mount.Path)
+		return ns.Mount{}, "", &refusal{noted: held, told: held, settled: true}
 	}
 	return mount, rest, nil
 }

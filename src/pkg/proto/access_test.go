@@ -196,3 +196,34 @@ func TestAnEnormousSecretIsRefusedBeforeItIsHashed(t *testing.T) {
 		t.Fatalf("a password of the length that is allowed was refused: %v", err)
 	}
 }
+
+// denying is what the interface leaves behind when somebody is revoked at a path. Like the real
+// store, a rule covers everything below where it was written.
+type denying struct {
+	at  string
+	who []string
+}
+
+func (d denying) For(path string) (allow, deny []string) {
+	if path == d.at || strings.HasPrefix(path, d.at+"/") {
+		return nil, d.who
+	}
+	return nil, nil
+}
+
+// Revoking somebody at a path below a mount is the ordinary thing to do -- a grant covers what is
+// under it the way a mount does -- and the session has to be judged over the path that was asked
+// for, not over the mount it happens to land in.
+func TestARevocationBelowAMountIsHonoured(t *testing.T) {
+	bob := who(1)
+	table := served(t, ns.Mount{Path: "/shared", Archetype: "files", Access: ns.Access{AnyPaired: true}})
+	table.Granted(denying{at: "/shared/private", who: []string{"bob"}})
+
+	asBob := ns.Caller{ID: bob.String(), Name: "bob", Paired: true}
+	if _, _, no := resolve(table, asBob, "/shared/notes"); no != nil {
+		t.Fatalf("bob was refused a path nobody revoked: %v", no)
+	}
+	if _, _, no := resolve(table, asBob, "/shared/private/notes"); no == nil {
+		t.Fatal("bob opened a session under a path he had been refused")
+	}
+}

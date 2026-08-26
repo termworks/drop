@@ -5,6 +5,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tmc/go-iroh/key"
 
@@ -197,4 +198,26 @@ func testEndpointID(t *testing.T, seed byte) node.ID {
 		raw[i] = seed
 	}
 	return key.NewSecretKey(raw).Public().EndpointID()
+}
+
+// A pairing window answers whoever dials during it, so a dialler that opens a stream and says
+// nothing must not hold a goroutine for the rest of the process's life.
+func TestAPairingRequestThatSaysNothingIsNotHeldForever(t *testing.T) {
+	host, caller := testEndpointID(t, 1), testEndpointID(t, 2)
+	silent := &deadlined{set: make(chan struct{})}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := AnswerPairing(silent, host, caller, "host", nil)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a pairing request that said nothing was answered")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AnswerPairing is still reading a stream that will never say anything")
+	}
 }

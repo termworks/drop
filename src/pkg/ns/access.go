@@ -114,10 +114,11 @@ func named(names []string, c Caller) bool {
 	return false
 }
 
-// rule is one declared way in, and whether the caller satisfied it.
+// rule is one declared way in, and what deciding it takes. The answer is a function because one of
+// these costs 64 MiB and three passes of argon2, and it is asked only when it still decides.
 type rule struct {
 	name string
-	ok   bool
+	ok   func() bool
 }
 
 // Caller is the device asking, and what it presented.
@@ -170,32 +171,45 @@ func (a Access) Admits(c Caller) (bool, string) {
 	var rules []rule
 
 	if a.Anyone {
-		rules = append(rules, rule{"being anybody at all", true})
+		rules = append(rules, rule{"being anybody at all", func() bool { return true }})
 	}
 	if a.AnyPaired {
-		rules = append(rules, rule{"pairing", c.Paired})
+		rules = append(rules, rule{"pairing", func() bool { return c.Paired }})
 	}
 	if a.AnyTrusted {
-		rules = append(rules, rule{"being trusted", c.Paired && c.Trusted})
+		rules = append(rules, rule{"being trusted", func() bool { return c.Paired && c.Trusted }})
 	}
 	if len(a.Named) > 0 {
-		rules = append(rules, rule{"pairing", named(a.Named, c)})
+		rules = append(rules, rule{"pairing", func() bool { return named(a.Named, c) }})
 	}
 	if len(a.Keys) > 0 {
-		rules = append(rules, rule{"key", hasFold(a.Keys, c.ID)})
+		rules = append(rules, rule{"key", func() bool { return hasFold(a.Keys, c.ID) }})
 	}
+	// Last, so that a caller another rule already lets in never pays for a guess, and neither does
+	// one that has already failed a rule every one of them must pass. The guessing is done on
+	// somebody else's machine and the 64 MiB is spent on this one.
 	if a.Password != "" {
-		rules = append(rules, rule{"password", c.Password != "" && c.Tried.Says(a.Password, c.Password)})
+		rules = append(rules, rule{"password", func() bool {
+			return c.Password != "" && c.Tried.Says(a.Password, c.Password)
+		}})
 	}
 
+	// One rule is enough unless All says otherwise, so the asking stops at the first that settles
+	// it: the first pass, or under All the first failure.
 	passed, failed := 0, ""
 	for _, r := range rules {
-		if r.ok {
+		if r.ok() {
 			passed++
+			if !a.All {
+				break
+			}
 			continue
 		}
 		if failed == "" {
 			failed = r.name
+		}
+		if a.All {
+			break
 		}
 	}
 
@@ -254,6 +268,9 @@ func (t *Table) AccessFor(path string) (Access, bool) {
 		return Access{}, false
 	}
 
+	// The mounts and the grants are read under one hold: a cast going up or a dropbox going down
+	// happens on another goroutine while connections are being judged.
+	t.mu.RLock()
 	best, bestLen, found := Access{}, -1, false
 	for at, m := range t.mounts {
 		// A rule that only makes a path visible still governs it: it says nobody may open this,
@@ -265,7 +282,10 @@ func (t *Table) AccessFor(path string) (Access, bool) {
 			best, bestLen, found = m.Access, len(at), true
 		}
 	}
-	return t.merge(path, best, found)
+	granting := t.granted
+	t.mu.RUnlock()
+
+	return merge(granting, path, best, found)
 }
 
 // Sees is whether a caller may know a path exists, asked of the table.
