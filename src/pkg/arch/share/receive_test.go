@@ -262,7 +262,8 @@ func TestWhatLandsIsNotTheSendersMode(t *testing.T) {
 	}
 }
 
-// The .part path is guessable, so a symlink planted there must not be written through.
+// The .part path is guessable, so a name planted there must not be written through — and clearing
+// it away is better than refusing: the transfer is somebody's, and the link is not.
 func TestASymlinkedPartIsNotWrittenThrough(t *testing.T) {
 	dir := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "target")
@@ -276,11 +277,14 @@ func TestASymlinkedPartIsNotWrittenThrough(t *testing.T) {
 	}
 
 	body := []byte("written through")
-	if _, err := taking(t, dir, []Item{item}, spoken(t, spoke{sent: body, whole: body}), nil); err == nil {
-		t.Fatal("a session wrote through a planted symlink")
+	if _, err := taking(t, dir, []Item{item}, spoken(t, spoke{sent: body, whole: body}), nil); err != nil {
+		t.Fatalf("a planted name stopped a transfer that was nothing to do with it: %v", err)
 	}
 	if got := read(t, outside); !bytes.Equal(got, []byte("untouched")) {
 		t.Fatalf("the file outside is now %q", got)
+	}
+	if got := read(t, filepath.Join(dir, "notes")); !bytes.Equal(got, body) {
+		t.Fatalf("what landed is %q", got)
 	}
 }
 
@@ -335,5 +339,80 @@ func TestAClosedShareIsNotAnError(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Errorf("a share that was closed answered %d bytes", out.Len())
+	}
+}
+
+// A root refuses a link that leaves it and follows one that does not, so a name planted inside the
+// receiving directory is still somewhere a transfer could be aimed. What arrives must land in a
+// file drop made, never through a name somebody left lying there.
+func TestAPartPlantedInsideIsNotWrittenThrough(t *testing.T) {
+	base := t.TempDir()
+	if err := os.WriteFile(filepath.Join(base, "already-here"), []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dir, err := os.OpenRoot(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+
+	item := Item{Name: "report.txt", Size: 4, Mode: 0o644}
+	part := partName(item)
+	if err := os.Symlink("already-here", filepath.Join(base, part)); err != nil {
+		t.Fatal(err)
+	}
+
+	out, at, err := opening(dir, part, 0)
+	if err != nil {
+		t.Fatalf("opening: %v", err)
+	}
+	defer out.Close()
+
+	if at != 0 {
+		t.Errorf("carried on at %d in a file it had just made", at)
+	}
+	if _, err := out.WriteString("gone"); err != nil {
+		t.Fatal(err)
+	}
+
+	kept, err := os.ReadFile(filepath.Join(base, "already-here"))
+	if err != nil || string(kept) != "mine" {
+		t.Errorf("what was already there is now %q (%v)", kept, err)
+	}
+}
+
+// Picking up where an abandoned transfer stopped must only ever pick up a plain file that is long
+// enough. Anything else starts again rather than writing into whatever the name now points at.
+func TestResumeOnlyCarriesOnInAPlainFile(t *testing.T) {
+	base := t.TempDir()
+	dir, err := os.OpenRoot(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+
+	item := Item{Name: "report.txt", Size: 40, Mode: 0o644}
+	part := partName(item)
+
+	if err := os.WriteFile(filepath.Join(base, "elsewhere"), []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("elsewhere", filepath.Join(base, part)); err != nil {
+		t.Fatal(err)
+	}
+
+	out, at, err := opening(dir, part, 10)
+	if err != nil {
+		t.Fatalf("opening: %v", err)
+	}
+	defer out.Close()
+
+	if at != 0 {
+		t.Errorf("carried on at %d through a name it did not make", at)
+	}
+	kept, _ := os.ReadFile(filepath.Join(base, "elsewhere"))
+	if string(kept) != "0123456789" {
+		t.Errorf("what the name pointed at is now %q", kept)
 	}
 }

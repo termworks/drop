@@ -116,19 +116,44 @@ func receive(conn *wire.Conn, into string, from node.ID, hooks Into) error {
 	return nil
 }
 
+// opening makes the part file this item is written into, and says where in it to carry on.
+//
+// A root refuses a link that leaves it, and follows one that does not — so a name inside the
+// receiving directory can still be aimed at another file in it. Starting fresh therefore unlinks
+// first and insists on making the file itself; picking something up opens what is there without
+// making anything, and carries on only if what opened is a plain file long enough to hold what was
+// promised. Anything else starts again rather than writing somewhere nobody chose.
+func opening(dir *os.Root, part string, at int64) (*os.File, int64, error) {
+	if at > 0 {
+		// Lstat looks at the name rather than through it, so a link is seen for what it is. What
+		// opened is then checked against what was looked at, because between the two somebody could
+		// have put something else there.
+		if named, err := dir.Lstat(part); err == nil && named.Mode().IsRegular() && named.Size() >= at {
+			out, err := dir.OpenFile(part, os.O_RDWR, 0o600)
+			if err == nil {
+				if opened, serr := out.Stat(); serr == nil && os.SameFile(named, opened) {
+					return out, at, nil
+				}
+				out.Close()
+			}
+		}
+	}
+
+	_ = dir.Remove(part)
+	out, err := dir.OpenFile(part, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, 0, fmt.Errorf("opening %s: %w", part, err)
+	}
+	return out, 0, nil
+}
+
 func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64, hooks Into) error {
 	name := safeName(item.Name)
 	part := partName(item)
 
-	// Truncating unless this is picking something up: a longer tail from an abandoned transfer would
-	// otherwise stay under what arrives now, and be part of the file nobody hashed.
-	flags := os.O_CREATE | os.O_RDWR
-	if at == 0 {
-		flags |= os.O_TRUNC
-	}
-	out, err := dir.OpenFile(part, flags, 0o600)
+	out, at, err := opening(dir, part, at)
 	if err != nil {
-		return fmt.Errorf("opening %s: %w", part, err)
+		return err
 	}
 	defer out.Close()
 
