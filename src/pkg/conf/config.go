@@ -38,7 +38,11 @@ type Config struct {
 	// Rendezvous turns on publishing this device's address for paired peers to find.
 	Rendezvous    bool
 	HasRendezvous bool
-	HasOpenLinks  bool
+	// Direct turns on publishing the addresses this machine has on its own networks, so a device
+	// on the same wire or the same overlay is reached over it rather than through a relay.
+	Direct       bool
+	HasDirect    bool
+	HasOpenLinks bool
 	// OpenLinks lets a link namespace act rather than only record.
 	OpenLinks bool
 	// Mounts is every namespace this node serves.
@@ -190,6 +194,9 @@ func (c *Config) Apply() {
 	}
 	if c.HasRendezvous {
 		node.SetRendezvous(c.Rendezvous)
+	}
+	if c.HasDirect {
+		node.SetDirect(c.Direct)
 	}
 	if len(c.Relays) > 0 {
 		node.SetRelays(c.Relays)

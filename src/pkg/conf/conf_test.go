@@ -15,6 +15,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/arch/share"
 	"github.com/bresilla/drop/src/pkg/arch/stream"
 	"github.com/bresilla/drop/src/pkg/arch/tty"
+	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 )
 
@@ -558,4 +559,29 @@ func TestAMountCanPinAVersion(t *testing.T) {
 	if !strings.Contains(err.Error(), "chat/4") {
 		t.Errorf("the refusal does not name the revision: %v", err)
 	}
+}
+
+// Publishing the addresses this machine is on is what lets two devices on one wire reach each
+// other without a relay, and it is also what tells a reader which networks this machine is on. A
+// config that turns it off must be obeyed.
+func TestDirectCanBeTurnedOff(t *testing.T) {
+	write(t, `
+		local drop = require("drop")
+		drop.direct = false
+		drop.mount("/chat", { type = "chat", access = "paired" })
+	`)
+
+	cfg, err := Load(known())
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if !cfg.HasDirect || cfg.Direct {
+		t.Fatalf("direct = %v, said = %v", cfg.Direct, cfg.HasDirect)
+	}
+
+	cfg.Apply()
+	if node.Direct() {
+		t.Error("the config said not to publish this machine's own addresses, and it does")
+	}
+	node.SetDirect(true)
 }

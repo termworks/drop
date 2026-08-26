@@ -225,6 +225,9 @@ func readSettings(cfg *Config, module *rt.Table) {
 	if on, ok := optBool(module, "rendezvous"); ok {
 		cfg.Rendezvous, cfg.HasRendezvous = on, true
 	}
+	if on, ok := optBool(module, "direct"); ok {
+		cfg.Direct, cfg.HasDirect = on, true
+	}
 	if list, ok := optStrings(module, "relays"); ok {
 		cfg.Relays = list
 	}

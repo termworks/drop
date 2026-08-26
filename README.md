@@ -542,6 +542,7 @@ local drop = require("drop")
 drop.name = "workstation"
 drop.open_links = true
 drop.rendezvous = false -- optional; on unless you say otherwise, see below
+drop.direct = false     -- optional; on unless you say otherwise, see below
 
 -- A branch: no archetype, just who may reach everything under it. Access inherits downward, and
 -- a path with no rule above it is reachable by nobody.
@@ -575,7 +576,8 @@ peers wrote down at pairing no longer reaches it.
 So drop publishes its current address for paired devices to find. **This is on by default**: a
 laptop that changed networks is the ordinary case, and a program that only works while both
 machines are on one wire is not worth pairing with. `drop.rendezvous = false` turns it off for
-somebody who would rather a device be unreachable than announced at all.
+somebody who would rather a device be unreachable than announced at all, and `drop.direct = false`
+keeps announcing but leaves this machine's own addresses out of what is announced.
 
 What gets published is not your identity. For each device you have paired with, drop derives
 a throwaway identity from the secret the two of you established when you paired:
@@ -591,7 +593,15 @@ Both sides can compute it and nobody else can, because it takes the pair secret.
   - A device paired with three others publishes three unrelated records. Nothing ties them
     to each other or to you.
   - The identity rotates hourly, so a relay cannot watch one record over weeks.
-  - Only relay addresses are published, never your IP.
+  - The record holds where this device can be reached — its relay, whatever a relay saw it
+    arrive from, and the addresses it has on its own networks. That last part is what lets two
+    machines on one wire or one overlay meet over a link that answers in milliseconds instead of
+    through a relay in another country, and it is what `drop.direct = false` turns off. It costs
+    something: a record says `192.168.1.24`, or whatever a VPN gave this machine, so whoever can
+    read it learns which networks this device is on and can watch them change as it moves. For a
+    rendezvous record that is the one device you paired with, and nobody else — the record is
+    filed under an identity only the two of you can compute. While a device is offering to pair
+    it also publishes under its own id, and there anybody holding the ticket can read it.
 
 The cost is that connections may cross a relay, and the relay knows two parties are talking
 even though it cannot tell who they are or read anything. Traffic stays end-to-end encrypted.
