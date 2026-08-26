@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
 )
 
@@ -172,6 +173,11 @@ func Load() (*Book, error) {
 }
 
 // Save writes the address book back. The file holds pairing secrets, so it is written 0600.
+//
+// Through a scratch file that is synced and then renamed over the old one, with the directory
+// synced after, so that a crash or a power cut leaves either book whole. The secrets in here were
+// derived once during pairing and are kept nowhere else: a file truncated to nothing costs every
+// pairing on the machine, and there is no way to get them back.
 func (b *Book) Save() error {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -197,10 +203,7 @@ func (b *Book) Save() error {
 	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
 		return fmt.Errorf("creating %s: %w", filepath.Dir(file), err)
 	}
-	if err := os.WriteFile(file, append(raw, '\n'), 0o600); err != nil {
-		return fmt.Errorf("writing %s: %w", file, err)
-	}
-	return nil
+	return keep.Replace(file, append(raw, '\n'))
 }
 
 // Pin records a name for a peer id, without a shared secret.
@@ -231,7 +234,20 @@ func (b *Book) Belongs(name, key string) {
 	}
 	entry.User = key
 	entry.Person = b.personFor(key, entry.Name)
+	entry.Trusted = entry.Trusted || b.trustedFor(key)
 	b.entries[name] = entry
+}
+
+// trustedFor reports whether this person is already trusted here, on any machine of theirs. Trust
+// belongs to the person, so a machine of theirs paired afterwards arrives with it rather than
+// leaving the book saying two different things about one person.
+func (b *Book) trustedFor(key string) bool {
+	for _, entry := range b.entries {
+		if entry.User == key && entry.Trusted {
+			return true
+		}
+	}
+	return false
 }
 
 // personFor is what a user key is already called here, and the fallback when it is called nothing.
@@ -279,6 +295,10 @@ func (b *Book) Trust(name string, trusted bool) {
 // This is the whole of person-level recognition. A machine nobody has ever paired with presents a
 // badge signed by a key that is already in here, and it is that person's machine from then on --
 // which is the point of pairing once per person instead of once per pair of machines.
+//
+// A person's machines are folded into one answer: the first by name, carrying trust if any machine
+// of theirs has it. Returning whichever machine a map walk reached first would let the same caller
+// be trusted on one connection and a stranger on the next.
 func (b *Book) ByUser(key string) (Entry, bool) {
 	if key == "" {
 		return Entry{}, false
@@ -287,12 +307,20 @@ func (b *Book) ByUser(key string) (Entry, bool) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
+	out, found, trusted := Entry{}, false, false
 	for _, entry := range b.entries {
-		if entry.User == key {
-			return entry, true
+		if entry.User != key {
+			continue
+		}
+		trusted = trusted || entry.Trusted
+		if !found || entry.Name < out.Name {
+			out, found = entry, true
 		}
 	}
-	return Entry{}, false
+	if found {
+		out.Trusted = trusted
+	}
+	return out, found
 }
 
 // Remove drops a name, reporting whether it was there.

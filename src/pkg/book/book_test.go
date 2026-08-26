@@ -3,6 +3,9 @@ package book
 import (
 	"bytes"
 	"crypto/rand"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/tmc/go-iroh/key"
@@ -318,5 +321,118 @@ func TestTrustingSomebodyTrustsEveryMachineOfTheirs(t *testing.T) {
 	b.Trust("bobs-phone", false)
 	if entry, _ := b.Lookup("bob"); entry.Trusted {
 		t.Error("withdrawing trust left one of his machines trusted")
+	}
+}
+
+// One person, two machines, and one of them trusted: the answer has to be the same every time it
+// is asked. A map walk returned whichever machine it reached first, so the same caller was let
+// through on one connection and turned away on the next.
+func TestOnePersonAnswersTheSameEveryTime(t *testing.T) {
+	const key = "ssh-ed25519 AAAA…"
+
+	write(t, fmt.Sprintf(`{
+	  "laptop":  {"id": %q, "user": %q, "person": "bob", "trusted": true},
+	  "desktop": {"id": %q, "user": %q, "person": "bob"}
+	}`, testID(t), key, testID(t), key))
+
+	b, err := Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+
+	first, ok := b.ByUser(key)
+	if !ok {
+		t.Fatal("ByUser() did not find a person who is in the book twice")
+	}
+	if !first.Trusted {
+		t.Fatal("ByUser() reported bob untrusted although a machine of his is trusted")
+	}
+	for i := 0; i < 500; i++ {
+		again, ok := b.ByUser(key)
+		if !ok || again.Name != first.Name || again.Trusted != first.Trusted {
+			t.Fatalf("ByUser() = %+v on try %d, %+v on the first", again, i, first)
+		}
+	}
+}
+
+// Trust follows the person, so a machine paired after the decision arrives with it. Otherwise the
+// book says two different things about one person.
+func TestAMachinePairedAfterTrustInheritsIt(t *testing.T) {
+	const key = "ssh-ed25519 AAAA…"
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	b, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Pair("bob", testID(t), testSecret(t))
+	b.Belongs("bob", key)
+	b.Trust("bob", true)
+
+	b.Pair("bobs-desktop", testID(t), testSecret(t))
+	b.Belongs("bobs-desktop", key)
+
+	if entry, _ := b.Lookup("bobs-desktop"); !entry.Trusted {
+		t.Fatal("a second machine of somebody already trusted was filed as untrusted")
+	}
+}
+
+// The pairing secrets in peers.json were derived once and are kept nowhere else, so the file is
+// replaced whole rather than truncated and written over: an interruption must leave the old book.
+func TestSaveReplacesTheBookRatherThanTruncatingIt(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	b, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Pair("laptop", testID(t), testSecret(t))
+	if err := b.Save(); err != nil {
+		t.Fatalf("Save(): %v", err)
+	}
+
+	file, err := path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	was, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b.Pair("desktop", testID(t), testSecret(t))
+	if err := b.Save(); err != nil {
+		t.Fatalf("Save(): %v", err)
+	}
+
+	now, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(was, now) {
+		t.Fatal("Save() wrote over peers.json in place; a crash would leave no pairings at all")
+	}
+
+	// And nothing is left lying beside it.
+	found, err := os.ReadDir(filepath.Dir(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].Name() != filepath.Base(file) {
+		names := make([]string, 0, len(found))
+		for _, at := range found {
+			names = append(names, at.Name())
+		}
+		t.Fatalf("the config directory holds %v, want only %s", names, filepath.Base(file))
+	}
+
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load() after Save(): %v", err)
+	}
+	if len(reloaded.All()) != 2 {
+		t.Fatalf("the reloaded book has %d entries, want 2", len(reloaded.All()))
 	}
 }

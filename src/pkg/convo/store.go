@@ -25,6 +25,11 @@ type Store struct {
 	dir     string
 	history string
 	outbox  string
+	// ids is every message id in the history, and size is how long the file was when that set was
+	// built. Deciding whether an arriving message is a resend by rereading the log costs a read and
+	// a decrypt pass of everything said so far, per message.
+	ids  map[string]bool
+	size int64
 }
 
 // DataDir is $XDG_DATA_HOME/drop, or ~/.local/share/drop. Conversations are data, not settings, so
@@ -40,6 +45,13 @@ func DataDir() (string, error) {
 	return node.Under(filepath.Join(home, ".local", "share", "drop"))
 }
 
+// open holds one Store per conversation directory, so everything in this process that talks to one
+// peer shares its lock and the dedupe set it has already built.
+var open struct {
+	sync.Mutex
+	stores map[string]*Store
+}
+
 // Open prepares the conversation with one peer.
 func Open(id node.ID) (*Store, error) {
 	base, err := DataDir()
@@ -50,12 +62,24 @@ func Open(id node.ID) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating %s: %w", dir, err)
 	}
-	return &Store{
+
+	open.Lock()
+	defer open.Unlock()
+
+	if s, ok := open.stores[dir]; ok {
+		return s, nil
+	}
+	s := &Store{
 		peer:    id,
 		dir:     dir,
 		history: filepath.Join(dir, "history"),
 		outbox:  filepath.Join(dir, "outbox"),
-	}, nil
+	}
+	if open.stores == nil {
+		open.stores = map[string]*Store{}
+	}
+	open.stores[dir] = s
+	return s, nil
 }
 
 // Peer is who this conversation is with.
@@ -77,9 +101,14 @@ func record(m Message, peer string) ([]byte, error) {
 // recordWith is the same, under a key given rather than held -- which is what rewriting a log to
 // turn a vault on or off needs, because that reads under one key and writes under another.
 func recordWith(m Message, peer string, key []byte) ([]byte, error) {
+	packed := m.Encode()
+	if len(packed) > MaxPacked {
+		return nil, fmt.Errorf("storing message %s: %d bytes, over the %d limit", m.ID, len(packed), MaxPacked)
+	}
+
 	w := wire.NewWriter()
 	w.Byte(m.Dir)
-	w.Bytes(m.Encode())
+	w.Bytes(packed)
 	body := w.Body()
 
 	if len(key) == 0 {
@@ -115,7 +144,7 @@ func plain(body []byte) (Message, error) {
 	if err != nil {
 		return Message{}, err
 	}
-	packed, err := r.Bytes(MaxBody + 4096)
+	packed, err := r.Bytes(MaxPacked)
 	if err != nil {
 		return Message{}, err
 	}
@@ -146,6 +175,10 @@ func appendTo(path string, body []byte) error {
 
 // readAll walks a log. A truncated tail — a crash mid-write — ends the walk rather than failing
 // it, because the records before it are still good and losing them would be the worse outcome.
+//
+// A record that is whole and still will not read is a different thing, and it is stepped over. Its
+// length prefix says where the next one starts, so one damaged entry costs one entry rather than
+// every message written after it.
 func readAll(path, peer string) ([]Message, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -163,18 +196,45 @@ func readAll(path, peer string) ([]Message, error) {
 		}
 		at += used
 		m, err := unrecord(raw[at:at+int(size)], peer)
+		at += int(size)
 		if errors.Is(err, ErrLocked) {
 			// Not a truncated tail: the records are whole and the key is not here. Reporting an
 			// empty conversation would be a lie about the disk rather than a report about the key.
 			return nil, err
 		}
 		if err != nil {
-			break
+			continue
 		}
-		at += int(size)
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+// known is the set of ids in the history, walking the log only when it has changed under this
+// process -- a `drop chat` in another terminal appending to the same conversation.
+func (s *Store) known() error {
+	var size int64
+	at, err := os.Stat(s.history)
+	switch {
+	case err == nil:
+		size = at.Size()
+	case !errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("reading %s: %w", s.history, err)
+	}
+	if s.ids != nil && size == s.size {
+		return nil
+	}
+
+	all, err := readAll(s.history, s.peer.String())
+	if err != nil {
+		return err
+	}
+	ids := make(map[string]bool, len(all))
+	for _, m := range all {
+		ids[m.ID] = true
+	}
+	s.ids, s.size = ids, size
+	return nil
 }
 
 // Add records a message in the history, ignoring one already there. Returns whether it was new,
@@ -183,14 +243,11 @@ func (s *Store) Add(m Message) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	known, err := readAll(s.history, s.peer.String())
-	if err != nil {
+	if err := s.known(); err != nil {
 		return false, err
 	}
-	for _, seen := range known {
-		if seen.ID == m.ID {
-			return false, nil
-		}
+	if s.ids[m.ID] {
+		return false, nil
 	}
 	body, err := record(m, s.peer.String())
 	if err != nil {
@@ -198,6 +255,13 @@ func (s *Store) Add(m Message) (bool, error) {
 	}
 	if err := appendTo(s.history, body); err != nil {
 		return false, err
+	}
+
+	s.ids[m.ID] = true
+	if at, err := os.Stat(s.history); err == nil {
+		s.size = at.Size()
+	} else {
+		s.ids = nil
 	}
 	return true, nil
 }
@@ -356,6 +420,8 @@ func Peers() ([]node.ID, error) {
 func (s *Store) Rewrite(to []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	s.ids = nil
 
 	for _, at := range []string{s.history, s.outbox} {
 		all, err := readAll(at, s.peer.String())

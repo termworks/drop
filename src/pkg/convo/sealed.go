@@ -27,6 +27,10 @@ import (
 // vaults existed reads exactly as it did.
 const sealedMark byte = 0xE1
 
+// maxCipher caps a sealed payload: the largest record there can be -- a direction byte, a length
+// prefix and a packed message at MaxPacked -- and the tag the seal adds on top of it.
+const maxCipher = MaxPacked + 32
+
 var held struct {
 	sync.Mutex
 	key   []byte
@@ -106,7 +110,7 @@ func unseal(key, stored []byte, peer string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	body, err := r.Bytes(MaxBody + 4096)
+	body, err := r.Bytes(maxCipher)
 	if err != nil {
 		return nil, err
 	}

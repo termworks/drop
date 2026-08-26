@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/bresilla/drop/src/pkg/convo"
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 )
@@ -201,10 +202,7 @@ func write(all map[string]stored) error {
 	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
 		return fmt.Errorf("creating %s: %w", filepath.Dir(file), err)
 	}
-	if err := os.WriteFile(file, append(raw, '\n'), 0o600); err != nil {
-		return fmt.Errorf("writing %s: %w", file, err)
-	}
-	return nil
+	return keep.Replace(file, append(raw, '\n'))
 }
 
 // trim keeps the most recent.
