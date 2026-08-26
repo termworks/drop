@@ -33,7 +33,8 @@ import (
 // over a socket on this machine, and there stays one node, one listener, and one address that
 // always means the same thing.
 //
-// The first line says which it is: "cast", "pair <code> <name>", or "via <device> <protocol>".
+// The first line says which it is: "cast", "share <who> <dir>", "pair <code> <name>", or
+// "via <device> <protocol>".
 
 // pairHost is the pairing offer open on this node, if any.
 //
@@ -160,6 +161,87 @@ func (h *castHost) end(stage *cast.Caster) {
 	}
 }
 
+// shareHost is the dropbox open through this node, if any.
+//
+// One at a time, the way a cast is: two dropboxes behind one path are two directories at one
+// address, and whoever is sending has no way to know which of them they reached.
+type shareHost struct {
+	mu     sync.Mutex
+	open   *dropbox
+	mounts *ns.Table
+	// known is what the mount a dropbox puts up carries, so it holds the settings the share
+	// archetype reads rather than a shape this file made up.
+	known *arch.Registry
+}
+
+// dropbox is one dropbox on the air, and how whoever asked for it learns it is over.
+type dropbox struct {
+	done chan struct{}
+	over bool
+}
+
+func newShareHost(mounts *ns.Table, known *arch.Registry) *shareHost {
+	return &shareHost{mounts: mounts, known: known}
+}
+
+// begin puts a dropbox up, and declares the path it is served at. It refuses while another is
+// open, and refuses a path the config declared: that one carries somebody's own rule over their
+// own directory, and a dropbox that came and went must not stand in for it.
+func (h *shareHost) begin(dir string, to []string) (*dropbox, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.open != nil {
+		return nil, errors.New("this device already has a dropbox open")
+	}
+	if mount, _, ok := h.mounts.Lookup(SharePath); ok && mount.Path == SharePath {
+		return nil, fmt.Errorf("the config declares %s already", SharePath)
+	}
+
+	mount, err := shareMount(h.known, dir, to)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.mounts.Add(mount); err != nil {
+		return nil, err
+	}
+
+	h.open = &dropbox{done: make(chan struct{})}
+	return h.open, nil
+}
+
+// end takes a dropbox down, and the path with it. One that has already been replaced ends nothing:
+// the one open belongs to whoever asked for it.
+func (h *shareHost) end(box *dropbox) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.open == nil || h.open != box {
+		return
+	}
+
+	h.open = nil
+	h.mounts.Drop(SharePath)
+}
+
+// finished is a session on some path having ended. A dropbox takes one transfer, so the one that
+// was open for that path is over.
+func (h *shareHost) finished(path string) {
+	at, err := ns.Clean(path)
+	if err != nil || at != SharePath {
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.open == nil || h.open.over {
+		return
+	}
+	h.open.over = true
+	close(h.open.done)
+}
+
 // castSocket is where a cast hands its output to the node.
 //
 // Named after the identity, so several nodes on one machine — which is what testing drop looks
@@ -194,7 +276,7 @@ const (
 )
 
 // hostLocal listens for whatever on this machine wants to act as this node.
-func hostLocal(ctx context.Context, casts *castHost, offers *pairHost, held *dial.Kept) error {
+func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, offers *pairHost, held *dial.Kept) error {
 	path, err := castSocket()
 	if err != nil {
 		return err
@@ -249,7 +331,7 @@ func hostLocal(ctx context.Context, casts *castHost, offers *pairHost, held *dia
 
 		go func() {
 			defer conn.Close()
-			if err := takeLocal(ctx, casts, offers, held, conn); err != nil {
+			if err := takeLocal(ctx, casts, shares, offers, held, conn); err != nil {
 				fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 			}
 		}()
@@ -276,7 +358,7 @@ func takeCast(ctx context.Context, host *castHost, from io.Reader) error {
 }
 
 // takeLocal reads what this connection is for and does it.
-func takeLocal(ctx context.Context, casts *castHost, offers *pairHost, held *dial.Kept, conn net.Conn) error {
+func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, offers *pairHost, held *dial.Kept, conn net.Conn) error {
 	reading := bufio.NewReader(conn)
 
 	first, err := reading.ReadString('\n')
@@ -288,6 +370,9 @@ func takeLocal(ctx context.Context, casts *castHost, offers *pairHost, held *dia
 	switch what {
 	case "cast":
 		return takeCast(ctx, casts, reading)
+
+	case "share":
+		return takeShare(ctx, shares, conn, rest)
 
 	case "pair":
 		code, as, machine, err := offerAsked(rest)
@@ -301,6 +386,48 @@ func takeLocal(ctx context.Context, casts *castHost, offers *pairHost, held *dia
 		return takeVia(ctx, held, conn, name, alpn)
 	}
 	return fmt.Errorf("a local connection asked for %q, which is nothing", what)
+}
+
+// takeShare holds a dropbox open for as long as whoever asked for it stays connected, and takes it
+// down as soon as a transfer has come through it.
+//
+// The line is who may send and then the directory, in that order, because a directory is the one
+// field that may have a space in it.
+func takeShare(ctx context.Context, host *shareHost, conn net.Conn, rest string) error {
+	who, dir, _ := strings.Cut(strings.TrimSpace(rest), " ")
+	if dir == "" {
+		return errors.New("a dropbox with no directory")
+	}
+
+	box, err := host.begin(dir, sendersNamed(who))
+	if err != nil {
+		fmt.Fprintf(conn, "no %v\n", err)
+		return nil
+	}
+	defer host.end(box)
+
+	if _, err := fmt.Fprintln(conn, "ok"); err != nil {
+		return err
+	}
+
+	fmt.Printf("  a dropbox is open at %s, taking things into %s\n", SharePath, dir)
+	defer fmt.Printf("  the dropbox at %s closed\n", SharePath)
+
+	// Whoever asked going away is what ends it, so an interrupted `drop share` takes the path down
+	// rather than leaving a dropbox open that nobody is watching.
+	gone := make(chan struct{})
+	go func() {
+		defer close(gone)
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+
+	select {
+	case <-ctx.Done():
+	case <-gone:
+	case <-box.done:
+		fmt.Fprintln(conn, "done")
+	}
+	return nil
 }
 
 // offerAsked reads what a local `drop pair` asked for: a code, a name to file the far end under,

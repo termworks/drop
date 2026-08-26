@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/arch/chat"
+	"github.com/bresilla/drop/src/pkg/arch/files"
 	"github.com/bresilla/drop/src/pkg/arch/share"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/conf"
@@ -364,7 +367,7 @@ func (l *running) Watch(ctx context.Context, w tui.Watching) error {
 	// it also threw away the only way to say how big the window is — and what may be typed is the
 	// far end's decision, which it makes whatever arrives.
 	if w.Ready != nil {
-		w.Ready(saying{d: d})
+		w.Ready(speaking{d: d})
 	}
 
 	done := make(chan error, 1)
@@ -394,17 +397,17 @@ func (l *running) Watch(ctx context.Context, w tui.Watching) error {
 // lands or fails quickly; anything longer is not worth holding the interface for.
 const stopWithin = 2 * time.Second
 
-// saying is a live path the interface can speak to.
-type saying struct{ d *live.Duplex }
+// speaking is a live path the interface can speak to.
+type speaking struct{ d *live.Duplex }
 
-func (s saying) Resize(cols, rows int) error {
+func (s speaking) Resize(cols, rows int) error {
 	if cols < 1 || rows < 1 {
 		return nil
 	}
 	return s.d.Resize(uint16(cols), uint16(rows))
 }
 
-func (s saying) Type(p []byte) error {
+func (s speaking) Type(p []byte) error {
 	if len(p) == 0 {
 		return nil
 	}
@@ -503,13 +506,12 @@ func (l *running) Join(ctx context.Context, ticket string) (string, error) {
 	return name, err
 }
 
-// Holding is what is in one of this machine's own share namespaces.
+// Holding is what is in one directory of one of this machine's own namespaces.
 //
-// Read from the config rather than asked over a wire: this is a directory on this disk, and asking
-// a peer what is in your own pocket would be a strange way to find out. Only files -- a directory
-// under a share namespace is not something drop serves, so listing it would promise something that
-// is not there.
-func (l *running) Holding(path string) ([]tui.Held, error) {
+// Read off this disk rather than asked over a wire: it is a directory here, and asking a peer what
+// is in your own pocket would be a strange way to find out. The same screen walks it as walks
+// somebody else's, so the answer has the same shape.
+func (l *running) Holding(path, dir string) ([]tui.Held, error) {
 	cfg, err := conf.Load(l.known)
 	if err != nil {
 		return nil, err
@@ -517,37 +519,183 @@ func (l *running) Holding(path string) ([]tui.Held, error) {
 	defer cfg.Close()
 
 	mount, _, ok := cfg.Mounts.Lookup(path)
-	if !ok || mount.Archetype != "share" {
-		return nil, fmt.Errorf("%s is not a share namespace of this machine's", path)
-	}
-	held, ok := mount.Config.(share.Config)
 	if !ok {
-		return nil, fmt.Errorf("%s has nowhere to hold anything", path)
+		return nil, fmt.Errorf("%s is not a namespace of this machine's", path)
 	}
 
-	entries, err := os.ReadDir(held.Dir)
+	root := heldIn(mount.Config)
+	if root == "" {
+		return nil, fmt.Errorf("%s is not a directory of this machine's", path)
+	}
+
+	full, err := beneath(root, dir)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := os.ReadDir(full)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", held.Dir, err)
+		return nil, fmt.Errorf("reading %s: %w", full, err)
 	}
 
-	var out []tui.Held
+	out := make([]tui.Held, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
 		at, err := entry.Info()
 		if err != nil {
 			continue
 		}
-		out = append(out, tui.Held{Name: entry.Name(), Size: at.Size(), At: at.ModTime()})
+		out = append(out, tui.Held{Name: entry.Name(), Size: at.Size(), At: at.ModTime(), Dir: entry.IsDir()})
+	}
+	arrange(out)
+	return out, nil
+}
+
+// heldIn is the directory a namespace of this machine's stands on, and the empty string for one
+// that stands on nothing.
+//
+// The archetypes this process registered that are a directory here. Which they are is this
+// process's own business: it is the one that registered them.
+func heldIn(cfg arch.Config) string {
+	switch held := cfg.(type) {
+	case share.Config:
+		return held.Dir
+	case files.Config:
+		return held.Dir
+	}
+	return ""
+}
+
+// beneath is a directory inside a namespace, refusing a name that leaves it.
+func beneath(root, dir string) (string, error) {
+	for _, part := range strings.Split(dir, "/") {
+		if part == ".." {
+			return "", fmt.Errorf("%q leaves the namespace", dir)
+		}
+	}
+	return filepath.Join(root, filepath.FromSlash(dir)), nil
+}
+
+// arrange puts a listing in the order a directory is read: the ways down first, then by name.
+func arrange(held []tui.Held) {
+	sort.Slice(held, func(i, j int) bool {
+		if held[i].Dir != held[j].Dir {
+			return held[i].Dir
+		}
+		return held[i].Name < held[j].Name
+	})
+}
+
+// browsing opens a files namespace on another device, over the connection this interface is already
+// holding to it.
+func (l *running) browsing(ctx context.Context, on book.Entry, path string) (*files.Browsing, func(), error) {
+	s, err := l.held.To(ctx, on, node.ALPNSession)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	// Newest last, the way everything else in this interface reads.
-	sort.Slice(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
+	conn, err := proto.Open(s, path, "files", 0, "", node.DisplayName())
+	if err != nil {
+		s.Close()
+		return nil, nil, err
+	}
+
+	walk, err := files.Browse(conn)
+	if err != nil {
+		s.Close()
+		return nil, nil, err
+	}
+
+	// The stream goes when the caller is done; the connection stays, because everything else this
+	// device is doing is on it.
+	return walk, func() { s.Close() }, nil
+}
+
+// Listing is what is in a files namespace on another device, at one directory inside it.
+func (l *running) Listing(ctx context.Context, on book.Entry, path, dir string) ([]tui.Held, error) {
+	walk, done, err := l.browsing(ctx, on, path)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+
+	entries, err := walk.List(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]tui.Held, 0, len(entries))
+	for _, at := range entries {
+		out = append(out, tui.Held{Name: at.Name, Size: at.Size, At: time.Unix(at.At, 0), Dir: at.Dir})
+	}
+	arrange(out)
 	return out, nil
+}
+
+// Fetch copies one thing out of a files namespace onto this disk, and says where it landed.
+func (l *running) Fetch(ctx context.Context, from book.Entry, path, dir, name string, progress func(string, int64, int64)) (string, error) {
+	walk, done, err := l.browsing(ctx, from, path)
+	if err != nil {
+		return "", err
+	}
+	defer done()
+
+	// Where anything else arriving would land. A download is a file changing hands, and a second
+	// place for it would mean answering "where did it go" twice.
+	inbox := conf.Inbox()
+	if err := os.MkdirAll(inbox, 0o700); err != nil {
+		return "", fmt.Errorf("making %s: %w", inbox, err)
+	}
+
+	into := filepath.Join(inbox, filepath.Base(name))
+	if err := walk.Get(slashed(dir, name), into, progress); err != nil {
+		return "", err
+	}
+
+	if at, err := os.Stat(into); err == nil {
+		noteFile(from.ID, convo.In, filepath.Base(name), at.Size())
+	}
+	return into, nil
+}
+
+// Put copies one thing from this disk into a files namespace on another device.
+func (l *running) Put(ctx context.Context, to book.Entry, path, dir, from string, progress func(string, int64, int64)) error {
+	walk, done, err := l.browsing(ctx, to, path)
+	if err != nil {
+		return err
+	}
+	defer done()
+
+	name := filepath.Base(from)
+	if err := walk.PutFile(slashed(dir, name), from, progress); err != nil {
+		return err
+	}
+
+	if at, err := os.Stat(from); err == nil {
+		noteFile(to.ID, convo.Out, name, at.Size())
+	}
+	return nil
+}
+
+// Remove deletes one thing from a files namespace on another device.
+func (l *running) Remove(ctx context.Context, on book.Entry, path, dir, name string) error {
+	walk, done, err := l.browsing(ctx, on, path)
+	if err != nil {
+		return err
+	}
+	defer done()
+
+	return walk.Remove(slashed(dir, name))
+}
+
+// slashed is one thing inside a namespace, the way the far end names it: slashes, and no leading one.
+func slashed(dir, name string) string {
+	if dir == "" {
+		return name
+	}
+	return strings.TrimSuffix(dir, "/") + "/" + name
 }
 
 // Knocked is what has dialled this device and been turned away.

@@ -26,14 +26,16 @@ func newListCmd() *cobra.Command {
 		Long: "ls asks a device what it serves, and shows what you may reach.\n\n" +
 			"What comes back is filtered by that device: a path shared with someone else is\n" +
 			"absent rather than refused, so this is what you have, not what exists.\n\n" +
+			"A path that lands in a directory somebody shares lists what is in it instead,\n" +
+			"and keeps going: `drop ls orin/work/deep` is that directory.\n\n" +
 			"With no argument, it lists what this device serves.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return showOwnTable(reading())
 			}
-			peer, under, _ := strings.Cut(args[0], "/")
-			return listThere(cmd.Context(), peer, "/"+strings.Trim(under, "/"), wait)
+			peer, under := splitTarget(args[0])
+			return listThere(cmd.Context(), peer, under, wait)
 		},
 	}
 
@@ -62,16 +64,21 @@ func listThere(parent context.Context, peer, under string, wait time.Duration) e
 
 	lan, _ := discovery.StartLAN(ctx, n)
 
-	done, s, err := best(n, lan).To(find, entry, node.ALPNHello)
+	hello, err := serving(find, n, lan, entry)
 	if err != nil {
 		return err
 	}
-	defer done.Close()
-	defer s.Close()
 
-	hello, err := proto.AskHello(s)
-	if err != nil {
-		return err
+	// A path that lands inside a directory namespace is a directory rather than a list of
+	// namespaces. A bare device is never that: it is asking what it may reach at all.
+	if at, rest, ok := insideFiles(hello.Serves, under); ok && under != "/" {
+		b, done, err := browse(find, n, lan, entry, at)
+		if err != nil {
+			return err
+		}
+		defer done()
+
+		return listInside(b, entry, at, rest)
 	}
 
 	shown := make([]proto.Served, 0, len(hello.Serves))

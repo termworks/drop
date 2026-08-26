@@ -103,6 +103,9 @@ func runServe(parent context.Context, quiet bool) error {
 	// A cast feeds this node over a local socket rather than standing up a second one, so a
 	// terminal can be shared while the daemon is running.
 	casts := newCastHost(cfg.Mounts, known)
+	// A dropbox is put up the same way: mounted while somebody is waiting for a file, and gone
+	// again the moment they are not.
+	shares := newShareHost(cfg.Mounts, known)
 	doing.shown = func(path string) (*cast.Caster, bool) {
 		if path != CastPath {
 			return nil, false
@@ -111,7 +114,7 @@ func runServe(parent context.Context, quiet bool) error {
 	}
 	offers := newPairHost(n)
 	go func() {
-		if err := hostLocal(ctx, casts, offers, held); err != nil {
+		if err := hostLocal(ctx, casts, shares, offers, held); err != nil {
 			fmt.Fprintf(os.Stderr, "drop: casts unavailable: %v\n", err)
 		}
 	}()
@@ -141,9 +144,19 @@ func runServe(parent context.Context, quiet bool) error {
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
 			_ = pinned.Refresh()
-			if err := proto.Handle(ctx, s, from, policy); err != nil {
+
+			// Which path this session was for, so an ephemeral mount learns when the transfer it
+			// was put up for is over. Nothing is asked of a caller that was turned away.
+			asked, watched := "", policy
+			watched.Allow = func(from node.ID, open proto.Opening) (bool, string) {
+				asked = open.Path
+				return policy.Allow(from, open)
+			}
+
+			if err := proto.Handle(ctx, s, from, watched); err != nil {
 				fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 			}
+			shares.finished(asked)
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()

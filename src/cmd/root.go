@@ -65,6 +65,12 @@ func Execute(v string, exit func(int), args []string) {
 		newNamespacesCmd(),
 		newPasswdCmd(),
 		newListCmd(),
+		newShareCmd(),
+		newGetCmd(),
+		newPutCmd(),
+		newRemoveCmd(),
+		newMkdirCmd(),
+		newMoveCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
