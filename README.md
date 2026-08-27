@@ -306,6 +306,23 @@ own comes after, and is sent whatever it has not seen. That happens on a connect
 change being made, and on a timer, because running it when there is nothing to say costs a few
 identifiers. A change from somebody your rule does not admit is refused, whoever relayed it.
 
+**Nothing a peer sends can finish a namespace.** The history is read back by ordering it, and
+ordering refuses one whose changes name each other in a circle — so a circle that got written down
+would make the namespace unreadable on every machine that took the change, after every restart,
+for good. A fold is the one thing that changes what a change is placed behind after it has been
+stored, so a fold must cover every head it names; one that does not is refused rather than kept.
+
+Nor can it fill the disk. A fold is exempt from the size limits because it is what makes a full log
+smaller — a log that could not take one could never shrink. That exemption belongs only to a fold
+standing for *everything* held; one standing for a part of it writes more than it takes away, and
+is held to the same limits as anything else.
+
+And bytes must be what the change asked for. A file too big to travel inside a change is fetched
+from whoever has it, and the digest in the signed change is the one account of that version nobody
+sending the bytes could have made up. Bytes that do not match are dropped and the round tries
+somebody else — otherwise whoever answered would be choosing what lands, on a path of the change's
+choosing, with the mode the change asks for put on it afterwards.
+
 ### share and files are not the same thing
 
 They both point at a directory and they are opposites.
@@ -468,6 +485,32 @@ A password is the weak one: the other two bind to a key nobody else holds, and a
 binds to knowledge, which spreads. It earns its place because it is the only one that works
 before you know who is coming. `drop me passwd` prints the hash to put in the config — the
 plaintext never goes in a file, so a leaked config is not a leaked password.
+
+### before anybody has been let in
+
+Two frames are read from a caller nobody has decided anything about yet: the opening, and the ask
+that starts a hello. Everything either of them can lead to is work a stranger chose for this
+machine, so all of it is bounded before it is done.
+
+**How much memory a frame may claim.** The size of a frame is a number the sender writes, and the
+general limit is what a *transfer* needs — twenty times what either of these frames can legally be.
+Read before authentication, that number is a stranger naming how many megabytes to set aside for
+them, at five bytes each, held for as long as the deadline allows. So the two pre-auth reads refuse
+at the header, before anything is allocated.
+
+**How long a read may wait.** Every read in the handshake has a deadline, on both sides. A far end
+that takes what you sent and then says nothing holds a goroutine, a stream and a buffer for as long
+as it likes, and a command that never returns is one somebody has to notice and kill.
+
+**How much a guess may cost.** A path guarded by a password costs 64 MiB and three passes of argon2
+to try, which is the point of it. A caller gets six tries in a window; getting in somewhere that
+asked for no password does not buy more, and one guess is hashed once however many rules ask about
+it — otherwise the allowance would really be six times however many rules a caller could get in the
+way, which they choose by choosing how deep a path to ask for.
+
+**How much disk a stranger may spend.** A device nobody knows that dials is written down, so you can
+let it in later without copying its id out of a log. That write is flushed to the disk itself, so it
+is done at most once in a while for each device rather than once per dial.
 
 ### what a peer says, and what your terminal does with it
 
@@ -1052,6 +1095,11 @@ drop.vault = { "age1yubikey1…", "age1…backup…" }   -- unreadable without t
 
 Always name more than one when you name hardware: a data key wrapped only to a YubiKey is a history
 that dies with the YubiKey.
+
+The data key is made exactly once, however many drops start at the same moment. Two of them each
+minting one would leave whichever wrote second owning the file while the other went on sealing
+records with a key that is nowhere — and a record sealed to a key that was never written down is
+not recoverable by anybody, ever.
 
 ```console
 drop me vault        what it is doing, creating nothing
