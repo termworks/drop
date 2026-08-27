@@ -18,6 +18,10 @@ import (
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
+// thing is the one both machines hold. A change made about anything else belongs in another
+// history and is refused there, so a meeting is always about one thing.
+const thing = "thing"
+
 // asSomebody gives this machine a user key to sign changes with, and answers what it signs as.
 func asSomebody(t *testing.T) string {
 	t.Helper()
@@ -44,13 +48,13 @@ func asSomebody(t *testing.T) string {
 }
 
 // aLog is one thing's record, in a data directory of its own.
-func aLog(t *testing.T, at string) *history.Log {
+func aLog(t *testing.T) *history.Log {
 	t.Helper()
 
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	l, err := history.Open(at)
+	l, err := history.Open(thing)
 	if err != nil {
-		t.Fatalf("Open(%q): %v", at, err)
+		t.Fatalf("Open(%q): %v", thing, err)
 	}
 	return l
 }
@@ -58,7 +62,7 @@ func aLog(t *testing.T, at string) *history.Log {
 func signed(t *testing.T, body string, heads ...history.ID) history.Change {
 	t.Helper()
 
-	c, err := history.Sign([]byte(body), heads)
+	c, err := history.Sign(thing, []byte(body), heads)
 	if err != nil {
 		t.Fatalf("Sign(%q): %v", body, err)
 	}
@@ -121,11 +125,11 @@ func meeting(t *testing.T, mine, theirs *history.Log, admits func(string) bool) 
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		asked, askErr = Ask(wire.NewConn(here), mine, admits)
+		asked, askErr = Ask(wire.NewConn(here), mine, "them", admits)
 	}()
 	go func() {
 		defer wg.Done()
-		answered, ansErr = Answer(wire.NewConn(there), theirs, admits)
+		answered, ansErr = Answer(wire.NewConn(there), theirs, "us", admits)
 	}()
 	wg.Wait()
 
@@ -145,7 +149,7 @@ func TestTwoMachinesThatBothChangedSomethingEndUpWithBoth(t *testing.T) {
 
 	// The change they were both made after, which each of them already has.
 	first := signed(t, "first")
-	mine, theirs := aLog(t, "thing"), aLog(t, "other")
+	mine, theirs := aLog(t), aLog(t)
 	add(t, mine, first)
 	add(t, theirs, first)
 
@@ -175,7 +179,7 @@ func TestMeetingTwiceTakesNothingTheSecondTime(t *testing.T) {
 	asSomebody(t)
 
 	first := signed(t, "first")
-	mine, theirs := aLog(t, "thing"), aLog(t, "other")
+	mine, theirs := aLog(t), aLog(t)
 	add(t, mine, first, signed(t, "and then", first.ID()))
 	add(t, theirs, first)
 
@@ -198,7 +202,7 @@ func TestAMachineWithNothingTakesAllOfIt(t *testing.T) {
 	right := signed(t, "right", first.ID())
 	join := signed(t, "join", left.ID(), right.ID())
 
-	mine, theirs := aLog(t, "thing"), aLog(t, "other")
+	mine, theirs := aLog(t), aLog(t)
 	add(t, mine, first, left, right, join)
 
 	if _, answered := meeting(t, mine, theirs, anybody); answered.Taken != 4 {
@@ -215,7 +219,7 @@ func TestAChangeFromSomebodyTheRuleDoesNotAdmitIsRefused(t *testing.T) {
 	stranger := asSomebody(t)
 
 	first := signed(t, "first")
-	mine, theirs := aLog(t, "thing"), aLog(t, "other")
+	mine, theirs := aLog(t), aLog(t)
 	add(t, mine, first, signed(t, "not shared with them", first.ID()))
 
 	nobody := func(author string) bool { return author != stranger }
@@ -237,7 +241,7 @@ func TestAChangeFromSomebodyTheRuleDoesNotAdmitIsRefused(t *testing.T) {
 func TestAMeetingWithNoRuleTakesNothing(t *testing.T) {
 	asSomebody(t)
 
-	mine, theirs := aLog(t, "thing"), aLog(t, "other")
+	mine, theirs := aLog(t), aLog(t)
 	add(t, mine, signed(t, "first"))
 
 	_, answered := meeting(t, mine, theirs, nil)
@@ -254,7 +258,7 @@ func TestAChangeAfterARefusedOneIsPassedOver(t *testing.T) {
 	first := signed(t, "first")
 	second := signed(t, "second", first.ID())
 
-	mine, theirs := aLog(t, "thing"), aLog(t, "other")
+	mine, theirs := aLog(t), aLog(t)
 	add(t, mine, first, second)
 
 	// The first change is theirs already, so only what follows it can be refused.
@@ -286,5 +290,119 @@ func TestTooManyHeadsAreRefused(t *testing.T) {
 		t.Fatal("a claim of too many heads was believed")
 	} else if !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("readHeads() = %v", err)
+	}
+}
+
+// One change the history will not take costs itself, not the meeting. A machine that has such a
+// record re-offers it at every meeting it ever has, so ending the meeting on it would stop that
+// namespace converging with everybody, for good.
+func TestAChangeTheHistoryRefusesDoesNotEndTheMeeting(t *testing.T) {
+	asSomebody(t)
+
+	first := signed(t, "first")
+	second := signed(t, "second", first.ID())
+
+	// The same change with a signature that is not over it: it decodes, and it will not verify.
+	spoiled := signed(t, "damaged since it was written")
+	spoiled.Signed = append([]byte(nil), signed(t, "something else entirely").Signed...)
+
+	l := aLog(t)
+	caught, err := answering(t, l, first, spoiled, second)
+	if err != nil {
+		t.Fatalf("Answer(): %v", err)
+	}
+	if caught.Taken != 2 {
+		t.Fatalf("took %d changes, want the two either side of the damaged one", caught.Taken)
+	}
+	if caught.Refused != 1 || caught.Trouble == nil {
+		t.Fatalf("refused %d changes and said %v about it, want one and a reason", caught.Refused, caught.Trouble)
+	}
+	if held := bodies(t, l); !same(held, []string{"first", "second"}) {
+		t.Fatalf("the log holds %v", held)
+	}
+}
+
+// A change made about another thing is one this history has no business taking, whoever signed it
+// and whoever the rule admits.
+func TestAChangeAboutAnotherThingIsRefusedRatherThanTaken(t *testing.T) {
+	asSomebody(t)
+
+	elsewhere, err := history.Sign("another", []byte("what alice wrote about the other thing"), nil)
+	if err != nil {
+		t.Fatalf("Sign(): %v", err)
+	}
+
+	l := aLog(t)
+	caught, err := answering(t, l, elsewhere, signed(t, "first"))
+	if err != nil {
+		t.Fatalf("Answer(): %v", err)
+	}
+	if caught.Taken != 1 || caught.Refused != 1 {
+		t.Fatalf("took %d and refused %d, want the stray one refused", caught.Taken, caught.Refused)
+	}
+	if held := bodies(t, l); !same(held, []string{"first"}) {
+		t.Fatalf("the log holds %v", held)
+	}
+}
+
+// answering runs the answering half against changes written straight down the wire, which is how a
+// peer that is not drop itself would send them.
+func answering(t *testing.T, l *history.Log, changes ...history.Change) (Caught, error) {
+	t.Helper()
+
+	here, there := net.Pipe()
+	defer here.Close()
+	defer there.Close()
+
+	go func() {
+		conn := wire.NewConn(there)
+		w := wire.NewWriter()
+		w.Uint(0)
+		_ = conn.WriteFrame(wire.KindItem, w.Body())
+		if _, _, err := conn.ReadFrame(); err != nil {
+			return
+		}
+		for _, c := range changes {
+			_ = conn.WriteFrame(wire.KindItem, c.Encode())
+		}
+		_ = conn.WriteFrame(wire.KindEnd, wire.End{Size: int64(len(changes))}.Encode())
+		for {
+			if _, _, err := conn.ReadFrame(); err != nil {
+				return
+			}
+		}
+	}()
+
+	return Answer(wire.NewConn(here), l, "them", anybody)
+}
+
+// What the far end said it held is remembered, because that is what decides whether a history can
+// be folded away. A peer that has caught up and then falls behind again holds the fold off.
+func TestAMeetingRemembersHowFarTheFarEndGot(t *testing.T) {
+	asSomebody(t)
+
+	mine, theirs := aLog(t), aLog(t)
+	var heads []history.ID
+	for i := range history.Least + 1 {
+		c := signed(t, string(rune('a'+i%26)), heads...)
+		add(t, mine, c)
+		heads = []history.ID{c.ID()}
+	}
+
+	// The heads are said before anything is sent, so it is the meeting after the one that caught
+	// them up that says they are caught up.
+	meeting(t, mine, theirs, anybody)
+	if mine.Folding() {
+		t.Fatal("a history was folded away on what a peer said before it took anything")
+	}
+
+	meeting(t, mine, theirs, anybody)
+	if !mine.Folding() {
+		t.Fatal("a history everybody has caught up on was not worth folding")
+	}
+
+	add(t, mine, signed(t, "written since they left", mine.Heads()...))
+	if mine.Folding() {
+		t.Fatal("a history was folded away with a peer behind on the last change")
 	}
 }

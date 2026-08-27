@@ -178,7 +178,7 @@ func (k *keeper) record(list []Edit) error {
 				k.dir, list[0].Path, len(body), history.MaxBody)
 		}
 
-		c, err := history.Sign(body, k.log.Heads())
+		c, err := history.Sign(k.log.At(), body, k.log.Heads())
 		if err != nil {
 			return fmt.Errorf("recording %s: %w", k.dir, err)
 		}

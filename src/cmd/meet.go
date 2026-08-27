@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/bresilla/drop/src/pkg/among"
 	"github.com/bresilla/drop/src/pkg/arch"
@@ -36,7 +37,7 @@ func meeting(mounts *ns.Table, pinned *book.Book, told arch.Changed) func(proto.
 		_ = pinned.Refresh()
 		rule, _ := mounts.AccessFor(m.Mount.Path)
 
-		caught, err := meet.Answer(m.Conn, l, among.Admits(rule, pinned, myKey()))
+		caught, err := meet.Answer(m.Conn, l, whoMet(m), among.Admits(rule, pinned, myKey()))
 		if caught.Taken > 0 && told != nil {
 			told(m.Mount.Path)
 		}
@@ -48,26 +49,82 @@ func meeting(mounts *ns.Table, pinned *book.Book, told arch.Changed) func(proto.
 	}
 }
 
+// whoMet is what to remember a meeting's far end under: what this machine files their device as,
+// and the device itself when it is nobody this machine has written down.
+func whoMet(m proto.Meeting) string {
+	if m.Who.Name != "" {
+		return m.Who.Name
+	}
+	return m.From.String()
+}
+
 // told is what a change here does: it goes out to whoever else holds the namespace it happened in.
 //
 // This is what an archetype is handed so it can say something moved. It answers at once and does
 // the reaching on a goroutine, because whatever made the change is in the middle of doing something
 // else and a peer that cannot be reached takes as long to fail as it takes.
+//
+// One round at a time per namespace. A change arriving while a round is running is not a second
+// round, it is the same round done again after this one, because what a round says is whatever the
+// history holds when it runs — so a peer dribbling changes out one at a time gets one reaching-out
+// rather than one per change.
 func told(ctx context.Context, over reaches, mounts *ns.Table, pinned *book.Book) arch.Changed {
+	var (
+		mu      sync.Mutex
+		running = map[string]bool{}
+		again   = map[string]bool{}
+	)
+
 	return func(path string) {
 		mount, _, ok := mounts.Lookup(path)
 		if !ok || !mount.Shared.Declared() {
 			return
 		}
+
+		at := mount.Path
+
+		mu.Lock()
+		if running[at] {
+			again[at] = true
+			mu.Unlock()
+			return
+		}
+		running[at] = true
+		mu.Unlock()
+
 		go func() {
-			_ = pinned.Refresh()
-			rule, _ := mounts.AccessFor(mount.Path)
-			for _, entry := range among.Holders(rule, pinned) {
-				if _, err := catchUp(ctx, over, entry, mount, rule, pinned); err != nil {
-					trace(fmt.Sprintf("telling %s about %s: %v", entry.Name, mount.Path, err))
+			for {
+				reaching(ctx, over, at, mounts, pinned)
+
+				mu.Lock()
+				if !again[at] {
+					delete(running, at)
+					mu.Unlock()
+					return
 				}
+				delete(again, at)
+				mu.Unlock()
 			}
 		}()
+	}
+}
+
+// reaching opens a meeting about one namespace with everyone the rule says holds it.
+//
+// The namespace is read off the table again rather than carried in, because a round may be the
+// second one and a path taken down in between is not a path to reach anybody about.
+func reaching(ctx context.Context, over reaches, at string, mounts *ns.Table, pinned *book.Book) {
+	mount, _, ok := mounts.Lookup(at)
+	if !ok || mount.Path != at || !mount.Shared.Declared() {
+		return
+	}
+	_ = pinned.Refresh()
+
+	rule, _ := mounts.AccessFor(at)
+	for _, entry := range among.Holders(rule, pinned) {
+		if _, err := catchUp(ctx, over, entry, mount, rule, pinned); err != nil {
+			trace(fmt.Sprintf("telling %s about %s: %v", entry.Name, at, err))
+		}
 	}
 }
 
@@ -110,9 +167,9 @@ func catchUp(ctx context.Context, over reaches, entry book.Entry, mount ns.Mount
 	defer done.Close()
 	defer s.Close()
 
-	conn, err := proto.Meet(s, mount.Path, node.DisplayName())
+	conn, err := proto.Meet(s, mount.Shared, node.DisplayName())
 	if err != nil {
 		return meet.Caught{}, err
 	}
-	return meet.Ask(conn, l, among.Admits(rule, pinned, myKey()))
+	return meet.Ask(conn, l, entry.Name, among.Admits(rule, pinned, myKey()))
 }

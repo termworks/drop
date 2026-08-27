@@ -35,7 +35,12 @@ type Opening struct {
 	// Meet says this is not an open either: the caller holds the same namespace and wants to catch
 	// up with it. What is said afterwards is heads and changes rather than anything the archetype
 	// would recognise.
+	//
+	// Held is which namespace, by the name every machine holding it works out for itself. A meeting
+	// is about a thing rather than about a path: a path is one machine's own word for it, and two
+	// machines that spell it differently would otherwise catch up about two different things.
 	Meet bool
+	Held string
 	// Badge says whose machine this is, and Signed is the proof of it.
 	//
 	// The transport already proves which machine is calling. This is what turns that into a
@@ -52,10 +57,23 @@ func (o Opening) encode() []byte {
 	w.Uint(uint64(o.Version))
 	w.String(o.From)
 	w.String(o.Path)
+	w.String(o.Held)
 	w.String(o.Secret)
 	w.String(string(o.Badge))
 	w.String(string(o.Signed))
 	return w.Body()
+}
+
+// MaxHeld bounds the name of a namespace several machines hold. It is a hash written in hex, and a
+// longer one names nothing this node could be holding.
+const MaxHeld = 128
+
+// what is the namespace an opening is about, in the words its failures use.
+func (o Opening) what() string {
+	if o.Meet {
+		return "the namespace named " + o.Held
+	}
+	return o.Path
 }
 
 // MaxVersion bounds the revision a caller may name, so a number off the wire stays a number.
@@ -92,6 +110,10 @@ func decodeOpen(body []byte) (Opening, error) {
 	if err != nil {
 		return out, err
 	}
+	held, err := r.String(MaxHeld)
+	if err != nil {
+		return out, err
+	}
 	secret, err := r.String(MaxSecret)
 	if err != nil {
 		return out, err
@@ -106,7 +128,7 @@ func decodeOpen(body []byte) (Opening, error) {
 	}
 
 	out.Ask, out.Meet, out.Archetype, out.Version = ask, meet, archetype, int(version)
-	out.From, out.Path, out.Secret = from, path, secret
+	out.From, out.Path, out.Held, out.Secret = from, path, held, secret
 	out.Badge, out.Signed = []byte(badge), []byte(signed)
 	return out, nil
 }

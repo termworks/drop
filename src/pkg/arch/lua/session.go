@@ -2,10 +2,16 @@ package lua
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
 	rt "github.com/arnodel/golua/runtime"
@@ -21,8 +27,19 @@ const MaxFile = 8 << 20
 // MaxSaid bounds what a process a plugin starts may say back.
 const MaxSaid = 1 << 20
 
-// Waiting is how long such a process may take before it is killed.
+// MaxOpen is how many files one session may hold at once.
+//
+// A descriptor belongs to the whole process and not to the session that took it, so a plugin that
+// opens a file for every frame and forgets to close it would leave the daemon with none: no stream,
+// no store, no config. Sixty-four is more than a plugin has a reason to hold.
+const MaxOpen = 64
+
+// Waiting is how long a process a plugin starts may take before it is killed.
 const Waiting = 30 * time.Second
+
+// Lingering is how long its output is waited for once the process itself is gone, which is a wait
+// at all only when it left something behind holding the other end.
+const Lingering = 2 * time.Second
 
 // wants is what a plugin has stopped for. Everything else it asks for is answered where it stands.
 type wants byte
@@ -46,6 +63,8 @@ type session struct {
 	dir   *os.Root
 	// open is every file the plugin has open, closed with the session.
 	open []*os.File
+	// mark is what makes a name this session's own, and what is swept up after it.
+	mark string
 
 	// want is what the plugin stopped for, with body and kind for a frame going out.
 	want wants
@@ -113,13 +132,33 @@ func (s *session) answer() error {
 	return nil
 }
 
-// shut closes what the session left open.
+// shut closes what the session left open and takes away what it named its own.
 func (s *session) shut() {
 	for _, file := range s.open {
 		file.Close()
 	}
 	if s.dir != nil {
+		s.sweep()
 		s.dir.Close()
+	}
+}
+
+// sweep removes everything in the namespace's directory carrying this session's mark.
+func (s *session) sweep() {
+	if s.mark == "" {
+		return
+	}
+	dir, err := s.dir.Open(".")
+	if err != nil {
+		return
+	}
+	names, _ := dir.Readdirnames(-1)
+	dir.Close()
+
+	for _, name := range names {
+		if strings.HasSuffix(name, "."+s.mark) {
+			_ = s.dir.Remove(name)
+		}
 	}
 }
 
@@ -131,6 +170,7 @@ func (s *session) value(machine *rt.Runtime) rt.Value {
 	machine.SetEnvGoFunc(on, "who", guarded("s:who", s.who), 1, false).SolemnlyDeclareCompliance(safe)
 	machine.SetEnvGoFunc(on, "path", guarded("s:path", s.path), 1, false).SolemnlyDeclareCompliance(safe)
 	machine.SetEnvGoFunc(on, "open", guarded("s:open", s.opens), 3, false).SolemnlyDeclareCompliance(safe)
+	machine.SetEnvGoFunc(on, "mine", guarded("s:mine", s.mine), 2, false).SolemnlyDeclareCompliance(safe)
 	machine.SetEnvGoFunc(on, "run", guarded("s:run", s.runs), 2, false).SolemnlyDeclareCompliance(safe)
 
 	meta := rt.NewTable()
@@ -227,24 +267,55 @@ func (s *session) opens(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		}
 	}
 
+	if len(s.open) >= MaxOpen {
+		return nil, fmt.Errorf("this session holds %d files open already, which is as many as it may", MaxOpen)
+	}
 	dir, err := s.under()
 	if err != nil {
 		return nil, err
 	}
+	t.RequireCPU(costOpen)
+
 	file, err := opening(dir, name, how)
 	if err != nil {
 		return nil, fmt.Errorf("opening %s: %w", name, err)
 	}
 	s.open = append(s.open, file)
 
-	return c.PushingNext1(t.Runtime, holding(t.Runtime, file)), nil
+	return c.PushingNext1(t.Runtime, s.holding(t.Runtime, file)), nil
+}
+
+// mine is `s:mine(name)`: that name, made this session's own.
+//
+// Every session of one namespace keeps its files in one directory, so two of them running the same
+// command into the same name write over each other's work and read back the halves. This gives the
+// name back carrying a mark no other session has, and what carries that mark goes when the session
+// does. The same name asked for twice is the same name both times.
+func (s *session) mine(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
+	if err := c.CheckNArgs(2); err != nil {
+		return nil, err
+	}
+	name, err := c.StringArg(1)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.mark == "" {
+		var seed [6]byte
+		if _, err := rand.Read(seed[:]); err != nil {
+			return nil, fmt.Errorf("naming a file only %s uses: %w", s.at.Path, err)
+		}
+		s.mark = hex.EncodeToString(seed[:])
+	}
+	return c.PushingNext1(t.Runtime, rt.StringValue(name+"."+s.mark)), nil
 }
 
 // runs is `s:run{ "program", "argument" }`: a process, its output read back.
 //
-// It gets the environment this daemon is running under, because it is a real program and a real
-// program expects one. What it cannot have is for ever: it is killed with the session, and killed
-// anyway once it has taken longer than anybody would wait.
+// It is given an environment chosen here rather than the one this daemon is running under, because
+// a plugin that can start a program must not thereby be a plugin that can read everything the owner
+// exported. What it cannot have is for ever: it and everything it starts are one process group,
+// killed with the session and killed anyway once it has taken longer than anybody would wait.
 func (s *session) runs(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if err := c.CheckNArgs(2); err != nil {
 		return nil, err
@@ -260,6 +331,7 @@ func (s *session) runs(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if _, err := s.under(); err != nil {
 		return nil, err
 	}
+	t.RequireCPU(costRun)
 
 	ctx, stop := context.WithTimeout(s.ctx, Waiting)
 	defer stop()
@@ -267,8 +339,21 @@ func (s *session) runs(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	said := &capped{left: MaxSaid}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir, cmd.Stdout, cmd.Stderr = s.where, said, said
+	cmd.Env = environ(s.where)
+
+	// The program and whatever it starts are one process group, so ending it ends all of them, and
+	// output is waited for only so long once the program itself has gone.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return ending(cmd) }
+	cmd.WaitDelay = Lingering
 
 	if err := cmd.Run(); err != nil {
+		// The group outlasted its leader, which is what holding the output means, so there is still
+		// a group of that number to send away.
+		if errors.Is(err, exec.ErrWaitDelay) {
+			_ = ending(cmd)
+			return nil, fmt.Errorf("running %s: it left something behind holding its output", argv[0])
+		}
 		return nil, fmt.Errorf("running %s: %w", argv[0], err)
 	}
 	t.RequireBytes(len(said.body))
@@ -276,12 +361,35 @@ func (s *session) runs(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	return c.PushingNext1(t.Runtime, rt.StringValue(string(said.body))), nil
 }
 
+// ending sends a command's whole process group away. A group that has already gone is the command
+// having finished of its own accord, which is not a failure to cancel it.
+func ending(cmd *exec.Cmd) error {
+	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	}
+	return err
+}
+
+// environ is what a process a plugin starts is given: a way to find a program, and a home of its
+// own inside the directory the namespace already keeps its files in.
+func environ(home string) []string {
+	path := os.Getenv("PATH")
+	if path == "" {
+		path = "/usr/local/bin:/usr/bin:/bin"
+	}
+	return []string{"PATH=" + path, "HOME=" + home}
+}
+
 // under is where this namespace keeps its files, opened the first time a plugin asks for one.
 func (s *session) under() (*os.Root, error) {
 	if s.dir != nil {
 		return s.dir, nil
 	}
-	if s.where == "" {
+	// Absolute rather than merely present: with no data directory to join to, a name joins to
+	// nothing and comes out a relative one, which would be resolved against wherever the daemon
+	// happened to be started from.
+	if !filepath.IsAbs(s.where) {
 		return nil, fmt.Errorf("this machine has nowhere for %s to keep files", s.at.Path)
 	}
 	if err := os.MkdirAll(s.where, 0o700); err != nil {
@@ -298,24 +406,45 @@ func (s *session) under() (*os.Root, error) {
 
 // opening is one file inside the namespace's directory, in the one of three ways a plugin may ask
 // for it.
+//
+// Opened without waiting, and only if it turns out to be a plain file. A fifo with nobody at the
+// other end waits in the kernel, where the session's budget, the timeout and the cancellation all
+// reach a host function that is no longer running lua and cannot be told anything.
 func opening(dir *os.Root, name, how string) (*os.File, error) {
+	var flag int
 	switch how {
 	case "r":
-		return dir.Open(name)
+		flag = os.O_RDONLY
 	case "w":
-		return dir.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+		flag = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 	case "a":
-		return dir.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+		flag = os.O_WRONLY | os.O_CREATE | os.O_APPEND
+	default:
+		return nil, fmt.Errorf("%q is not a way to open a file: r, w or a", how)
 	}
-	return nil, fmt.Errorf("%q is not a way to open a file: r, w or a", how)
+
+	file, err := dir.OpenFile(name, flag|syscall.O_NONBLOCK, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	said, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	if !said.Mode().IsRegular() {
+		file.Close()
+		return nil, errors.New("not a plain file")
+	}
+	return file, nil
 }
 
 // holding is an open file as the plugin holds it.
-func holding(machine *rt.Runtime, file *os.File) rt.Value {
+func (s *session) holding(machine *rt.Runtime, file *os.File) rt.Value {
 	on := rt.NewTable()
 	machine.SetEnvGoFunc(on, "read", guarded("f:read", reading(file)), 2, false).SolemnlyDeclareCompliance(safe)
 	machine.SetEnvGoFunc(on, "write", guarded("f:write", writing(file)), 2, false).SolemnlyDeclareCompliance(safe)
-	machine.SetEnvGoFunc(on, "close", guarded("f:close", closing(file)), 1, false).SolemnlyDeclareCompliance(safe)
+	machine.SetEnvGoFunc(on, "close", guarded("f:close", s.closing(file)), 1, false).SolemnlyDeclareCompliance(safe)
 
 	meta := rt.NewTable()
 	machine.SetEnv(meta, "__index", rt.TableValue(on))
@@ -360,6 +489,8 @@ func writing(file *os.File) rt.GoFunctionFunc {
 		if err != nil {
 			return nil, err
 		}
+		t.RequireCPU(costWrite * uint64(len(body)))
+
 		if _, err := file.WriteString(body); err != nil {
 			return nil, fmt.Errorf("writing: %w", err)
 		}
@@ -367,12 +498,23 @@ func writing(file *os.File) rt.GoFunctionFunc {
 	}
 }
 
-func closing(file *os.File) rt.GoFunctionFunc {
+func (s *session) closing(file *os.File) rt.GoFunctionFunc {
 	return func(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		if err := file.Close(); err != nil {
 			return nil, fmt.Errorf("closing: %w", err)
 		}
+		s.forget(file)
 		return c.Next(), nil
+	}
+}
+
+// forget drops a file the plugin closed, so closing one gives its place back.
+func (s *session) forget(file *os.File) {
+	for i, held := range s.open {
+		if held == file {
+			s.open = append(s.open[:i], s.open[i+1:]...)
+			return
+		}
 	}
 }
 

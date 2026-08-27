@@ -1,6 +1,7 @@
 package history
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
@@ -12,6 +13,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 )
+
+// thing is the one this whole file is about, except where a second one is the point.
+const thing = "thing"
 
 // asSomebody gives this machine a user key to sign changes with.
 func asSomebody(t *testing.T) {
@@ -46,10 +50,15 @@ func aLog(t *testing.T, at string) *Log {
 
 func signed(t *testing.T, body string, heads ...ID) Change {
 	t.Helper()
+	return about(t, thing, body, heads...)
+}
 
-	c, err := Sign([]byte(body), heads)
+func about(t *testing.T, at, body string, heads ...ID) Change {
+	t.Helper()
+
+	c, err := Sign(at, []byte(body), heads)
 	if err != nil {
-		t.Fatalf("Sign(%q): %v", body, err)
+		t.Fatalf("Sign(%q, %q): %v", at, body, err)
 	}
 	return c
 }
@@ -70,6 +79,16 @@ func bodies(changes []Change) []string {
 		out = append(out, string(c.Body))
 	}
 	return out
+}
+
+func read(t *testing.T, l *Log) []string {
+	t.Helper()
+
+	order, err := l.Ordered()
+	if err != nil {
+		t.Fatalf("Ordered(): %v", err)
+	}
+	return bodies(order)
 }
 
 func same(a, b []string) bool {
@@ -101,23 +120,15 @@ func TestTwoLogsGivenTheSameChangesInDifferentOrdersReadTheSame(t *testing.T) {
 	right := signed(t, "right", first.ID())
 	join := signed(t, "join", left.ID(), right.ID())
 
-	mine := aLog(t, "thing")
-	theirs := aLog(t, "thing")
+	mine := aLog(t, thing)
+	theirs := aLog(t, thing)
 
 	add(t, mine, first, left, right, join)
 	add(t, theirs, first, right, left, join)
 
-	ours, err := mine.Ordered()
-	if err != nil {
-		t.Fatalf("Ordered(): %v", err)
-	}
-	yours, err := theirs.Ordered()
-	if err != nil {
-		t.Fatalf("Ordered(): %v", err)
-	}
-
-	if !same(bodies(ours), bodies(yours)) {
-		t.Fatalf("two logs read differently: %v and %v", bodies(ours), bodies(yours))
+	ours, yours := read(t, mine), read(t, theirs)
+	if !same(ours, yours) {
+		t.Fatalf("two logs read differently: %v and %v", ours, yours)
 	}
 
 	// The tie between the two sides of the fork is broken on id, so one of the two logs read them
@@ -128,8 +139,52 @@ func TestTwoLogsGivenTheSameChangesInDifferentOrdersReadTheSame(t *testing.T) {
 	} else {
 		want[2] = "left"
 	}
-	if !same(bodies(ours), want) {
-		t.Fatalf("Ordered() = %v, want %v", bodies(ours), want)
+	if !same(ours, want) {
+		t.Fatalf("Ordered() = %v, want %v", ours, want)
+	}
+}
+
+// A change says which thing it was made about, and it says so inside what its author signed. A
+// peer admitted to two shared things cannot take what somebody wrote in one and replay it into the
+// other under that person's own signature.
+func TestAChangeMadeAboutSomethingElseIsRefused(t *testing.T) {
+	asSomebody(t)
+
+	elsewhere := about(t, "another", "what alice wrote about the other thing")
+
+	l := aLog(t, thing)
+	if _, err := l.Add(elsewhere); err == nil {
+		t.Fatal("a change made about another thing was taken")
+	} else if !strings.Contains(err.Error(), "made about") {
+		t.Fatalf("Add() = %v", err)
+	}
+	if held := read(t, l); len(held) != 0 {
+		t.Fatalf("the log holds %v", held)
+	}
+
+	// And the same change, encoded and read back the way it travels, is refused just as squarely.
+	again, err := Decode(elsewhere.Encode())
+	if err != nil {
+		t.Fatalf("Decode(): %v", err)
+	}
+	if _, err := l.Add(again); err == nil {
+		t.Fatal("a change made about another thing was taken off the wire")
+	}
+}
+
+// The thing's id is part of what is signed, so the same words about two things are two changes.
+func TestTheThingSignedForIsPartOfTheChange(t *testing.T) {
+	asSomebody(t)
+
+	here := about(t, thing, "the same words")
+	there := about(t, "another", "the same words")
+	if here.ID() == there.ID() {
+		t.Fatal("the same change was made about two things")
+	}
+
+	here.About = "another"
+	if err := verify(here); err == nil {
+		t.Fatal("a change rebound to another thing still verified")
 	}
 }
 
@@ -140,7 +195,7 @@ func TestAChangeWhoseBodyIsAlteredDoesNotVerify(t *testing.T) {
 	c := signed(t, "the body as written")
 	c.Body[3] ^= 1
 
-	l := aLog(t, "thing")
+	l := aLog(t, thing)
 	if _, err := l.Add(c); err == nil {
 		t.Fatal("an altered change was taken")
 	} else if !strings.Contains(err.Error(), "who made it") {
@@ -174,7 +229,7 @@ func TestAChangeNamingSomethingUnseenIsRefusedUntilItArrives(t *testing.T) {
 	first := signed(t, "first")
 	second := signed(t, "second", first.ID())
 
-	l := aLog(t, "thing")
+	l := aLog(t, thing)
 	if _, err := l.Add(second); err == nil {
 		t.Fatal("an orphan was taken")
 	} else if !strings.Contains(err.Error(), "not here") {
@@ -182,13 +237,8 @@ func TestAChangeNamingSomethingUnseenIsRefusedUntilItArrives(t *testing.T) {
 	}
 
 	add(t, l, first, second)
-
-	order, err := l.Ordered()
-	if err != nil {
-		t.Fatalf("Ordered(): %v", err)
-	}
-	if !same(bodies(order), []string{"first", "second"}) {
-		t.Fatalf("Ordered() = %v", bodies(order))
+	if held := read(t, l); !same(held, []string{"first", "second"}) {
+		t.Fatalf("Ordered() = %v", held)
 	}
 }
 
@@ -196,7 +246,7 @@ func TestAChangeNamingSomethingUnseenIsRefusedUntilItArrives(t *testing.T) {
 func TestAddingTheSameChangeTwiceChangesNothing(t *testing.T) {
 	asSomebody(t)
 
-	l := aLog(t, "thing")
+	l := aLog(t, thing)
 	c := signed(t, "said once")
 
 	first, err := l.Add(c)
@@ -223,13 +273,8 @@ func TestAddingTheSameChangeTwiceChangesNothing(t *testing.T) {
 	if now.Size() != written.Size() {
 		t.Fatalf("the log grew from %d to %d bytes", written.Size(), now.Size())
 	}
-
-	order, err := l.Ordered()
-	if err != nil {
-		t.Fatalf("Ordered(): %v", err)
-	}
-	if len(order) != 1 {
-		t.Fatalf("Ordered() = %v", bodies(order))
+	if held := read(t, l); len(held) != 1 {
+		t.Fatalf("Ordered() = %v", held)
 	}
 }
 
@@ -241,7 +286,7 @@ func TestHeadsAreBothSidesOfAForkAndOneAfterAJoin(t *testing.T) {
 	left := signed(t, "left", first.ID())
 	right := signed(t, "right", first.ID())
 
-	l := aLog(t, "thing")
+	l := aLog(t, thing)
 	add(t, l, first, left, right)
 
 	heads := l.Heads()
@@ -271,7 +316,7 @@ func TestSinceIsWhatThePeerHasNotSeen(t *testing.T) {
 	right := signed(t, "right", first.ID())
 	join := signed(t, "join", left.ID(), right.ID())
 
-	l := aLog(t, "thing")
+	l := aLog(t, thing)
 	add(t, l, first, left, right, join)
 
 	behind, err := l.Since([]ID{first.ID()})
@@ -316,7 +361,7 @@ func TestSinceIsWhatThePeerHasNotSeen(t *testing.T) {
 func TestSinceIgnoresAHeadNobodyHereHasSeen(t *testing.T) {
 	asSomebody(t)
 
-	l := aLog(t, "thing")
+	l := aLog(t, thing)
 	first := signed(t, "first")
 	add(t, l, first)
 
@@ -335,7 +380,7 @@ func TestSinceIgnoresAHeadNobodyHereHasSeen(t *testing.T) {
 func TestATruncatedRecordDoesNotLoseTheOnesBeforeIt(t *testing.T) {
 	asSomebody(t)
 
-	l := aLog(t, "thing")
+	l := aLog(t, thing)
 	first := signed(t, "first")
 	second := signed(t, "second", first.ID())
 	third := signed(t, "third", second.ID())
@@ -348,22 +393,19 @@ func TestATruncatedRecordDoesNotLoseTheOnesBeforeIt(t *testing.T) {
 	if err := os.WriteFile(l.file, raw[:len(raw)-20], 0o600); err != nil {
 		t.Fatal(err)
 	}
+	l.read = false
 
-	order, err := l.Ordered()
-	if err != nil {
-		t.Fatalf("Ordered(): %v", err)
-	}
-	if !same(bodies(order), []string{"first", "second"}) {
-		t.Fatalf("Ordered() = %v, want everything before the truncated record", bodies(order))
+	if held := read(t, l); !same(held, []string{"first", "second"}) {
+		t.Fatalf("Ordered() = %v, want everything before the truncated record", held)
 	}
 }
 
-// One damaged record costs one change. Its length says where the next one starts, so the rest of
-// the file is still readable.
+// One damaged record costs one change. Every record says where it starts, so the walk finds the
+// next one rather than reading the rest of the file as rubble.
 func TestADamagedRecordCostsOnlyItself(t *testing.T) {
 	asSomebody(t)
 
-	l := aLog(t, "thing")
+	l := aLog(t, thing)
 	first := signed(t, "first")
 	left := signed(t, "left", first.ID())
 	right := signed(t, "right", first.ID())
@@ -384,26 +426,61 @@ func TestADamagedRecordCostsOnlyItself(t *testing.T) {
 	// A fresh process reads the file rather than what this one is holding.
 	l.read = false
 
-	order, err := l.Ordered()
-	if err != nil {
-		t.Fatalf("Ordered(): %v", err)
-	}
-	if !same(bodies(order), []string{"first", "right"}) {
-		t.Fatalf("Ordered() = %v, want everything but the damaged record", bodies(order))
+	if held := read(t, l); !same(held, []string{"first", "right"}) {
+		t.Fatalf("Ordered() = %v, want everything but the damaged record", held)
 	}
 }
 
-// starts is where each record's body begins, past its length.
+// A record left shorter than its own length says it is — a write that ran out of disk halfway —
+// used to take every change written after it with it, because the walk stepped over it by a length
+// that was no longer true and landed in the middle of the next one.
+func TestARecordShorterThanItsLengthDoesNotSwallowTheRest(t *testing.T) {
+	asSomebody(t)
+
+	l := aLog(t, thing)
+	first := signed(t, "first")
+	left := signed(t, "left", first.ID())
+	right := signed(t, "right", first.ID())
+	add(t, l, first, left, right)
+
+	raw, err := os.ReadFile(l.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := starts(t, raw)
+	if len(at) != 3 {
+		t.Fatalf("the log holds %d records, want 3", len(at))
+	}
+
+	// Take nine bytes out of the middle of the second record and leave its length alone, which is
+	// exactly what a short write leaves behind.
+	short := append(append([]byte(nil), raw[:at[1]+20]...), raw[at[1]+29:]...)
+	if err := os.WriteFile(l.file, short, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l.read = false
+
+	if held := read(t, l); !same(held, []string{"first", "right"}) {
+		t.Fatalf("Ordered() = %v, want everything but the damaged record", held)
+	}
+}
+
+// starts is where each record's body begins, past what says a record starts here and past its
+// length.
 func starts(t *testing.T, raw []byte) []int {
 	t.Helper()
 
 	var out []int
 	for at := 0; at < len(raw); {
+		if !bytes.HasPrefix(raw[at:], mark) {
+			t.Fatalf("the log does not walk: %d bytes in", at)
+		}
+		at += len(mark)
 		width, used := binary.Uvarint(raw[at:])
 		if used <= 0 || at+used+int(width) > len(raw) {
 			t.Fatalf("the log does not walk: %d bytes in", at)
 		}
-		out = append(out, at+used)
+		out = append(out, at)
 		at += used + int(width)
 	}
 	return out
@@ -415,7 +492,7 @@ func TestSigningWithNoUserKeySaysSo(t *testing.T) {
 	t.Setenv("DROP_USER_KEY", "")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	if _, err := Sign([]byte("who said this"), nil); err == nil {
+	if _, err := Sign(thing, []byte("who said this"), nil); err == nil {
 		t.Fatal("a change was signed by nobody")
 	} else if !strings.Contains(err.Error(), "no user key") {
 		t.Fatalf("Sign() = %v", err)
@@ -427,7 +504,7 @@ func TestSigningWithNoUserKeySaysSo(t *testing.T) {
 func TestAChangeNamingTheSameHeadTwiceIsRefused(t *testing.T) {
 	asSomebody(t)
 
-	l := aLog(t, "thing")
+	l := aLog(t, thing)
 	first := signed(t, "first")
 	add(t, l, first)
 
@@ -448,5 +525,99 @@ func TestAThingWhoseIDIsAPathIsRefused(t *testing.T) {
 		if _, err := Open(at); err == nil {
 			t.Errorf("Open(%q) was allowed", at)
 		}
+	}
+}
+
+// A history is a means, not a peer's disk quota. Past what one may weigh a change is refused
+// rather than written.
+func TestALogThatIsFullRefusesMoreAndStillTakesAFold(t *testing.T) {
+	asSomebody(t)
+
+	l := aLog(t, thing)
+	first := signed(t, "first")
+	add(t, l, first)
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.load(); err != nil {
+		t.Fatalf("load(): %v", err)
+	}
+	l.size = MaxLog
+
+	more := signed(t, "and another", first.ID())
+	if err := l.takeable(more, len(record(more))); err == nil {
+		t.Fatal("a full log took another change")
+	} else if !strings.Contains(err.Error(), "the limit") {
+		t.Fatalf("takeable() = %v", err)
+	}
+
+	// The one thing a full log must still take is what makes it smaller.
+	whole, err := sign(thing, []byte("what it all came to"), []ID{first.ID()}, []ID{first.ID()})
+	if err != nil {
+		t.Fatalf("sign(): %v", err)
+	}
+	if err := l.takeable(whole, len(record(whole))); err != nil {
+		t.Fatalf("a full log refused the fold that would empty it: %v", err)
+	}
+}
+
+// A thing is changed only so many ways at once. Past that another way is refused, because a log
+// with more heads than a meeting may name stops meeting anybody at all, in both directions and for
+// good — and its own machine stops being able to save, since a change names them all.
+func TestAThingBeingChangedTooManyWaysAtOnceRefusesAnother(t *testing.T) {
+	asSomebody(t)
+
+	l := aLog(t, thing)
+	add(t, l, signed(t, "first"))
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.load(); err != nil {
+		t.Fatalf("load(): %v", err)
+	}
+	for i := range MaxHeads {
+		var id ID
+		binary.BigEndian.PutUint64(id[:], uint64(i))
+		l.tips[id] = true
+	}
+
+	c := signed(t, "one more way")
+	if err := l.takeable(c, len(record(c))); err == nil {
+		t.Fatal("a change was taken past what a thing may be changed at once")
+	} else if !strings.Contains(err.Error(), "ways at once") {
+		t.Fatalf("takeable() = %v", err)
+	}
+}
+
+// Another drop appending to the same log between reading it and writing to it must not be counted
+// as already read: its change is on the disk, and this process has to end up holding it.
+func TestAChangeAnotherDropAppendedIsNotCountedAsRead(t *testing.T) {
+	asSomebody(t)
+
+	l := aLog(t, thing)
+	first := signed(t, "first")
+	add(t, l, first)
+
+	elsewhere := signed(t, "written by the other drop", first.ID())
+	mine := signed(t, "written here", first.ID())
+
+	// Read the log, then let the other process append, then write — which is the window.
+	l.mu.Lock()
+	if err := l.load(); err != nil {
+		t.Fatalf("load(): %v", err)
+	}
+	if err := l.append(framed(record(elsewhere))); err != nil {
+		t.Fatalf("appending elsewhere: %v", err)
+	}
+	if _, err := l.take(mine); err != nil {
+		t.Fatalf("take(): %v", err)
+	}
+	l.mu.Unlock()
+
+	if !l.Has(elsewhere.ID()) {
+		t.Fatal("the change the other drop appended was never picked up")
+	}
+	if held := read(t, l); len(held) != 3 {
+		t.Fatalf("Ordered() = %v, want all three", held)
 	}
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/bresilla/drop/src/pkg/among"
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/conf"
@@ -47,8 +48,10 @@ func newJoinCmd() *cobra.Command {
 			"  drop path join bob:laptop:/notes\n" +
 			"  drop path join bob::/notes --at /bobs-notes\n\n" +
 			"It is written down beside the config, so it is here after a restart, and what came\n" +
-			"over comes over now. Who may reach it here is this machine's own decision: joining\n" +
-			"names the person you joined from, and `drop path grant` names anybody else.\n\n" +
+			"over comes over now. Who may reach it here is this machine's own decision, and it is\n" +
+			"also who this machine takes a change from: joining names the person you joined from\n" +
+			"and nobody else, so a change by anybody else holding it is refused until you have\n" +
+			"paired with them and `drop path grant` names them. Joining says who those are.\n\n" +
 			"A setting is text, on or off, or a list of names, the same as `drop path create` —\n" +
 			"a namespace that needs one here needs it given here.",
 		Args: cobra.ExactArgs(1),
@@ -110,6 +113,9 @@ func runJoin(parent context.Context, target, here string, declared made.Settings
 	if err != nil {
 		return err
 	}
+	if err := offered(served, entry); err != nil {
+		return err
+	}
 
 	at := here
 	if at == "" {
@@ -147,7 +153,7 @@ func runJoin(parent context.Context, target, here string, declared made.Settings
 		fmt.Printf("\n%s is held here; catching up with %s failed: %v\n\n", at, entry.Name, err)
 		return nil
 	}
-	sayJoined(at, entry, served, caught, held)
+	sayJoined(at, entry, served, line.Access.Rule(), caught, held)
 	return nil
 }
 
@@ -165,16 +171,32 @@ func joinable(known *arch.Registry, serves []proto.Served, address ns.Address) (
 	if served.Archetype == "" {
 		return proto.Served{}, fmt.Errorf("%s holds other namespaces and is none itself: `drop path ls %s`", address, address)
 	}
-	if served.Shared.Declared() {
-		return served, nil
-	}
-
-	// It is not shared, and there are two reasons for that. One is a decision somebody made about
-	// this namespace, and the other is that a namespace of that kind is nobody else's to hold.
+	// What kind of thing it is is asked first, and of this machine rather than of the far end. A
+	// namespace of a kind that is one machine's own is nobody else's to hold however the peer
+	// describes it: joining one would put a terminal up here under a rule naming whoever offered it.
 	if answers, ok := known.Lookup(served.Archetype, served.Version); ok && !answers.Note(nil).Shareable {
 		return proto.Served{}, fmt.Errorf("%s is a %s namespace, and a %s is one machine's own", address, served.Archetype, served.Archetype)
 	}
+	if served.Shared.Declared() {
+		return served, nil
+	}
 	return proto.Served{}, fmt.Errorf("%s is a %s namespace that %s holds alone", address, served.Archetype, address.Machine)
+}
+
+// offered refuses a namespace whose own account of itself does not hold together.
+//
+// What it is called is worked out from three facts the far end sends, and this machine files a
+// history under that name — so the three are worth reading rather than copying. A machine that says
+// it made this one is naming the path it made it at, and that is a path it serves.
+func offered(served proto.Served, entry book.Entry) error {
+	if entry.User == "" || served.Shared.Creator != entry.User {
+		return nil
+	}
+	if served.Shared.At != served.Path {
+		return fmt.Errorf("%s serves it at %s and says it was made at %s: a namespace somebody made is one they hold where they made it",
+			personOf(entry), served.Path, served.Shared.At)
+	}
+	return nil
 }
 
 // taken reports whether this machine already holds that namespace, and refuses a path that is
@@ -197,6 +219,10 @@ func taken(known *arch.Registry, line made.Line) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if at, twice := already(cfg.Mounts.All(), store, line); twice {
+		return false, fmt.Errorf("%s is the namespace already held at %s, and one thing is held once here: `drop path rm %s` first, or catch up on it where it is", line.Path, at, at)
+	}
+
 	was, ok := store.Get(line.Path)
 	if !ok {
 		return false, nil
@@ -205,6 +231,35 @@ func taken(known *arch.Registry, line made.Line) (bool, error) {
 		return false, fmt.Errorf("%s is something else here already: `drop path rm %s` first, or join it --at another path", line.Path, line.Path)
 	}
 	return true, nil
+}
+
+// already is where this machine holds that same namespace, when it holds it somewhere else.
+//
+// A namespace is one thing and its history is filed under the one name every machine holding it
+// works out, so two paths carrying that name are two access rules over one history: whatever
+// arrives through either is written into the other, and whatever the other sends goes out under a
+// rule its own holders never agreed to. The name is the far end's word, and this is the part of it
+// this machine can check.
+func already(mounts []ns.Mount, store *made.Store, line made.Line) (string, bool) {
+	name := line.Shared.ID()
+	if name == "" {
+		return "", false
+	}
+
+	for _, m := range mounts {
+		if m.Path != line.Path && m.Shared.ID() == name {
+			return m.Path, true
+		}
+	}
+	for _, at := range store.Paths() {
+		if at == line.Path {
+			continue
+		}
+		if was, ok := store.Get(at); ok && was.Shared.ID() == name {
+			return at, true
+		}
+	}
+	return "", false
 }
 
 // writeJoined checks this build can serve what is being joined, writes it down, and puts it up.
@@ -255,8 +310,9 @@ func caughtUp(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.
 	return catchUp(ctx, best(n, lan), entry, mount, mount.Access, pinned)
 }
 
-// sayJoined says what was taken up: what it is, who else has it, and how much came over.
-func sayJoined(at string, entry book.Entry, served proto.Served, caught meet.Caught, was bool) {
+// sayJoined says what was taken up: what it is, who else has it, whose changes it will not take,
+// and how much came over.
+func sayJoined(at string, entry book.Entry, served proto.Served, rule ns.Access, caught meet.Caught, was bool) {
 	verb := "is held here"
 	if was {
 		verb = "was already held here"
@@ -265,7 +321,69 @@ func sayJoined(at string, entry book.Entry, served proto.Served, caught meet.Cau
 	fmt.Printf("\n%s %s  →  %s, shared\n\n", at, verb, served.Archetype)
 	fmt.Printf("  also held by  %s\n", holdersOf(served.Holders))
 	fmt.Printf("  history       %s\n", howMuch(caught))
-	fmt.Printf("  reachable by  %s\n\n", personOf(entry))
+	fmt.Printf("  reachable by  %s\n", personOf(entry))
+	for _, line := range sayUnheard(at, notNamed(served.Holders, rule)) {
+		fmt.Printf("  %s\n", line)
+	}
+	fmt.Println()
+}
+
+// unheard is the holders of a namespace whose changes this machine will not take.
+type unheard struct {
+	// named is what this machine calls the ones it has a name for, and strangers is how many of the
+	// rest there are. There is nothing to call somebody nobody here has paired with.
+	named     []string
+	strangers int
+}
+
+// notNamed is who else holds a namespace and is not named by the rule written for it here.
+//
+// Joining names the person joined from and nobody else, so anybody else holding it is somebody
+// whose changes are passed over — and, because a change cannot be placed without the ones it names,
+// so is everything made after one of them. That is a namespace that stops moving rather than an
+// error anybody sees, which is why it is said out loud while there is still somebody to say it
+// about.
+func notNamed(keys []string, rule ns.Access) unheard {
+	pinned, err := book.Load()
+	if err != nil {
+		return unheard{}
+	}
+
+	var out unheard
+	mine, admits := myKey(), among.Admits(rule, pinned, myKey())
+	for _, key := range keys {
+		if key == mine || admits(key) {
+			continue
+		}
+		if owner, ok := pinned.ByUser(key); ok {
+			out.named = append(out.named, personOf(owner))
+			continue
+		}
+		out.strangers++
+	}
+	sort.Strings(out.named)
+	return out
+}
+
+// sayUnheard is what to tell somebody about the holders whose changes will not be taken, and what
+// each kind of them needs before they will be.
+func sayUnheard(at string, who unheard) []string {
+	var out []string
+
+	if len(who.named) > 0 {
+		out = append(out, fmt.Sprintf("not taken     changes by %s: `drop path grant %s %s`",
+			strings.Join(who.named, ", "), at, who.named[0]))
+	}
+	switch {
+	case who.strangers == 1:
+		out = append(out, fmt.Sprintf("not taken     changes by 1 holder you have not paired with: pair, then grant %s", at))
+	case who.strangers > 1:
+		out = append(out, fmt.Sprintf("not taken     changes by %d holders you have not paired with: pair, then grant %s", who.strangers, at))
+	}
+	if len(out) > 0 {
+		out = append(out, "              and everything made after one of theirs, until then")
+	}
+	return out
 }
 
 // holdersOf is who else holds a namespace, in this machine's own words for them.
@@ -304,16 +422,30 @@ func holdersOf(keys []string) string {
 }
 
 // howMuch is what a catch-up came to, in the words somebody joining would use.
+//
+// What was refused is said beside what came over. A change signed by somebody this machine's rule
+// does not name is passed over along with everything made after it, so a count of what arrived and
+// no count of what did not is a namespace that reads as caught up and is not.
 func howMuch(caught meet.Caught) string {
+	came := "nothing has happened there yet"
 	switch {
 	case caught.More:
-		return fmt.Sprintf("%d changes came over, and there are more", caught.Taken)
+		came = fmt.Sprintf("%d changes came over, and there are more", caught.Taken)
 	case caught.Taken == 1:
-		return "1 change came over"
+		came = "1 change came over"
 	case caught.Taken > 1:
-		return fmt.Sprintf("%d changes came over", caught.Taken)
+		came = fmt.Sprintf("%d changes came over", caught.Taken)
+	case caught.Refused > 0:
+		came = "nothing came over"
 	}
-	return "nothing has happened there yet"
+
+	switch {
+	case caught.Refused == 1:
+		return came + ", and 1 was refused"
+	case caught.Refused > 1:
+		return fmt.Sprintf("%s, and %d were refused", came, caught.Refused)
+	}
+	return came
 }
 
 // personOf is what to call whoever a machine belongs to: the person when it is somebody's, and the

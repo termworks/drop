@@ -170,3 +170,36 @@ func TestARuleThatSaysNothingAdmitsNobody(t *testing.T) {
 		t.Fatal("a rule that says nothing took a change")
 	}
 }
+
+// A change carries the person who signed it and not the machine they were at, so a rule that names
+// one of somebody's machines is read as naming them.
+//
+// The two halves of membership have to give one answer: a machine the rule admits is one Holders
+// names, and Holders naming it while Admits refuses everything it signs is a namespace that goes on
+// dialling somebody whose changes it will never take.
+func TestAChangeIsJudgedAgainstEveryMachineOfThePerson(t *testing.T) {
+	b := aBook(t)
+	b.Pair("laptop", anID(t), aSecret(t))
+	b.Belongs("laptop", bobKey)
+
+	rule := ns.Access{Named: []string{"bob@laptop"}}
+
+	holders := Holders(rule, b)
+	if len(holders) != 1 || holders[0].Name != "laptop" {
+		t.Fatalf("Holders() = %v, want bob's laptop", names(holders))
+	}
+	if !Admits(rule, b, "")(bobKey) {
+		t.Fatal("a change by the person whose machine the rule names was refused")
+	}
+}
+
+// The same rule still refuses somebody it names no machine of.
+func TestAChangeBySomebodyNoMachineOfWhoseIsNamedIsRefused(t *testing.T) {
+	b := aBook(t)
+	b.Pair("laptop", anID(t), aSecret(t))
+	b.Belongs("laptop", bobKey)
+
+	if Admits(ns.Access{Named: []string{"bob@laptop"}}, b, "")(aliceKey) {
+		t.Fatal("a change by somebody the rule names no machine of was taken")
+	}
+}

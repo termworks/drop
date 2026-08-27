@@ -119,6 +119,14 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 		})
 	}
 
+	// A caller that holds this namespace too is here to catch up rather than to open anything, so it
+	// is answered before the archetype is looked at: what is said afterwards is heads and changes,
+	// which no archetype would recognise. It names the namespace itself, so nothing below resolves a
+	// path for it.
+	if open.Meet {
+		return meeting(conn, policy, open, caller, from, refuse, decided)
+	}
+
 	caller.Password = open.Secret
 	if open.Secret != "" && !guessing.spare(from) {
 		turnedAway(policy, from, path, "too many password attempts")
@@ -155,22 +163,6 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 		return refuse(reason)
 	}
 
-	// A caller that holds this namespace too is here to catch up rather than to open anything, so
-	// it is answered before the archetype is looked at: what is said afterwards is heads and
-	// changes, which no archetype would recognise.
-	if open.Meet {
-		if !mount.Shared.Declared() {
-			return decided(fmt.Sprintf("%s is not a namespace anybody else holds", mount.Path))
-		}
-		if policy.Met == nil {
-			return refuse("this node keeps no history")
-		}
-		if err := conn.WriteFrame(wire.KindAccept, nil); err != nil {
-			return err
-		}
-		return policy.Met(Meeting{Mount: mount, Who: caller, From: from, Conn: conn})
-	}
-
 	if policy.Archetypes == nil {
 		return refuse("this node serves no namespace types")
 	}
@@ -202,6 +194,63 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 
 // unreadable is what a caller is told about a path this node cannot even spell.
 const unreadable = "that is not a path this node can read"
+
+// notHeld is what a caller is told about a namespace this node does not hold, and about one it
+// holds and does not share with them.
+//
+// One answer for both, the same way a path somebody may not open reads as one that is not there.
+// Which of the two it is is a fact about this machine, and answering a guess would draw the map.
+const notHeld = "that is not a namespace held with you here"
+
+// meeting answers a caller that holds the same namespace and wants to catch up.
+//
+// It is found by the name both machines work out for it rather than by any path: the path it has
+// here is this machine's own word for it, the path over there is theirs, and a namespace taken up
+// at another name would otherwise catch up with whatever happened to be spelled the same. Nothing
+// under a namespace is meetable either, because a history is the whole of one thing.
+func meeting(conn *wire.Conn, policy Policy, open Opening, caller ns.Caller, from node.ID, refuse, decided func(string) error) error {
+	allowed, reason := false, "not accepting sessions"
+	if policy.Allow != nil {
+		allowed, reason = policy.Allow(from, open)
+	}
+	if !allowed {
+		turnedAway(policy, from, open.Held, reason)
+		return refuse(reason)
+	}
+
+	mount, found := holding(policy.Mounts, open.Held)
+	if !found {
+		turnedAway(policy, from, open.Held, "no namespace of that name is held here")
+		return decided(notHeld)
+	}
+	// The rule on the mount, because whether an arriving change's author was allowed to make it is
+	// judged by that same rule: the two halves of holding a thing together have to agree.
+	if ok, why := policy.Mounts.Admits(mount.Path, caller); !ok {
+		turnedAway(policy, from, mount.Path, fmt.Sprintf("%s: %s", mount.Path, why))
+		return decided(notHeld)
+	}
+	if policy.Met == nil {
+		return refuse("this node keeps no history")
+	}
+
+	if err := conn.WriteFrame(wire.KindAccept, nil); err != nil {
+		return err
+	}
+	return policy.Met(Meeting{Mount: mount, Who: caller, From: from, Conn: conn})
+}
+
+// holding finds the namespace both machines call by one name.
+func holding(table *ns.Table, name string) (ns.Mount, bool) {
+	if table == nil || name == "" {
+		return ns.Mount{}, false
+	}
+	for _, m := range table.All() {
+		if m.Shared.Declared() && m.Shared.ID() == name {
+			return m, true
+		}
+	}
+	return ns.Mount{}, false
+}
 
 // refusal is a session that was not taken: what is written down here, and what the caller is told.
 //

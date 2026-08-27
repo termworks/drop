@@ -11,12 +11,15 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/bresilla/drop/src/pkg/among"
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/history"
+	"github.com/bresilla/drop/src/pkg/meet"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
@@ -25,9 +28,9 @@ import (
 
 // This machine speaking first, answered by a machine that holds the same namespace.
 //
-// Both ends run in this process, so they cannot have a data directory each. They are told to call
-// the namespace two different names instead, which gives them a history each: what a name is worked
-// out from never travels in a catch-up, so the exchange is the one the two machines would have.
+// Both ends run in this process and the two of them hold one thing, so the far end's history is
+// opened under a data directory of its own and handed to it. Two machines holding one namespace
+// call it one name, and that name is what the meeting is addressed by.
 
 // asSomebody gives this machine a user key to sign changes with, and homes of its own.
 func asSomebody(t *testing.T) string {
@@ -97,11 +100,24 @@ func logOf(t *testing.T, shared ns.Shared) *history.Log {
 	return l
 }
 
+// theirLog is the same namespace's history in a data directory of its own, which is what the far
+// end has and what one process cannot get out of history.Open twice.
+func theirLog(t *testing.T, shared ns.Shared) *history.Log {
+	t.Helper()
+
+	mine := os.Getenv("XDG_DATA_HOME")
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	l := logOf(t, shared)
+	t.Setenv("XDG_DATA_HOME", mine)
+	return l
+}
+
 // answers is the far end: it takes whatever this machine opens and serves it against a table and a
-// history of its own, and remembers which paths were asked for.
+// history of its own, and remembers which namespaces were asked about.
 type answers struct {
 	table  *ns.Table
 	pinned *book.Book
+	log    *history.Log
 
 	mu    sync.Mutex
 	asked []string
@@ -119,18 +135,27 @@ func (a *answers) To(ctx context.Context, entry book.Entry, alpn string) (io.Clo
 				return ns.Caller{ID: idFor(9).String(), Name: "bob", UserName: "bob", Paired: true}
 			},
 			Allow: func(_ node.ID, open proto.Opening) (bool, string) {
-				a.mu.Lock()
-				a.asked = append(a.asked, open.Path)
-				a.mu.Unlock()
+				if open.Meet {
+					a.mu.Lock()
+					a.asked = append(a.asked, open.Held)
+					a.mu.Unlock()
+				}
 				return true, ""
 			},
-			Met: meeting(a.table, a.pinned, nil),
+			Met: a.caught,
 		})
 	}()
 	return here, here, nil
 }
 
-func (a *answers) paths() []string {
+// caught answers a meeting against the history the far end was given.
+func (a *answers) caught(m proto.Meeting) error {
+	rule, _ := a.table.AccessFor(m.Mount.Path)
+	_, err := meet.Answer(m.Conn, a.log, "bob", among.Admits(rule, a.pinned, ""))
+	return err
+}
+
+func (a *answers) about() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -142,24 +167,64 @@ func TestSpeakingFirstCatchesAPeerUp(t *testing.T) {
 	key := asSomebody(t)
 	pinned, entry := bookWith(t, key)
 
-	mine := ns.Shared{Creator: key, At: "/notes", Nonce: "here"}
-	theirs := ns.Shared{Creator: key, At: "/notes", Nonce: "there"}
+	shared := ns.Shared{Creator: key, At: "/notes", Nonce: "cafe"}
 
-	here := mounted(t, "/notes", mine, []string{"bob"})
-	there := &answers{table: mounted(t, "/notes", theirs, []string{"bob"}), pinned: pinned}
+	here := mounted(t, "/notes", shared, []string{"bob"})
+	there := &answers{table: mounted(t, "/notes", shared, []string{"bob"}), pinned: pinned, log: theirLog(t, shared)}
 
-	change, err := history.Sign([]byte("written here"), nil)
+	change, err := history.Sign(shared.ID(), []byte("written here"), nil)
 	if err != nil {
 		t.Fatalf("Sign(): %v", err)
 	}
-	if _, err := logOf(t, mine).Add(change); err != nil {
+	if _, err := logOf(t, shared).Add(change); err != nil {
 		t.Fatalf("Add(): %v", err)
 	}
 
 	pushTo(context.Background(), there, entry, here, pinned)
 
-	if !logOf(t, theirs).Has(change.ID()) {
+	if !there.log.Has(change.ID()) {
 		t.Fatal("the change did not reach the machine that holds it too")
+	}
+}
+
+// A meeting is about the thing, not about where it is kept. A namespace joined at another path is
+// one the two machines still catch up on, and one the far end holds at that same path by chance is
+// not one they mistake it for.
+func TestACatchUpFindsTheNamespaceUnderThePeersOwnName(t *testing.T) {
+	key := asSomebody(t)
+	pinned, entry := bookWith(t, key)
+
+	shared := ns.Shared{Creator: key, At: "/notes", Nonce: "cafe"}
+	other := ns.Shared{Creator: key, At: "/diary", Nonce: "beef"}
+
+	here := mounted(t, "/bobs-notes", shared, []string{"bob"})
+
+	table := mounted(t, "/notes", shared, []string{"bob"})
+	if err := table.Add(ns.Mount{
+		Path:      "/bobs-notes",
+		Archetype: "chat",
+		Access:    ns.Access{Named: []string{"bob"}},
+		Shared:    other,
+	}); err != nil {
+		t.Fatalf("adding /bobs-notes: %v", err)
+	}
+	there := &answers{table: table, pinned: pinned, log: theirLog(t, shared)}
+
+	change, err := history.Sign(shared.ID(), []byte("written here"), nil)
+	if err != nil {
+		t.Fatalf("Sign(): %v", err)
+	}
+	if _, err := logOf(t, shared).Add(change); err != nil {
+		t.Fatalf("Add(): %v", err)
+	}
+
+	pushTo(context.Background(), there, entry, here, pinned)
+
+	if !there.log.Has(change.ID()) {
+		t.Fatal("a namespace held under another name here never reached the machine holding it")
+	}
+	if about := there.about(); !has(about, shared.ID()) {
+		t.Fatalf("the meeting was about %v, want %s", about, shared.ID())
 	}
 }
 
@@ -182,18 +247,15 @@ func TestSpeakingFirstLeavesAloneWhatThePeerDoesNotHold(t *testing.T) {
 		t.Fatalf("adding /private: %v", err)
 	}
 
-	there := &answers{
-		table:  mounted(t, "/notes", ns.Shared{Creator: key, At: "/notes", Nonce: "there"}, []string{"bob"}),
-		pinned: pinned,
-	}
+	there := &answers{table: mounted(t, "/notes", shared, []string{"bob"}), pinned: pinned, log: theirLog(t, shared)}
 
 	pushTo(context.Background(), there, entry, here, pinned)
 
-	asked := there.paths()
-	if !has(asked, "/notes") {
+	asked := there.about()
+	if !has(asked, shared.ID()) {
 		t.Fatalf("the namespace they hold was not mentioned: %v", asked)
 	}
-	if has(asked, "/private") {
+	if has(asked, mine.ID()) {
 		t.Fatalf("a namespace the rule does not name them in was mentioned: %v", asked)
 	}
 }
@@ -208,7 +270,66 @@ func TestSpeakingFirstSaysNothingAboutANamespaceHeldAlone(t *testing.T) {
 
 	pushTo(context.Background(), there, entry, here, pinned)
 
-	if asked := there.paths(); has(asked, "/chat") {
+	if asked := there.about(); len(asked) != 0 {
 		t.Fatalf("a namespace nobody else holds was mentioned: %v", asked)
+	}
+}
+
+// counting is a peer that can be reached, and remembers how often it was reached for.
+type counting struct {
+	started chan struct{}
+	release chan struct{}
+
+	mu sync.Mutex
+	n  int
+}
+
+func (c *counting) To(ctx context.Context, entry book.Entry, alpn string) (io.Closer, proto.Stream, error) {
+	c.mu.Lock()
+	c.n++
+	c.mu.Unlock()
+
+	c.started <- struct{}{}
+	<-c.release
+
+	here, there := net.Pipe()
+	there.Close()
+	return here, here, nil
+}
+
+func (c *counting) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.n
+}
+
+// A change here reaches out to the other holders, and a change arriving while that is still going
+// on is the same reaching out done once more rather than another one beside it.
+//
+// What a round says is whatever the history holds when it runs, so a peer sending changes one at a
+// time would otherwise leave one outbound stream on this machine per change it chose to send.
+func TestTellingTheOtherHoldersDoesNotStackUp(t *testing.T) {
+	key := asSomebody(t)
+	pinned, _ := bookWith(t, key)
+
+	shared := ns.Shared{Creator: key, At: "/notes", Nonce: "cafe"}
+	here := mounted(t, "/notes", shared, []string{"bob"})
+
+	over := &counting{started: make(chan struct{}, 128), release: make(chan struct{})}
+	changed := told(context.Background(), over, here, pinned)
+
+	changed("/notes")
+	<-over.started
+	for range 50 {
+		changed("/notes")
+	}
+	close(over.release)
+
+	<-over.started
+	time.Sleep(50 * time.Millisecond)
+
+	if reached := over.count(); reached != 2 {
+		t.Fatalf("the peer was reached for %d times, want one round and one more after it", reached)
 	}
 }

@@ -2,6 +2,7 @@ package weave
 
 import (
 	"bytes"
+	"math"
 	"strings"
 	"unicode/utf8"
 
@@ -98,6 +99,44 @@ func marked(mine, yours []byte, us, them string) []byte {
 	return out
 }
 
+// Unsettled is who a file still names in a conflict nobody has taken out of it.
+//
+// A merge that could not choose says so in the file and nowhere else, so this reads the markers
+// back: whoever holds the file can be told there is something in it to settle, rather than finding
+// out when somebody notices the file has gone strange.
+func Unsettled(raw []byte) []string {
+	var out []string
+	us, open := "", false
+
+	for _, line := range split(raw) {
+		text := strings.TrimRight(line, "\r\n")
+		switch {
+		case strings.HasPrefix(text, "<<<<<<< "):
+			us, open = strings.TrimSpace(text[len("<<<<<<< "):]), false
+		case us != "" && text == "=======":
+			open = true
+		case open && strings.HasPrefix(text, ">>>>>>> "):
+			out = append(out, us, strings.TrimSpace(text[len(">>>>>>> "):]))
+			us, open = "", false
+		}
+	}
+	return tidied(out)
+}
+
+// tidied is a list of names with each said once, in the order they were met.
+func tidied(names []string) []string {
+	var out []string
+	said := make(map[string]bool, len(names))
+	for _, name := range names {
+		if name == "" || said[name] {
+			continue
+		}
+		said[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
 // ended is a run of lines with a line ending on the last of them, so a marker starts where a line
 // starts.
 func ended(run []byte) []byte {
@@ -135,63 +174,276 @@ func split(raw []byte) []string {
 // matched says, for each line of base, which line of other it is, and -1 for one that is neither
 // there nor anywhere.
 //
-// What both ends share is taken off first, so the usual edit — a few lines changed in a long file —
-// never reaches the table at all.
+// The lines that are left out of each side are worked out first, and what remains on the two sides
+// then pairs off in order, because the lines nobody touched are the same lines in the same order.
 func matched(base, other []string) []int {
-	out := make([]int, len(base))
-	for i := range out {
-		out[i] = -1
+	first, second := make([]bool, len(base)), make([]bool, len(other))
+	theirs, at := heard(base, other, first)
+	ours, to := heard(other, base, second)
+
+	left, right := make([]bool, len(theirs)), make([]bool, len(ours))
+	spread := len(theirs) + len(ours) + 3
+	forth, back := make([]int, spread), make([]int, spread)
+	trace(theirs, ours, span{0, len(theirs), 0, len(ours)}, left, right, forth, back, len(ours)+1)
+	for i, gone := range left {
+		first[at[i]] = gone
+	}
+	for i, gone := range right {
+		second[to[i]] = gone
 	}
 
-	head := 0
-	for head < len(base) && head < len(other) && base[head] == other[head] {
-		out[head] = head
-		head++
-	}
-	tail := 0
-	for tail < len(base)-head && tail < len(other)-head &&
-		base[len(base)-1-tail] == other[len(other)-1-tail] {
-		out[len(base)-1-tail] = len(other) - 1 - tail
-		tail++
-	}
-
-	lineUp(base[head:len(base)-tail], other[head:len(other)-tail], out[head:len(base)-tail], head)
-	return out
+	settle(base, other, first, second)
+	settle(other, base, second, first)
+	return lined(first, second)
 }
 
-// lineUp fills in the longest run of lines the two middles have in common, in order.
-func lineUp(base, other []string, into []int, off int) {
-	n, m := len(base), len(other)
-	if n == 0 || m == 0 || int64(n)*int64(m) > maxCells {
-		return
+// heard is the lines of a file the other one has somewhere, and marks the rest as changed.
+//
+// A line the other side does not have anywhere can only be a change, and taking it out before the
+// two are walked against each other keeps it from pulling the walk off the lines that do line up.
+func heard(rec, other []string, chg []bool) ([]string, []int) {
+	has := make(map[string]struct{}, len(other))
+	for _, line := range other {
+		has[line] = struct{}{}
 	}
 
-	// table[i][j] is how many lines base[i:] and other[j:] still have in common.
-	table := make([]int32, (n+1)*(m+1))
-	for i := n - 1; i >= 0; i-- {
-		for j := m - 1; j >= 0; j-- {
-			switch {
-			case base[i] == other[j]:
-				table[i*(m+1)+j] = table[(i+1)*(m+1)+j+1] + 1
-			case table[(i+1)*(m+1)+j] >= table[i*(m+1)+j+1]:
-				table[i*(m+1)+j] = table[(i+1)*(m+1)+j]
-			default:
-				table[i*(m+1)+j] = table[i*(m+1)+j+1]
+	lines, at := make([]string, 0, len(rec)), make([]int, 0, len(rec))
+	for i, line := range rec {
+		if _, held := has[line]; !held {
+			chg[i] = true
+			continue
+		}
+		lines, at = append(lines, line), append(at, i)
+	}
+	return lines, at
+}
+
+// span is a stretch of one file against a stretch of the other, which is what a lining-up is worked
+// out inside.
+type span struct{ x0, x1, y0, y1 int }
+
+// trace marks the lines the two stretches do not share.
+//
+// What both ends already agree on comes off first, so the usual edit — a few lines changed in a
+// long file — is a short walk. What is left is cut in two at the point the shortest way through it
+// passes through, and each half is a smaller one of the same question.
+func trace(base, other []string, at span, first, second []bool, forth, back []int, off int) {
+	for at.x0 < at.x1 && at.y0 < at.y1 && base[at.x0] == other[at.y0] {
+		at.x0, at.y0 = at.x0+1, at.y0+1
+	}
+	for at.x0 < at.x1 && at.y0 < at.y1 && base[at.x1-1] == other[at.y1-1] {
+		at.x1, at.y1 = at.x1-1, at.y1-1
+	}
+
+	if at.x0 < at.x1 && at.y0 < at.y1 && int64(at.x1-at.x0)*int64(at.y1-at.y0) <= maxCells {
+		x, y := meet(base, other, at, forth, back, off)
+		trace(base, other, span{at.x0, x, at.y0, y}, first, second, forth, back, off)
+		trace(base, other, span{x, at.x1, y, at.y1}, first, second, forth, back, off)
+		return
+	}
+	for i := at.x0; i < at.x1; i++ {
+		first[i] = true
+	}
+	for i := at.y0; i < at.y1; i++ {
+		second[i] = true
+	}
+}
+
+// meet is where the shortest way through a stretch is cut in two: the point the walk from the front
+// and the walk from the back first reach together.
+func meet(base, other []string, at span, forth, back []int, off int) (int, int) {
+	low, high := at.x0-at.y1, at.x1-at.y0
+	front, rear := at.x0-at.y0, at.x1-at.y1
+	odd := (front-rear)&1 != 0
+	fmin, fmax, bmin, bmax := front, front, rear, rear
+
+	forth[front+off], back[rear+off] = at.x0, at.x1
+	for {
+		if fmin > low {
+			fmin--
+			forth[fmin-1+off] = -1
+		} else {
+			fmin++
+		}
+		if fmax < high {
+			fmax++
+			forth[fmax+1+off] = -1
+		} else {
+			fmax--
+		}
+		for d := fmax; d >= fmin; d -= 2 {
+			x := forth[d+1+off]
+			if forth[d-1+off] >= x {
+				x = forth[d-1+off] + 1
+			}
+			y := x - d
+			for x < at.x1 && y < at.y1 && base[x] == other[y] {
+				x, y = x+1, y+1
+			}
+			forth[d+off] = x
+			if odd && bmin <= d && d <= bmax && back[d+off] <= x {
+				return x, y
+			}
+		}
+
+		if bmin > low {
+			bmin--
+			back[bmin-1+off] = math.MaxInt
+		} else {
+			bmin++
+		}
+		if bmax < high {
+			bmax++
+			back[bmax+1+off] = math.MaxInt
+		} else {
+			bmax--
+		}
+		for d := bmax; d >= bmin; d -= 2 {
+			x := back[d+1+off] - 1
+			if back[d-1+off] < back[d+1+off] {
+				x = back[d-1+off]
+			}
+			y := x - d
+			for x > at.x0 && y > at.y0 && base[x-1] == other[y-1] {
+				x, y = x-1, y-1
+			}
+			back[d+off] = x
+			if !odd && fmin <= d && d <= fmax && x <= forth[d+off] {
+				return x, y
 			}
 		}
 	}
+}
 
-	for i, j := 0, 0; i < n && j < m; {
-		switch {
-		case base[i] == other[j]:
-			into[i] = j + off
-			i, j = i+1, j+1
-		case table[(i+1)*(m+1)+j] >= table[i*(m+1)+j+1]:
-			i++
-		default:
-			j++
+// lined is the lining-up two sets of edited lines make: what is left of one side against what is
+// left of the other, in the order both are in.
+func lined(first, second []bool) []int {
+	out := make([]int, len(first))
+	at := 0
+	for i, gone := range first {
+		if gone {
+			out[i] = -1
+			continue
 		}
+		for second[at] {
+			at++
+		}
+		out[i], at = at, at+1
 	}
+	return out
+}
+
+// settle puts every changed stretch where it would be if it were the only place it could go.
+//
+// A file with repeated lines — a blank line, a closing brace, a list item said twice — can be lined
+// up against another in more than one way, and which of them the trims and the table happen to pick
+// depends on what else is around it. The two sides of a merge are lined up separately, so one edit
+// that settled differently in the two looks like two edits, or two look like one, and a line is
+// doubled or dropped with nothing said. So each stretch is moved down as far as it goes, taking in
+// any stretch it meets, and then back up to where it lines up with a stretch of the other side —
+// which is the same place whatever the two files around it look like.
+func settle(rec, other []string, chg, ochg []bool) {
+	at := &stretch{rec: rec, chg: chg}
+	with := &stretch{rec: other, chg: ochg}
+	at.first()
+	with.first()
+
+	for {
+		if at.end > at.start {
+			earliest, lines := 0, -1
+			for {
+				size := at.end - at.start
+				lines = -1
+				for at.up() {
+					with.back()
+				}
+				earliest = at.end
+				if with.end > with.start {
+					lines = at.end
+				}
+				for at.down() {
+					with.on()
+					if with.end > with.start {
+						lines = at.end
+					}
+				}
+				if size == at.end-at.start {
+					break
+				}
+			}
+			for at.end != earliest && lines >= 0 && with.end == with.start && at.up() {
+				with.back()
+			}
+		}
+		if !at.on() {
+			return
+		}
+		with.on()
+	}
+}
+
+// stretch is one run of changed lines in a file, and the file it is in.
+type stretch struct {
+	rec        []string
+	chg        []bool
+	start, end int
+}
+
+// first is the run a file opens with, which is empty when its first line is unchanged.
+func (s *stretch) first() {
+	for s.end < len(s.chg) && s.chg[s.end] {
+		s.end++
+	}
+}
+
+// on is the next run, one unchanged line along, and says no at the end of the file.
+func (s *stretch) on() bool {
+	if s.end == len(s.chg) {
+		return false
+	}
+	s.start = s.end + 1
+	for s.end = s.start; s.end < len(s.chg) && s.chg[s.end]; s.end++ {
+	}
+	return true
+}
+
+// back is the run before this one, and says no at the start of the file.
+func (s *stretch) back() bool {
+	if s.start == 0 {
+		return false
+	}
+	s.end = s.start - 1
+	for s.start = s.end; s.start > 0 && s.chg[s.start-1]; s.start-- {
+	}
+	return true
+}
+
+// up moves the run one line earlier, which it can do when the line above it is the line it ends
+// with, and takes in the run above if it reaches it.
+func (s *stretch) up() bool {
+	if s.start == 0 || s.rec[s.start-1] != s.rec[s.end-1] {
+		return false
+	}
+	s.start, s.end = s.start-1, s.end-1
+	s.chg[s.start], s.chg[s.end] = true, false
+	for s.start > 0 && s.chg[s.start-1] {
+		s.start--
+	}
+	return true
+}
+
+// down moves the run one line later, which it can do when the line below it is the line it starts
+// with, and takes in the run below if it reaches it.
+func (s *stretch) down() bool {
+	if s.end == len(s.chg) || s.rec[s.start] != s.rec[s.end] {
+		return false
+	}
+	s.chg[s.start], s.chg[s.end] = false, true
+	s.start, s.end = s.start+1, s.end+1
+	for s.end < len(s.chg) && s.chg[s.end] {
+		s.end++
+	}
+	return true
 }
 
 // Textual reports whether a file is lines of text, and says no whenever it is not sure.

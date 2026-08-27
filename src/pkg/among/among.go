@@ -74,6 +74,13 @@ func People(rule ns.Access, b *book.Book, mine string) []string {
 // this is asked. This is the other half: whether the person it turned out to be was allowed to
 // change this thing. Their own key always is — a machine refusing its owner's changes would refuse
 // everything it wrote on another machine of theirs.
+//
+// The book is walked entry by entry, the same way Holders walks it, so the two halves of membership
+// give one answer. A change is signed by a person and carries no machine, so a rule that names one
+// of somebody's machines is read as naming them: whoever the rule would let in is somebody whose
+// changes come in. Folding their machines into one first would judge them by a machine they may not
+// have been at, and a namespace shared with one machine of somebody's would take nothing from them
+// ever again.
 func Admits(rule ns.Access, b *book.Book, mine string) func(author string) bool {
 	return func(author string) bool {
 		if author == "" {
@@ -85,12 +92,15 @@ func Admits(rule ns.Access, b *book.Book, mine string) func(author string) bool 
 		if b == nil {
 			return false
 		}
-		owner, known := b.ByUser(author)
-		if !known {
-			return false
+		for _, entry := range b.All() {
+			if entry.User != author {
+				continue
+			}
+			if ok, _ := rule.Admits(caller(entry)); ok {
+				return true
+			}
 		}
-		ok, _ := rule.Admits(caller(owner))
-		return ok
+		return false
 	}
 }
 

@@ -1,6 +1,7 @@
 package proto
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"reflect"
@@ -171,5 +172,56 @@ func TestHelloIsAskedThenAnswered(t *testing.T) {
 
 	if got.Name != want.Name || len(got.Serves) != 1 || got.Serves[0].Path != "/tty" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// A node never says more than its own reader will take. The reader refuses an over-long list for
+// the whole message, so a node with one crowded namespace would otherwise be a node nobody can list
+// at all — including on the namespaces that have nothing to do with it.
+func TestHelloCutsALongHolderListRatherThanBecomingUnreadable(t *testing.T) {
+	crowd := make([]string, MaxHolders+1)
+	for i := range crowd {
+		crowd[i] = fmt.Sprintf("ssh-ed25519 AAAA%04d somebody\n", i)
+	}
+
+	said := Hello{
+		Name:    "laptop",
+		Version: "0.1.0",
+		Serves: []Served{
+			{Path: "/files", Archetype: "files"},
+			{
+				Path:      "/notes",
+				Archetype: "chat",
+				Shared:    ns.Shared{Creator: crowd[0], At: "/notes", Nonce: "cafe"},
+				Holders:   crowd,
+			},
+		},
+	}
+
+	got, err := decodeHello(said.encode())
+	if err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if len(got.Serves) != 2 {
+		t.Fatalf("%d namespaces came back, want 2", len(got.Serves))
+	}
+	if len(got.Serves[1].Holders) != MaxHolders {
+		t.Fatalf("%d holders came back, want %d", len(got.Serves[1].Holders), MaxHolders)
+	}
+}
+
+// The same for the namespaces themselves.
+func TestHelloCutsALongNamespaceListRatherThanBecomingUnreadable(t *testing.T) {
+	said := Hello{Name: "laptop", Version: "0.1.0"}
+	for i := range MaxServed + 10 {
+		said.Serves = append(said.Serves, Served{Path: fmt.Sprintf("/p%d", i), Archetype: "chat"})
+	}
+
+	got, err := decodeHello(said.encode())
+	if err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if len(got.Serves) != MaxServed {
+		t.Fatalf("%d namespaces came back, want %d", len(got.Serves), MaxServed)
 	}
 }

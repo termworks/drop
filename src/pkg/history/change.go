@@ -1,10 +1,10 @@
 // Package history is the record of what happened to one thing.
 //
-// A change is one thing somebody did. It names the changes its author had seen when they made it,
-// so the record is a graph rather than a line, and its id is the hash of the bytes they signed, so
-// a change cannot be altered without becoming a different change and two machines that made the
-// same change made one change. What the changes mean is the archetype's business; this orders them
-// and nothing more.
+// A change is one thing somebody did. It names the thing it was done to and the changes its author
+// had seen when they made it, so the record is a graph rather than a line, and its id is the hash
+// of the bytes they signed, so a change cannot be altered without becoming a different change and
+// two machines that made the same change made one change. What the changes mean is the archetype's
+// business; this orders them and nothing more.
 package history
 
 import (
@@ -31,6 +31,10 @@ func (id ID) String() string { return hex.EncodeToString(id[:]) }
 
 // Change is one thing somebody did to one thing.
 type Change struct {
+	// About is the thing it was done to, by the id that thing is known by everywhere. It is signed
+	// with the rest, so a change made about one thing is not a change about another: replaying it
+	// into some other history is refused there rather than passing as the author's own doing.
+	About string
 	// Heads is what its author had already seen, written smallest first and each named once.
 	// Empty for the first change there was.
 	Heads []ID
@@ -42,6 +46,10 @@ type Change struct {
 	At int64
 	// Body is the archetype's own business, opaque here.
 	Body []byte
+	// Fold is the changes this one stands in place of, smallest first and each named once. Empty
+	// for all but a snapshot: a snapshot carries what those changes came to, so a machine holding
+	// it may forget them and one that never held them may take it on its own.
+	Fold []ID
 	// Signed is the author's signature over everything above.
 	Signed []byte
 }
@@ -59,18 +67,30 @@ const (
 )
 
 // maxSigned caps the half of a record the author signed.
-const maxSigned = MaxBody + MaxHeads*(len(ID{})+1) + wire.MaxString + 64
+const maxSigned = MaxBody + (MaxHeads+MaxHeld)*(len(ID{})+1) + 2*wire.MaxString + 64
 
-// Sign makes a change, signed as the person sitting at this machine.
+// Sign makes a change to one thing, signed as the person sitting at this machine.
 //
-// The heads given are put in order and each named once, so that one set of changes seen is one
-// change rather than several spellings of it.
-func Sign(body []byte, heads []ID) (Change, error) {
+// The thing's id is signed with the rest, so what is signed says which history it belongs in. The
+// heads given are put in order and each named once, so that one set of changes seen is one change
+// rather than several spellings of it.
+func Sign(about string, body []byte, heads []ID) (Change, error) {
+	return sign(about, body, heads, nil)
+}
+
+// sign is that, and a snapshot besides: the same bytes, with the changes it stands for named.
+func sign(about string, body []byte, heads, fold []ID) (Change, error) {
+	if err := nameable(about); err != nil {
+		return Change{}, fmt.Errorf("signing a change: %w", err)
+	}
 	if len(body) > MaxBody {
 		return Change{}, fmt.Errorf("signing a change: %d bytes, over the %d limit", len(body), MaxBody)
 	}
 	if len(heads) > MaxHeads {
 		return Change{}, fmt.Errorf("signing a change: it names %d changes, over the %d limit", len(heads), MaxHeads)
+	}
+	if len(fold) > MaxHeld {
+		return Change{}, fmt.Errorf("signing a change: it stands for %d changes, over the %d limit", len(fold), MaxHeld)
 	}
 
 	by, err := signer()
@@ -79,10 +99,12 @@ func Sign(body []byte, heads []ID) (Change, error) {
 	}
 
 	c := Change{
+		About:  about,
 		Heads:  tidy(heads),
 		Author: user.Text(by.PublicKey()),
 		At:     time.Now().UnixMilli(),
 		Body:   append([]byte(nil), body...),
+		Fold:   tidy(fold),
 	}
 	sig, err := user.Signature(by, c.bytes())
 	if err != nil {
@@ -111,10 +133,15 @@ func signer() (ssh.Signer, error) {
 // ID is what this change is called.
 func (c Change) ID() ID { return blake3.Sum256(c.bytes()) }
 
+// Whole reports whether this change carries what the changes it names came to, rather than one
+// more thing done on top of them. An archetype reads such a change as the state itself.
+func (c Change) Whole() bool { return len(c.Fold) > 0 }
+
 // bytes is what the author signs and what the id is taken over: everything the change says, minus
 // the signature over it.
 func (c Change) bytes() []byte {
 	w := wire.NewWriter()
+	w.String(c.About)
 	w.Uint(uint64(len(c.Heads)))
 	for _, head := range c.Heads {
 		w.Bytes(head[:])
@@ -122,6 +149,10 @@ func (c Change) bytes() []byte {
 	w.String(c.Author)
 	w.Int(c.At)
 	w.Bytes(c.Body)
+	w.Uint(uint64(len(c.Fold)))
+	for _, id := range c.Fold {
+		w.Bytes(id[:])
+	}
 	return w.Body()
 }
 
@@ -130,24 +161,14 @@ func unpack(signed []byte) (Change, error) {
 	var c Change
 
 	r := wire.NewReader(signed)
-	count, err := r.Uint()
+	about, err := r.String(wire.MaxString)
 	if err != nil {
 		return c, err
 	}
-	if count > MaxHeads {
-		return c, fmt.Errorf("that change names %d changes, over the %d limit", count, MaxHeads)
-	}
 
-	c.Heads = make([]ID, 0, wire.Hint(count, signed, len(ID{})+1))
-	for range count {
-		head, err := r.Bytes(len(ID{}))
-		if err != nil {
-			return Change{}, err
-		}
-		if len(head) != len(ID{}) {
-			return Change{}, fmt.Errorf("that change names an id of %d bytes", len(head))
-		}
-		c.Heads = append(c.Heads, ID(head))
+	heads, err := run(r, MaxHeads)
+	if err != nil {
+		return Change{}, err
 	}
 
 	author, err := r.String(wire.MaxString)
@@ -162,12 +183,45 @@ func unpack(signed []byte) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
+
+	fold, err := run(r, MaxHeld)
+	if err != nil {
+		return Change{}, err
+	}
 	if !r.Done() {
 		return Change{}, fmt.Errorf("that change has %d bytes nobody claims", len(signed))
 	}
 
-	c.Author, c.At, c.Body = author, at, append([]byte(nil), body...)
+	c.About, c.Heads, c.Author, c.At = about, heads, author, at
+	c.Body, c.Fold = append([]byte(nil), body...), fold
 	return c, nil
+}
+
+// run reads a run of change ids, refusing a count nobody could mean before any of it is kept.
+func run(r *wire.Reader, most int) ([]ID, error) {
+	count, err := r.Uint()
+	if err != nil {
+		return nil, err
+	}
+	if count > uint64(most) {
+		return nil, fmt.Errorf("that change names %d changes, over the %d limit", count, most)
+	}
+	if count == 0 {
+		return nil, nil
+	}
+
+	out := make([]ID, 0, min(int(count), 1<<10))
+	for range count {
+		id, err := r.Bytes(len(ID{}))
+		if err != nil {
+			return nil, err
+		}
+		if len(id) != len(ID{}) {
+			return nil, fmt.Errorf("that change names an id of %d bytes", len(id))
+		}
+		out = append(out, ID(id))
+	}
+	return out, nil
 }
 
 // verify reports whether a change was really signed by the person it names.
@@ -188,8 +242,8 @@ func verify(c Change) error {
 	return nil
 }
 
-// Encode is one change as it travels, which is exactly how it is stored: nothing is added for the
-// wire and nothing is left off, so a change that arrives is written down as it came.
+// Encode is one change as it travels: its id, the bytes its author signed, and the signature.
+// Nothing is added for the wire and nothing is left off, so what arrives is what was signed.
 func (c Change) Encode() []byte { return record(c) }
 
 // Decode reads one change off the wire, refusing one that is not written the way a change is
@@ -197,7 +251,7 @@ func (c Change) Encode() []byte { return record(c) }
 // they were allowed to is asked by whoever holds the access rule.
 func Decode(raw []byte) (Change, error) { return unrecord(raw) }
 
-// record is one change as it is stored: its id, the bytes its author signed, and the signature.
+// record is one change as it is written down.
 //
 // The id is written down so that reading the log back costs a hash rather than a signature check
 // per change. A record whose bytes were altered no longer hashes to the id beside it, and it is
@@ -211,8 +265,8 @@ func record(c Change) []byte {
 	return w.Body()
 }
 
-// unrecord reads one stored change, refusing one that is not written the way it was written: an id
-// that does not match the bytes beside it, or bytes that would not be written back as they arrived.
+// unrecord reads one, refusing one that is not written the way it was written: an id that does not
+// match the bytes beside it, or bytes that would not be written back as they arrived.
 func unrecord(raw []byte) (Change, error) {
 	r := wire.NewReader(raw)
 	named, err := r.Bytes(len(ID{}))
@@ -251,30 +305,36 @@ func unrecord(raw []byte) (Change, error) {
 	return c, nil
 }
 
-// tidy is a set of heads in the one order they are written: smallest first, each named once.
-func tidy(heads []ID) []ID {
-	if len(heads) == 0 {
+// tidy is a set of ids in the one order they are written: smallest first, each named once.
+func tidy(ids []ID) []ID {
+	if len(ids) == 0 {
 		return nil
 	}
 
-	out := append([]ID(nil), heads...)
+	out := append([]ID(nil), ids...)
 	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i][:], out[j][:]) < 0 })
 
 	kept := out[:1]
-	for _, head := range out[1:] {
-		if head != kept[len(kept)-1] {
-			kept = append(kept, head)
+	for _, id := range out[1:] {
+		if id != kept[len(kept)-1] {
+			kept = append(kept, id)
 		}
 	}
 	return kept
 }
 
-// tidied reports whether heads are already written that way.
-func tidied(heads []ID) bool {
-	for i := 1; i < len(heads); i++ {
-		if bytes.Compare(heads[i-1][:], heads[i][:]) >= 0 {
+// tidied reports whether ids are already written that way.
+func tidied(ids []ID) bool {
+	for i := 1; i < len(ids); i++ {
+		if bytes.Compare(ids[i-1][:], ids[i][:]) >= 0 {
 			return false
 		}
 	}
 	return true
+}
+
+// names reports whether a tidied run of ids holds one.
+func names(ids []ID, id ID) bool {
+	at := sort.Search(len(ids), func(i int) bool { return bytes.Compare(ids[i][:], id[:]) >= 0 })
+	return at < len(ids) && ids[at] == id
 }

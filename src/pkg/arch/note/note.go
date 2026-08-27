@@ -193,7 +193,7 @@ func (n *Note) keep(mount ns.Mount, cfg Config) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return k.once(n.into.Named)
+	return k.once()
 }
 
 // keeper is the one keeper for a namespace, made the first time it is wanted and thrown away when

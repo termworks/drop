@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -60,7 +61,7 @@ func aKeeper(t *testing.T) *keeper {
 func (k *keeper) turn(t *testing.T) bool {
 	t.Helper()
 
-	made, err := k.once(nil)
+	made, err := k.once()
 	if err != nil {
 		t.Fatalf("once(): %v", err)
 	}
@@ -77,10 +78,24 @@ func (k *keeper) count(t *testing.T) int {
 	return len(changes)
 }
 
+// save writes a file the way a person's editor leaves one, and then dates it far enough back that
+// it counts as put down rather than still being written. A test that saved and read in the same
+// breath would be asking about a file nobody has finished with.
 func save(t *testing.T, at, body string) {
 	t.Helper()
 
 	if err := os.WriteFile(at, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settled(t, at)
+}
+
+// settled backdates a file so steady() takes it for one nobody is holding open.
+func settled(t *testing.T, at string) {
+	t.Helper()
+
+	when := time.Now().Add(-2 * Still)
+	if err := os.Chtimes(at, when, when); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -111,7 +126,7 @@ func TestAFileDropWroteIsNotReadBackAsAChange(t *testing.T) {
 
 	// Somebody else's change arrives, and the file drop writes for it is drop's own doing.
 	them := asSomebody(t, "bob")
-	theirs, err := history.Sign([]byte("one\ntwo\nthree\n"), k.log.Heads())
+	theirs, err := history.Sign(k.log.At(), []byte("one\ntwo\nthree\n"), k.log.Heads())
 	if err != nil {
 		t.Fatalf("Sign(): %v", err)
 	}
@@ -172,7 +187,7 @@ func TestANoteWithNoFileYetIsWrittenFromItsHistory(t *testing.T) {
 	asSomebody(t, "alice")
 	k := aKeeper(t)
 
-	c, err := history.Sign([]byte("what alice wrote\n"), nil)
+	c, err := history.Sign(k.log.At(), []byte("what alice wrote\n"), nil)
 	if err != nil {
 		t.Fatalf("Sign(): %v", err)
 	}
@@ -205,7 +220,7 @@ func TestTwoMachinesReplayingOneHistoryWriteTheSameFile(t *testing.T) {
 
 	// Bob, who had seen the first change and not the second.
 	asSomebody(t, "bob")
-	theirs, err := history.Sign([]byte("one\ntwo\nTHREE\n"), first)
+	theirs, err := history.Sign(mine.log.At(), []byte("one\ntwo\nTHREE\n"), first)
 	if err != nil {
 		t.Fatalf("Sign(): %v", err)
 	}
@@ -240,7 +255,7 @@ func TestTheVersionThatIsNotTheFileIsKeptBesideIt(t *testing.T) {
 	k.turn(t)
 
 	asSomebody(t, "bob")
-	theirs, err := history.Sign([]byte("SQLite format 3\x00\x10\x00\x01bob"), first)
+	theirs, err := history.Sign(k.log.At(), []byte("SQLite format 3\x00\x10\x00\x01bob"), first)
 	if err != nil {
 		t.Fatalf("Sign(): %v", err)
 	}

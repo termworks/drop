@@ -16,16 +16,19 @@
 
 -- taken runs the snap command and reads back what it left.
 --
--- The command writes into this namespace's own directory: still.jpg is a name and not a path, and
--- there is nowhere else it could land.
+-- The command writes into this namespace's own directory: the name is a name and not a path, and
+-- there is nowhere else it could land. It is asked for with s:mine because that directory belongs
+-- to the namespace and not to this session — two people asking for a still at the same moment would
+-- otherwise run their snap commands into one file and each read back the other's half of it.
 local function taken(s, c)
 	if not c.snap then
 		error("this camera has no way to take a still")
 	end
 
-	s:run{ "sh", "-c", c.snap .. " still.jpg" }
+	local name = s:mine("still.jpg")
+	s:run{ "sh", "-c", c.snap .. " " .. name }
 
-	local file = s:open("still.jpg")
+	local file = s:open(name)
 	local body = file:read()
 	file:close()
 	return body

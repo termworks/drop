@@ -14,6 +14,7 @@ package weave
 import (
 	"bytes"
 	"encoding/hex"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -124,16 +125,16 @@ func (w *woven[T]) join(heads []history.ID) (T, []Aside) {
 	}
 
 	made := w.after(heads[0])
-	mine := []string{w.who(heads[0])}
+	first, folded := w.who(heads[0]), 1
 	var aside []Aside
 
 	for i, head := range heads[1:] {
 		base, _ := w.join(w.between(heads[:i+1], head))
 
 		var kept []Aside
-		made, kept = w.how.Merge(base, made, w.after(head), strings.Join(mine, ", "), w.who(head))
+		made, kept = w.how.Merge(base, made, w.after(head), several(first, folded), w.who(head))
 		aside = append(aside, kept...)
-		mine = append(mine, w.who(head))
+		folded++
 	}
 
 	w.made[key(heads)] = &made
@@ -189,6 +190,25 @@ func (w *woven[T]) behind(heads []history.ID) map[history.ID]bool {
 
 // who is what to call the person who made a change.
 func (w *woven[T]) who(id history.ID) string { return Whose(w.by[id].Author, w.named) }
+
+// several is what to call a side of a merge that is already several versions folded together. It
+// says how many rather than listing them, so a marker stays one line however many were put in.
+func several(first string, folded int) string {
+	if folded < 2 {
+		return first
+	}
+	return fmt.Sprintf("%s and %d others", first, folded-1)
+}
+
+// Heads is the changes in a set that nothing else in it comes after: the versions of the thing that
+// a merge has to put together.
+func Heads(changes []history.Change) []history.ID {
+	w := &woven[struct{}]{by: make(map[history.ID]history.Change, len(changes))}
+	for _, c := range changes {
+		w.by[c.ID()] = c
+	}
+	return w.heads()
+}
 
 // sorted is a set of ids in the one order they are read in.
 func sorted(ids []history.ID) []history.ID {

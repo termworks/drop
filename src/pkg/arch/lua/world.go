@@ -34,6 +34,19 @@ const (
 	sessionBytes = 64 << 20
 )
 
+// What a session spends on the work a host function does outside lua.
+//
+// The budget counts steps and bytes, and neither is what starting a process, opening a file or
+// filling a disk actually costs — all three are one step to the runtime and none of them is memory
+// the runtime gives back. Each is charged what it is worth in steps instead, so the one budget
+// bounds all of it: a session gets about twelve hundred processes, fifty thousand opens and fifty
+// megabytes written, or any mixture adding up to the same.
+const (
+	costRun   = 40_000
+	costOpen  = 1_000
+	costWrite = 1
+)
+
 // What working out a mount's settings and the line said about it may spend. Both run while a config
 // is being read, where the answer is a fact about a file and not a conversation with anybody.
 const (

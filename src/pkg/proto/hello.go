@@ -60,13 +60,27 @@ type Hello struct {
 	Serves  []Served
 }
 
+// encode writes what this node says it offers, cut to what the far end will read.
+//
+// Both lists are cut here rather than left to the reader, which refuses the whole message: a node
+// with one crowded namespace would otherwise be a node nobody can list at all, and the crowding is
+// its own doing rather than anything a caller did.
 func (h Hello) encode() []byte {
 	w := wire.NewWriter()
 	w.String(h.Name)
 	w.String(h.Version)
 
-	w.Uint(uint64(len(h.Serves)))
-	for _, s := range h.Serves {
+	serves := h.Serves
+	if len(serves) > MaxServed {
+		serves = serves[:MaxServed]
+	}
+
+	w.Uint(uint64(len(serves)))
+	for _, s := range serves {
+		holders := s.Holders
+		if len(holders) > MaxHolders {
+			holders = holders[:MaxHolders]
+		}
 		w.String(s.Path)
 		w.String(s.Archetype)
 		w.String(s.Shape)
@@ -77,8 +91,8 @@ func (h Hello) encode() []byte {
 		w.String(s.Shared.Creator)
 		w.String(s.Shared.At)
 		w.String(s.Shared.Nonce)
-		w.Uint(uint64(len(s.Holders)))
-		for _, key := range s.Holders {
+		w.Uint(uint64(len(holders)))
+		for _, key := range holders {
 			w.String(key)
 		}
 	}

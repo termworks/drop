@@ -14,6 +14,10 @@ import (
 // Beside is the directory a config keeps its own archetypes in, next to init.lua.
 const Beside = "archetypes"
 
+// newest is the version a registry gives back when it is asked for a name and no version, which is
+// what a mount that pinned none is asking for.
+const newest = 0
+
 // Load compiles every archetype written beside a config and registers it.
 //
 // A file that will not compile is an error naming the file and the line, said here, while the
@@ -98,20 +102,28 @@ func compile(file, keeps string) ([]*Plugin, error) {
 	return out, nil
 }
 
-// spare refuses a plugin that would take the name of an archetype this build was made with.
+// spare refuses a plugin that would take a name already spoken for.
 //
 // Registering replaces, so a file called chat.lua declaring a chat would quietly become the chat
-// everybody's messages go to. Another plugin under the same name is a config read twice and is
-// left alone.
+// everybody's messages go to — and so would one declaring a chat at version 2, because a mount that
+// names no version is asking for the newest of them. The name is what is spoken for and not the
+// name and the version, and it is spoken for by another file as much as by this build. The same
+// file read twice is a config read twice and is left alone.
 func spare(into *arch.Registry, p *Plugin) error {
-	was, taken := into.Lookup(p.name, p.version)
-	if !taken {
-		return nil
+	for _, version := range []int{newest, p.version} {
+		was, taken := into.Lookup(p.name, version)
+		if !taken {
+			continue
+		}
+		written, ok := was.(*Plugin)
+		if !ok {
+			return fmt.Errorf("%s: %s is what this build already calls a kind of namespace", p.file, p.name)
+		}
+		if written.file != p.file {
+			return fmt.Errorf("%s: %s already declares a %s", p.file, written.file, p.name)
+		}
 	}
-	if _, written := was.(*Plugin); written {
-		return nil
-	}
-	return fmt.Errorf("%s: %s is what this build already calls a kind of namespace", p.file, p.name)
+	return nil
 }
 
 // keeping is where namespaces of archetypes written in lua keep their files: beside the

@@ -41,11 +41,40 @@ func showOwnTable(known *arch.Registry) error {
 	mounts := cfg.Mounts.All()
 	kind := widest(6, kinds(mounts))
 	for _, m := range mounts {
-		fmt.Printf("  %-24s %-*s %-8s %-22s %s%s\n",
-			m.Path, kind, kindOf(m.Archetype), m.Source, shared(cfg.Mounts, m), detail(known, m), sharedAs(m))
+		fmt.Printf("  %-24s %-*s %-8s %-22s %s%s%s\n",
+			m.Path, kind, kindOf(m.Archetype), m.Source, shared(cfg.Mounts, m), detail(known, m), unresolved(known, m), sharedAs(m))
 	}
 	shadowed(skipped)
+	if said := membership(mounts); said != "" {
+		fmt.Printf("\n%s", said)
+	}
 	return nil
+}
+
+// unresolved is what a namespace says about a change it could not merge, for the row it is on.
+//
+// This is the seam and nothing is coming through it yet. What can be said about a namespace without
+// knowing what it is comes from arch.Note, and arch.Note has no word for a conflict — when it grows
+// one, read it off `known.Lookup(m.Archetype, m.Version).Note(m.Config)` here, which is where the
+// listing has room for it.
+func unresolved(known *arch.Registry, m ns.Mount) string {
+	return ""
+}
+
+// membership says what the rule column means for a namespace several machines hold.
+//
+// Said once, under the table, because it is the one thing about holding a thing together that the
+// table cannot show: there is no list of who holds it, so the rule is the list. Somebody holding it
+// whom the rule does not name is somebody whose changes are passed over, and everything made after
+// one of theirs with them, with nothing on the row to say so.
+func membership(mounts []ns.Mount) string {
+	for _, m := range mounts {
+		if m.Shared.Declared() {
+			return "  who a shared namespace is open to is who holds it: a change signed by anybody\n" +
+				"  else is refused here, and so is everything made after it.\n"
+		}
+	}
+	return ""
 }
 
 // sharedAs says a namespace is one several machines hold, and what they all call it.

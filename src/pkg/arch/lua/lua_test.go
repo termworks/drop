@@ -590,6 +590,105 @@ func TestAPluginCannotTakeABuiltInName(t *testing.T) {
 	}
 }
 
+// Nor at a version this build never had. A mount that pinned no version asks for the newest, so a
+// plugin declaring a later one is the one every existing mount would reach.
+func TestAPluginCannotTakeABuiltInNameAtALaterVersion(t *testing.T) {
+	dir := t.TempDir()
+	written := `drop.archetype{ name = "chat", version = 2, read = function(d) return {} end,
+		note = function(c) return {} end, serve = function(s, c) end }`
+	if err := os.WriteFile(filepath.Join(dir, "anything.lua"), []byte(written), 0o600); err != nil {
+		t.Fatalf("writing the plugin: %v", err)
+	}
+
+	known := arch.NewRegistry()
+	known.Register(stub{})
+
+	err := Load(dir, known)
+	if err == nil || !strings.Contains(err.Error(), "chat") {
+		t.Fatalf("a plugin took a built-in name at version 2 and came back with %v", err)
+	}
+	if was, _ := known.Lookup("chat", 0); was != arch.Archetype(stub{}) {
+		t.Fatalf("chat is now served by %T", was)
+	}
+}
+
+// Two files declaring one name is a mistake somebody has to be told about, not a race between two
+// filenames.
+func TestTwoFilesCannotDeclareOneName(t *testing.T) {
+	dir := t.TempDir()
+	for _, file := range []string{"one.lua", "two.lua"} {
+		written := `drop.archetype{ name = "camera", read = function(d) return {} end,
+			note = function(c) return {} end, serve = function(s, c) end }`
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(written), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", file, err)
+		}
+	}
+
+	err := Load(dir, arch.NewRegistry())
+	if err == nil || !strings.Contains(err.Error(), "camera") {
+		t.Fatalf("two files declared one camera and came back with %v", err)
+	}
+}
+
+// The example shipped with drop is the one everybody copies, so two people asking one camera for a
+// still at the same moment have to get two whole stills.
+func TestTwoWatchersOfOneCameraGetTheirOwnStill(t *testing.T) {
+	made, err := compile(filepath.Join("..", "..", "..", "..", "misc", Beside, "camera.lua"), t.TempDir())
+	if err != nil {
+		t.Fatalf("compiling the example: %v", err)
+	}
+	p := made[0]
+
+	// A snap that takes as long as a real one does and writes a mark of its own three times.
+	snap := `sh -c 'n=$$; : > "$0"; for i in 1 2 3; do echo $n >> "$0"; sleep 0.1; done'`
+	settings, err := p.Read(told{"device": "/dev/video0", "snap": snap})
+	if err != nil {
+		t.Fatalf("Read(): %v", err)
+	}
+
+	stills := make([]string, 2)
+	var wg sync.WaitGroup
+	for at := range stills {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			conn, client, done := opened(t, p, settings)
+			defer client.Close()
+
+			said(t, conn)
+			if err := conn.WriteFrame(wire.KindItem, []byte("still")); err != nil {
+				t.Errorf("watcher %d asking: %v", at, err)
+				return
+			}
+			_, body := said(t, conn)
+			stills[at] = string(body)
+
+			if err := conn.WriteFrame(wire.KindEnd, nil); err != nil {
+				t.Errorf("watcher %d ending: %v", at, err)
+			}
+			<-done
+		}()
+	}
+	wg.Wait()
+
+	// Every line of a still came from one capture, and the two watchers watched two of them.
+	for at, still := range stills {
+		lines := strings.Fields(still)
+		if len(lines) != 3 {
+			t.Fatalf("watcher %d got %d lines of a still: %q", at, len(lines), still)
+		}
+		for _, line := range lines {
+			if line != lines[0] {
+				t.Fatalf("watcher %d got a still made of %q", at, still)
+			}
+		}
+	}
+	if stills[0] == stills[1] {
+		t.Fatalf("both watchers were handed the same capture: %q", stills[0])
+	}
+}
+
 // stub is an archetype of this build's own, to be shadowed and not shadowed.
 type stub struct{}
 
