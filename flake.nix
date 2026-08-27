@@ -24,16 +24,15 @@
         ];
       in
       {
-        # Nothing enters this today — the release workflow uses actions/setup-go, not nix. It is
-        # here for a job that wants the same toolchain this shell pins.
+        # For a job that wants the toolchain without the release tools. The release workflow uses
+        # actions/setup-go rather than entering this.
         devShells.ci = pkgs.mkShell { packages = buildTools; };
 
         devShells.default = pkgs.mkShell {
           packages = buildTools ++ [
-            pkgs.goreleaser
+            # `make changelog` shells out to this.
             pkgs.git-cliff
             pkgs.gh
-            pkgs.mdbook
             # The release workflow packs with `upx -9`; this is here to reproduce that locally.
             # It takes the binary from 19 MB to 6.8 MB and costs 0.054s of startup against
             # 0.003s, because a packed binary unpacks itself every time.
