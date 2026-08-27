@@ -41,8 +41,8 @@ func newMachineCmd() *cobra.Command {
 			case mark.Held():
 				fmt.Printf("  named by      %s\n", mark.Says)
 				fmt.Printf("  which reads   %s\n", mark.Brief())
-				fmt.Printf("  and by        this account, %s, so everyone with one here is\n", metal.Whose())
-				fmt.Printf("                reachable as themselves\n")
+				fmt.Printf("  and by        where this drop keeps its things, so every account and\n")
+				fmt.Printf("                profile here is reachable as itself\n")
 				fmt.Printf("  survives      a reinstall, because nothing about it is written down\n")
 				fmt.Printf("  changes if    %s\n", changes(mark.From))
 			default:
@@ -71,11 +71,11 @@ func newMachineCmd() *cobra.Command {
 func changes(from metal.Source) string {
 	switch from {
 	case metal.Chip:
-		return "the TPM is cleared, or this account is renamed"
+		return "the TPM is cleared, or this drop is moved to another home"
 	case metal.Board:
-		return "the board is replaced, or this account is renamed"
+		return "the board is replaced, or this drop is moved to another home"
 	case metal.Disk:
-		return "the drive the system is on is replaced, or this account is renamed"
+		return "the drive the system is on is replaced, or this drop is moved to another home"
 	}
 	return "anything at all"
 }
@@ -101,11 +101,15 @@ func newRebindCmd() *cobra.Command {
 				return fmt.Errorf("this machine is already named by %s", mark.Says)
 			}
 
+			where, err := node.ConfigDir()
+			if err != nil {
+				return err
+			}
 			was, err := node.LocalID()
 			if err != nil {
 				return err
 			}
-			seed, err := mark.Seed(metal.Whose())
+			seed, err := mark.Seed(where)
 			if err != nil {
 				return err
 			}

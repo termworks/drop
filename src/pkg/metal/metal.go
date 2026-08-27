@@ -73,19 +73,25 @@ func (m Mark) Held() bool { return m.From != Nowhere && len(m.raw) > 0 }
 // label, a licence, another program doing the same trick — cannot produce the same key.
 const purpose = "drop machine identity v1"
 
-// Seed is the key material for one person's drop on this machine.
+// Seed is the key material for one drop on this machine.
 //
 // Domain-separated and versioned: the version is in the purpose, so the day this has to derive
 // differently, old machines keep their names by keeping the old purpose.
 //
-// Whose it is goes in as well as what the machine is. A machine is one machine and the people with
-// accounts on it are several, and each of them runs a drop of their own that has to be reachable as
-// itself — two of them deriving one key would be two programs answering to one address, which is
-// not a machine with two people on it but a machine that cannot be dialled. So the machine decides
-// the part that survives a reinstall, and the account decides which of the people on it this is.
+// Which drop goes in as well as which machine. A machine is one machine, and the drops running on
+// it are several — every account with one, every profile under an account, every node a test brings
+// up. Each has to be reachable as itself, and two of them deriving one key would not be one machine
+// with several people on it but two programs answering to one address, which is nobody.
+//
+// What tells them apart is where each keeps its things, because that is exactly what makes one drop
+// a different drop from another. It survives a reinstall — the path is the same on the machine that
+// comes back — and it does not survive being carried somewhere else, which is the point.
 func (m Mark) Seed(whose string) ([32]byte, error) {
 	if !m.Held() {
 		return [32]byte{}, fmt.Errorf("this machine says nothing about itself that a name could be made from")
+	}
+	if whose == "" {
+		return [32]byte{}, fmt.Errorf("a name needs to know which drop on this machine it is for")
 	}
 
 	h := blake3.New(32, nil)

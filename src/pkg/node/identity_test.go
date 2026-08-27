@@ -17,7 +17,11 @@ func TestAMachineWithNothingWrittenDownComesBackAsItself(t *testing.T) {
 	if !metal.Read().Held() {
 		t.Skip("this machine says nothing about itself, so there is nothing to derive from")
 	}
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	// One place, wiped and used again — which is what a reinstall leaves behind. Not two places:
+	// two places are two drops, and they are supposed to differ.
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
 
 	was, err := LocalID()
 	if err != nil {
@@ -25,7 +29,7 @@ func TestAMachineWithNothingWrittenDownComesBackAsItself(t *testing.T) {
 	}
 
 	// Nothing was written down, so there is nothing a backup could carry and nothing a wipe could
-	// take. A fresh config directory is exactly what a reinstall leaves behind.
+	// take.
 	path, err := Written()
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +38,9 @@ func TestAMachineWithNothingWrittenDownComesBackAsItself(t *testing.T) {
 		t.Fatalf("%s was written even though the machine names itself", path)
 	}
 
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := os.RemoveAll(home); err != nil {
+		t.Fatal(err)
+	}
 	now, err := LocalID()
 	if err != nil {
 		t.Fatalf("LocalID() after a wipe: %v", err)
@@ -50,6 +56,40 @@ func TestAMachineWithNothingWrittenDownComesBackAsItself(t *testing.T) {
 	}
 	if !mark.Held() || mark.Says == "" {
 		t.Fatalf("the machine named itself but will not say from what: %+v", mark)
+	}
+}
+
+// Two drops on one machine are two drops. An account of their own, a profile, or a test bringing
+// up a second node — each keeps its things somewhere else, and each has to be reachable as itself.
+// Two of them on one address is not one machine with two people on it, it is nobody.
+func TestTwoDropsOnOneMachineAreNotOneAddress(t *testing.T) {
+	if !metal.Read().Held() {
+		t.Skip("this machine says nothing about itself, so there is nothing to derive from")
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	one, err := LocalID()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	two, err := LocalID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one == two {
+		t.Fatalf("two drops on one machine both answer to %s", Brief(one))
+	}
+
+	// A profile is the same thing: its own place, so its own name.
+	t.Setenv("DROP_PROFILE", "bob")
+	three, err := LocalID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if three == two || three == one {
+		t.Fatalf("a profile answers to the same address as the drop it runs beside: %s", Brief(three))
 	}
 }
 

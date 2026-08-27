@@ -51,11 +51,11 @@ func TestTheOrderThingsAreReadInDoesNotChangeTheMachine(t *testing.T) {
 func TestOneSerialGivesDifferentNamesForDifferentThings(t *testing.T) {
 	raw := []byte("1421823004485")
 
-	disk, err := Mark{From: Disk, raw: raw}.Seed("alice")
+	disk, err := Mark{From: Disk, raw: raw}.Seed("/home/alice/.config/drop")
 	if err != nil {
 		t.Fatal(err)
 	}
-	board, err := Mark{From: Board, raw: raw}.Seed("alice")
+	board, err := Mark{From: Board, raw: raw}.Seed("/home/alice/.config/drop")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestOneSerialGivesDifferentNamesForDifferentThings(t *testing.T) {
 	}
 
 	// And the same thing twice is the same machine, which is the whole point.
-	again, err := Mark{From: Disk, raw: raw}.Seed("alice")
+	again, err := Mark{From: Disk, raw: raw}.Seed("/home/alice/.config/drop")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestAMachineThatFoundNothingHasNoName(t *testing.T) {
 	if none.Held() {
 		t.Fatal("a machine that read nothing thinks it has something")
 	}
-	if _, err := none.Seed("alice"); err == nil {
+	if _, err := none.Seed("/home/alice/.config/drop"); err == nil {
 		t.Fatal("a machine that read nothing made a name anyway")
 	}
 	if none.Brief() != "" {
@@ -95,7 +95,7 @@ func TestWhatIsShownIsNotWhatTheKeyIsMadeFrom(t *testing.T) {
 	if strings.Contains(m.Brief(), secret) {
 		t.Fatalf("the serial is in what gets printed: %q", m.Brief())
 	}
-	seed, err := m.Seed("alice")
+	seed, err := m.Seed("/home/alice/.config/drop")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,16 +265,16 @@ func timeout() <-chan struct{} {
 	return done
 }
 
-// One machine, several people: each has to come out as themselves, or two programs answer to one
-// address and neither can be reached. And each of them still has to survive the disk being wiped.
-func TestTwoPeopleOnOneMachineAreNotOneMachine(t *testing.T) {
+// One machine, several drops: each has to come out as itself, or two programs answer to one address
+// and neither can be reached. And each of them still has to survive the disk being wiped.
+func TestTwoDropsOnOneMachineAreNotOneName(t *testing.T) {
 	m := Mark{From: Board, raw: []byte("1421823004485")}
 
-	alice, err := m.Seed("alice")
+	alice, err := m.Seed("/home/alice/.config/drop")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bob, err := m.Seed("bob")
+	bob, err := m.Seed("/home/bob/.config/drop")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestTwoPeopleOnOneMachineAreNotOneMachine(t *testing.T) {
 	}
 
 	// The same person on the same machine, after everything on it was thrown away.
-	again, err := m.Seed("alice")
+	again, err := m.Seed("/home/alice/.config/drop")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestTwoPeopleOnOneMachineAreNotOneMachine(t *testing.T) {
 	// The same person on another machine is somebody else's problem: a name is a machine and a
 	// person together, so carrying a backup elsewhere does not carry the name.
 	other := Mark{From: Board, raw: []byte("9999999999999")}
-	away, err := other.Seed("alice")
+	away, err := other.Seed("/home/alice/.config/drop")
 	if err != nil {
 		t.Fatal(err)
 	}
