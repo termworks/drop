@@ -55,32 +55,34 @@ Discovery, pairing and transfer work.
 
 ## build
 
-There is no build system. It is one Go module and the go tool is enough.
+The build is [`.make.lua`](.make.lua), as recipes. `make` on its own lists them with what each one
+says it does.
 
-```console
-go build -o drop ./src                      # a working binary
-go test ./...                               # the suite
-gofmt -l src && go vet ./...                # what has to be clean before a commit
-go run ./src me machine                     # run it without building
+```
+make build        # the release binary, into ./drop
+make run peers    # run it; bare words pass through, flags go in --args
+make test         # the suite
+make verify       # fmt-check, check, test, build — the whole local gate
+make install      # into $PREFIX/bin, which defaults to ~/.local
 ```
 
-The release binary is static and stripped:
+`c`, `r`, `t`, `v` are aliases for compile, run, test and verify. `make clean` removes every build
+output; `make tidy` syncs go.mod; `make release --type patch` cuts a version.
 
-```console
-CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o drop ./src
-```
+At an oslo prompt in this directory `make` is enough; everywhere else it is `oslo make`.
 
-`CGO_ENABLED=0` matters for more than size: cgo links the system resolver and pins the binary to
-the host it was built on. With it off, the same command cross-compiles to anything Go targets —
-which is how this is tested on two architectures at once:
+The toolchain comes from the flake — `nix develop`, or `direnv allow` and it is loaded on `cd`.
+
+Nothing stops you calling the go tool directly, and one thing needs it: there is no recipe for
+another architecture, so a cross build is spelt out.
 
 ```console
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o drop-arm64 ./src
 ```
 
-The toolchain comes from the flake — `nix develop`, or `direnv allow` and it is loaded on `cd`.
-That shell sets `CGO_ENABLED=0`, which the race detector cannot build under, so that one run needs
-it back: `CGO_ENABLED=1 go test -race ./...`.
+`CGO_ENABLED=0` matters for more than size: cgo would link the system resolver and pin the binary
+to the host it was built on. With it off the same command targets anything Go does, which is how
+this is tested on two architectures at once.
 
 ### size
 
@@ -89,11 +91,11 @@ it back: `CGO_ENABLED=1 go test -race ./...`.
 
 It was 32 MB on libp2p. Moving to iroh took it to 15 MB compiled: 682 packages became 307.
 
-upx is in the dev shell and nothing runs it for you. `upx --best` takes the 19 MB to 6.8 MB, and
-that is not free: a packed binary starts in 0.054s against 0.003s unpacked, because it unpacks
-itself into memory every time. For a daemon that starts once it is worth it, for a command you run
-in a loop it is not. The compression *level* is free — `-1`, `-5` and `-9` all unpack in the same
-time — so if you pack at all, pack hardest. Only lzma is genuinely slow to unpack.
+`make build` does **not** compress: it copies the compiled binary into place, because this is one
+that gets run rather than shipped over a wire that charges by the megabyte. The release workflow
+packs with `upx -9`, which takes it to 6.8 MB and costs 0.054s of startup against 0.003s — worth it
+for something downloaded once, not for a command you run in a loop. The compression *level* is
+free: `-1`, `-5` and `-9` all unpack in the same time, so if you pack at all, pack hardest.
 
 ## commands
 
@@ -1309,22 +1311,29 @@ With nothing running, every command dials for itself, exactly as before.
 
 ## testing it
 
-`go test ./...` is the unit suite. Two more are behind build tags, because each builds the binary,
-starts daemons and takes a minute — that does not belong in the run you do on every save.
+`make test` is the unit suite. Two more are separate, because each builds the binary, starts
+daemons and takes a minute — that does not belong in the run you do on every save.
 
-```console
-go test ./...                          # the unit suite
-go test -tags e2e -count=1 ./src/e2e/  # two real nodes on this machine
-go test -tags cross -count=1 ./src/e2e/ -v   # this machine and another one, over the network
+```
+make test         # the suite
+make test-all     # the same, with the race detector
+make e2e          # two real nodes on this machine
+make cover        # the suite, with a coverage profile
 ```
 
 **e2e** drives two nodes on this machine from the command line over QUIC: pairing, a message each
 way, a file each way, standard input as a file, a link, a stream, a shell, a cast, and a message
 queued for a device that was switched off.
 
-**cross** needs a second machine, reachable over ssh and running the same build — it is what proves
-a thing works between two architectures rather than between two processes that happen to agree.
-[`misc/orin.sh`](misc/orin.sh) builds for arm64, copies it over and restarts the daemon there.
+**cross** is the third, and has no recipe because it needs a second machine — reachable over ssh
+and running the same build. It is what proves a thing works between two architectures rather than
+between two processes that happen to agree.
+
+```console
+go test -tags cross -count=1 -v ./src/e2e/
+```
+
+[`misc/orin.sh`](misc/orin.sh) is what puts the build on the other machine.
 
 ```console
 misc/orin.sh deploy      # build for arm64, copy it over, restart the daemon
