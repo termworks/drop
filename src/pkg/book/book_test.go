@@ -436,3 +436,91 @@ func TestSaveReplacesTheBookRatherThanTruncatingIt(t *testing.T) {
 		t.Fatalf("the reloaded book has %d entries, want 2", len(reloaded.All()))
 	}
 }
+
+// A machine somebody replaced is the same machine to everyone who knew it. Pointing the entry at
+// the new one has to keep everything that made it worth having: the name, the shared secret, whose
+// it is, and whether it is trusted. Losing any of those is being made to pair again.
+func TestAMovedMachineKeepsEverythingButWhereItWas(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	b, err := Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+
+	was, now := testID(t), testID(t)
+	secret := testSecret(t)
+	b.Pair("orin", was, secret, "1.2.3.4:47777")
+	b.Belongs("orin", "ssh-ed25519 AAAA bob")
+	b.Trust("orin", true)
+
+	name, ok := b.Moved(was, now)
+	if !ok || name != "orin" {
+		t.Fatalf("Moved() said %q, %v", name, ok)
+	}
+
+	entry, held := b.Lookup("orin")
+	if !held {
+		t.Fatal("the entry went when it moved")
+	}
+	if entry.ID != now {
+		t.Fatalf("the entry points at %v, want %v", entry.ID, now)
+	}
+	if !entry.Paired() {
+		t.Fatal("the shared secret was lost, so the two would have to pair again")
+	}
+	if string(entry.Secret) != string(secret) {
+		t.Fatal("the shared secret changed")
+	}
+	if !entry.Trusted || entry.User == "" {
+		t.Fatalf("who it belongs to or whether it is trusted was lost: %+v", entry)
+	}
+	// Where it was is the one thing that must go: it is somewhere else now.
+	if len(entry.Addrs) != 0 {
+		t.Fatalf("the old addresses were kept: %v", entry.Addrs)
+	}
+
+	// And it is findable by the new id and not the old.
+	if _, found := b.ByID(now); !found {
+		t.Fatal("the moved machine is not findable by its new id")
+	}
+	if _, found := b.ByID(was); found {
+		t.Fatal("the moved machine is still findable by its old id")
+	}
+}
+
+// Moving is refused where it would do harm or nothing: onto itself, onto an id already in the book,
+// or from a machine nobody here has heard of.
+func TestAMoveThatWouldMergeOrInventAnEntryIsRefused(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	b, err := Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+
+	one, two, three := testID(t), testID(t), testID(t)
+	b.Pin("orin", one)
+	b.Pin("tron", two)
+
+	if _, ok := b.Moved(one, one); ok {
+		t.Error("a machine moved to itself")
+	}
+	if _, ok := b.Moved(one, two); ok {
+		t.Error("a machine moved onto another machine already in the book, making two entries one")
+	}
+	if _, ok := b.Moved(three, testID(t)); ok {
+		t.Error("a machine nobody here has heard of moved something")
+	}
+	if _, ok := b.Moved(node.ID{}, two); ok {
+		t.Error("a move from nothing was taken")
+	}
+
+	// And nothing was disturbed by any of that.
+	if entry, _ := b.Lookup("orin"); entry.ID != one {
+		t.Fatalf("orin is %v, want %v", entry.ID, one)
+	}
+	if entry, _ := b.Lookup("tron"); entry.ID != two {
+		t.Fatalf("tron is %v, want %v", entry.ID, two)
+	}
+}

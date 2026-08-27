@@ -445,3 +445,42 @@ func (b *Book) Reached(id node.ID, at string) (bool, error) {
 // mostAddrs caps what is remembered for one device. A machine that moves between a few networks is
 // worth keeping; one that has been on thirty is not, and the oldest are the least likely to work.
 const mostAddrs = 8
+
+// Moved points an entry at the machine its old one says it became, and says which entry it was.
+//
+// Everything else about the entry is kept: the name it is filed under here, the secret the two
+// derived together, whose machine it is, and whether it is trusted. That is the whole point — a
+// machine somebody replaced is the same machine to everybody who knew it, and being made to pair
+// again with each of them is the thing this avoids.
+//
+// The addresses go, because they are where the old machine was and the new one is somewhere else.
+// They are learned again the first time it is reached.
+//
+// Nothing here checks anybody's word for it. Whoever calls this has already checked that the old
+// machine signed the statement, because the old machine's key is the id being replaced.
+func (b *Book) Moved(was, now node.ID) (string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if was == now || was.IsZero() || now.IsZero() {
+		return "", false
+	}
+
+	// A machine already in the book under the new id is one this has been done for, or one paired
+	// separately. Either way there is nothing to move and moving would make two entries one.
+	for _, entry := range b.entries {
+		if entry.ID == now {
+			return "", false
+		}
+	}
+
+	for name, entry := range b.entries {
+		if entry.ID != was {
+			continue
+		}
+		entry.ID, entry.Addrs = now, nil
+		b.entries[name] = entry
+		return name, true
+	}
+	return "", false
+}

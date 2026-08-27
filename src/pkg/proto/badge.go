@@ -80,25 +80,41 @@ func vouched(from node.ID, open Opening) Badged {
 // is asking, so the badge rides in that frame's body.
 func showable() []byte {
 	badge, signed := carried()
+	moved, handed := handing()
 
 	w := wire.NewWriter()
 	w.Bytes(badge)
 	w.Bytes(signed)
+	w.Bytes(moved)
+	w.Bytes(handed)
 	return w.Body()
 }
 
-// showing reads a badge out of such a frame and checks it.
-func showing(from node.ID, body []byte) Badged {
+// showing reads a badge and a handover out of such a frame and checks both.
+func showing(from node.ID, body []byte) (Badged, node.ID, bool) {
 	r := wire.NewReader(body)
 	badge, err := r.Bytes(wire.MaxString)
 	if err != nil {
-		return Badged{}
+		return Badged{}, node.ID{}, false
 	}
 	signed, err := r.Bytes(wire.MaxString)
 	if err != nil {
-		return Badged{}
+		return Badged{}, node.ID{}, false
 	}
-	return vouched(from, Opening{Badge: badge, Signed: signed})
+	who := vouched(from, Opening{Badge: badge, Signed: signed})
+
+	// A hello from a machine that has moved is the first thing many peers hear from it, so the
+	// news travels here as well as on an open. An older frame simply stops here and says nothing.
+	moved, err := r.Bytes(wire.MaxString)
+	if err != nil {
+		return who, node.ID{}, false
+	}
+	handed, err := r.Bytes(wire.MaxString)
+	if err != nil {
+		return who, node.ID{}, false
+	}
+	was, ok := handedRaw(from, moved, handed)
+	return who, was, ok
 }
 
 // What this machine shows to say what it is running on.
@@ -161,4 +177,53 @@ func stood(from node.ID, open Opening) Stood {
 		return Stood{}
 	}
 	return Stood{Machine: stamp.Machine.String(), Whose: stamp.Whose}
+}
+
+// What this machine shows to say it is the one another machine became.
+
+var moving struct {
+	sync.RWMutex
+	moved  []byte
+	handed []byte
+}
+
+// Moving sets the handover every session this node opens will present, so that peers who knew the
+// machine this one replaced hear about it the first time it calls them. Nothing set means a machine
+// that replaced nothing, which is nearly all of them.
+func Moving(moved, handed []byte) {
+	moving.Lock()
+	defer moving.Unlock()
+
+	moving.moved, moving.handed = moved, handed
+}
+
+// handing is what to attach, and nothing at all for a machine that replaced nothing.
+func handing() ([]byte, []byte) {
+	moving.RLock()
+	defer moving.RUnlock()
+
+	return moving.moved, moving.handed
+}
+
+// handed checks a caller's handover and reports which machine it says it became.
+//
+// Two things have to hold, and the second is the one that matters. The statement has to be signed
+// by the machine it says it was, which is checked against that machine's own id. And it has to name
+// this very caller as what that machine became — otherwise anybody who overheard a handover could
+// present it and be taken for somebody else's machine.
+func handed(from node.ID, open Opening) (node.ID, bool) {
+	return handedRaw(from, open.Moved, open.Handed)
+}
+
+// handedRaw is the same check on the two halves alone, for the frames that carry no opening.
+func handedRaw(from node.ID, moved, hand []byte) (node.ID, bool) {
+	if len(moved) == 0 || len(hand) == 0 {
+		return node.ID{}, false
+	}
+
+	over, err := plate.Took(moved, hand, time.Now())
+	if err != nil || over.Now != from {
+		return node.ID{}, false
+	}
+	return over.Was, true
 }

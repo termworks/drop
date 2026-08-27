@@ -98,6 +98,7 @@ func runTUI(parent context.Context) error {
 				Archetypes: known,
 				Allow:      accepting(pinned, false),
 				Who:        whoIs(pinned),
+				Moved:      moving(pinned, func(string) {}),
 				Refused:    noting(pinned),
 				Asked:      taking(),
 			})
@@ -108,7 +109,7 @@ func runTUI(parent context.Context) error {
 
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
 				return greeting(pinned, cfg.Mounts, known, from, badge)
-			})
+			}, moving(pinned, func(string) {}))
 		},
 	}
 

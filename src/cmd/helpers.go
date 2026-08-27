@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -153,5 +154,25 @@ func noting(pinned *book.Book) func(node.ID, string, string) {
 			return
 		}
 		_ = seen.Knocked(from, asked, why, time.Now())
+	}
+}
+
+// moving applies a handover: the machine an entry names says it became somebody else, and that has
+// been checked before this is called.
+//
+// Written down straight away rather than at the end of anything. A machine tells each peer once, on
+// the first connection after it moved, and a peer that heard it and did not keep it would go on
+// dialling somewhere nobody is.
+func moving(pinned *book.Book, said func(string)) func(was, now node.ID) {
+	return func(was, now node.ID) {
+		name, ok := pinned.Moved(was, now)
+		if !ok {
+			return
+		}
+		if err := pinned.Save(); err != nil {
+			said(fmt.Sprintf("%s moved to %s and it could not be written down: %v", name, node.Brief(now), err))
+			return
+		}
+		said(fmt.Sprintf("%s is now %s, and was %s", name, node.Brief(now), node.Brief(was)))
 	}
 }

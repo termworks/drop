@@ -268,13 +268,17 @@ func lookup(known *arch.Registry, m ns.Mount) (arch.Archetype, bool) {
 	return known.Lookup(m.Archetype, m.Version)
 }
 
+// Moved is told when the ask carried word that a machine became this caller, once that checks out:
+// a hello is the first thing many peers hear from a machine that moved, so the news travels here as
+// well as on an open. Nil ignores it.
+//
 // AnswerHello reads the ask and answers it. Self is built from the badge the ask carried, because
 // what this node is willing to say it serves depends on who is asking.
 //
 // Hello is answered to anybody who dials, so the ask is bounded the way a session's open is: a peer
 // that says half a frame and then nothing otherwise holds a goroutine and its buffer for as long as
 // it likes, and it never has to say another word.
-func AnswerHello(s Stream, from node.ID, self func(Badged) Hello) error {
+func AnswerHello(s Stream, from node.ID, self func(Badged) Hello, moved func(was, now node.ID)) error {
 	c := wire.NewConn(s)
 
 	_ = s.SetReadDeadline(time.Now().Add(settleIn))
@@ -286,7 +290,11 @@ func AnswerHello(s Stream, from node.ID, self func(Badged) Hello) error {
 	}
 	_ = s.SetReadDeadline(time.Time{})
 
-	return c.WriteFrame(wire.KindOpen, self(showing(from, body)).encode())
+	who, was, movedOn := showing(from, body)
+	if movedOn && moved != nil {
+		moved(was, from)
+	}
+	return c.WriteFrame(wire.KindOpen, self(who).encode())
 }
 
 // ReadHello reads what the far end calls itself.

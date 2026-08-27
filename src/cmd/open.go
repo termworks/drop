@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -262,6 +263,7 @@ func talkTo(ctx context.Context, o opening) error {
 		Archetypes: known,
 		Allow:      accepting(pinned, false),
 		Who:        whoIs(pinned),
+		Moved:      moving(pinned, func(said string) { log.Printf("%s", said) }),
 	}
 	go serveLoop(ctx, o.node, map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
@@ -272,7 +274,7 @@ func talkTo(ctx context.Context, o opening) error {
 			defer s.Close()
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
 				return greeting(pinned, mounts, known, from, badge)
-			})
+			}, moving(pinned, func(said string) { log.Printf("%s", said) }))
 		},
 	})
 

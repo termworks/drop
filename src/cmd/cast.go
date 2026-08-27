@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -120,13 +121,14 @@ func runCast(parent context.Context, addressFile string) error {
 				Archetypes: known,
 				Allow:      accepting(pinned, false),
 				Who:        whoIs(pinned),
+				Moved:      moving(pinned, func(said string) { log.Printf("%s", said) }),
 			})
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
 			defer s.Close()
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
 				return greeting(pinned, mounts, known, from, badge)
-			})
+			}, moving(pinned, func(said string) { log.Printf("%s", said) }))
 		},
 	})
 

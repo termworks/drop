@@ -7,6 +7,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/metal"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/plate"
+	"github.com/tmc/go-iroh/key"
 )
 
 // A plate has to survive being written into an opening and read back out, or none of the rest of
@@ -80,5 +81,57 @@ func TestRubbishIsNotAPlate(t *testing.T) {
 		if on := stood(here, open); on.Shown() {
 			t.Errorf("%s was read as a plate: %+v", what, on)
 		}
+	}
+}
+
+// A hello is the first thing many peers hear from a machine that moved, so the news has to travel
+// in that frame too — not only on an open, which a peer may never see.
+func TestAHandoverRidesInTheHelloAsk(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	now := time.Now()
+
+	fresh, err := key.GenerateSecretKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	became := fresh.Public().EndpointID()
+
+	over, sig, err := plate.Hand(became, "bresilla", now)
+	if err != nil {
+		t.Fatalf("Hand(): %v", err)
+	}
+	Moving(over.Bytes(), sig)
+	defer Moving(nil, nil)
+
+	// The machine that moved is the one calling, so the news is acted on.
+	_, was, moved := showing(became, showable())
+	if !moved {
+		t.Fatal("a handover did not survive the hello ask")
+	}
+	if was != over.Was {
+		t.Fatalf("the hello says %s moved, want %s", node.Brief(was), node.Brief(over.Was))
+	}
+
+	// Anybody else presenting the same words is not the machine it names, and gets nothing.
+	other, err := key.GenerateSecretKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, moved := showing(other.Public().EndpointID(), showable()); moved {
+		t.Fatal("a handover replayed by somebody else was acted on")
+	}
+}
+
+// A hello carrying no handover is the ordinary case and must stay silent rather than looking like
+// a machine that moved to nowhere.
+func TestAHelloWithNoHandoverMovesNothing(t *testing.T) {
+	Moving(nil, nil)
+
+	here, err := node.LocalID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, was, moved := showing(here, showable()); moved || !was.IsZero() {
+		t.Fatalf("a hello with no handover moved %s", node.Brief(was))
 	}
 }

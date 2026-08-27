@@ -133,7 +133,7 @@ func TestAHelloThatSaysNothingIsNotHeldForever(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- AnswerHello(silent, node.ID{}, func(Badged) Hello { return Hello{Name: "beta"} })
+		done <- AnswerHello(silent, node.ID{}, func(Badged) Hello { return Hello{Name: "beta"} }, nil)
 	}()
 
 	select {
@@ -159,7 +159,7 @@ func TestHelloIsAskedThenAnswered(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- AnswerHello(server, node.ID{}, func(Badged) Hello { return want })
+		done <- AnswerHello(server, node.ID{}, func(Badged) Hello { return want }, nil)
 	}()
 
 	got, err := AskHello(client)

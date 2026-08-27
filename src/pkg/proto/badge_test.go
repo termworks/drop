@@ -93,13 +93,13 @@ func TestABadgeRidesInTheHelloAsk(t *testing.T) {
 	Carry(badge, sig)
 	defer Carry(nil, nil)
 
-	shown := showing(device, showable())
+	shown, _, _ := showing(device, showable())
 	if shown.Key != user.Text(signer.PublicKey()) {
 		t.Fatalf("the badge did not survive the ask: %+v", shown)
 	}
 
 	// An ask with no badge in it is not an ask this node knows how to answer for anybody.
-	if shown := showing(device, nil); shown.Shown() {
+	if shown, _, _ := showing(device, nil); shown.Shown() {
 		t.Error("an empty ask carried a badge")
 	}
 }

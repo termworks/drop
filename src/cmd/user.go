@@ -87,9 +87,11 @@ func wearBadge() error {
 	proto.Carry(badge.Bytes(), signed)
 
 	mine.Lock()
-	defer mine.Unlock()
 	mine.key = user.Text(badge.User)
+	mine.Unlock()
 
+	showPlate()
+	carryHandover()
 	return nil
 }
 

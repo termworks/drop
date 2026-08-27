@@ -29,6 +29,13 @@ type Policy struct {
 	Mounts *ns.Table
 	// Archetypes is what those namespaces mean. Without it nothing can be answered.
 	Archetypes *arch.Registry
+	// Moved is told that a machine in the address book says it became this caller, once that has
+	// been checked. Nil means handovers are ignored, which is what a process that keeps no address
+	// book wants.
+	//
+	// Called before the caller is described, so the machine doing the moving is recognised on the
+	// very connection that carries the news rather than on the next one.
+	Moved func(was, now node.ID)
 	// Who describes a caller: what it is filed under, and whether a secret is shared with it.
 	// Nil means nothing is known about anyone, which with deny-by-default serves nobody.
 	Who func(from node.ID, badge Badged, on Stood) ns.Caller
@@ -86,6 +93,14 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 	}
 	decided := func(reason string) error {
 		return conn.WriteFrame(wire.KindReject, wire.Reject{Reason: reason, Settled: true}.Encode())
+	}
+
+	// A machine that has moved says so before anything is decided about it, so the entry that
+	// names it is pointed at this caller and the rest of this connection sees whoever it always was.
+	if policy.Moved != nil {
+		if was, ok := handed(from, open); ok {
+			policy.Moved(was, from)
+		}
 	}
 
 	caller := ns.Caller{ID: from.String()}

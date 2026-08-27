@@ -54,6 +54,13 @@ type Opening struct {
 	// machine are seen as one machine with several people rather than as unrelated machines.
 	Plate   []byte
 	Stamped []byte
+	// Moved says this machine is the one another machine became, and Handed is the proof of it.
+	//
+	// Carried on every opening because there is no telling which peer has not heard yet, and a
+	// peer that has heard does nothing with it. It is signed by the old machine, so what it costs
+	// somebody who was never told is one signature check they refuse.
+	Moved  []byte
+	Handed []byte
 }
 
 func (o Opening) encode() []byte {
@@ -70,6 +77,8 @@ func (o Opening) encode() []byte {
 	w.String(string(o.Signed))
 	w.String(string(o.Plate))
 	w.String(string(o.Stamped))
+	w.String(string(o.Moved))
+	w.String(string(o.Handed))
 	return w.Body()
 }
 
@@ -143,11 +152,20 @@ func decodeOpen(body []byte) (Opening, error) {
 	if err != nil {
 		return out, err
 	}
+	moved, err := r.String(wire.MaxString)
+	if err != nil {
+		return out, err
+	}
+	handed, err := r.String(wire.MaxString)
+	if err != nil {
+		return out, err
+	}
 
 	out.Ask, out.Meet, out.Archetype, out.Version = ask, meet, archetype, int(version)
 	out.From, out.Path, out.Held, out.Secret = from, path, held, secret
 	out.Badge, out.Signed = []byte(badge), []byte(signed)
 	out.Plate, out.Stamped = []byte(plate), []byte(stamped)
+	out.Moved, out.Handed = []byte(moved), []byte(handed)
 	return out, nil
 }
 

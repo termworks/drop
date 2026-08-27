@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -156,6 +157,7 @@ func runServe(parent context.Context, quiet bool) error {
 		Archetypes: known,
 		Allow:      accepting(pinned, false),
 		Who:        whoIs(pinned),
+		Moved:      moving(pinned, func(said string) { log.Printf("%s", said) }),
 		Refused:    noting(pinned),
 		Asked:      taking(),
 		Met:        meeting(cfg.Mounts, pinned, doing.changed),
@@ -192,7 +194,7 @@ func runServe(parent context.Context, quiet bool) error {
 			_ = pinned.Refresh()
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
 				return greeting(pinned, cfg.Mounts, known, from, badge)
-			})
+			}, moving(pinned, func(said string) { log.Printf("%s", said) }))
 		},
 		// Pairing is answered by whoever holds the address, which is this. A separate `drop peer pair`
 		// process on this machine asks for a code to be shown; it cannot answer for the node.
