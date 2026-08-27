@@ -204,3 +204,13 @@ const (
 	MaxSigned    = 1024
 	MaxSignature = 64
 )
+
+// MaxUnknown is the largest first frame this node will hear from somebody it has decided nothing
+// about yet.
+//
+// Every field an opening or a hello ask can carry is bounded already, and the two of them together
+// come to a little over two hundred kilobytes. The general frame limit is twenty times that,
+// because a transfer needs it — but a transfer happens after somebody has been let in, and the size
+// of a frame is a number the sender chooses. Read before authentication, that number is a stranger
+// naming how much of this machine's memory to set aside for them, at a few bytes each.
+const MaxUnknown = 256 << 10

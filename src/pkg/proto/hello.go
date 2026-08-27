@@ -288,7 +288,7 @@ func AnswerHello(s Stream, from node.ID, self func(Badged) Hello, moved func(was
 	_ = s.SetReadDeadline(time.Now().Add(settleIn))
 
 	// Reading the ask is also what keeps the two sides in step on one stream.
-	_, body, err := c.ReadFrame()
+	_, body, err := c.ReadFrameUpTo(MaxUnknown)
 	if err != nil {
 		return fmt.Errorf("reading the ask: %w", err)
 	}

@@ -66,7 +66,7 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 
 	_ = s.SetReadDeadline(time.Now().Add(settleIn))
 
-	kind, body, err := conn.ReadFrame()
+	kind, body, err := conn.ReadFrameUpTo(MaxUnknown)
 	if err != nil {
 		// A stream opened and closed without a word is a peer that changed its mind, not a fault.
 		if wire.Closed(err) {

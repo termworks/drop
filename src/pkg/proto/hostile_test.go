@@ -1,6 +1,10 @@
 package proto
 
 import (
+	"bytes"
+	"encoding/binary"
+	"github.com/bresilla/drop/src/pkg/wire"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -169,3 +173,42 @@ func TestTheHolderListIsBoundedToWhatAKeyCouldBe(t *testing.T) {
 		t.Fatalf("a key came back as %q, want %q", got, ordinary)
 	}
 }
+
+// The size of a frame is a number the sender chooses, and the first frame is read from somebody
+// nobody has decided anything about. A few bytes claiming the largest frame there is must not buy
+// the whole of it: that is a stranger naming how much of this machine's memory to set aside.
+func TestAStrangerCannotNameHowMuchMemoryToSetAside(t *testing.T) {
+	head := header(wire.KindOpen, wire.MaxFrame)
+	if len(head) > 16 {
+		t.Fatalf("a header claiming %d bytes is itself %d bytes", wire.MaxFrame, len(head))
+	}
+
+	conn := wire.NewConn(readOnly{bytes.NewReader(head)})
+	if _, _, err := conn.ReadFrameUpTo(MaxUnknown); err == nil {
+		t.Fatalf("%d bytes bought a %d byte frame before anybody was authenticated", len(head), wire.MaxFrame)
+	}
+
+	// What an opening can legally be still goes through.
+	big := Opening{Path: "/notes", Secret: strings.Repeat("s", 1000), Badge: make([]byte, 60000)}
+	body := big.encode()
+	if len(body) > MaxUnknown {
+		t.Fatalf("an opening this node would send is %d bytes, over its own %d bound", len(body), MaxUnknown)
+	}
+	conn = wire.NewConn(readOnly{bytes.NewReader(append(header(wire.KindOpen, len(body)), body...))})
+	if _, got, err := conn.ReadFrameUpTo(MaxUnknown); err != nil || len(got) != len(body) {
+		t.Fatalf("an ordinary opening was refused: %v", err)
+	}
+}
+
+// header is a frame header as it goes on the wire: the kind, then the length as a varint.
+func header(kind byte, size int) []byte {
+	out := make([]byte, 1, 16)
+	out[0] = kind
+	return binary.AppendUvarint(out, uint64(size))
+}
+
+// readOnly is a stream that only ever reads, for a reader being fed bytes that never answers.
+type readOnly struct{ io.Reader }
+
+func (readOnly) Write(p []byte) (int, error) { return len(p), nil }
+func (readOnly) Close() error                { return nil }

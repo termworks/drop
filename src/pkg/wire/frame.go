@@ -152,3 +152,30 @@ func Closed(err error) bool {
 	}
 	return errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed)
 }
+
+// ReadFrameUpTo reads a whole frame and refuses one that says it is bigger than most, before
+// anything is allocated for it.
+//
+// The general limit is what any frame may be, which is what a transfer needs. It is far more than
+// the frames a stranger is allowed to send before anybody has decided anything about them, and the
+// size is read from the caller: a handful of bytes claiming the largest frame there is buys the
+// whole of it, held for as long as the deadline allows, and nothing has been read to earn it. So a
+// reader that answers before authentication says what it is prepared to hear.
+func (c *Conn) ReadFrameUpTo(most int) (kind byte, body []byte, err error) {
+	kind, size, err := c.ReadHeader()
+	if err != nil {
+		return 0, nil, err
+	}
+	if size > most {
+		return 0, nil, fmt.Errorf("wire: a frame claims %d bytes, over the %d allowed here", size, most)
+	}
+	if size == 0 {
+		return kind, nil, nil
+	}
+
+	body = make([]byte, size)
+	if _, err := io.ReadFull(c.r, body); err != nil {
+		return 0, nil, fmt.Errorf("wire: reading a frame body: %w", err)
+	}
+	return kind, body, nil
+}

@@ -54,5 +54,15 @@ func refused(names []string, c Caller) bool {
 	if has(names, c.ID) {
 		return true
 	}
+
+	// The name this machine is filed under here, before anything the caller says about itself.
+	// Admitting matches a bare name only for a caller with no person, which is right for letting
+	// somebody in — a device paired on its own is the only thing a bare name should admit. It is
+	// wrong for keeping somebody out: a device refused under its own name would go on being
+	// admitted the moment it attached a badge naming a person this machine happens to know, which
+	// it does on every connection. Revocation would be a thing the refused device could opt out of.
+	if c.Name != "" && has(names, c.Name) {
+		return true
+	}
 	return named(names, Caller{ID: c.ID, Name: c.Name, UserName: c.UserName, Paired: true})
 }
