@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bresilla/drop/src/pkg/among"
@@ -149,13 +150,46 @@ func whoIs(pinned *book.Book) func(node.ID, proto.Badged, proto.Stood) ns.Caller
 // nothing to look up afterwards. A stranger is the case this exists for: it dialled, so its id is
 // known, and letting it in later should not mean copying sixty-four characters of hex out of a log.
 func noting(pinned *book.Book) func(node.ID, string, string) {
+	var (
+		mu    sync.Mutex
+		noted = map[node.ID]time.Time{}
+	)
+
 	return func(from node.ID, asked, why string) {
 		if _, known := pinned.ByID(from); known {
 			return
 		}
-		_ = seen.Knocked(from, asked, why, time.Now())
+
+		// Written down at most once in a while for each stranger.
+		//
+		// Every one of these is a file rewritten and flushed to the disk itself, twice, before the
+		// caller has been authenticated — so a stranger that dials in a loop makes this machine do
+		// synchronous disk work as fast as it can ask for it. Only the last knock from a device is
+		// kept anyway, so collapsing the repeats loses nothing that was going to be shown.
+		now := time.Now()
+
+		mu.Lock()
+		last, seenBefore := noted[from]
+		if seenBefore && now.Sub(last) < notingEvery {
+			mu.Unlock()
+			return
+		}
+		noted[from] = now
+		for who, when := range noted {
+			if now.Sub(when) > notingEvery {
+				delete(noted, who)
+			}
+		}
+		mu.Unlock()
+
+		_ = seen.Knocked(from, asked, why, now)
 	}
 }
+
+// notingEvery is how often one stranger's knocking is written down. Long enough that a device
+// dialling in a loop cannot drive the disk, short enough that somebody who knocked and then went to
+// ask about it finds their knock there.
+const notingEvery = 30 * time.Second
 
 // moving applies a handover: the machine an entry names says it became somebody else, and that has
 // been checked before this is called.

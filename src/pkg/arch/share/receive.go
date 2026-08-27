@@ -26,11 +26,19 @@ func safeName(name string) string {
 	return clean
 }
 
-// partName is where an item waits while it arrives. The name and the length are folded into it, so
-// what an earlier, different offer left behind is a different file and is never resumed against.
-func partName(item Item) string {
+// partName is where an item waits while it arrives.
+//
+// Who is sending goes into the name along with the name and the length, so two peers offering a
+// file of the same name and size never write into one file. Without that they would take turns
+// writing into it and each be told at the end that theirs had arrived, when what is there is a
+// weave of both and matches neither digest — or worse, matches one, and the other peer is told
+// their file landed when somebody else's did.
+//
+// The sender is in it rather than the moment, so a peer whose connection dropped still comes back
+// to its own half-written file and carries on from where it stopped.
+func partName(from node.ID, item Item) string {
 	name := safeName(item.Name)
-	sum := blake3.Sum256(fmt.Appendf(nil, "%s\x00%d", name, item.Size))
+	sum := blake3.Sum256(fmt.Appendf(nil, "%s\x00%s\x00%d", from, name, item.Size))
 	return fmt.Sprintf(".%s.%x.part", name, sum[:6])
 }
 
@@ -99,7 +107,7 @@ func receive(conn *wire.Conn, into string, from node.ID, hooks Into) error {
 		if !item.Known() {
 			continue
 		}
-		stat, err := dir.Lstat(partName(item))
+		stat, err := dir.Lstat(partName(from, item))
 		if err == nil && stat.Mode().IsRegular() && stat.Size() <= item.Size {
 			picked.At[i] = stat.Size()
 		}
@@ -149,7 +157,7 @@ func opening(dir *os.Root, part string, at int64) (*os.File, int64, error) {
 
 func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64, hooks Into) error {
 	name := safeName(item.Name)
-	part := partName(item)
+	part := partName(from, item)
 
 	out, at, err := opening(dir, part, at)
 	if err != nil {

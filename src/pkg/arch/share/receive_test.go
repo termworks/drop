@@ -2,6 +2,7 @@ package share
 
 import (
 	"bytes"
+	"github.com/tmc/go-iroh/key"
 	"io"
 	"os"
 	"path/filepath"
@@ -104,7 +105,7 @@ func TestAStalePartIsNotLeftUnderTheItem(t *testing.T) {
 	item := Item{Name: "notes", Size: wire.SizeUnknown, Mode: 0o644}
 
 	stale := bytes.Repeat([]byte("x"), 4096)
-	if err := os.WriteFile(filepath.Join(dir, partName(item)), stale, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, partName(node.ID{}, item)), stale, 0o600); err != nil {
 		t.Fatalf("planting a stale part: %v", err)
 	}
 
@@ -122,7 +123,7 @@ func TestAStalePartIsNotLeftUnderTheItem(t *testing.T) {
 func TestResumeOnlyPicksUpTheSameOffer(t *testing.T) {
 	dir := t.TempDir()
 	earlier := Item{Name: "a.txt", Size: 10}
-	if err := os.WriteFile(filepath.Join(dir, partName(earlier)), []byte("0123456789"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, partName(node.ID{}, earlier)), []byte("0123456789"), 0o600); err != nil {
 		t.Fatalf("planting an earlier part: %v", err)
 	}
 
@@ -152,7 +153,7 @@ func TestResumeContinuesTheSameOffer(t *testing.T) {
 	whole := []byte("0123456789abcdef")
 	item := Item{Name: "b.bin", Size: int64(len(whole))}
 
-	if err := os.WriteFile(filepath.Join(dir, partName(item)), whole[:6], 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, partName(node.ID{}, item)), whole[:6], 0o600); err != nil {
 		t.Fatalf("planting a part: %v", err)
 	}
 
@@ -272,7 +273,7 @@ func TestASymlinkedPartIsNotWrittenThrough(t *testing.T) {
 	}
 
 	item := Item{Name: "notes", Size: wire.SizeUnknown}
-	if err := os.Symlink(outside, filepath.Join(dir, partName(item))); err != nil {
+	if err := os.Symlink(outside, filepath.Join(dir, partName(node.ID{}, item))); err != nil {
 		t.Fatalf("planting a symlink: %v", err)
 	}
 
@@ -358,7 +359,7 @@ func TestAPartPlantedInsideIsNotWrittenThrough(t *testing.T) {
 	defer dir.Close()
 
 	item := Item{Name: "report.txt", Size: 4, Mode: 0o644}
-	part := partName(item)
+	part := partName(node.ID{}, item)
 	if err := os.Symlink("already-here", filepath.Join(base, part)); err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +394,7 @@ func TestResumeOnlyCarriesOnInAPlainFile(t *testing.T) {
 	defer dir.Close()
 
 	item := Item{Name: "report.txt", Size: 40, Mode: 0o644}
-	part := partName(item)
+	part := partName(node.ID{}, item)
 
 	if err := os.WriteFile(filepath.Join(base, "elsewhere"), []byte("0123456789"), 0o600); err != nil {
 		t.Fatal(err)
@@ -414,5 +415,38 @@ func TestResumeOnlyCarriesOnInAPlainFile(t *testing.T) {
 	kept, _ := os.ReadFile(filepath.Join(base, "elsewhere"))
 	if string(kept) != "0123456789" {
 		t.Errorf("what the name pointed at is now %q", kept)
+	}
+}
+
+// idFor is a sender, distinct from every other.
+func idFor(n byte) node.ID {
+	var raw [32]byte
+	raw[0] = n
+	return key.NewSecretKey(raw).Public().EndpointID()
+}
+
+// Two peers offering a file with the same name and the same size must not write into one file.
+//
+// The part file is where an item waits while it arrives, and it is found again by name so a dropped
+// connection can carry on. If two senders find the same one they take turns writing into it, and
+// each is told at the end that theirs arrived — when what is on the disk is a weave of both and is
+// neither of them.
+func TestTwoSendersDoNotShareOnePartFile(t *testing.T) {
+	item := Item{Name: "report.pdf", Size: 4096}
+
+	one, two := partName(idFor(1), item), partName(idFor(2), item)
+	if one == two {
+		t.Fatalf("two senders offering %q at %d bytes both wait in %s", item.Name, item.Size, one)
+	}
+
+	// And one sender coming back to the same offer finds its own file again, or a dropped
+	// connection would start from nothing every time.
+	if again := partName(idFor(1), item); again != one {
+		t.Fatalf("the same sender came back to %s, having left %s", again, one)
+	}
+
+	// A different offer from the same sender is still a different file.
+	if other := partName(idFor(1), Item{Name: "report.pdf", Size: 8192}); other == one {
+		t.Fatal("two different offers from one sender share a part file")
 	}
 }

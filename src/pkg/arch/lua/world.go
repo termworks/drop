@@ -2,6 +2,7 @@ package lua
 
 import (
 	"fmt"
+	shown "github.com/bresilla/drop/src/pkg/plain"
 	"io"
 	"os"
 	"path/filepath"
@@ -215,7 +216,19 @@ func (w *world) log(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		}
 		text += s
 	}
-	fmt.Fprintf(os.Stderr, "drop: %s: %s\n", w.who, text)
+
+	// Charged like any other writing, and cut like any other message.
+	//
+	// A plugin runs under a quota it cannot exceed, and this was the one way out: writing cost it
+	// nothing, so a loop that only logged could turn a bounded plugin into as much of somebody's
+	// terminal, and somebody's disk if the log is kept, as it cared to produce.
+	if len(text) > MaxSaid {
+		text = text[:MaxSaid]
+	}
+	t.RequireCPU(costWrite * uint64(len(text)))
+	t.RequireBytes(len(text))
+
+	fmt.Fprintf(os.Stderr, "drop: %s: %s\n", w.who, shown.Text(text, MaxSaid))
 	return c.Next(), nil
 }
 

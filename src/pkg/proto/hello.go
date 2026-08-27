@@ -2,7 +2,6 @@ package proto
 
 import (
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/bresilla/drop/src/pkg/arch"
@@ -302,8 +301,15 @@ func AnswerHello(s Stream, from node.ID, self func(Badged) Hello, moved func(was
 }
 
 // ReadHello reads what the far end calls itself.
-func ReadHello(s io.ReadWriteCloser) (Hello, error) {
-	_, body, err := wire.NewConn(s).ReadFrame()
+//
+// Bounded, like every other read in this handshake. A node that answers a hello by saying nothing
+// at all would otherwise hold whoever asked for as long as it cared to — and asking what somebody
+// serves is the first thing a person does, so it is the first place they would find drop hung.
+func ReadHello(s Stream) (Hello, error) {
+	_ = s.SetReadDeadline(time.Now().Add(settleIn))
+	defer func() { _ = s.SetReadDeadline(time.Time{}) }()
+
+	_, body, err := wire.NewConn(s).ReadFrameUpTo(MaxHello)
 	if err != nil {
 		return Hello{}, fmt.Errorf("reading hello: %w", err)
 	}
@@ -315,12 +321,17 @@ func ReadHello(s io.ReadWriteCloser) (Hello, error) {
 // The ask is not empty ceremony. A QUIC stream does not reach the other side until something is
 // sent on it, so a client that opened one and only read would wait for an answer to a stream the
 // server had not yet been handed. This is the byte that makes the stream exist over there.
-func AskHello(s io.ReadWriteCloser) (Hello, error) {
+func AskHello(s Stream) (Hello, error) {
 	if err := wire.NewConn(s).WriteFrame(wire.KindPing, showable()); err != nil {
 		return Hello{}, fmt.Errorf("asking: %w", err)
 	}
 	return ReadHello(s)
 }
+
+// MaxHello bounds what a node may say about itself. Every field in it is bounded already and the
+// list of namespaces is capped, so this is the sum of those rather than a new opinion — and it is
+// what keeps a node nobody has decided anything about from naming a large number and being given it.
+const MaxHello = 1 << 20
 
 // MaxPathShown bounds a path as it is printed. A path is already bounded on the wire; this is what
 // keeps one long enough to be legal from pushing the rest of a listing off the screen.

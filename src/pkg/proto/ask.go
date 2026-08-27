@@ -3,6 +3,7 @@ package proto
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/wire"
 )
@@ -28,6 +29,12 @@ func Ask(ctx context.Context, s Stream, path, why, from string) error {
 	open.Badge, open.Signed = carried()
 	open.Plate, open.Stamped = stamping()
 	open.Moved, open.Handed = handing()
+
+	// Bounded the way the other half of this handshake is. A far end that takes the ask and then
+	// says nothing would otherwise hold this for as long as it liked, and a command that never
+	// returns is a command somebody has to notice and kill.
+	_ = s.SetReadDeadline(time.Now().Add(settleIn))
+	defer func() { _ = s.SetReadDeadline(time.Time{}) }()
 
 	if err := conn.WriteFrame(wire.KindOpen, open.encode()); err != nil {
 		return fmt.Errorf("asking for %s: %w", path, err)

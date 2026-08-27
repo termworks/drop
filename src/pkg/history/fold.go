@@ -66,10 +66,29 @@ func (l *Log) Seen(who string, heads []ID) error {
 		}
 	}
 	out = append(out, far{who: who, at: time.Now().UnixMilli(), heads: tidy(heads)})
+
+	// Bounded by weight as well as by count, oldest word dropped first.
+	//
+	// Each peer is remembered along with every head it said it had, and a namespace being changed
+	// many ways at once has a great many. Counting only the peers lets a few of them carry a file
+	// that is rewritten and flushed on every meeting — so what one peer says costs every meeting
+	// after it, for everybody.
 	if len(out) > maxSeen {
 		out = out[len(out)-maxSeen:]
 	}
+	for len(out) > 1 && weighed(out) > maxSeenHeads {
+		out = out[1:]
+	}
 	return l.remember(out)
+}
+
+// weighed is how many heads are remembered in all.
+func weighed(all []far) int {
+	n := 0
+	for _, p := range all {
+		n += len(p.heads)
+	}
+	return n
 }
 
 // Folding reports whether the record is worth folding: there is enough of it to be worth replacing,
@@ -207,3 +226,7 @@ func (l *Log) remember(all []far) error {
 	}
 	return nil
 }
+
+// maxSeenHeads bounds how many heads are remembered across every peer put together. A peer that
+// says it holds a great many is a peer whose word costs every meeting after it, for everybody.
+const maxSeenHeads = 1 << 16
