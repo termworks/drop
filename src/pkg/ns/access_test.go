@@ -508,3 +508,40 @@ func TestWhatMachineSomebodyIsAtNeverLetsThemIn(t *testing.T) {
 		t.Fatalf("a paired caller was refused: %s", why)
 	}
 }
+
+// One guess is paid for once, however many rules ask about it.
+//
+// Resolving a path walks every rule above it, and each one that guards with a password asks the
+// same question of the same guess. Each asking is 64 MiB and three passes of argon2. Without
+// somewhere to remember the answer, the allowance that counts six guesses is really letting a peer
+// spend six times however many rules they can get in the way — which they choose, by choosing how
+// deep a path to ask for.
+func TestOneGuessIsPaidForOnce(t *testing.T) {
+	hash, err := passwd.Hash("open sesame")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	who := Caller{ID: "abc", Password: "not it", Tried: passwd.NewTried()}
+	rule := Access{Password: hash}
+
+	was := passwd.Spent()
+	for range 8 {
+		if ok, _ := rule.Admits(who); ok {
+			t.Fatal("the wrong password was admitted")
+		}
+	}
+	if cost := passwd.Spent() - was; cost != 1 {
+		t.Fatalf("one guess against eight rules cost %d hashes, want 1", cost)
+	}
+
+	// A different guess is a different question, and is paid for.
+	other := who
+	other.Password = "open sesame"
+	if ok, _ := rule.Admits(other); !ok {
+		t.Fatal("the right password was refused")
+	}
+	if cost := passwd.Spent() - was; cost != 2 {
+		t.Fatalf("two guesses cost %d hashes, want 2", cost)
+	}
+}

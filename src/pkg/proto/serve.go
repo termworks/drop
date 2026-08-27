@@ -9,6 +9,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
+	"github.com/bresilla/drop/src/pkg/passwd"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -143,6 +144,14 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 	}
 
 	caller.Password = open.Secret
+
+	// One answer per guess, for as long as this caller is here.
+	//
+	// Resolving a path walks every rule above it, and each rule that guards with a password asks
+	// the same question of the same guess. Each asking costs 64 MiB and three passes, so without
+	// somewhere to remember the answer one guess is paid for as many times as there are rules in the
+	// way — the guess allowance counts six, and each of the six is worth several.
+	caller.Tried = passwd.NewTried()
 	if open.Secret != "" && !guessing.spare(from) {
 		turnedAway(policy, from, path, "too many password attempts")
 		return refuse("too many attempts, wait a while")
