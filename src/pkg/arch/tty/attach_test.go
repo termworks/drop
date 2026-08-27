@@ -130,3 +130,56 @@ func (q *quiet) SetReadDeadline(t time.Time) error {
 	}
 	return nil
 }
+
+// A shell that leaves something behind must not take the namespace with it.
+//
+// Whatever the shell started keeps the other side of the pty open, so reading it never ends — and
+// everything that tidies up sits behind that read. The terminal would stay in the table with its
+// shell gone, and every watcher arriving afterwards would be handed that one and hear nothing, for
+// as long as the daemon ran. One watcher, once, and the path is finished for everybody.
+func TestAShellThatLeavesSomethingBehindDoesNotKeepTheNamespace(t *testing.T) {
+	tty := New(Into{})
+	defer tty.Stop()
+
+	term, err := tty.at("/shell", Config{Shell: "/bin/sh"})
+	if err != nil {
+		t.Fatalf("at(): %v", err)
+	}
+
+	// Something backgrounded that holds the pty, and then the shell itself goes.
+	if _, err := term.ptmx.WriteString("sleep 604 &\nexit\n"); err != nil {
+		t.Fatalf("writing to the shell: %v", err)
+	}
+
+	// The terminal has to leave the table, or the next watcher is given a dead one.
+	gone := false
+	for range 200 {
+		tty.mu.Lock()
+		_, still := tty.open["/shell"]
+		tty.mu.Unlock()
+		if !still {
+			gone = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !gone {
+		t.Fatal("a shell that left something behind kept the namespace: every later watcher gets a terminal with no shell")
+	}
+
+	// And the shell is waited for rather than left a zombie.
+	select {
+	case <-term.reaped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the shell was never waited for")
+	}
+
+	// A watcher arriving now gets a fresh one.
+	next, err := tty.at("/shell", Config{Shell: "/bin/sh"})
+	if err != nil {
+		t.Fatalf("at() after the first ended: %v", err)
+	}
+	if next == term {
+		t.Fatal("the next watcher was handed the terminal whose shell had gone")
+	}
+}

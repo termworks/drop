@@ -179,23 +179,41 @@ func (t *TTY) at(path string, cfg Config) (*terminal, error) {
 	}
 	t.open[path] = term
 
-	// Everything the shell writes goes to every watcher, and into the scrollback so somebody
-	// arriving later has something to render.
+	// What ends the session is the shell ending, and nothing else.
+	//
+	// Reading the pty cannot be what ends it. A shell with a terminal turns job control on, so
+	// anything the person backgrounds gets a process group of its own and goes on holding the other
+	// side of the pty after the shell has gone — and the read waits on it, for as long as it lives.
+	// Hanging the tidying off that read is what made one watcher able to finish the namespace for
+	// everybody: the terminal stayed in the table with no shell behind it, and every watcher after
+	// that was handed it and heard nothing until the daemon restarted.
+	//
+	// So the shell is waited for on its own, and the table and the feeds are put right there. The
+	// read is left to end when whatever is holding the pty lets go, which costs a goroutine and a
+	// closed file for as long as somebody's own background job lives, and costs nobody the path.
 	go func() {
-		_, _ = io.Copy(term.stage, ptmx)
+		_ = cmd.Wait()
 
-		// Out of the map before it is taken apart, so the next watcher starts a fresh shell rather
-		// than being handed this one with its feeds ended and its pty closed.
+		// A shell that had no job control keeps whatever it started in its own group, and that
+		// does go with it. One that had job control does not, and that is a person's own doing.
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+
+		// Out of the table before it is taken apart, so the next watcher starts a fresh shell
+		// rather than being handed this one with its feeds ended.
 		t.mu.Lock()
 		delete(t.open, path)
 		t.mu.Unlock()
 
-		// The shell is gone: end every feed, and wait for the process so it is not left a zombie.
 		term.stage.Stop()
 		_ = ptmx.Close()
-		_ = cmd.Wait()
 		close(term.reaped)
 	}()
+
+	// Everything the shell writes goes to every watcher, and into the scrollback so somebody
+	// arriving later has something to render.
+	go func() { _, _ = io.Copy(term.stage, ptmx) }()
 
 	return term, nil
 }
