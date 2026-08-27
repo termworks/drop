@@ -2,6 +2,9 @@
 
 Distributed peer-to-peer file transfer.
 
+This page is the tour. [`docs/`](docs/) is one document per subject — how each thing works, what it
+cannot do, and where it lives in the tree.
+
 Pair two devices once, by key. After that either can reach the other from anywhere — across NATs,
 across networks, through address changes — with no account and no server holding your data.
 
