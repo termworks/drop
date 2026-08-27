@@ -9,6 +9,7 @@ import (
 
 	"github.com/tmc/go-iroh/key"
 
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/metal"
 )
 
@@ -97,20 +98,39 @@ func identity() (key.SecretKey, metal.Mark, error) {
 		return key.NewSecretKey(seed), mark, nil
 	}
 
-	fresh, err := key.GenerateSecretKey()
-	if err != nil {
-		return empty, metal.Mark{}, fmt.Errorf("generating identity: %w", err)
-	}
-	seed := fresh.Bytes()
+	// Made exactly once, however many drops start at the same moment.
+	//
+	// Two processes reaching this together would each make a key and each write it, and the one
+	// whose write landed second would win the file while the other went on running its whole
+	// session — endpoint, badge, everything it signs — under a key that is not the one on disk.
+	// Every pairing a peer recorded during that session would name an address that vanishes at the
+	// next restart, with nothing to say so. `drop serve` and `drop peer pair` are separate
+	// processes sharing this directory, so this is the ordinary way to start, not a rare one.
+	var made key.SecretKey
+	err = keep.While(path, func() error {
+		// Somebody may have made one while this was waiting for the file.
+		if raw, err := os.ReadFile(path); err == nil && len(raw) == key.SeedSize {
+			var seed [key.SeedSize]byte
+			copy(seed[:], raw)
+			made = key.NewSecretKey(seed)
+			return nil
+		}
 
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return empty, metal.Mark{}, fmt.Errorf("creating %s: %w", dir, err)
+		fresh, err := key.GenerateSecretKey()
+		if err != nil {
+			return fmt.Errorf("generating identity: %w", err)
+		}
+		seed := fresh.Bytes()
+		if err := keep.Replace(path, seed[:]); err != nil {
+			return err
+		}
+		made = fresh
+		return nil
+	})
+	if err != nil {
+		return empty, metal.Mark{}, err
 	}
-	if err := os.WriteFile(path, seed[:], 0o600); err != nil {
-		return empty, metal.Mark{}, fmt.Errorf("writing %s: %w", path, err)
-	}
-	return fresh, metal.Mark{}, nil
+	return made, metal.Mark{}, nil
 }
 
 // LocalID is the address derived from the stored identity.

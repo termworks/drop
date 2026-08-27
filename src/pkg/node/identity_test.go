@@ -3,6 +3,7 @@ package node
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/bresilla/drop/src/pkg/metal"
@@ -128,5 +129,53 @@ func TestAKeyAlreadyWrittenDownStillWins(t *testing.T) {
 	}
 	if mark.Held() {
 		t.Fatalf("a machine using a written-down key says it was named by %s", mark.Says)
+	}
+}
+
+// A machine has one identity, however many drops start at once.
+//
+// `drop serve` and `drop peer pair` are separate processes over one config directory, so two of
+// them reaching a machine with nothing written down is the ordinary way to start. If they each made
+// a key, the one whose write landed second would own the file while the other ran its whole session
+// signing as a key that is not there — and every pairing a peer recorded in that session would name
+// an address that is gone at the next restart, silently.
+func TestAMachineGetsOneIdentityHoweverManyDropsStartAtOnce(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	// On a machine that names itself this holds because they all derive the same key and nothing is
+	// written at all; on one that does not, it holds because the first to reach the file makes the
+	// key and the rest are handed what it made. Both are the same promise, so both are asserted.
+	if metal.Read().Held() {
+		t.Log("this machine names itself, so what is asserted here is the derivation, not the lock")
+	}
+
+	var wg sync.WaitGroup
+	got := make([]ID, 8)
+	for i := range got {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			id, err := LocalID()
+			if err != nil {
+				t.Errorf("LocalID(): %v", err)
+				return
+			}
+			got[i] = id
+		}()
+	}
+	wg.Wait()
+
+	// Every one of them, and the file on the disk, are the same machine.
+	for i, id := range got {
+		if id != got[0] {
+			t.Fatalf("drop %d is %s and drop 0 is %s", i, Brief(id), Brief(got[0]))
+		}
+	}
+
+	again, err := LocalID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != got[0] {
+		t.Fatalf("what is on the disk is %s and what was handed out was %s", Brief(again), Brief(got[0]))
 	}
 }
