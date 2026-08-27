@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -115,5 +116,49 @@ func TestARecipientCanBeWrappedToWithoutBeingHeld(t *testing.T) {
 	}
 	if string(both.Key()) == string(first.Key()) {
 		t.Error("two vaults share a data key")
+	}
+}
+
+// One data key, however many drops start at once.
+//
+// Two processes reaching a machine with no vault yet would each make a key and each write it, and
+// whichever landed second would own the file. The other would go on sealing records with a key that
+// is nowhere — and a record sealed to a key that was never written down is not recoverable by
+// anybody, ever. That is not a race that costs a restart; it is one that costs the data.
+func TestOneDataKeyHoweverManyDropsStartAtOnce(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	at := []string{filepath.Join(dir, "vault.key")}
+
+	var wg sync.WaitGroup
+	keys := make([]string, 8)
+	for i := range keys {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			v, err := Open(at)
+			if err != nil {
+				t.Errorf("Open(): %v", err)
+				return
+			}
+			keys[i] = string(v.Key())
+		}()
+	}
+	wg.Wait()
+
+	for i, k := range keys {
+		if k != keys[0] {
+			t.Fatalf("drop %d sealed with a different key from drop 0: a record either of them wrote is gone", i)
+		}
+	}
+
+	// And what is on the disk is that key, so a restart can still read what was written.
+	again, err := Open(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again.Key()) != keys[0] {
+		t.Fatal("the key on the disk is not the one that was handed out")
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"github.com/bresilla/drop/src/pkg/keep"
 	"io"
 	"os"
 	"path/filepath"
@@ -93,36 +94,57 @@ func Open(to []string) (*Vault, error) {
 }
 
 // mint generates a data key and wraps it to the recipients, once.
+//
+// Once is the whole of it. Two processes reaching this together would each make a key and each
+// write it, and whichever landed second would own the file — while the other went on sealing
+// records with a key that is nowhere. Those records are not recoverable by anybody, ever: there is
+// no second copy of a key that was never written down. So the file is taken first and looked at
+// again inside, because somebody may have made one while this was waiting.
 func mint(file string, to []string) (*Vault, error) {
-	key := [KeyBytes]byte{}
-	if _, err := rand.Read(key[:]); err != nil {
-		return nil, fmt.Errorf("generating a data key: %w", err)
-	}
+	var made *Vault
 
-	recipients, err := recipientsOf(to)
+	err := keep.While(file, func() error {
+		if wrapped, err := os.ReadFile(file); err == nil {
+			got, err := unwrap(wrapped, to)
+			if err != nil {
+				return err
+			}
+			made = got
+			return nil
+		}
+
+		key := [KeyBytes]byte{}
+		if _, err := rand.Read(key[:]); err != nil {
+			return fmt.Errorf("generating a data key: %w", err)
+		}
+
+		recipients, err := recipientsOf(to)
+		if err != nil {
+			return err
+		}
+
+		var wrapped bytes.Buffer
+		writer, err := age.Encrypt(&wrapped, recipients...)
+		if err != nil {
+			return fmt.Errorf("wrapping the data key: %w", err)
+		}
+		if _, err := writer.Write(key[:]); err != nil {
+			return fmt.Errorf("wrapping the data key: %w", err)
+		}
+		if err := writer.Close(); err != nil {
+			return fmt.Errorf("wrapping the data key: %w", err)
+		}
+
+		if err := keep.Replace(file, wrapped.Bytes()); err != nil {
+			return err
+		}
+		made = &Vault{key: key[:]}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	var wrapped bytes.Buffer
-	writer, err := age.Encrypt(&wrapped, recipients...)
-	if err != nil {
-		return nil, fmt.Errorf("wrapping the data key: %w", err)
-	}
-	if _, err := writer.Write(key[:]); err != nil {
-		return nil, fmt.Errorf("wrapping the data key: %w", err)
-	}
-	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("wrapping the data key: %w", err)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
-		return nil, fmt.Errorf("creating %s: %w", filepath.Dir(file), err)
-	}
-	if err := os.WriteFile(file, wrapped.Bytes(), 0o600); err != nil {
-		return nil, fmt.Errorf("writing %s: %w", file, err)
-	}
-	return &Vault{key: key[:]}, nil
+	return made, nil
 }
 
 // unwrap opens the wrapped data key with whichever identity is to hand.
