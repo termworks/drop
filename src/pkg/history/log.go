@@ -192,6 +192,22 @@ func (l *Log) takeable(c Change, weight int) error {
 		return errors.New("the changes it names are out of order, or one of them twice")
 	}
 
+	// A fold stands in place of the changes it covers, and every change that named one of those is
+	// read as naming the fold instead. So a fold that names as a head something it does not cover
+	// is a fold that a covered change gets placed behind — while the fold is placed behind it. That
+	// is a circle, ordering refuses a history with one in it, and the history is on a disk: the
+	// namespace would be unreadable from then on, on every machine that took the change, for good.
+	//
+	// A fold made here cannot look like that. Its heads are the tips and it covers everything, so
+	// every head is inside its own cover. One that is not was not made by folding.
+	if c.Whole() {
+		for _, head := range c.Heads {
+			if !names(c.Fold, head) {
+				return fmt.Errorf("it stands for what came before it and yet names %s, which it does not stand for", brief(head.String()))
+			}
+		}
+	}
+
 	// A fold is what makes a full log smaller, so what a full log refuses does not apply to it.
 	if !c.Whole() {
 		tips := l.tipping(c)
