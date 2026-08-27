@@ -19,7 +19,6 @@ package files
 import (
 	"context"
 	"fmt"
-	"github.com/bresilla/drop/src/pkg/weave"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -31,6 +30,8 @@ import (
 	"github.com/bresilla/drop/src/pkg/history"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
+	"github.com/bresilla/drop/src/pkg/nudge"
+	"github.com/bresilla/drop/src/pkg/weave"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -157,26 +158,44 @@ func (f *Files) Serve(ctx context.Context, at arch.Session) error {
 // up without anything having to say so. A files namespace nobody else holds is left alone: it is a
 // directory this machine serves, and there is nothing for it to be level with.
 func (f *Files) Watch(ctx context.Context, mounts *ns.Table) {
+	// A nudge makes somebody's edit quick; the timer is what makes every edit eventually seen. A
+	// machine with no inotify, or one at its watch limit, keeps the timer and loses the quickness.
+	ear, err := nudge.Listen(ctx)
+	if err != nil {
+		ear = nil
+	}
+
 	go func() {
 		tick := time.NewTicker(Every)
 		defer tick.Stop()
 
+		var heard <-chan struct{}
+		if ear != nil {
+			heard = ear.Heard()
+		}
 		for {
-			f.round(mounts)
+			dirs := f.round(mounts)
+			if ear != nil {
+				ear.Mind(dirs)
+			}
 			select {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
+			case <-heard:
 			}
 		}
 	}()
 }
 
-// round brings every shared folder level with its history once.
-func (f *Files) round(mounts *ns.Table) {
+// round brings every shared folder level with its history once, and says which directories are
+// worth listening to until the next one.
+func (f *Files) round(mounts *ns.Table) []string {
 	if mounts == nil {
-		return
+		return nil
 	}
+
+	var dirs []string
 
 	for _, mount := range mounts.All() {
 		if mount.Archetype != f.Name() || !mount.Shared.Declared() {
@@ -186,6 +205,7 @@ func (f *Files) round(mounts *ns.Table) {
 		if !ok || cfg.Dir == "" {
 			continue
 		}
+		dirs = append(dirs, under(cfg.Dir)...)
 
 		made, err := f.keep(mount, cfg)
 		if err != nil {
@@ -197,6 +217,7 @@ func (f *Files) round(mounts *ns.Table) {
 			f.into.Changed(mount.Path)
 		}
 	}
+	return dirs
 }
 
 // keep runs one folder's turn, and says whether a change of this machine's own was recorded.
@@ -301,3 +322,30 @@ func (f *Files) Amiss(c arch.Config) string {
 
 // Enough is how many unsettled files are looked for before the walk gives up and says "and more".
 const Enough = 64
+
+// under is a directory and the directories inside it, which is what has to be listened to for a
+// change anywhere in a folder to be heard.
+//
+// Bounded, because a watch is a kernel resource with a per-user limit and a deep tree would spend
+// the lot, leaving every other namespace on this machine with none. A folder too deep to watch is
+// watched as far down as the bound goes and noticed the rest of the way by the timer.
+func under(dir string) []string {
+	out := []string{dir}
+	walk := func(at string, d fs.DirEntry, err error) error {
+		switch {
+		case err != nil, !d.IsDir(), at == dir:
+			return nil
+		case len(out) >= Deep:
+			return fs.SkipAll
+		}
+		out = append(out, at)
+		return nil
+	}
+	if err := filepath.WalkDir(dir, walk); err != nil {
+		return []string{dir}
+	}
+	return out
+}
+
+// Deep is how many directories of one folder are listened to before the rest is left to the timer.
+const Deep = 512

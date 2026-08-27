@@ -25,6 +25,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/history"
 	"github.com/bresilla/drop/src/pkg/ns"
+	"github.com/bresilla/drop/src/pkg/nudge"
 	"github.com/bresilla/drop/src/pkg/weave"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
@@ -144,26 +145,44 @@ func Text(conn *wire.Conn) ([]byte, error) {
 // The table is read again every time round, so a namespace created while this is running is picked
 // up without anything having to say so.
 func (n *Note) Watch(ctx context.Context, mounts *ns.Table) {
+	// A nudge makes a save quick; the timer is what makes every save eventually seen. A machine
+	// with no inotify, or one at its watch limit, keeps the timer and loses only the quickness.
+	ear, err := nudge.Listen(ctx)
+	if err != nil {
+		ear = nil
+	}
+
 	go func() {
 		tick := time.NewTicker(Every)
 		defer tick.Stop()
 
+		var heard <-chan struct{}
+		if ear != nil {
+			heard = ear.Heard()
+		}
 		for {
-			n.round(mounts)
+			dirs := n.round(mounts)
+			if ear != nil {
+				ear.Mind(dirs)
+			}
 			select {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
+			case <-heard:
 			}
 		}
 	}()
 }
 
-// round brings every note level with its history once.
-func (n *Note) round(mounts *ns.Table) {
+// round brings every note level with its history once, and says which directories are worth
+// listening to until the next one.
+func (n *Note) round(mounts *ns.Table) []string {
 	if mounts == nil {
-		return
+		return nil
 	}
+
+	var dirs []string
 
 	for _, mount := range mounts.All() {
 		if mount.Archetype != n.Name() {
@@ -178,6 +197,10 @@ func (n *Note) round(mounts *ns.Table) {
 			continue
 		}
 
+		// The directory and not the file: an editor saves by writing beside it and renaming over
+		// it, so the file being watched is not the file that is written.
+		dirs = append(dirs, filepath.Dir(cfg.File))
+
 		made, err := n.keep(mount, cfg)
 		if err != nil {
 			n.say(mount.Path, fmt.Sprintf("%s: %v", mount.Path, err))
@@ -188,6 +211,7 @@ func (n *Note) round(mounts *ns.Table) {
 			n.into.Changed(mount.Path)
 		}
 	}
+	return dirs
 }
 
 // keep runs one note's turn, and says whether a change of this machine's own was recorded.
