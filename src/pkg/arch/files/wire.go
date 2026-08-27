@@ -2,6 +2,7 @@ package files
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/bresilla/drop/src/pkg/wire"
 )
@@ -185,6 +186,13 @@ func decodeReply(body []byte) (reply, error) {
 		if err != nil {
 			return out, err
 		}
+		// What is listed in a directory is one name in it. Nothing here turns that into a local
+		// path today, and the moment something does — a get that walks a whole tree, a mirror — it
+		// would inherit whatever the far end put in the name. Refusing it now costs nothing: a
+		// well-behaved node sends what the filesystem calls the file, and that is one name.
+		if err := bare(name); err != nil {
+			return out, err
+		}
 		size, err := r.Int()
 		if err != nil {
 			return out, err
@@ -210,4 +218,18 @@ func decodeReply(body []byte) (reply, error) {
 		})
 	}
 	return out, nil
+}
+
+// bare refuses a listed name that is anything other than one name in a directory.
+//
+// A serving node builds these from what the filesystem calls each item, which is always a single
+// name. Anything else came from somewhere that is not a filesystem.
+func bare(name string) error {
+	switch {
+	case name == "", name == "." || name == "..":
+		return fmt.Errorf("%q is not a name", name)
+	case strings.ContainsAny(name, "/\\\x00"):
+		return fmt.Errorf("%q is not one name in a directory", name)
+	}
+	return nil
 }
