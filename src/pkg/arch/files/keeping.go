@@ -321,12 +321,21 @@ func (k *keeper) put(root *os.Root, path string, h Held, fetch func(Wanted) erro
 		if err := fetch(w); err != nil {
 			return fmt.Errorf("fetching %s: %w", path, err)
 		}
-		// What arrived was weighed against what the sender counted, which is not the same as what
-		// the change asked for: the file there may have moved on since. The record says what is
-		// really here, so the next round notices rather than trusting a digest nobody checked.
+		// What the change asks for is what has to arrive. The digest is inside something somebody
+		// signed, so it is the one account of this version that cannot have been made up by
+		// whoever happens to be sending the bytes — and a holder is not always the author.
+		//
+		// Bytes that do not match are not a version of this file: they are whatever the sender
+		// felt like, on a path the folder is missing, with the mode the change asks for put on
+		// them afterwards. So they go, and the round tries again, which reaches a different holder.
 		landed, err := sumOf(at)
 		if err != nil {
 			return err
+		}
+		if landed != h.Sum {
+			_ = root.Remove(path)
+			return fmt.Errorf("fetching %s: it arrived as %x and the change asks for %x",
+				path, landed[:6], h.Sum[:6])
 		}
 		sum = landed
 	}
