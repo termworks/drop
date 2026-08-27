@@ -167,7 +167,16 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 		}
 		return refuse(told)
 	}
-	guessing.forget(from)
+	// A guess is forgiven only by a path that asked for one.
+	//
+	// Getting in somewhere is not proof of anything about a password: a peer that may open any
+	// ordinary path can open one, have its count cleared, and go back to guessing — six at a time,
+	// for ever, each one costing this machine 64 MiB and three passes of argon2 and costing the
+	// peer a frame. What clears the count is reaching a path that actually has a password on it,
+	// which is the only place a guess could have been right.
+	if open.Secret != "" && mount.Access.Password != "" {
+		guessing.forget(from)
+	}
 
 	allowed, reason := false, "not accepting sessions"
 	if policy.Allow != nil {
