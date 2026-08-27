@@ -43,7 +43,16 @@ func Clean(path string) (string, error) {
 	if len(kept) == 0 {
 		return Root, nil
 	}
-	return "/" + strings.Join(kept, "/"), nil
+
+	// The limit is on what comes out, not on what went in. A path given without a leading slash
+	// gains one here, so measuring the way in lets through something a character over the limit —
+	// and then this refuses its own answer. Two pieces of code that clean the same path a different
+	// number of times would disagree about whether it exists at all.
+	out := "/" + strings.Join(kept, "/")
+	if len(out) > MaxLength {
+		return "", fmt.Errorf("path is %d characters, over the %d limit", len(out), MaxLength)
+	}
+	return out, nil
 }
 
 // checkSegment keeps a path to what can be typed, logged and compared without surprises.
