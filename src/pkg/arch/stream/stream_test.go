@@ -130,3 +130,41 @@ func (q *quiet) SetReadDeadline(t time.Time) error {
 	}
 	return nil
 }
+
+// A command that leaves something behind must not leave the session behind with it.
+//
+// The shell is what gets cancelled, and a command that puts something in the background, or pipes,
+// or otherwise does not exec into a single process, leaves a grandchild holding the write end of
+// the output pipe. Reading that pipe then waits on something that will never finish — not when the
+// peer hangs up, not when the session ends, not when the daemon stops. One goroutine, one stream,
+// one pipe and one process, kept for good, as many times as a peer cares to open the namespace.
+func TestAStreamDoesNotOutliveItsSession(t *testing.T) {
+	s := newQuiet()
+	ctx, stop := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- (&Stream{}).Serve(ctx, arch.Session{
+			Path: "/log",
+			// Backgrounded, so the shell exits and something else keeps the pipe.
+			Config: Config{Command: "sleep 600 & echo up"},
+			Conn:   wire.NewConn(s),
+			Stream: s,
+		})
+	}()
+
+	// Wait until the command has actually said something, so the session is properly under way.
+	for range 100 {
+		if strings.Contains(s.written(), "up") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	stop()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Serve() outlived its session: a peer can leave one of these behind every time it opens the namespace")
+	}
+}

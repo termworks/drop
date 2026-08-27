@@ -6,9 +6,12 @@ package stream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/bresilla/drop/src/pkg/arch"
@@ -83,9 +86,38 @@ func (s *Stream) Serve(ctx context.Context, at arch.Session) error {
 	}
 	cmd.Stderr = cmd.Stdout
 
+	// The shell and everything it starts are one process group, so ending it ends all of them.
+	//
+	// Without this, cancelling reaches `/bin/sh` and nothing else. A command that leaves anything
+	// behind — a pipeline, a job put in the background, anything the shell does not exec into —
+	// leaves that thing holding the write end of this pipe, and the copy below waits on a read
+	// that nothing will ever finish. Not the peer hanging up, not the session ending, not the
+	// daemon shutting down: a goroutine, a stream, a pipe and a process, kept for good, and a peer
+	// that opens the namespace and walks away can do it again as often as it likes.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return ending(cmd) }
+	cmd.WaitDelay = partingWithin
+
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("running %q: %w", cfg.Command, err)
 	}
+	defer func() {
+		_ = ending(cmd)
+		_ = cmd.Wait()
+	}()
+
+	// And the read side is closed when the session ends, so the copy stops waiting even if
+	// something out there is still holding the pipe open.
+	over := make(chan struct{})
+	defer close(over)
+	go func() {
+		select {
+		case <-over:
+		case <-ctx.Done():
+		}
+		_ = ending(cmd)
+		_ = out.Close()
+	}()
 	defer func() {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
@@ -140,4 +172,17 @@ func (a asTerminal) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+// ending sends a command's whole process group away. A group that has already gone is the command
+// having finished of its own accord, which is not a failure to cancel it.
+func ending(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return nil
+	}
+	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	}
+	return err
 }
