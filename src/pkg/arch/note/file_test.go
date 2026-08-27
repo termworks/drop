@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -295,5 +296,32 @@ func TestAFileBeingWrittenIsSkipped(t *testing.T) {
 	raw, there, err := steady(at)
 	if !there || err != nil || string(raw) != "one\n" {
 		t.Fatalf("a file that is there read as %q, %v, %v", raw, there, err)
+	}
+}
+
+// A note saved over and over must not grow a history without end. Once everybody holding it has
+// caught up, what came before is folded into one change that says what it all came to.
+func TestANoteSavedManyTimesFoldsItsHistory(t *testing.T) {
+	asSomebody(t, "alice")
+	k := aKeeper(t)
+
+	for i := range history.Least * 3 {
+		save(t, k.file, fmt.Sprintf("line %d\n", i))
+		k.turn(t)
+	}
+
+	if n := k.count(t); n >= history.Least*3 {
+		t.Fatalf("%d saves left %d changes, and nothing was folded away", history.Least*3, n)
+	}
+	// What survives still says what the note came to.
+	if got, want := held(t, k.file), fmt.Sprintf("line %d\n", history.Least*3-1); got != want {
+		t.Fatalf("the file holds %q, want %q", got, want)
+	}
+
+	// And a machine joining now is handed that, without replaying anything folded away.
+	fresh := &keeper{file: filepath.Join(t.TempDir(), "notes.md"), log: k.log}
+	fresh.turn(t)
+	if got := held(t, fresh.file); got != held(t, k.file) {
+		t.Fatalf("a machine reading the folded history holds %q, want %q", got, held(t, k.file))
 	}
 }

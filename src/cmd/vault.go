@@ -7,6 +7,7 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/conf"
 	"github.com/bresilla/drop/src/pkg/convo"
+	"github.com/bresilla/drop/src/pkg/history"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/vault"
 )
@@ -85,6 +86,7 @@ func unlock(cfg *conf.Config) error {
 	}
 
 	convo.Unlock(held.Key())
+	history.Unlock(held.Key())
 	return nil
 }
 
@@ -93,7 +95,7 @@ func unlock(cfg *conf.Config) error {
 // Every command goes through here, and most of them never touch a conversation. Opening a vault
 // means parsing a config and unwrapping a key, which is real work to do for `drop me id`.
 func unlocking() {
-	convo.Unlocking(func() ([]byte, error) {
+	key := func() ([]byte, error) {
 		cfg, err := conf.Load(reading())
 		if err != nil {
 			return nil, err
@@ -105,7 +107,12 @@ func unlocking() {
 			return nil, err
 		}
 		return held.Key(), nil
-	})
+	}
+
+	// Conversations and histories are sealed with the same key: a note somebody wrote is no less
+	// theirs than a message they sent.
+	convo.Unlocking(key)
+	history.Unlocking(key)
 }
 
 func newVaultSealCmd() *cobra.Command {
@@ -157,6 +164,7 @@ func reseal(seal bool) error {
 
 	// Read under whatever is on disk now, which is the key this vault holds either way.
 	convo.Unlock(held.Key())
+	history.Unlock(held.Key())
 
 	to := held.Key()
 	if !seal {

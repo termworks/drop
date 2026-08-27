@@ -113,6 +113,15 @@ func (k *keeper) once() (bool, error) {
 	if err := k.write(body, aside, raw, there, heads); err != nil {
 		return made, err
 	}
+
+	// The merged file is the whole of what the history came to, so it is what a fold stands in
+	// place of. The history decides whether this is the moment; a note only has to say what it says.
+	if k.log.Folding() {
+		if _, err := k.log.Fold(body); err != nil {
+			return made, fmt.Errorf("folding the history of %s: %w", k.file, err)
+		}
+		k.heads = k.log.Heads()
+	}
 	return made, trouble
 }
 
