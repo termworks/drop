@@ -191,7 +191,11 @@ func readAll(path, peer string) ([]Message, error) {
 	var out []Message
 	for at := 0; at < len(raw); {
 		size, used := binary.Uvarint(raw[at:])
-		if used <= 0 || at+used+int(size) > len(raw) {
+		// Weighed as it was written, before it is a length. A record that says it is longer than the
+		// file is a truncated tail; one that says it is longer than a number can hold turns negative
+		// on the way to being one, slips past a check written in signed arithmetic, and takes the
+		// slice with it. What is on the disk is bytes, and bad bytes are not worth a panic.
+		if used <= 0 || size > uint64(len(raw)) || at+used+int(size) > len(raw) {
 			break
 		}
 		at += used
