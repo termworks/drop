@@ -215,9 +215,7 @@ func decodeHolders(r *wire.Reader) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Named by the far end and printed here, the same as everything else it says about itself.
-		// A key is printable already, so this changes nothing about a real one.
-		out = append(out, plain.Line(key))
+		out = append(out, key)
 	}
 	return out, nil
 }

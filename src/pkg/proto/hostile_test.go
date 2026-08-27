@@ -147,41 +147,25 @@ func TestRubbishInAHandoverMovesNothing(t *testing.T) {
 	}
 }
 
-// Who else holds a namespace is a list the far end writes, and it is printed when you look at
-// joining one. It is the last thing a peer says about itself, and it gets the same treatment.
-func TestTheHolderListCannotWriteOnYourTerminal(t *testing.T) {
-	said := Hello{
-		Name:   "orin",
-		Serves: []Served{{Path: "/notes", Holders: []string{"ssh-ed25519 AAAA\x1b[2Jowned"}}},
-	}
-
-	back, err := decodeHello(said.encode())
-	if err != nil {
-		t.Fatalf("decodeHello(): %v", err)
-	}
-	for _, who := range back.Serves[0].Holders {
-		for _, bad := range []string{"\x1b", "\r", "\n", "\x00"} {
-			if strings.Contains(who, bad) {
-				t.Errorf("a holder reached a listing carrying %q: %q", bad, who)
-			}
-		}
-	}
-
-	// A name longer than any key could be makes the whole message unreadable rather than being cut
-	// down to size. A sender is expected to cut its own lists — one that sends a name a thousand
-	// times longer than a key is not a sender whose listing is worth showing.
+// Who else holds a namespace is a list of user keys the far end writes. It is bounded rather than
+// cleaned, and the difference is the point: these are never printed as they arrive. Each is looked
+// up in the address book and what gets shown is the local name for whoever it turns out to be, or a
+// count of the people it did not recognise. So the danger here is not a terminal, it is a peer
+// claiming a thousand names of sixty-four kilobytes each and making this machine read them all.
+func TestTheHolderListIsBoundedToWhatAKeyCouldBe(t *testing.T) {
 	huge := Hello{Serves: []Served{{Path: "/x", Holders: []string{strings.Repeat("k", 40_000)}}}}
 	if _, err := decodeHello(huge.encode()); err == nil {
 		t.Fatal("a holder name of 40,000 characters was read off the wire")
 	}
 
-	// An ordinary key is untouched, because a key is printable already.
-	ordinary := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIbk9rJ4ec3MxEHxE2Grpt bob@laptop"
+	// A real key goes through exactly as it is, trailing newline and all: it is matched against
+	// what this machine computes for the same person, and a byte of difference is a stranger.
+	ordinary := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIbk9rJ4ec3MxEHxE2Grpt bob@laptop\n"
 	one, err := decodeHello(Hello{Serves: []Served{{Path: "/x", Holders: []string{ordinary}}}}.encode())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := one.Serves[0].Holders[0]; got != ordinary {
-		t.Fatalf("an ordinary key came back as %q", got)
+		t.Fatalf("a key came back as %q, want %q", got, ordinary)
 	}
 }
