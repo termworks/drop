@@ -165,14 +165,21 @@ func noting(pinned *book.Book) func(node.ID, string, string) {
 // dialling somewhere nobody is.
 func moving(pinned *book.Book, said func(string)) func(was, now node.ID) {
 	return func(was, now node.ID) {
-		name, ok := pinned.Moved(was, now)
-		if !ok {
-			return
-		}
-		if err := pinned.Save(); err != nil {
+		var name string
+
+		// Re-read, change and write with nothing else able to write in between. A machine saying
+		// it moved is a message from the network, and it must not be able to land in the middle of
+		// somebody pairing on this machine and take that pairing with it.
+		err := pinned.Change(func() (bool, error) {
+			var moved bool
+			name, moved = pinned.Moved(was, now)
+			return moved, nil
+		})
+		switch {
+		case err != nil:
 			said(fmt.Sprintf("%s moved to %s and it could not be written down: %v", name, node.Brief(now), err))
-			return
+		case name != "":
+			said(fmt.Sprintf("%s is now %s, and was %s", name, node.Brief(now), node.Brief(was)))
 		}
-		said(fmt.Sprintf("%s is now %s, and was %s", name, node.Brief(now), node.Brief(was)))
 	}
 }

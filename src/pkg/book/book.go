@@ -484,3 +484,32 @@ func (b *Book) Moved(was, now node.ID) (string, bool) {
 	}
 	return "", false
 }
+
+// Change re-reads the book, alters it, and writes it back, with nothing else able to write in
+// between.
+//
+// Read, change, write is three steps, and another process writing between the first and the third
+// has its work thrown away by the third. Every drop on a machine shares one address book and
+// `drop peer pair` is its own process, so a pairing made at the wrong instant would vanish with
+// nothing to say so. That was already worth avoiding when the only thing that wrote here was
+// somebody typing; it matters more now a machine saying it moved can make the daemon write.
+//
+// alter reports whether anything actually changed, so a connection that had nothing to say does
+// not rewrite the file.
+func (b *Book) Change(alter func() (bool, error)) error {
+	file, err := path()
+	if err != nil {
+		return err
+	}
+
+	return keep.While(file, func() error {
+		if err := b.Refresh(); err != nil {
+			return err
+		}
+		changed, err := alter()
+		if err != nil || !changed {
+			return err
+		}
+		return b.Save()
+	})
+}
