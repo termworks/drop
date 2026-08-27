@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"lukechampine.com/blake3"
 )
@@ -108,6 +109,19 @@ func (m Mark) Brief() string {
 // not be identified by a drive serial because the drive happened to answer sooner, and one whose
 // TPM is present but unreadable should still have a name.
 func Read() Mark {
+	once.Do(func() { found = looked() })
+	return found
+}
+
+// once keeps the answer. Nothing this reads changes while the process runs, and one of the things
+// it reads is a TPM, which is slow enough to be worth asking only the first time.
+var (
+	once  sync.Once
+	found Mark
+)
+
+// looked tries every source and takes the best one that answered.
+func looked() Mark {
 	best := Mark{}
 	for _, look := range sources {
 		m, err := look()

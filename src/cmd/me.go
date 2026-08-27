@@ -20,6 +20,7 @@ func newMeCmd() *cobra.Command {
 
 	cmd.AddCommand(
 		newIDCmd(),
+		newMachineCmd(),
 		newUserCmd(),
 		newVaultCmd(),
 		newPasswdCmd(),
