@@ -82,6 +82,7 @@ machines of different architectures.
 
 | | |
 |---|---|
+| [**Start here**](docs/getting-started.md) | a walkthrough: one identity across three machines, from nothing to talking |
 | [How it is put together](docs/architecture.md) | the layers, one daemon, and what happens when somebody opens a path |
 | [What names a machine](docs/identity.md) | identity from the hardware, several people on one machine, moving to another |
 | [Namespaces and archetypes](docs/namespaces.md) | an instance, a meaning, and the rule that keeps them apart |
