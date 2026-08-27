@@ -26,6 +26,7 @@ func Ask(ctx context.Context, s Stream, path, why, from string) error {
 	conn := wire.NewConn(s)
 	open := Opening{Ask: true, Path: path, From: from, Secret: why}
 	open.Badge, open.Signed = carried()
+	open.Plate, open.Stamped = stamping()
 
 	if err := conn.WriteFrame(wire.KindOpen, open.encode()); err != nil {
 		return fmt.Errorf("asking for %s: %w", path, err)

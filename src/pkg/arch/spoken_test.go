@@ -167,7 +167,7 @@ func over(t *testing.T, cfg *conf.Config, known *arch.Registry, caller ns.Caller
 		_ = proto.Handle(t.Context(), deadlined{server}, node.ID{}, proto.Policy{
 			Mounts:     cfg.Mounts,
 			Archetypes: known,
-			Who:        func(node.ID, proto.Badged) ns.Caller { return caller },
+			Who:        func(node.ID, proto.Badged, proto.Stood) ns.Caller { return caller },
 			Allow:      func(node.ID, proto.Opening) (bool, string) { return true, "" },
 		})
 	}()

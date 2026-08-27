@@ -62,7 +62,7 @@ func newMachineCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(newRebindCmd())
+	cmd.AddCommand(newRebindCmd(), newMigrateCmd(), newTookCmd())
 	return cmd
 }
 

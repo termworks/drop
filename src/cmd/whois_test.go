@@ -30,7 +30,7 @@ func TestAPairedMachineIsKnownWithoutABadge(t *testing.T) {
 	id := idFor(1)
 	pinned.Pair("laptop", id, make([]byte, book.SecretBytes))
 
-	who := whoIs(pinned)(id, proto.Badged{})
+	who := whoIs(pinned)(id, proto.Badged{}, proto.Stood{})
 	if who.Name != "laptop" || !who.Paired {
 		t.Fatalf("a paired machine came out as %+v", who)
 	}
@@ -46,7 +46,7 @@ func TestAnUnknownMachineOfAKnownPersonIsRecognised(t *testing.T) {
 	pinned.Pair("bob", idFor(1), make([]byte, book.SecretBytes))
 	pinned.Belongs("bob", bobsKey)
 
-	who := whoIs(pinned)(idFor(2), proto.Badged{Key: bobsKey, As: "phone"})
+	who := whoIs(pinned)(idFor(2), proto.Badged{Key: bobsKey, As: "phone"}, proto.Stood{})
 	if who.UserName != "bob" {
 		t.Fatalf("bob's phone came out as %+v", who)
 	}
@@ -73,7 +73,7 @@ func TestAMachineCannotNameItselfIntoANarrowRule(t *testing.T) {
 
 	rule := ns.Access{Named: []string{"bob@laptop"}}
 
-	claiming := whoIs(pinned)(idFor(2), proto.Badged{Key: bobsKey, As: "laptop"})
+	claiming := whoIs(pinned)(idFor(2), proto.Badged{Key: bobsKey, As: "laptop"}, proto.Stood{})
 	if ok, _ := rule.Admits(claiming); ok {
 		t.Fatal("a machine got in by calling itself laptop")
 	}
@@ -82,7 +82,7 @@ func TestAMachineCannotNameItselfIntoANarrowRule(t *testing.T) {
 	pinned.Pair("laptop", idFor(3), make([]byte, book.SecretBytes))
 	pinned.Belongs("laptop", bobsKey)
 
-	filed := whoIs(pinned)(idFor(3), proto.Badged{Key: bobsKey, As: "whatever"})
+	filed := whoIs(pinned)(idFor(3), proto.Badged{Key: bobsKey, As: "whatever"}, proto.Stood{})
 	if ok, why := rule.Admits(filed); !ok {
 		t.Fatalf("bob's laptop was refused: %s", why)
 	}
@@ -93,7 +93,7 @@ func TestAMachineCannotNameItselfIntoANarrowRule(t *testing.T) {
 func TestABadgeFromAStrangerNamesNobody(t *testing.T) {
 	pinned := emptyBook(t)
 
-	who := whoIs(pinned)(idFor(2), proto.Badged{Key: bobsKey, As: "phone"})
+	who := whoIs(pinned)(idFor(2), proto.Badged{Key: bobsKey, As: "phone"}, proto.Stood{})
 	if who.UserName != "" || who.Paired {
 		t.Fatalf("a stranger came out as %+v", who)
 	}
@@ -111,7 +111,7 @@ func TestALocalNameOutranksTheBadgesName(t *testing.T) {
 	pinned.Pair("bob", idFor(1), make([]byte, book.SecretBytes))
 	pinned.Belongs("bob", bobsKey)
 
-	who := whoIs(pinned)(id, proto.Badged{Key: bobsKey, As: "workstation"})
+	who := whoIs(pinned)(id, proto.Badged{Key: bobsKey, As: "workstation"}, proto.Stood{})
 	if who.Name != "buildbox" || who.UserName != "bob" {
 		t.Fatalf("came out as %+v", who)
 	}
@@ -131,7 +131,7 @@ func TestMyOwnMachinesAreMe(t *testing.T) {
 		mine.Unlock()
 	})
 
-	who := whoIs(pinned)(idFor(4), proto.Badged{Key: bobsKey, As: "laptop"})
+	who := whoIs(pinned)(idFor(4), proto.Badged{Key: bobsKey, As: "laptop"}, proto.Stood{})
 	if who.UserName != "me" || !who.Paired {
 		t.Fatalf("my own laptop came out as %+v", who)
 	}

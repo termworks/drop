@@ -131,6 +131,13 @@ type Caller struct {
 	// Label is what the device calls itself, off its badge. Nobody vouches for it and no rule may
 	// be satisfied by it -- it is there so a list can show a machine that has no local name yet.
 	Label string
+	// Machine is the hardware this caller is running on, off its plate, and Whose is the account
+	// there. Two callers with the same Machine are two people at one machine.
+	//
+	// Established by the machine key, which everyone with an account on that machine holds, so it
+	// says which box and never which person. No rule is satisfied by it for that reason.
+	Machine string
+	Whose   string
 	// Paired says a shared secret exists with it.
 	Paired bool
 	// Trusted says this is somebody you decided to trust, not merely somebody you have met.

@@ -49,6 +49,7 @@ func start(s Stream, open Opening) (*wire.Conn, error) {
 
 	what := open.what()
 	open.Badge, open.Signed = carried()
+	open.Plate, open.Stamped = stamping()
 
 	_ = s.SetReadDeadline(time.Now().Add(settleIn))
 	defer func() { _ = s.SetReadDeadline(time.Time{}) }()

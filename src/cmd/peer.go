@@ -146,7 +146,7 @@ func newPeerWhoisCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			who := whoIs(pinned)(entry.ID, proto.Badged{})
+			who := whoIs(pinned)(entry.ID, proto.Badged{}, proto.Stood{})
 
 			fmt.Printf("\n  %s  %s\n\n", entry.Name, node.Brief(entry.ID))
 			fmt.Printf("  id       %s\n", entry.ID)

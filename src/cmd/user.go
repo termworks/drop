@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/bresilla/drop/src/pkg/plate"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"github.com/bresilla/drop/src/pkg/user"
 )
@@ -105,4 +106,17 @@ func myKey() string {
 	defer mine.Unlock()
 
 	return mine.key
+}
+
+// showPlate picks up this machine's plate, so everything it opens says what it is running on.
+//
+// Unlike a badge this is allowed to fail quietly. A machine that will not say what it is still has
+// an identity and still works, and what is lost is only that nobody learns two of its accounts are
+// on one machine — worth less than refusing to start over.
+func showPlate() {
+	stamp, signed, err := plate.Sign(time.Now())
+	if err != nil {
+		return
+	}
+	proto.Stamped(stamp.Bytes(), signed)
 }

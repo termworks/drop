@@ -47,6 +47,13 @@ type Opening struct {
 	// person, so a rule can name one.
 	Badge  []byte
 	Signed []byte
+	// Plate says which machine this drop is running on, and Stamped is the proof of it.
+	//
+	// Separate from the badge because it answers a different question. The badge says whose drop
+	// this is; the plate says what it is sitting on, so several people with accounts on one
+	// machine are seen as one machine with several people rather than as unrelated machines.
+	Plate   []byte
+	Stamped []byte
 }
 
 func (o Opening) encode() []byte {
@@ -61,6 +68,8 @@ func (o Opening) encode() []byte {
 	w.String(o.Secret)
 	w.String(string(o.Badge))
 	w.String(string(o.Signed))
+	w.String(string(o.Plate))
+	w.String(string(o.Stamped))
 	return w.Body()
 }
 
@@ -126,10 +135,19 @@ func decodeOpen(body []byte) (Opening, error) {
 	if err != nil {
 		return out, err
 	}
+	plate, err := r.String(wire.MaxString)
+	if err != nil {
+		return out, err
+	}
+	stamped, err := r.String(wire.MaxString)
+	if err != nil {
+		return out, err
+	}
 
 	out.Ask, out.Meet, out.Archetype, out.Version = ask, meet, archetype, int(version)
 	out.From, out.Path, out.Held, out.Secret = from, path, held, secret
 	out.Badge, out.Signed = []byte(badge), []byte(signed)
+	out.Plate, out.Stamped = []byte(plate), []byte(stamped)
 	return out, nil
 }
 

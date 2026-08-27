@@ -45,7 +45,7 @@ func answering(t *testing.T, m ns.Mount, known *arch.Registry) net.Conn {
 		_ = Handle(t.Context(), stream{server}, who(3), Policy{
 			Mounts:     table,
 			Archetypes: known,
-			Who:        func(node.ID, Badged) ns.Caller { return ns.Caller{ID: who(3).String(), Paired: true} },
+			Who:        func(node.ID, Badged, Stood) ns.Caller { return ns.Caller{ID: who(3).String(), Paired: true} },
 			Allow:      func(node.ID, Opening) (bool, string) { return true, "" },
 		})
 	}()
@@ -269,7 +269,7 @@ func TestARefusedOpenCostsOneGuess(t *testing.T) {
 		Access:    ns.Access{Password: hash, AnyVisible: true},
 	})
 	caller := handling(t, who(9), table, Policy{
-		Who: func(from node.ID, _ Badged) ns.Caller { return ns.Caller{ID: from.String(), Paired: true} },
+		Who: func(from node.ID, _ Badged, _ Stood) ns.Caller { return ns.Caller{ID: from.String(), Paired: true} },
 	})
 
 	// Counted rather than timed: a guess is expensive on purpose, and how many were run is the

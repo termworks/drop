@@ -31,7 +31,7 @@ type Policy struct {
 	Archetypes *arch.Registry
 	// Who describes a caller: what it is filed under, and whether a secret is shared with it.
 	// Nil means nothing is known about anyone, which with deny-by-default serves nobody.
-	Who func(from node.ID, badge Badged) ns.Caller
+	Who func(from node.ID, badge Badged, on Stood) ns.Caller
 	// Allow decides whether to take a session. Nil accepts nothing.
 	Allow func(from node.ID, open Opening) (bool, string)
 	// Asked, when set, takes a request to reach a path the caller can see but not open. Returning
@@ -90,7 +90,7 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 
 	caller := ns.Caller{ID: from.String()}
 	if policy.Who != nil {
-		caller = policy.Who(from, vouched(from, open))
+		caller = policy.Who(from, vouched(from, open), stood(from, open))
 	}
 
 	// The path is cleaned here and nowhere else after: what a peer wrote is a thousand arbitrary

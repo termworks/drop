@@ -31,7 +31,7 @@ func catching(t *testing.T, m ns.Mount, met func(Meeting) error) net.Conn {
 		_ = Handle(t.Context(), stream{server}, who(4), Policy{
 			Mounts:     table,
 			Archetypes: arch.NewRegistry(),
-			Who:        func(node.ID, Badged) ns.Caller { return ns.Caller{ID: who(4).String(), Paired: true} },
+			Who:        func(node.ID, Badged, Stood) ns.Caller { return ns.Caller{ID: who(4).String(), Paired: true} },
 			Allow:      func(node.ID, Opening) (bool, string) { return true, "" },
 			Met:        met,
 		})

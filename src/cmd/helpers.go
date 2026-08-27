@@ -67,7 +67,7 @@ func streamOver(err error) bool {
 func greeting(pinned *book.Book, mounts *ns.Table, known *arch.Registry, from node.ID, badge proto.Badged) proto.Hello {
 	// No pairing check here any more: the rules on the paths decide, and one of them may name a
 	// bare key. What an unpaired caller can reach is usually nothing, and then the list is empty.
-	who := whoIs(pinned)(from, badge)
+	who := whoIs(pinned)(from, badge, proto.Stood{})
 	serves := proto.Describe(mounts, known, who)
 
 	// Who else holds a shared namespace is not a list anybody keeps: it is the access rule read
@@ -103,9 +103,15 @@ func greeting(pinned *book.Book, mounts *ns.Table, known *arch.Registry, from no
 // end's own word for itself, so it goes in Label, where nothing is decided on it: a rule written
 // as "bob@laptop" has to mean the laptop somebody here wrote down, not whichever of bob's machines
 // calls itself that.
-func whoIs(pinned *book.Book) func(node.ID, proto.Badged) ns.Caller {
-	return func(from node.ID, badge proto.Badged) ns.Caller {
+func whoIs(pinned *book.Book) func(node.ID, proto.Badged, proto.Stood) ns.Caller {
+	return func(from node.ID, badge proto.Badged, on proto.Stood) ns.Caller {
 		who := ns.Caller{ID: from.String()}
+
+		// What machine it is running on, which is a different question from whose it is: several
+		// people with accounts on one machine all stand on the same one.
+		if on.Shown() {
+			who.Machine, who.Whose = on.Machine, on.Whose
+		}
 
 		if entry, ok := pinned.ByID(from); ok {
 			who.Name = entry.Name

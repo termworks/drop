@@ -131,7 +131,7 @@ func (a *answers) To(ctx context.Context, entry book.Entry, alpn string) (io.Clo
 		_ = proto.Handle(ctx, there, idFor(9), proto.Policy{
 			Mounts:     a.table,
 			Archetypes: arch.NewRegistry(),
-			Who: func(node.ID, proto.Badged) ns.Caller {
+			Who: func(node.ID, proto.Badged, proto.Stood) ns.Caller {
 				return ns.Caller{ID: idFor(9).String(), Name: "bob", UserName: "bob", Paired: true}
 			},
 			Allow: func(_ node.ID, open proto.Opening) (bool, string) {
