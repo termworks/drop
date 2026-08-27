@@ -207,3 +207,29 @@ func gathered(parts []string) []byte {
 	sort.Strings(parts)
 	return []byte(strings.Join(parts, "\x00"))
 }
+
+// Machine is the key material for the machine itself, rather than for one person's drop on it.
+//
+// No account goes into it: the point of it is to be the same for everyone with an account here, so
+// that two of them can each say "this endpoint of mine is on that machine" and be talking about one
+// machine. Which means, said plainly, that everyone with an account here can produce it — so what
+// it proves is which hardware something is on, and never which person is behind it. People are
+// proved by their own keys, which is where drop already keeps that question.
+func (m Mark) Machine() ([32]byte, error) {
+	if !m.Held() {
+		return [32]byte{}, fmt.Errorf("this machine says nothing about itself that a name could be made from")
+	}
+
+	h := blake3.New(32, nil)
+	h.Write([]byte(purpose))
+	h.Write([]byte{0})
+	h.Write([]byte(m.From.String()))
+	h.Write([]byte{0})
+	h.Write(m.raw)
+	h.Write([]byte{0})
+	h.Write([]byte("the machine itself"))
+
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out, nil
+}
