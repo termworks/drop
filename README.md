@@ -79,6 +79,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o drop-arm64 ./src
 ```
 
 The toolchain comes from the flake — `nix develop`, or `direnv allow` and it is loaded on `cd`.
+That shell sets `CGO_ENABLED=0`, which the race detector cannot build under, so that one run needs
+it back: `CGO_ENABLED=1 go test -race ./...`.
 
 ### size
 
