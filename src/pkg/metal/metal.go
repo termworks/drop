@@ -14,8 +14,10 @@
 package metal
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/user"
 	"sort"
@@ -94,18 +96,7 @@ func (m Mark) Seed(whose string) ([32]byte, error) {
 		return [32]byte{}, fmt.Errorf("a name needs to know which drop on this machine it is for")
 	}
 
-	h := blake3.New(32, nil)
-	h.Write([]byte(purpose))
-	h.Write([]byte{0})
-	h.Write([]byte(m.From.String()))
-	h.Write([]byte{0})
-	h.Write(m.raw)
-	h.Write([]byte{0})
-	h.Write([]byte(whose))
-
-	var out [32]byte
-	copy(out[:], h.Sum(nil))
-	return out, nil
+	return m.derive("one drop on it", whose), nil
 }
 
 // Whose is which account on this machine is asking.
@@ -226,16 +217,38 @@ func (m Mark) Machine() ([32]byte, error) {
 		return [32]byte{}, fmt.Errorf("this machine says nothing about itself that a name could be made from")
 	}
 
+	return m.derive("the machine itself", ""), nil
+}
+
+// bound writes a piece into a hash so that where it ends cannot be mistaken.
+//
+// The pieces are joined with a separator, and one of them — the drive case — is itself several
+// serials joined the same way. Two machines could then hash the same bytes from different pieces:
+// a serial that ends where a path begins is the same run of bytes as a serial that runs on into it.
+// A length in front of each removes the question rather than arguing about whether the values that
+// would collide can occur.
+func bound(h io.Writer, part []byte) {
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], uint64(len(part)))
+	h.Write(n[:])
+	h.Write(part)
+}
+
+// derive is every key this machine has, made the same way and kept apart from each other.
+//
+// kind is what the key is for and whose is which drop it belongs to, and they are separate pieces
+// because they come from different places: kind is written here, whose is a path off the disk. In
+// one slot between them, a drop whose directory happened to read like the word for a machine key
+// would derive the machine key. Two slots cannot be confused for one another whatever is in them.
+func (m Mark) derive(kind, whose string) [32]byte {
 	h := blake3.New(32, nil)
-	h.Write([]byte(purpose))
-	h.Write([]byte{0})
-	h.Write([]byte(m.From.String()))
-	h.Write([]byte{0})
-	h.Write(m.raw)
-	h.Write([]byte{0})
-	h.Write([]byte("the machine itself"))
+	bound(h, []byte(purpose))
+	bound(h, []byte(m.From.String()))
+	bound(h, m.raw)
+	bound(h, []byte(kind))
+	bound(h, []byte(whose))
 
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
-	return out, nil
+	return out
 }

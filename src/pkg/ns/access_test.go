@@ -471,3 +471,40 @@ func TestARuleThatAlreadyFailedDoesNotReachTheHash(t *testing.T) {
 		t.Errorf("refusing an unpaired caller paid for %d guesses", paid)
 	}
 }
+
+// What machine a caller is sitting at must never be what lets them in.
+//
+// A plate is signed by a machine key, and on a machine without a TPM that key is derived from a
+// serial every account there can read — so every account there can produce it. It says which
+// hardware, and it can never say which person. If a rule could be satisfied by it, anybody with a
+// login on a machine you trust would inherit that trust.
+func TestWhatMachineSomebodyIsAtNeverLetsThemIn(t *testing.T) {
+	// A caller who is nobody: no pairing, no user key, no password — but standing on a machine
+	// with a name, and claiming an account on it.
+	standing := Caller{
+		ID:      "0123456789abcdef",
+		Machine: "a machine you have paired with a hundred times",
+		Whose:   "me",
+	}
+
+	for what, rule := range map[string]Access{
+		"paired":         {AnyPaired: true},
+		"trusted":        {AnyTrusted: true},
+		"a person":       {Named: []string{"me"}},
+		"a machine":      {Named: []string{"a machine you have paired with a hundred times"}},
+		"a key":          {Keys: []string{"a machine you have paired with a hundred times"}},
+		"nothing at all": {},
+	} {
+		if ok, _ := rule.Admits(standing); ok {
+			t.Errorf("a rule for %q was satisfied by what machine somebody is at", what)
+		}
+	}
+
+	// And the same caller, once actually paired, is let in on the strength of the pairing — so the
+	// check above is refusing the plate and not refusing everything.
+	paired := standing
+	paired.Paired = true
+	if ok, why := (Access{AnyPaired: true}).Admits(paired); !ok {
+		t.Fatalf("a paired caller was refused: %s", why)
+	}
+}

@@ -302,3 +302,58 @@ func TestTwoDropsOnOneMachineAreNotOneName(t *testing.T) {
 		t.Fatal("one person got the same name on two different machines")
 	}
 }
+
+// Two machines must not be able to hash to one name because the pieces they were built from happen
+// to run together the same way.
+//
+// The drive case is several serials joined with a separator, and the account is a path. Written one
+// after another, a serial that ends where a path begins is the same run of bytes as a serial that
+// runs on into it. A length in front of each piece settles it, rather than leaving it to whether
+// the values that would collide can actually occur.
+func TestPiecesThatRunTogetherAreStillDifferentMachines(t *testing.T) {
+	// The same bytes, split between the two pieces in two places.
+	one, err := Mark{From: Disk, raw: []byte("aaa\x00bbb")}.Seed("ccc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := Mark{From: Disk, raw: []byte("aaa")}.Seed("bbb\x00ccc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one == two {
+		t.Fatal("two machines derived one name from the same bytes split differently")
+	}
+
+	// And where the split falls with no separator at all.
+	three, err := Mark{From: Disk, raw: []byte("ab")}.Seed("c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	four, err := Mark{From: Disk, raw: []byte("a")}.Seed("bc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if three == four {
+		t.Fatal("two machines derived one name because their pieces ran together")
+	}
+
+	// The machine key is built the same way and has to be as careful.
+	five, err := Mark{From: Disk, raw: []byte("ab")}.Machine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	six, err := Mark{From: Disk, raw: []byte("a")}.Machine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if five == six {
+		t.Fatal("two machines share a machine key")
+	}
+
+	// A machine key is never one of that machine's drop keys, whatever the account is called.
+	for _, whose := range []string{"the machine itself", "/home/alice/.config/drop", ""} {
+		if seed, err := (Mark{From: Disk, raw: []byte("ab")}).Seed(whose); err == nil && seed == five {
+			t.Fatalf("the account %q derives the machine key itself", whose)
+		}
+	}
+}
