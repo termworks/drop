@@ -27,27 +27,38 @@ const Most = 120
 // Removed rather than escaped: an escape shown as `\x1b[2K` is honest but it is also four times the
 // width and nobody reading a listing wants it. What is dropped is exactly what could act on the
 // terminal or lie about the order of what is left; ordinary writing in any language survives.
+//
+// The mark that says it was cut is inside the bound and not past it. Text and Fit have to agree
+// about what is safe — one is what unsigned text is cleaned with and the other is what signed text
+// is refused by, and a length they disagree on is a length where one of them is wrong.
 func Text(s string, most int) string {
 	if most <= 0 {
 		most = Most
 	}
 
-	var out strings.Builder
-	out.Grow(len(s))
-
-	kept := 0
+	out := make([]rune, 0, most)
+	cut := false
 	for _, r := range s {
-		if kept >= most {
-			out.WriteString("…")
-			break
-		}
 		if !shown(r) {
 			continue
 		}
-		out.WriteRune(r)
-		kept++
+		// Space before anything else is not worth the budget: it comes off the front at the end
+		// anyway, and spending the room on it turns a long name into nothing but the mark. Every
+		// kind of space, because a name padded with the unbreakable one is still a padded name.
+		if unicode.IsSpace(r) && len(out) == 0 {
+			continue
+		}
+		if len(out) == most {
+			cut = true
+			break
+		}
+		out = append(out, r)
 	}
-	return strings.TrimSpace(out.String())
+
+	if cut {
+		out = append(out[:most-1], '…')
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // Line is Text with the ordinary bound, for the callers that have no reason to pick one.
