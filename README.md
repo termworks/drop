@@ -43,7 +43,10 @@ two ends compute the same value.
 
 Discovery, pairing and transfer work.
 
-- ed25519 identity, persisted; the public half is the address
+- ed25519 identity, taken from the hardware where the machine will say what it is, so a reinstall
+  comes back as the same machine and a backup carried elsewhere does not
+- one machine, several accounts: each reachable as itself, tied together by a machine-signed plate
+- moving to new hardware without pairing again, by a handover the old machine signs
 - pairing over a one-time 60-bit code, hashed into its own rendezvous
 - private rendezvous per pair, hourly rotation
 - AutoRelay, so a node behind a NAT still has a dialable address
@@ -134,6 +137,10 @@ drop path share [dir]          take a file from somebody, once: a path is up for
 drop path cast                 serve a terminal read from stdin as asciicast
 
 drop me id                     this machine's identity
+drop me machine                what names this machine, and what would change it
+drop me machine rebind         stop using a written-down key, be named by the hardware
+drop me machine migrate <id>   say this machine became another one
+drop me machine took <line>    on the new machine: take that statement up
 drop me user                   who this machine belongs to
 drop me vault                  whether what is kept on this disk is encrypted
 drop me passwd                 hash a password, to guard a path with
@@ -582,7 +589,8 @@ exists — so whoever you hand one to needs the path as well as the word.
 ## who you are
 
 A device has an identity of its own — the endpoint key, which QUIC proves on every connection. That
-says *which machine*, never *whose*. A **user key** says whose.
+says *which machine*, never *whose*. A **user key** says whose. Where the endpoint key itself comes
+from is [what names a machine](#what-names-a-machine), below.
 
 ```
   you ──── one SSH key ────┬──── laptop     each machine carries a badge:
@@ -649,6 +657,161 @@ key it cannot is signed by `ssh-keygen -Y sign`, which every machine with SSH al
 drives a security key directly — **no ssh-agent involved**. A key drop was *pointed at* and cannot
 find is an error: it will not answer a typo by inventing a second identity. Without `user_key` at
 all, drop keeps a key of its own.
+
+### what names a machine
+
+A user key says *whose*. What says *which machine* is the endpoint key — and where that comes from
+decides two things you care about: whether a machine survives being wiped, and whether two people
+with accounts on one box are one machine or two.
+
+drop takes it from the machine itself, strongest source first, and says which one it got:
+
+```console
+$ drop me machine
+5629e48c2227fc04ac3fc875a85569bb89e66123699ee9dd20552e0b421c044d
+
+  named by      the serial on the drive the system is on
+  which reads   e5535c77824b
+  and by        this account, bresilla, so everyone with one here is
+                reachable as themselves
+  survives      a reinstall, because nothing about it is written down
+  changes if    the drive the system is on is replaced, or this account is renamed
+```
+
+| source | what it is | what changes it |
+| --- | --- | --- |
+| the TPM | a key the chip derives and never hands out | clearing the TPM |
+| the board | the serial the firmware holds — DMI on a PC, the device tree on a board | replacing the board |
+| a drive | the serial on the drive `/` is on, followed down through partitions, LVM and encryption to the metal | replacing that drive |
+
+The TPM row is written and **has never run** — neither machine this was built on has a TPM, and
+code that has not executed is not code that works. A PC whose firmware offers one (Intel PTT, AMD
+fTPM) usually ships with it switched off in the BIOS. `metal.Seal` and `metal.Unseal` are there for
+the same chip to encrypt with later, and carry the same warning.
+
+Nothing is written down when a machine will name itself, which is the point: **reinstall and it
+comes back as the machine it was**, with no backup and nothing to restore. Carry a backup to
+another box and it does *not* come back as that machine, because the key was never in the backup.
+
+The seed is `KDF(purpose, what the hardware said, this account)`. The account is in there because a
+machine is one machine and the people with accounts on it are several — each runs a drop that has
+to be reachable as itself, and two of them deriving one key would be two programs answering to one
+address. Same account after a wipe: same name. Two accounts on one box: two names. Same account on
+another box: a different name.
+
+**What this is not.** On a machine without a TPM the serial is one every account there can read, so
+every account there can derive the machine key. Machine identity locates *hardware*; it is never a
+wall between the people sitting at it. Who somebody is stays with their user key, which is where
+the namespaces are owned anyway.
+
+A machine that has been running with a key of its own **keeps it**. Deriving a different one on an
+ordinary upgrade would break every pairing that names that machine without anybody asking, so a
+machine already installed says so instead, and nothing changes until you say it should:
+
+```console
+$ drop me machine
+5629e48c2227fc04ac3fc875a85569bb89e66123699ee9dd20552e0b421c044d
+
+  named by      the key kept in /home/bresilla/.config/drop/identity
+  survives      a reinstall only if that file is in your backup
+
+  this machine could name itself instead, by the serial on the drive the system is on.
+  `drop me machine rebind` changes it over — and every pairing that
+  names this machine has to be made again.
+```
+
+Changing over is deliberate, and says what it will cost before it does anything:
+
+```console
+$ drop me machine rebind
+this machine is 2e0b421c044d
+it would become 9983d3d10ca5, named by the serial on the drive the system is on
+
+every machine paired with this one knows it by the old name and will not
+recognise the new one. Each pairing has to be made again.
+
+run it again with --yes to go ahead.
+```
+
+The old key is kept beside the new one as `identity.was`, not deleted.
+
+### one machine, several people
+
+Each account on a machine has its own endpoint key, so each is reachable as itself. What ties them
+together is a **plate**: a statement signed by the *machine* key — the one every account there
+derives — saying "this endpoint is one of the drops running on me, and it belongs to that account".
+
+```
+  one machine ──── machine key ────┬──── alice's drop    "endpoint E is on me,
+                                   └──── bob's drop       account alice"
+```
+
+It rides on every connection next to the badge and answers a different question. The badge says
+whose drop this is; the plate says what it is sitting on. A peer learns that two endpoints it can
+reach are two people at one machine, rather than two unrelated machines that happen to answer at
+the same time.
+
+Because every account on a machine can produce that machine's plate, **no access rule is satisfied
+by it**. It is there so a listing can say what is where, and for nothing else.
+
+This is a different thing from `$DROP_PROFILE` below, which is a second identity under *one*
+account for trying rules out. Two real accounts on one machine need nothing set up.
+
+### moving to another machine
+
+A name taken from the hardware stays with the hardware. That is the point of taking it from the
+hardware, and it is also the one thing that has to be possible anyway — machines get replaced, and
+everybody who knew the old one should end up knowing the new one without pairing all over again.
+
+So the old machine says it, while it still can, and signs with the key everybody already knows it
+by: **its own endpoint key**. Nothing new has to be trusted, because the old name *is* the key that
+signed the statement.
+
+```console
+# on the new machine
+$ drop me id
+39ce1a4bee9e4275e641045f9b867c6f60dbd4e801f1719029fc1ba8a4ed1a91
+
+# on the old one, while it still runs
+$ drop me machine migrate 39ce1a4bee9e…
+2e0b421c044d is now 1ba8a4ed1a91
+
+drop1AMRkcm9wLWhhbmRvdmVyLzEKd2FzIDU2MjllNDhj…
+
+# back on the new machine
+$ drop me machine took drop1AMRkcm9wLWhhbmRvdmVy…
+  2e0b421c044d said it became this machine
+  account   bresilla
+  good till 2026-09-03 15:04
+```
+
+Restart drop on the new machine after `took`: the handover is picked up when it puts its badge on.
+
+After that the new machine carries the handover on every connection it makes — there is no telling
+which peers have heard yet — and each of them points what it had filed under the old name at the
+new one. The entry keeps **the local name, the shared secret, whose machine it is, and whether it
+is trusted**; only the addresses go, because the machine is somewhere else now and they are learned
+again on first contact. Nobody pairs again.
+
+```console
+# on a peer, in the daemon log
+tron is now 1ba8a4ed1a91, and was 2e0b421c044d
+```
+
+A peer that has already heard does nothing with it. It travels on a `hello` as well as on an open,
+because `drop path ls` is how most peers hear from a machine first.
+
+Two things have to hold before a peer acts on one, and the second is the one that matters. It has
+to be signed by the machine it says it was. And it has to name **the very caller presenting it** as
+what that machine became — otherwise anybody who overheard a handover could present it and be taken
+for somebody else's machine. It runs out after seven days, names exactly one successor, and moves
+one account.
+
+A move onto an id already in the book is refused: that would make two entries one.
+
+Both ends need the same build. The opening frame grew these claims, and a drop that predates them
+reads a newer one as `malformed unsigned varint` — there is no compatibility shim anywhere in drop,
+by design.
 
 ### another person, same machine
 
@@ -810,6 +973,12 @@ delivery, so a reconnect does not duplicate the backlog.
 
 ## what is kept on disk
 
+The machine's own key is often **not** on disk at all — see [what names a machine](#what-names-a-machine).
+`~/.config/drop/identity` exists only on a machine that would not name itself, or one that has been
+running since before it could. Beside it, `handover` is the statement a machine presents after
+moving; it is not a secret, it is a thing anybody may check and only the old machine could have
+made, and it is thrown away once it runs out.
+
 Conversations are written to `$XDG_DATA_HOME/drop/convo/<peer id>/`. Without a vault they are
 written in the clear, and `0600` under `0700` stops another account on the same machine and nothing
 else:
@@ -892,13 +1061,20 @@ The receiver checks both before renaming anything into place.
 ### the opening, and then whatever the archetype says
 
 Only the first two frames are everybody's. A caller says which path it wants and which archetype it
-expects to find there; the far end resolves the path, checks the rule, and either accepts or gives
-a reason:
+expects to find there, along with what it can say about itself; the far end resolves the path,
+checks the rule, and either accepts or gives a reason:
 
 ```
-  Open{path, archetype, version, badge}  ------->
-                     <------- Accept     // or Reject{reason}
+  Open{path, archetype, version, badge, plate, handover}  ------->
+                                   <------- Accept     // or Reject{reason}
 ```
+
+Three separate claims ride in that frame, and they answer three different questions. The **badge**
+says whose machine this is, signed by a user key. The **plate** says what machine the drop is
+running on, signed by the machine key. The **handover** says this caller is what some other machine
+became, signed by that other machine's key. Each is checked against the endpoint QUIC already
+proved, and any of them failing yields a caller less is known about rather than a refused
+connection — an expired badge is not a device that vanished.
 
 After that the stream belongs to the archetype, and nothing generic reads another byte of it. Four
 shapes are in use, and a seventh archetype is free to invent a fifth.
@@ -1057,12 +1233,16 @@ running something that serves.
 src/main.go            entry point; the version lives here
 src/cmd/               the cobra command tree, one file per command
 src/pkg/node/          identity, the iroh endpoint, relays
+src/pkg/metal/         what machine this is, off the TPM or a serial, and TPM sealing
+src/pkg/plate/         a machine vouching for the drops on it, and for what it became
 src/pkg/discovery/     finding a device on this wire
 src/pkg/rendezvous/    finding one that moved, under a derived identity
 src/pkg/ns/            namespaces: paths, the access rules on them, nothing about meaning
 src/pkg/arch/          archetypes: the interface, the registry, and one package each
 src/pkg/passwd/        argon2id, for the secrets that guard a path
 src/pkg/proto/         pairing, hello, opening a namespace, and the framing under them
+src/pkg/wire/          the binary encoding under all of it: varints, no reflection
+src/pkg/dial/          turning a device you know into a connection to it
 src/pkg/book/          the address book, including pairing secrets
 src/pkg/grant/         who has been let in and shut out from the interface
 src/pkg/asked/         requests to reach a path, waiting on an answer
@@ -1072,14 +1252,19 @@ src/pkg/shares/        what each device last said it shares
 src/pkg/user/          a person, and the badge each of their machines carries
 src/pkg/convo/         the durable conversation log and outbox
 src/pkg/history/       what happened to one thing: signed changes, causally ordered
+src/pkg/weave/         putting versions of one thing back together, three ways at a time
 src/pkg/among/         who else holds a namespace, read off its access rule
 src/pkg/meet/          two machines catching up on one thing: heads, and what is missing
+src/pkg/live/          a stream both ends write on at once
 src/pkg/term/          a terminal screen, rebuilt from what a device sends
 src/pkg/cast/          one terminal fanned out to many watchers
 src/pkg/asciicast/     reading an asciicast stream
 src/pkg/ticket/        a pairing invitation, as text, link, or QR
 src/pkg/tui/           the full-screen interface
 src/pkg/conf/          the Lua configuration
+src/pkg/made/          the namespaces put up from the command line
+src/pkg/nudge/         hearing a file change, so a save is not waited for
+src/pkg/keep/          writing a file so a reader never sees half of one
 misc/                  the systemd user unit, and an example config
 ```
 
