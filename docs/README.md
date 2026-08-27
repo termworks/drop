@@ -8,6 +8,12 @@ Every claim in here was checked against the source or against a running build, o
 different architectures. Where a design was forced by a measurement, a bug or an attack, the
 document says so, because those are the sentences worth reading twice.
 
+## Start here
+
+| | |
+|---|---|
+| [Setting up three machines and one you](getting-started.md) | a walkthrough: a YubiKey as your identity, the first config, making other machines you, pairing |
+
 ## The shape of the thing
 
 | | |
