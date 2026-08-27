@@ -51,11 +51,11 @@ func TestTheOrderThingsAreReadInDoesNotChangeTheMachine(t *testing.T) {
 func TestOneSerialGivesDifferentNamesForDifferentThings(t *testing.T) {
 	raw := []byte("1421823004485")
 
-	disk, err := Mark{From: Disk, raw: raw}.Seed()
+	disk, err := Mark{From: Disk, raw: raw}.Seed("alice")
 	if err != nil {
 		t.Fatal(err)
 	}
-	board, err := Mark{From: Board, raw: raw}.Seed()
+	board, err := Mark{From: Board, raw: raw}.Seed("alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestOneSerialGivesDifferentNamesForDifferentThings(t *testing.T) {
 	}
 
 	// And the same thing twice is the same machine, which is the whole point.
-	again, err := Mark{From: Disk, raw: raw}.Seed()
+	again, err := Mark{From: Disk, raw: raw}.Seed("alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestAMachineThatFoundNothingHasNoName(t *testing.T) {
 	if none.Held() {
 		t.Fatal("a machine that read nothing thinks it has something")
 	}
-	if _, err := none.Seed(); err == nil {
+	if _, err := none.Seed("alice"); err == nil {
 		t.Fatal("a machine that read nothing made a name anyway")
 	}
 	if none.Brief() != "" {
@@ -95,7 +95,7 @@ func TestWhatIsShownIsNotWhatTheKeyIsMadeFrom(t *testing.T) {
 	if strings.Contains(m.Brief(), secret) {
 		t.Fatalf("the serial is in what gets printed: %q", m.Brief())
 	}
-	seed, err := m.Seed()
+	seed, err := m.Seed("alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,4 +263,42 @@ func timeout() <-chan struct{} {
 		close(done)
 	}()
 	return done
+}
+
+// One machine, several people: each has to come out as themselves, or two programs answer to one
+// address and neither can be reached. And each of them still has to survive the disk being wiped.
+func TestTwoPeopleOnOneMachineAreNotOneMachine(t *testing.T) {
+	m := Mark{From: Board, raw: []byte("1421823004485")}
+
+	alice, err := m.Seed("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := m.Seed("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alice == bob {
+		t.Fatal("two people with accounts on one machine derived one key, so only one of them can be dialled")
+	}
+
+	// The same person on the same machine, after everything on it was thrown away.
+	again, err := m.Seed("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != alice {
+		t.Fatal("the same person on the same machine came back as somebody else")
+	}
+
+	// The same person on another machine is somebody else's problem: a name is a machine and a
+	// person together, so carrying a backup elsewhere does not carry the name.
+	other := Mark{From: Board, raw: []byte("9999999999999")}
+	away, err := other.Seed("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if away == alice {
+		t.Fatal("one person got the same name on two different machines")
+	}
 }

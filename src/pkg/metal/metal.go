@@ -16,6 +16,8 @@ package metal
 import (
 	"encoding/hex"
 	"fmt"
+	"os"
+	"os/user"
 	"sort"
 	"strings"
 	"sync"
@@ -71,11 +73,17 @@ func (m Mark) Held() bool { return m.From != Nowhere && len(m.raw) > 0 }
 // label, a licence, another program doing the same trick — cannot produce the same key.
 const purpose = "drop machine identity v1"
 
-// Seed is the machine key material, derived from what the hardware said.
+// Seed is the key material for one person's drop on this machine.
 //
 // Domain-separated and versioned: the version is in the purpose, so the day this has to derive
 // differently, old machines keep their names by keeping the old purpose.
-func (m Mark) Seed() ([32]byte, error) {
+//
+// Whose it is goes in as well as what the machine is. A machine is one machine and the people with
+// accounts on it are several, and each of them runs a drop of their own that has to be reachable as
+// itself — two of them deriving one key would be two programs answering to one address, which is
+// not a machine with two people on it but a machine that cannot be dialled. So the machine decides
+// the part that survives a reinstall, and the account decides which of the people on it this is.
+func (m Mark) Seed(whose string) ([32]byte, error) {
 	if !m.Held() {
 		return [32]byte{}, fmt.Errorf("this machine says nothing about itself that a name could be made from")
 	}
@@ -86,10 +94,28 @@ func (m Mark) Seed() ([32]byte, error) {
 	h.Write([]byte(m.From.String()))
 	h.Write([]byte{0})
 	h.Write(m.raw)
+	h.Write([]byte{0})
+	h.Write([]byte(whose))
 
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
 	return out, nil
+}
+
+// Whose is which account on this machine is asking.
+//
+// The account name rather than its number: a person who reinstalls and makes their account again
+// is the same person and picks the same name, where the number depends on what order the accounts
+// were made in. It is not a secret and does not need to be — what it separates is the people on one
+// machine, and they can all read the machine's serial anyway.
+func Whose() string {
+	if who, err := user.Current(); err == nil && who.Username != "" {
+		return who.Username
+	}
+	if named := os.Getenv("USER"); named != "" {
+		return named
+	}
+	return "somebody"
 }
 
 // Brief is a few characters standing for the material, for a person checking two machines are not

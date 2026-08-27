@@ -90,7 +90,7 @@ func identity() (key.SecretKey, metal.Mark, error) {
 	// Nothing written down: this is a machine that has not run before, or one that has been wiped
 	// and is meant to come back as itself.
 	if mark := metal.Read(); mark.Held() {
-		seed, err := mark.Seed()
+		seed, err := mark.Seed(metal.Whose())
 		if err != nil {
 			return empty, metal.Mark{}, err
 		}

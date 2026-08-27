@@ -41,6 +41,8 @@ func newMachineCmd() *cobra.Command {
 			case mark.Held():
 				fmt.Printf("  named by      %s\n", mark.Says)
 				fmt.Printf("  which reads   %s\n", mark.Brief())
+				fmt.Printf("  and by        this account, %s, so everyone with one here is\n", metal.Whose())
+				fmt.Printf("                reachable as themselves\n")
 				fmt.Printf("  survives      a reinstall, because nothing about it is written down\n")
 				fmt.Printf("  changes if    %s\n", changes(mark.From))
 			default:
@@ -69,11 +71,11 @@ func newMachineCmd() *cobra.Command {
 func changes(from metal.Source) string {
 	switch from {
 	case metal.Chip:
-		return "the TPM is cleared, which is what clearing it is for"
+		return "the TPM is cleared, or this account is renamed"
 	case metal.Board:
-		return "the board is replaced"
+		return "the board is replaced, or this account is renamed"
 	case metal.Disk:
-		return "the drive the system is on is replaced"
+		return "the drive the system is on is replaced, or this account is renamed"
 	}
 	return "anything at all"
 }
@@ -103,7 +105,7 @@ func newRebindCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			seed, err := mark.Seed()
+			seed, err := mark.Seed(metal.Whose())
 			if err != nil {
 				return err
 			}
