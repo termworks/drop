@@ -1,10 +1,12 @@
 package made
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bresilla/drop/src/pkg/ns"
@@ -149,5 +151,45 @@ func TestRemovingSaysWhetherItWasThere(t *testing.T) {
 	}
 	if had, _ := s.Remove("/notes"); had {
 		t.Error("removing it twice said it was there twice")
+	}
+}
+
+// Two commands putting a namespace up at once must not lose each other's work. `drop path create`
+// and `drop path rm` are separate processes sharing one file, so this is the ordinary case rather
+// than a rare one.
+func TestTwoCommandsPuttingNamespacesUpDoNotLoseEachOther(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	// Each store is a process of its own, each holding the file as it was when it started.
+	var stores []*Store
+	for range 4 {
+		s, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		stores = append(stores, s)
+	}
+
+	var wg sync.WaitGroup
+	for i, s := range stores {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = s.Add(fmt.Sprintf("/ns%d", i), Entry{Archetype: "chat"})
+		}()
+	}
+	wg.Wait()
+
+	after, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range stores {
+		if _, held := after.Get(fmt.Sprintf("/ns%d", i)); !held {
+			t.Errorf("/ns%d was lost by another command writing at the same time", i)
+		}
+	}
+	if n := after.Len(); n != len(stores) {
+		t.Fatalf("%d namespaces were put up and %d survive", len(stores), n)
 	}
 }

@@ -137,6 +137,37 @@ func (s *Store) Save() error {
 	return keep.Replace(file, append(raw, '\n'))
 }
 
+// change re-reads what is written down, alters it, and writes it back, with nothing else able to
+// write in between.
+//
+// `drop path create` and `drop path rm` are separate processes and the daemon is a third, all
+// sharing one file. Read, change, write is three steps, and a writer that lands between the first
+// and the third has its namespace thrown away by the third — a path put up and then silently
+// missing after an unrelated command, which is the kind of thing nobody thinks to look for.
+func (s *Store) change(alter func() bool) error {
+	file, err := Path()
+	if err != nil {
+		return err
+	}
+
+	return keep.While(file, func() error {
+		fresh, err := Load()
+		if err != nil {
+			return err
+		}
+
+		s.mu.Lock()
+		s.paths = fresh.paths
+		changed := alter()
+		s.mu.Unlock()
+
+		if !changed {
+			return nil
+		}
+		return s.Save()
+	})
+}
+
 // Add writes a namespace down, replacing whatever was at that path.
 func (s *Store) Add(at string, e Entry) error {
 	at, err := ns.Clean(at)
@@ -150,11 +181,10 @@ func (s *Store) Add(at string, e Entry) error {
 		return err
 	}
 
-	s.mu.Lock()
-	s.paths[at] = e
-	s.mu.Unlock()
-
-	return s.Save()
+	return s.change(func() bool {
+		s.paths[at] = e
+		return true
+	})
 }
 
 // Remove takes a namespace off the list, reporting whether it was on it.
@@ -164,15 +194,15 @@ func (s *Store) Remove(at string) (bool, error) {
 		return false, err
 	}
 
-	s.mu.Lock()
-	_, had := s.paths[at]
-	delete(s.paths, at)
-	s.mu.Unlock()
-
-	if !had {
-		return false, nil
+	had := false
+	if err := s.change(func() bool {
+		_, had = s.paths[at]
+		delete(s.paths, at)
+		return had
+	}); err != nil {
+		return false, err
 	}
-	return true, s.Save()
+	return had, nil
 }
 
 // Get is what was written down at a path, exactly, without the prefix matching a lookup does.

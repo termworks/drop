@@ -1,6 +1,8 @@
 package grant
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/bresilla/drop/src/pkg/ns"
@@ -192,5 +194,42 @@ func TestARefusalMadeElsewhereIsNoticed(t *testing.T) {
 	}
 	if _, deny := serving.For("/work"); len(deny) != 0 {
 		t.Errorf("the running store missed the refusal being lifted: %v", deny)
+	}
+}
+
+// The interface grants from one process and `drop path grant` from another. A decision lost
+// between them is somebody let in who was shut out, or shut out who was let in, with nothing at all
+// to say it happened.
+func TestTwoProcessesGrantingDoNotLoseEachOther(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	var stores []*Store
+	for range 4 {
+		s, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		stores = append(stores, s)
+	}
+
+	var wg sync.WaitGroup
+	for i, s := range stores {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = s.Allow(fmt.Sprintf("/p%d", i), fmt.Sprintf("bob%d", i))
+		}()
+	}
+	wg.Wait()
+
+	after, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range stores {
+		allow, _ := after.For(fmt.Sprintf("/p%d", i))
+		if len(allow) == 0 {
+			t.Errorf("/p%d was granted and the grant is gone", i)
+		}
 	}
 }

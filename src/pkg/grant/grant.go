@@ -249,16 +249,30 @@ func (s *Store) edit(at string, change func(Rule) Rule) error {
 		return fmt.Errorf("a grant needs a path")
 	}
 
-	s.mu.Lock()
-	rule := change(s.paths[at])
-	if len(rule.Allow) == 0 && len(rule.Deny) == 0 {
-		delete(s.paths, at)
-	} else {
-		s.paths[at] = rule
+	file, err := path()
+	if err != nil {
+		return err
 	}
-	s.mu.Unlock()
 
-	return s.Save()
+	// Re-read, change and write back with nothing else able to write in between. The interface
+	// grants from one process and `drop path grant` from another, and a decision lost between them
+	// is somebody let in who was shut out, or shut out who was let in, with nothing to say so.
+	return keep.While(file, func() error {
+		if err := s.reread(); err != nil {
+			return err
+		}
+
+		s.mu.Lock()
+		rule := change(s.paths[at])
+		if len(rule.Allow) == 0 && len(rule.Deny) == 0 {
+			delete(s.paths, at)
+		} else {
+			s.paths[at] = rule
+		}
+		s.mu.Unlock()
+
+		return s.Save()
+	})
 }
 
 // ancestry is a path and every path above it, widest first.
