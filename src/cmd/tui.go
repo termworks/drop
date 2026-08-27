@@ -643,7 +643,7 @@ func (l *running) Fetch(ctx context.Context, from book.Entry, path, dir, name st
 	}
 
 	into := filepath.Join(inbox, filepath.Base(name))
-	if err := walk.Get(slashed(dir, name), into, progress); err != nil {
+	if err := walk.Get(slashed(dir, name), into, files.Want{Progress: progress}); err != nil {
 		return "", err
 	}
 

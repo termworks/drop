@@ -13,6 +13,7 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/history"
 	"github.com/bresilla/drop/src/pkg/keep"
+	"github.com/bresilla/drop/src/pkg/weave"
 )
 
 // The file on disk, and the two ways it and the history get out of step.
@@ -100,9 +101,9 @@ func (k *keeper) record(raw []byte) error {
 //
 // What is written is remembered as this machine's own doing before anything reads the file again,
 // which is what keeps two machines from handing one change back and forth for ever.
-func (k *keeper) write(body []byte, aside []Aside, raw []byte, there bool) error {
+func (k *keeper) write(body []byte, aside []weave.Aside, raw []byte, there bool) error {
 	for _, a := range aside {
-		beside := k.file + "." + safe(a.Who)
+		beside := k.file + "." + weave.Safe(a.Who)
 		if held, err := os.ReadFile(beside); err == nil && bytes.Equal(held, a.Body) {
 			continue
 		}
@@ -204,23 +205,4 @@ func same(now, was []history.ID) bool {
 		}
 	}
 	return true
-}
-
-// safe is a person's name as a piece of a file name.
-func safe(who string) string {
-	out := strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-			return r
-		case r == '.' || r == '_' || r == '-':
-			return r
-		}
-		return '-'
-	}, who)
-
-	out = strings.Trim(out, "-.")
-	if out == "" {
-		return "somebody"
-	}
-	return out
 }

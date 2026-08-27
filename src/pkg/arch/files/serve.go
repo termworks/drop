@@ -1,6 +1,7 @@
 package files
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"lukechampine.com/blake3"
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/wire"
@@ -23,7 +26,8 @@ func (f *Files) answer(conn *wire.Conn, at arch.Session, dir *os.Root, writable 
 	}
 
 	// The mount flag is the only thing that permits a write. Nothing here is per-operation.
-	if q.Op == opPut || q.Op == opRemove || q.Op == opMkdir || q.Op == opMove {
+	switch q.Op {
+	case opPut, opReplace, opRemove, opMkdir, opMove:
 		if !writable {
 			return refuse(fmt.Sprintf("%s is read-only", at.Path))
 		}
@@ -53,10 +57,13 @@ func (f *Files) answer(conn *wire.Conn, at arch.Session, dir *os.Root, writable 
 		return conn.WriteFrame(wire.KindReply, said)
 
 	case opGet:
-		return f.handGet(conn, dir, name)
+		return f.handGet(conn, dir, name, q)
 
 	case opPut:
 		return f.handPut(conn, at, dir, name, q)
+
+	case opReplace:
+		return f.handReplace(conn, at, dir, name, q)
 
 	case opRemove:
 		if err := dir.Remove(name); err != nil {
@@ -88,8 +95,8 @@ func (f *Files) answer(conn *wire.Conn, at arch.Session, dir *os.Root, writable 
 	}
 }
 
-// handGet answers a get and then writes the file out.
-func (f *Files) handGet(conn *wire.Conn, dir *os.Root, name string) error {
+// handGet answers a get and then writes the file out, from wherever the caller has already got to.
+func (f *Files) handGet(conn *wire.Conn, dir *os.Root, name string, q request) error {
 	refuse := func(reason string) error {
 		return conn.WriteFrame(wire.KindReply, reply{Reason: reason}.encode())
 	}
@@ -108,12 +115,15 @@ func (f *Files) handGet(conn *wire.Conn, dir *os.Root, name string) error {
 	if !open.Mode().IsRegular() {
 		return refuse(fmt.Sprintf("%s is not a file", name))
 	}
+	if q.From < 0 || q.From > open.Size() {
+		return refuse(fmt.Sprintf("%s is %d bytes, and you asked to carry on from %d", name, open.Size(), q.From))
+	}
 
 	said := reply{OK: true, Entries: []Entry{entryOf(open)}}
 	if err := conn.WriteFrame(wire.KindReply, said.encode()); err != nil {
 		return err
 	}
-	return sendBody(conn, file, path.Base(name), open.Size(), f.into.Progress)
+	return sendBody(conn, file, path.Base(name), open.Size(), q.From, f.into.Progress)
 }
 
 // handPut answers a put and then takes the file in.
@@ -124,19 +134,14 @@ func (f *Files) handPut(conn *wire.Conn, at arch.Session, dir *os.Root, name str
 
 	// What cannot be taken is refused before the caller starts sending, so a put that has nowhere to
 	// land ends the round rather than the session.
-	if where := path.Dir(name); where != "." {
-		if stat, err := dir.Stat(where); err != nil || !stat.IsDir() {
-			return refuse(fmt.Sprintf("%s is not a directory here", where))
-		}
-	}
-	if stat, err := dir.Lstat(name); err == nil && stat.IsDir() {
-		return refuse(fmt.Sprintf("%s is a directory", name))
+	if reason := roomFor(dir, name); reason != "" {
+		return refuse(reason)
 	}
 	if err := conn.WriteFrame(wire.KindReply, reply{OK: true}.encode()); err != nil {
 		return err
 	}
 
-	final, size, err := takeInto(conn, dir, name, q.Size, q.Mode, f.into.Progress)
+	final, size, err := takeInto(conn, dir, name, q, f.into.Progress)
 	if err != nil {
 		return err
 	}
@@ -144,6 +149,97 @@ func (f *Files) handPut(conn *wire.Conn, at arch.Session, dir *os.Root, name str
 		f.into.Landed(at.From, final, size)
 	}
 	return nil
+}
+
+// handReplace answers a replace and then puts the file where the caller said.
+//
+// The caller names the version they believe is at that name. What is actually there is weighed
+// against it before a byte is sent, so a file that somebody else changed in the meantime is a
+// refusal the caller can act on rather than a version silently written over.
+func (f *Files) handReplace(conn *wire.Conn, at arch.Session, dir *os.Root, name string, q request) error {
+	refuse := func(reason string) error {
+		return conn.WriteFrame(wire.KindReply, reply{Reason: reason}.encode())
+	}
+
+	if reason := roomFor(dir, name); reason != "" {
+		return refuse(reason)
+	}
+	if reason := standing(dir, name, q.Sum); reason != "" {
+		return refuse(reason)
+	}
+	if err := conn.WriteFrame(wire.KindReply, reply{OK: true}.encode()); err != nil {
+		return err
+	}
+
+	size, err := takeOver(conn, dir, name, q, f.into.Progress)
+	if err != nil {
+		return err
+	}
+	if f.into.Landed != nil {
+		f.into.Landed(at.From, name, size)
+	}
+	return nil
+}
+
+// roomFor says why a name cannot be written to, and nothing at all when it can.
+func roomFor(dir *os.Root, name string) string {
+	if where := path.Dir(name); where != "." {
+		if stat, err := dir.Stat(where); err != nil || !stat.IsDir() {
+			return fmt.Sprintf("%s is not a directory here", where)
+		}
+	}
+	if stat, err := dir.Lstat(name); err == nil && stat.IsDir() {
+		return fmt.Sprintf("%s is a directory", name)
+	}
+	return ""
+}
+
+// standing says why what is at a name is not the version the caller believes is there.
+//
+// An empty digest is a caller who believes there is nothing there at all, which is what a machine
+// that has never seen the file says. A name holding something that is not a plain file is refused
+// whatever the caller believes, because there is no version of a device to compare.
+func standing(dir *os.Root, name string, sum []byte) string {
+	stat, err := dir.Lstat(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		if len(sum) == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%s is not here, and you wrote as though it were", name)
+	}
+	if err != nil {
+		return fmt.Sprintf("cannot look at %s: %v", name, unpath(err))
+	}
+	if !stat.Mode().IsRegular() {
+		return fmt.Sprintf("%s is not a file", name)
+	}
+	if len(sum) == 0 {
+		return fmt.Sprintf("%s is here already, and you wrote as though it were not", name)
+	}
+
+	held, err := digestOf(dir, name)
+	if err != nil {
+		return fmt.Sprintf("cannot read %s: %v", name, unpath(err))
+	}
+	if !bytes.Equal(held, sum) {
+		return fmt.Sprintf("%s changed since you last read it", name)
+	}
+	return ""
+}
+
+// digestOf is what a file in a namespace holds, as one number.
+func digestOf(dir *os.Root, name string) ([]byte, error) {
+	file, err := dir.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	sum := blake3.New(32, nil)
+	if _, err := io.Copy(sum, file); err != nil {
+		return nil, err
+	}
+	return sum.Sum(nil), nil
 }
 
 // listed reads one directory of a namespace into entries.
@@ -164,7 +260,7 @@ func listed(dir *os.Root, name string) ([]Entry, error) {
 		return nil, fmt.Errorf("cannot list it: %v", unpath(err))
 	}
 	if len(items) > MaxEntries {
-		return nil, fmt.Errorf("it holds more than the %d entries one listing carries", MaxEntries)
+		return nil, fmt.Errorf("it holds more than the %d entries one listing carries: ask for a directory inside it by name, or serve one of them as a namespace of its own", MaxEntries)
 	}
 
 	out := make([]Entry, 0, len(items))
@@ -225,7 +321,7 @@ func entryOf(stat fs.FileInfo) Entry {
 		Size: stat.Size(),
 		Mode: uint32(stat.Mode().Perm()),
 		Dir:  stat.IsDir(),
-		At:   stat.ModTime().Unix(),
+		At:   stat.ModTime().UnixNano(),
 	}
 }
 

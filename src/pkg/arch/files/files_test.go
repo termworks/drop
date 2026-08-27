@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -99,7 +100,7 @@ func TestBrowseListsAndReadsAFile(t *testing.T) {
 	}
 
 	into := filepath.Join(t.TempDir(), "copy.txt")
-	if err := b.Get("notes.txt", into, nil); err != nil {
+	if err := b.Get("notes.txt", into, Want{}); err != nil {
 		t.Fatalf("Get(): %v", err)
 	}
 	if got := read(t, into); string(got) != "what happened" {
@@ -124,12 +125,12 @@ func TestBrowseKeepsGoingAfterEveryRound(t *testing.T) {
 			t.Fatalf("List(): %v", err)
 		}
 		for _, name := range []string{"one", "two"} {
-			if err := b.Get(name, filepath.Join(landing, name), nil); err != nil {
+			if err := b.Get(name, filepath.Join(landing, name), Want{}); err != nil {
 				t.Fatalf("Get(%q): %v", name, err)
 			}
 		}
 	}
-	if err := b.Get("missing", filepath.Join(landing, "missing"), nil); err == nil {
+	if err := b.Get("missing", filepath.Join(landing, "missing"), Want{}); err == nil {
 		t.Fatal("Get() of a file that is not there succeeded")
 	}
 	if _, err := b.List(""); err != nil {
@@ -149,7 +150,7 @@ func TestBrowseWritesWhenTheMountSaysSo(t *testing.T) {
 	}
 
 	sent := "the numbers"
-	if err := b.Put("uploads/report", strings.NewReader(sent), int64(len(sent)), 0o777, nil); err != nil {
+	if err := b.Put("uploads/report", strings.NewReader(sent), Given{Size: int64(len(sent)), Mode: 0o777}); err != nil {
 		t.Fatalf("Put(): %v", err)
 	}
 
@@ -193,7 +194,7 @@ func TestBrowseRefusesEveryWriteOnAReadOnlyMount(t *testing.T) {
 
 	b := opened(t, dir, false, Into{})
 
-	if err := b.Put("sneaky", strings.NewReader("x"), 1, 0o644, nil); err == nil {
+	if err := b.Put("sneaky", strings.NewReader("x"), Given{Size: 1, Mode: 0o644}); err == nil {
 		t.Error("Put() worked on a read-only namespace")
 	}
 	if err := b.Remove("kept"); err == nil {
@@ -222,7 +223,7 @@ func TestBrowseReportsAnUploadThatLands(t *testing.T) {
 	hooks := Into{Landed: func(_ node.ID, n string, s int64) { name, size = n, s }}
 
 	b := opened(t, dir, true, hooks)
-	if err := b.Put("log", strings.NewReader("ping"), 4, 0o644, nil); err != nil {
+	if err := b.Put("log", strings.NewReader("ping"), Given{Size: 4, Mode: 0o644}); err != nil {
 		t.Fatalf("Put(): %v", err)
 	}
 	// One more round, so the note the far end makes after acknowledging has been made.
@@ -302,10 +303,10 @@ func TestANamespaceMayBeReachedThroughALink(t *testing.T) {
 
 	b := opened(t, link, false, Into{})
 	into := filepath.Join(t.TempDir(), "copy")
-	if err := b.Get("notes", into, nil); err != nil {
+	if err := b.Get("notes", into, Want{}); err != nil {
 		t.Fatalf("Get() through a namespace reached by a link: %v", err)
 	}
-	if err := b.Get("out/secret", into, nil); err == nil {
+	if err := b.Get("out/secret", into, Want{}); err == nil {
 		t.Error("Get() read a file outside the namespace")
 	}
 }
@@ -329,7 +330,7 @@ func TestALinkOutOfTheNamespaceIsNotFollowed(t *testing.T) {
 
 	// A link at the last component of a get is the same escape as one halfway along it.
 	for _, name := range []string{"out/secret", "one"} {
-		if err := b.Get(name, into, nil); err == nil {
+		if err := b.Get(name, into, Want{}); err == nil {
 			t.Errorf("Get(%q) read a file outside the namespace", name)
 		}
 	}
@@ -344,7 +345,7 @@ func TestALinkOutOfTheNamespaceIsNotFollowed(t *testing.T) {
 	}
 
 	// A write at the name of a link is something already there, so it lands beside it.
-	if err := b.Put("one", strings.NewReader("wrote"), 5, 0o644, nil); err != nil {
+	if err := b.Put("one", strings.NewReader("wrote"), Given{Size: 5, Mode: 0o644}); err != nil {
 		t.Fatalf("Put(): %v", err)
 	}
 	if got := read(t, secret); string(got) != "the secret" {
@@ -374,7 +375,7 @@ func TestALinkThatStaysInsideIsWalked(t *testing.T) {
 	}
 
 	into := filepath.Join(t.TempDir(), "copy")
-	if err := b.Get("same/notes", into, nil); err != nil {
+	if err := b.Get("same/notes", into, Want{}); err != nil {
 		t.Fatalf("Get() through a link that stays inside: %v", err)
 	}
 	if got := read(t, into); string(got) != "here" {
@@ -400,10 +401,10 @@ func TestTheNamespaceItselfIsNotAName(t *testing.T) {
 		if err := b.Move("thing", name); err == nil {
 			t.Errorf("Move() onto %q was allowed", name)
 		}
-		if err := b.Get(name, filepath.Join(t.TempDir(), "copy"), nil); err == nil {
+		if err := b.Get(name, filepath.Join(t.TempDir(), "copy"), Want{}); err == nil {
 			t.Errorf("Get(%q) was allowed", name)
 		}
-		if err := b.Put(name, strings.NewReader("x"), 1, 0o644, nil); err == nil {
+		if err := b.Put(name, strings.NewReader("x"), Given{Size: 1, Mode: 0o644}); err == nil {
 			t.Errorf("Put(%q) was allowed", name)
 		}
 	}
@@ -426,7 +427,7 @@ func TestOnlyARegularFileIsRead(t *testing.T) {
 	defer listening.Close()
 
 	b := opened(t, dir, false, Into{})
-	if err := b.Get("socket", filepath.Join(t.TempDir(), "copy"), nil); err == nil {
+	if err := b.Get("socket", filepath.Join(t.TempDir(), "copy"), Want{}); err == nil {
 		t.Fatal("Get() read something that is not a file")
 	}
 	if _, err := b.List(""); err != nil {
@@ -440,7 +441,7 @@ func TestADeeplyNestedNameIsAnsweredNotFollowed(t *testing.T) {
 	b := opened(t, dir, true, Into{})
 
 	deep := strings.Repeat("a/", 400) + "thing"
-	if err := b.Get(deep, filepath.Join(t.TempDir(), "copy"), nil); err == nil {
+	if err := b.Get(deep, filepath.Join(t.TempDir(), "copy"), Want{}); err == nil {
 		t.Error("Get() of a name 400 deep succeeded")
 	}
 	if err := b.Mkdir(deep); err == nil {
@@ -469,9 +470,9 @@ func TestALinkAtThePartIsNotWrittenThrough(t *testing.T) {
 	}
 	defer root.Close()
 
-	if out, err := fresh(root, ".planted.abcdef012345.part"); err == nil {
+	if out, _, err := opening(root, arriving{part: ".planted.abcdef012345.part"}); err == nil {
 		out.Close()
-		t.Fatal("fresh() opened a part that was already there")
+		t.Fatal("opening() opened a part that was already there")
 	}
 	if got := read(t, outside); string(got) != "original" {
 		t.Errorf("the file behind the link now says %q", got)
@@ -510,7 +511,7 @@ func TestAStalePartIsNotWrittenInto(t *testing.T) {
 
 	body := "short"
 	b := opened(t, dir, true, Into{})
-	if err := b.Put("notes", strings.NewReader(body), int64(len(body)), 0o644, nil); err != nil {
+	if err := b.Put("notes", strings.NewReader(body), Given{Size: int64(len(body)), Mode: 0o644}); err != nil {
 		t.Fatalf("Put(): %v", err)
 	}
 	if got := read(t, filepath.Join(dir, "notes")); string(got) != body {
@@ -537,13 +538,13 @@ func TestTwoUploadsOfOneNameDoNotShareAPart(t *testing.T) {
 
 	acked := make(chan error, 1)
 	go func() {
-		acked <- slow.Put("report.bin", first, 8, 0o644, nil)
+		acked <- slow.Put("report.bin", first, Given{Size: 8, Mode: 0o644})
 	}()
 	<-landed
 
 	// The second runs to its end while the first still has its part file open.
 	quick := opened(t, dir, true, Into{})
-	if err := quick.Put("report.bin", bytes.NewReader(bytes.Repeat([]byte("B"), 8)), 8, 0o644, nil); err != nil {
+	if err := quick.Put("report.bin", bytes.NewReader(bytes.Repeat([]byte("B"), 8)), Given{Size: 8, Mode: 0o644}); err != nil {
 		t.Fatalf("the second Put(): %v", err)
 	}
 
@@ -589,7 +590,7 @@ func TestAnUploadDoesNotLandOnWhatIsThere(t *testing.T) {
 
 	var landed string
 	b := opened(t, dir, true, Into{Landed: func(_ node.ID, name string, _ int64) { landed = name }})
-	if err := b.Put("notes.txt", strings.NewReader("theirs"), 6, 0o644, nil); err != nil {
+	if err := b.Put("notes.txt", strings.NewReader("theirs"), Given{Size: 6, Mode: 0o644}); err != nil {
 		t.Fatalf("Put(): %v", err)
 	}
 	if _, err := b.List(""); err != nil {
@@ -650,12 +651,15 @@ func TestCleanRefusesWhatIsNotAPathInsideTheNamespace(t *testing.T) {
 }
 
 func TestRequestAndReplyRoundTrip(t *testing.T) {
-	q := request{Op: opPut, Name: "sub/thing.txt", To: "sub/other.txt", Size: 1234, Mode: 0o755}
+	q := request{
+		Op: opReplace, Name: "sub/thing.txt", To: "sub/other.txt", Size: 1234, Mode: 0o755,
+		At: 1724751000123456789, Sum: bytes.Repeat([]byte{0x7f}, 32), From: 4096,
+	}
 	back, err := decodeRequest(q.encode())
 	if err != nil {
 		t.Fatalf("decodeRequest(): %v", err)
 	}
-	if back != q {
+	if !reflect.DeepEqual(back, q) {
 		t.Errorf("request came back as %+v, want %+v", back, q)
 	}
 
@@ -730,7 +734,7 @@ func TestTakeOntoRefusesACorruptedTransfer(t *testing.T) {
 
 	dir := t.TempDir()
 	into := filepath.Join(dir, "landed")
-	if err := takeOnto(conn, into, "landed", 5, 0o644, nil); err == nil {
+	if err := takeOnto(conn, into, "landed", Entry{Size: 5, Mode: 0o644}, nil, nil); err == nil {
 		t.Fatal("takeOnto() accepted a digest that does not match")
 	}
 	if _, err := os.Stat(into); err == nil {
@@ -766,13 +770,13 @@ func TestNumberedSpacesANameOut(t *testing.T) {
 func TestAPutWithNowhereToLandIsRefused(t *testing.T) {
 	b := opened(t, t.TempDir(), true, Into{})
 
-	if err := b.Put("missing/thing", strings.NewReader("x"), 1, 0o644, nil); err == nil {
+	if err := b.Put("missing/thing", strings.NewReader("x"), Given{Size: 1, Mode: 0o644}); err == nil {
 		t.Error("Put() into a directory that is not there succeeded")
 	}
 	if err := b.Mkdir("here"); err != nil {
 		t.Fatalf("Mkdir() after the refusal: %v", err)
 	}
-	if err := b.Put("here/thing", strings.NewReader("x"), 1, 0o644, nil); err != nil {
+	if err := b.Put("here/thing", strings.NewReader("x"), Given{Size: 1, Mode: 0o644}); err != nil {
 		t.Fatalf("Put() after the refusal: %v", err)
 	}
 }
@@ -814,7 +818,7 @@ func TestALinkSwappedInUnderASessionIsNotFollowed(t *testing.T) {
 
 	for range 300 {
 		_ = os.Remove(into)
-		if err := b.Get("swap", into, nil); err != nil {
+		if err := b.Get("swap", into, Want{}); err != nil {
 			continue
 		}
 		if got, err := os.ReadFile(into); err == nil && string(got) == "the secret" {

@@ -1,4 +1,4 @@
-package note
+package weave
 
 import (
 	"bytes"
@@ -23,9 +23,15 @@ func saved(author, body string, heads ...history.ID) history.Change {
 // asPeople is what these tests call the people making the changes.
 func asPeople(author string) string { return strings.TrimSuffix(author, "-key") }
 
+// files is the weaving a note does: a change carries the whole file its author saved.
+var files = Melding[[]byte]{
+	Take:  func(_ func() []byte, c history.Change) []byte { return c.Body },
+	Merge: Bytes,
+}
+
 func whole(t *testing.T, changes ...history.Change) ([]byte, []Aside) {
 	t.Helper()
-	return Whole(changes, asPeople)
+	return Join(changes, files, asPeople)
 }
 
 func TestTwoPeopleEditDifferentPartsAndBothSurvive(t *testing.T) {
@@ -159,14 +165,14 @@ func TestSomethingThatIsNotTextIsKeptBothWaysAndNeverMerged(t *testing.T) {
 func TestWhatCountsAsTextIsAskedConservatively(t *testing.T) {
 	yes := []string{"", "one\ntwo\n", "no ending", "a\tb\r\n", "héllo\n"}
 	for _, raw := range yes {
-		if !textual([]byte(raw)) {
+		if !Textual([]byte(raw)) {
 			t.Errorf("%q is text and was refused", raw)
 		}
 	}
 
 	no := []string{"\x00", "SQLite format 3\x00", "\xff\xfe\x00\x00", strings.Repeat("x", maxLine+1)}
 	for _, raw := range no {
-		if textual([]byte(raw)) {
+		if Textual([]byte(raw)) {
 			t.Errorf("%q is not text and was taken for it", raw)
 		}
 	}
@@ -186,5 +192,25 @@ func TestALineAddedAtEachEndIsNotAConflict(t *testing.T) {
 func TestAFileWithNoHistoryIsNoFile(t *testing.T) {
 	if body, aside := whole(t); body != nil || aside != nil {
 		t.Fatalf("nothing made %q and %+v", body, aside)
+	}
+}
+
+// A change that is a difference rather than a whole version asks for what its author was looking at,
+// and gets it: the versions the changes before it come to.
+func TestAChangeThatIsADifferenceIsToldWhatItWasMadeAgainst(t *testing.T) {
+	adding := Melding[string]{
+		Take: func(was func() string, c history.Change) string { return was() + string(c.Body) },
+		Merge: func(base, ours, theirs, _, _ string) (string, []Aside) {
+			return base + strings.TrimPrefix(ours, base) + strings.TrimPrefix(theirs, base), nil
+		},
+	}
+
+	first := saved("alice-key", "a")
+	alice := saved("alice-key", "b", first.ID())
+	bob := saved("bob-key", "c", first.ID())
+
+	got, _ := Join([]history.Change{first, alice, bob}, adding, asPeople)
+	if got != "abc" && got != "acb" {
+		t.Fatalf("the two differences came to %q", got)
 	}
 }

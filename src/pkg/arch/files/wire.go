@@ -7,13 +7,19 @@ import (
 )
 
 // Operations a files session can ask for.
+//
+// A put and a replace are different acts. A put is somebody handing a file over, and it lands on a
+// free name so that nothing already here is lost to it. A replace is one version of a file taking
+// the place of another, and it names the version it believes is there, so two machines writing at
+// once is noticed rather than one of them winning silently.
 const (
-	opList   byte = 1
-	opGet    byte = 2
-	opPut    byte = 3
-	opRemove byte = 4
-	opMkdir  byte = 5
-	opMove   byte = 6
+	opList    byte = 1
+	opGet     byte = 2
+	opPut     byte = 3
+	opRemove  byte = 4
+	opMkdir   byte = 5
+	opMove    byte = 6
+	opReplace byte = 7
 )
 
 // MaxRel bounds a path named inside a namespace. It arrives from a peer and becomes a filesystem
@@ -23,13 +29,20 @@ const MaxRel = 1024
 // MaxEntries caps one listing, so a directory cannot be answered with an unbounded slice.
 const MaxEntries = 1 << 14
 
+// MaxSum bounds a digest named in a request, which is a blake3 sum and nothing longer.
+const MaxSum = 32
+
 // Entry is one thing in a served directory.
 type Entry struct {
 	Name string
 	Size int64
 	Mode uint32
 	Dir  bool
-	// At is when it last changed, in seconds.
+	// At is when it last changed, in nanoseconds.
+	//
+	// Nanoseconds because that is what the filesystem holds and what two saves a few milliseconds
+	// apart are told apart by. At whole seconds they are one save, and a folder kept level by
+	// comparing times would never see the second one.
 	At int64
 }
 
@@ -50,14 +63,22 @@ func decodeReady(body []byte) (ready, error) {
 	return ready{Writable: writable}, err
 }
 
-// request is one operation. Size and Mode describe an upload; To is the destination of a move. The
-// rest of the time they are zero.
+// request is one operation. Size, Mode and At describe an upload; To is the destination of a move.
+// The rest of the time they are zero.
 type request struct {
 	Op   byte
 	Name string
 	To   string
 	Size int64
 	Mode uint32
+	// At is when the item last changed where it came from, in nanoseconds.
+	At int64
+	// Sum is the digest the round turns on: what a replace believes is at the name now, and what a
+	// get is carrying on towards. Empty is a caller that does not know or does not care.
+	Sum []byte
+	// From is how much of the item the caller already holds, so a get that was interrupted carries
+	// on rather than starting again.
+	From int64
 }
 
 func (q request) encode() []byte {
@@ -67,6 +88,9 @@ func (q request) encode() []byte {
 	w.String(q.To)
 	w.Int(q.Size)
 	w.Uint(uint64(q.Mode))
+	w.Int(q.At)
+	w.Bytes(q.Sum)
+	w.Int(q.From)
 	return w.Body()
 }
 
@@ -94,7 +118,20 @@ func decodeRequest(body []byte) (request, error) {
 	if err != nil {
 		return out, err
 	}
+	at, err := r.Int()
+	if err != nil {
+		return out, err
+	}
+	sum, err := r.Bytes(MaxSum)
+	if err != nil {
+		return out, err
+	}
+	from, err := r.Int()
+	if err != nil {
+		return out, err
+	}
 	out.Op, out.Name, out.To, out.Size, out.Mode = op, name, to, size, uint32(mode)
+	out.At, out.Sum, out.From = at, append([]byte(nil), sum...), from
 	return out, nil
 }
 

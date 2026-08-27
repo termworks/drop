@@ -52,6 +52,10 @@ type doings struct {
 	// pages is the notes this process keeps, held so that the config and the timer that watches
 	// them are looking at the same ones.
 	pages *note.Note
+	// folders is the shared folders this process keeps, held for the same reason.
+	folders *files.Files
+	// pulls, when set, gets the bytes of a file a shared folder is missing from whoever has them.
+	pulls func(w files.Wanted) error
 }
 
 // reading registers every archetype for its settings alone.
@@ -66,7 +70,7 @@ func reading() *arch.Registry {
 func (d *doings) serving() *arch.Registry {
 	known := arch.NewRegistry()
 	known.Register(share.New(share.Into{Progress: d.moving, Landed: d.dropped}))
-	known.Register(files.New(files.Into{Progress: d.moving, Landed: d.landed}))
+	known.Register(d.filing())
 	known.Register(chat.New(chat.Into{Store: d.store}))
 	known.Register(link.New(link.Into{Store: d.store}))
 	known.Register(stream.New(stream.Into{Opened: d.opened}))
@@ -95,6 +99,30 @@ func (d *doings) terminals() *tty.TTY {
 		d.shells = tty.New(tty.Into{Watched: d.watched, Showing: d.showing})
 	}
 	return d.shells
+}
+
+// filing is this process's directories, made once so that the config reads the same ones the timer
+// keeps level with their histories.
+func (d *doings) filing() *files.Files {
+	if d.folders == nil {
+		d.folders = files.New(files.Into{
+			Progress: d.moving,
+			Landed:   d.landed,
+			Changed:  d.moved,
+			Fetch:    d.pull,
+			Trouble:  d.note,
+		})
+	}
+	return d.folders
+}
+
+// pull gets the bytes of a file a shared folder is missing, and says so plainly in a process that
+// has nobody to get them from.
+func (d *doings) pull(w files.Wanted) error {
+	if d.pulls == nil {
+		return fmt.Errorf("there is nobody here to fetch %s from", w.Name)
+	}
+	return d.pulls(w)
 }
 
 // noting is this process's notes, made once so that the config reads the same ones the timer keeps.

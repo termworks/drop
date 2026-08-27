@@ -157,7 +157,7 @@ func getFrom(parent context.Context, target, into string, wait time.Duration) er
 	defer bar.clear()
 
 	into = landing(into, w.rest)
-	if err := w.Get(w.rest, into, bar.update); err != nil {
+	if err := w.Get(w.rest, into, files.Want{Progress: bar.update}); err != nil {
 		return err
 	}
 	fmt.Printf("\n%s is now %s\n", target, into)
@@ -195,7 +195,7 @@ func putInto(parent context.Context, target string, sources []string, stdinName 
 		if from == "-" {
 			// Standard input has no length, so the far end reads until it ends rather than
 			// counting down.
-			if err := w.Put(below(w.rest, stdinName), os.Stdin, wire.SizeUnknown, 0o600, bar.update); err != nil {
+			if err := w.Put(below(w.rest, stdinName), os.Stdin, files.Given{Size: wire.SizeUnknown, Mode: 0o600, Progress: bar.update}); err != nil {
 				return err
 			}
 			continue
@@ -287,5 +287,5 @@ func changed(at int64) string {
 	if at <= 0 {
 		return ""
 	}
-	return time.Unix(at, 0).Format("2006-01-02 15:04")
+	return time.Unix(0, at).Format("2006-01-02 15:04")
 }

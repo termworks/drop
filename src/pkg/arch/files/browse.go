@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 
 	"github.com/bresilla/drop/src/pkg/wire"
 )
@@ -71,9 +72,33 @@ func (b *Browsing) List(dir string) ([]Entry, error) {
 	return got.Entries, nil
 }
 
-// Get reads one file out of the namespace and writes it to a local path.
-func (b *Browsing) Get(name, into string, progress func(name string, done, total int64)) error {
-	got, err := b.round(request{Op: opGet, Name: name})
+// Want is what a caller already knows about a file before it asks for it.
+type Want struct {
+	// Sum is the digest of the version wanted. A part file beside where the file lands is named
+	// after it, so a get that was cut off carries on from what is already there rather than
+	// starting again. Empty asks for whatever is at the name now, and cannot be carried on.
+	Sum []byte
+	// Progress, when set, is called as the bytes move.
+	Progress func(name string, done, total int64)
+}
+
+// Given is what a caller says about a file it is writing.
+type Given struct {
+	Size int64
+	Mode uint32
+	// At is when it last changed here, in nanoseconds, so that what lands there is dated the way it
+	// is dated here rather than dated now.
+	At int64
+	// Progress, when set, is called as the bytes move.
+	Progress func(name string, done, total int64)
+}
+
+// Get reads one file out of the namespace and writes it to a local path, carrying on from whatever
+// an earlier attempt at the same version left beside it.
+func (b *Browsing) Get(name, into string, want Want) error {
+	from := already(filepath.Dir(into), filepath.Base(into), want.Sum)
+
+	got, err := b.round(request{Op: opGet, Name: name, Sum: want.Sum, From: from})
 	if err != nil {
 		return err
 	}
@@ -81,39 +106,87 @@ func (b *Browsing) Get(name, into string, progress func(name string, done, total
 		return fmt.Errorf("reading %s: %s", shown(name), got.Reason)
 	}
 
-	size, mode := wire.SizeUnknown, uint32(0)
+	e := Entry{Size: wire.SizeUnknown}
 	if len(got.Entries) > 0 {
-		size, mode = got.Entries[0].Size, got.Entries[0].Mode
+		e = got.Entries[0]
 	}
-	return takeOnto(b.conn, into, path.Base(name), size, mode, progress)
+	return takeOnto(b.conn, into, path.Base(name), e, want.Sum, want.Progress)
 }
 
-// Put writes one file into the namespace. It fails unless the far end said the namespace is
-// writable.
-func (b *Browsing) Put(name string, body io.Reader, size int64, mode uint32, progress func(name string, done, total int64)) error {
-	got, err := b.round(request{Op: opPut, Name: name, Size: size, Mode: mode})
+// Put writes one file into the namespace, on a free name beside whatever is already there. It fails
+// unless the far end said the namespace is writable.
+func (b *Browsing) Put(name string, body io.Reader, g Given) error {
+	got, err := b.round(request{Op: opPut, Name: name, Size: g.Size, Mode: g.Mode, At: g.At})
 	if err != nil {
 		return err
 	}
 	if !got.OK {
 		return fmt.Errorf("writing %s: %s", shown(name), got.Reason)
 	}
-	return sendBody(b.conn, body, path.Base(name), size, progress)
+	return sendBody(b.conn, body, path.Base(name), g.Size, 0, g.Progress)
+}
+
+// Replace writes one file over the version already at that name.
+//
+// was is the digest of the version the caller believes is there, and empty says the caller believes
+// there is nothing there at all. The far end weighs it before a byte is sent, so a file somebody
+// else changed in the meantime comes back as a refusal rather than being written over.
+func (b *Browsing) Replace(name string, body io.Reader, was []byte, g Given) error {
+	got, err := b.round(request{Op: opReplace, Name: name, Size: g.Size, Mode: g.Mode, At: g.At, Sum: was})
+	if err != nil {
+		return err
+	}
+	if !got.OK {
+		return fmt.Errorf("replacing %s: %s", shown(name), got.Reason)
+	}
+	return sendBody(b.conn, body, path.Base(name), g.Size, 0, g.Progress)
 }
 
 // PutFile writes one file from this disk into the namespace.
 func (b *Browsing) PutFile(name, from string, progress func(name string, done, total int64)) error {
-	file, err := os.Open(from)
+	file, stat, err := lifted(from)
 	if err != nil {
-		return fmt.Errorf("opening %s: %w", from, err)
+		return err
 	}
 	defer file.Close()
 
+	return b.Put(name, file, given(stat, progress))
+}
+
+// ReplaceFile writes one file from this disk over the version already at a name.
+func (b *Browsing) ReplaceFile(name, from string, was []byte, progress func(name string, done, total int64)) error {
+	file, stat, err := lifted(from)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	return b.Replace(name, file, was, given(stat, progress))
+}
+
+// lifted opens a file on this disk and weighs it.
+func lifted(from string) (*os.File, os.FileInfo, error) {
+	file, err := os.Open(from)
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening %s: %w", from, err)
+	}
+
 	stat, err := file.Stat()
 	if err != nil {
-		return fmt.Errorf("looking at %s: %w", from, err)
+		file.Close()
+		return nil, nil, fmt.Errorf("looking at %s: %w", from, err)
 	}
-	return b.Put(name, file, stat.Size(), uint32(stat.Mode().Perm()), progress)
+	return file, stat, nil
+}
+
+// given is what to say about a file on this disk that is about to be written elsewhere.
+func given(stat os.FileInfo, progress func(name string, done, total int64)) Given {
+	return Given{
+		Size:     stat.Size(),
+		Mode:     uint32(stat.Mode().Perm()),
+		At:       stat.ModTime().UnixNano(),
+		Progress: progress,
+	}
 }
 
 // Remove deletes one file, or one empty directory.
