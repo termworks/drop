@@ -208,8 +208,15 @@ func (l *Log) takeable(c Change, weight int) error {
 		}
 	}
 
-	// A fold is what makes a full log smaller, so what a full log refuses does not apply to it.
-	if !c.Whole() {
+	// A fold that stands for everything here is what makes a full log smaller, so the limits that
+	// keep a log from growing do not apply to it: a full log has to be able to take one, or it
+	// could never shrink again.
+	//
+	// One that stands for only some of what is here does not shrink anything. It writes a change of
+	// its own and takes away less than it added, and being called a fold was the whole of what
+	// exempted it — so a peer could send them one after another, a megabyte at a time, and this
+	// history would grow until the disk was gone. It is held to the same limits as anything else.
+	if !c.Whole() || !l.standsForAll(c) {
 		tips := l.tipping(c)
 		switch {
 		case len(l.changes) >= MaxHeld:
@@ -664,6 +671,23 @@ func (l *Log) placeable(c Change) bool {
 			continue
 		}
 		return false
+	}
+	return true
+}
+
+// standsForAll reports whether a fold covers every change this history is holding.
+//
+// That is what a fold made here looks like: it covers all of them and its heads are the tips. Only
+// such a fold is certain to leave the log smaller than it found it, which is what earns it the
+// right to be taken by a log that is already full.
+func (l *Log) standsForAll(c Change) bool {
+	if len(l.changes) == 0 {
+		return true
+	}
+	for id := range l.changes {
+		if !names(c.Fold, id) {
+			return false
+		}
 	}
 	return true
 }

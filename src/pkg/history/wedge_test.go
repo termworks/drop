@@ -93,3 +93,45 @@ func folded(t *testing.T, l *Log, body string, heads, over []ID) ID {
 	_ = fmt.Sprint(id)
 	return id
 }
+
+// A history has a size, and calling something a fold must not be the way past it.
+//
+// A fold is exempt from the limits because it is what makes a full log smaller — a log that could
+// not take one could never shrink. But that only holds for a fold that stands for everything there
+// is. One standing for a single change writes more than it takes away, and if the word alone bought
+// the exemption a peer could send them one after another until the disk was gone.
+func TestCallingSomethingAFoldIsNotAWayPastTheLimits(t *testing.T) {
+	asSomebody(t)
+	l := aLog(t, thing)
+
+	first := added(t, l, "one", nil)
+
+	// A fold that stands for that one change and nothing else, carrying as much as a change may.
+	big := make([]byte, MaxBody)
+	for i := range big {
+		big[i] = byte(i)
+	}
+
+	grew := 0
+	for range 40 {
+		c, err := sign(l.at, big, nil, []ID{first})
+		if err != nil {
+			break
+		}
+		if _, err := l.Add(c); err != nil {
+			break
+		}
+		grew++
+		if l.size > MaxLog {
+			t.Fatalf("this history is %d bytes, over the %d limit, after %d so-called folds", l.size, MaxLog, grew)
+		}
+	}
+
+	// And a real fold — one that stands for everything here — is still taken, however full it is.
+	if _, err := l.Fold([]byte("what it all came to")); err != nil {
+		t.Fatalf("a history would not take a fold that stands for all of it: %v", err)
+	}
+	if n := len(l.changes); n != 1 {
+		t.Fatalf("after folding everything the history holds %d changes, want 1", n)
+	}
+}
