@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	safe "github.com/bresilla/drop/src/pkg/plain"
 	"strings"
 
 	"github.com/bresilla/drop/src/pkg/proto"
@@ -793,12 +794,16 @@ func (m Model) bubble(msg convo.Message) []string {
 
 	body := shade.Padding(0, 2, 1, 2)
 
-	said := body.Foreground(plain).Render(msg.Body)
+	// What arrived is somebody else's bytes and this is a terminal. Styling wraps text in escapes;
+	// it does not take any out, so a message carrying its own would draw wherever it liked.
+	told, more := safe.Text(msg.Body, MaxSaid), safe.Line(msg.Extra)
+
+	said := body.Foreground(plain).Render(told)
 	switch msg.Kind {
 	case convo.KindLink:
-		said = body.Foreground(second).Render(msg.Body)
+		said = body.Foreground(second).Render(told)
 	case convo.KindFile:
-		said = body.Foreground(plain).Render("▣ " + msg.Body + "  " + msg.Extra)
+		said = body.Foreground(plain).Render("▣ " + told + "  " + more)
 	}
 
 	bar := lipgloss.NewStyle().Foreground(colour).Render("┃")
@@ -982,3 +987,7 @@ func bytesOf(n int64) string {
 		return fmt.Sprintf("%.1f GB", float64(n)/(1024*1024*1024))
 	}
 }
+
+// MaxSaid is how much of one message the interface draws. A message is what somebody wanted to say,
+// so it is generous; it is still somebody else's screen, so it is bounded.
+const MaxSaid = 2000

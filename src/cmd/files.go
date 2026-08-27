@@ -17,6 +17,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
+	"github.com/bresilla/drop/src/pkg/plain"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
@@ -269,11 +270,17 @@ func listInside(b *files.Browsing, id node.ID, where, rest string) error {
 }
 
 // shownAs marks a directory, so a listing needs no column to say which is which.
+// shownAs is a remote file as it is printed.
+//
+// Made safe here and not where it arrives: the name that reaches this disk when the file is fetched
+// is a different question, answered by containment, and a name cleaned up on the way in would be a
+// name that no longer matches the file it asks for.
 func shownAs(item files.Entry) string {
+	name := plain.Text(item.Name, files.MaxRel)
 	if item.Dir {
-		return item.Name + "/"
+		return name + "/"
 	}
-	return item.Name
+	return name
 }
 
 func sizeOf(item files.Entry) string {

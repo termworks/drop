@@ -12,6 +12,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/plain"
 	"github.com/bresilla/drop/src/pkg/proto"
 )
 
@@ -141,6 +142,11 @@ func nameFor(pinned *book.Book, id node.ID) string {
 }
 
 // render prints one message the way a log reads.
+// render is one message as a line of a conversation.
+//
+// What somebody said is theirs, and it is also bytes going to a terminal. Kept as it arrived on the
+// disk, because a conversation is a record of what was said; made safe here, because this is where
+// it stops being a record and starts being output.
 func render(who string, m convo.Message) string {
 	arrow := "→"
 	if m.Dir == convo.In {
@@ -148,17 +154,22 @@ func render(who string, m convo.Message) string {
 	}
 
 	stamp := m.When().Format("15:04")
+	body, extra := plain.Text(m.Body, MaxSaid), plain.Line(m.Extra)
 	switch m.Kind {
 	case convo.KindLink:
-		return fmt.Sprintf("%s %s %-12s link  %s", stamp, arrow, who, m.Body)
+		return fmt.Sprintf("%s %s %-12s link  %s", stamp, arrow, who, body)
 	case convo.KindFile:
-		return fmt.Sprintf("%s %s %-12s file  %s (%s)", stamp, arrow, who, m.Body, m.Extra)
+		return fmt.Sprintf("%s %s %-12s file  %s (%s)", stamp, arrow, who, body, extra)
 	case convo.KindEvent:
-		return fmt.Sprintf("%s   %-12s %s", stamp, who, m.Body)
+		return fmt.Sprintf("%s   %-12s %s", stamp, who, body)
 	default:
-		return fmt.Sprintf("%s %s %-12s %s", stamp, arrow, who, m.Body)
+		return fmt.Sprintf("%s %s %-12s %s", stamp, arrow, who, body)
 	}
 }
+
+// MaxSaid is how much of one message a line of a conversation shows. Generous, because a message is
+// the thing somebody wanted to say, and bounded, because it is going onto somebody else's screen.
+const MaxSaid = 2000
 
 // noteFile records a file changing hands, so `drop me log` reads as the whole story.
 func noteFile(with node.ID, dir byte, name string, size int64) {
