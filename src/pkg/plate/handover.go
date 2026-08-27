@@ -142,10 +142,13 @@ func unpick(signed []byte) (Handover, error) {
 	}
 
 	switch {
-	case over.Was.IsZero() || over.Now.IsZero() || over.Whose == "":
+	case over.Was.IsZero() || over.Now.IsZero():
 		return Handover{}, fmt.Errorf("that handover does not say what became what")
 	case over.Was == over.Now:
 		return Handover{}, fmt.Errorf("that handover says a machine became itself")
+	}
+	if err := oneLine(map[string]string{"whose": over.Whose}); err != nil {
+		return Handover{}, err
 	}
 	if string(over.Bytes()) != string(signed) {
 		return Handover{}, fmt.Errorf("that handover is not written the way a handover is written")

@@ -105,11 +105,11 @@ func showing(from node.ID, body []byte) (Badged, node.ID, bool) {
 
 	// A hello from a machine that has moved is the first thing many peers hear from it, so the
 	// news travels here as well as on an open. An older frame simply stops here and says nothing.
-	moved, err := r.Bytes(wire.MaxString)
+	moved, err := r.Bytes(MaxSigned)
 	if err != nil {
 		return who, node.ID{}, false
 	}
-	handed, err := r.Bytes(wire.MaxString)
+	handed, err := r.Bytes(MaxSignature)
 	if err != nil {
 		return who, node.ID{}, false
 	}

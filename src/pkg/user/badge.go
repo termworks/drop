@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/bresilla/drop/src/pkg/plain"
 )
 
 // A badge is what turns "some machine" into "a machine of bob's".
@@ -70,15 +72,27 @@ func SignBy(command string, who ssh.PublicKey, device, name string, now time.Tim
 }
 
 // writable reports whether a badge can be written down as one line per field and read back as the
-// same thing. A field carrying a newline would be read back as a line of its own.
+// same thing, and whether what it says can be put in front of a person.
+//
+// The name on a badge is chosen by whoever signs it and printed by whoever reads it. An escape in
+// there acts on the terminal it is printed to, so a badge carrying one is refused rather than
+// cleaned up: what is checked is the exact bytes that were signed, and a name tidied on the way in
+// would mean the string verified and the string shown are not the same string.
 func (b Badge) writable() error {
 	for what, field := range map[string]string{"device": b.Device, "name": b.Name} {
 		if strings.ContainsAny(field, "\r\n") {
 			return fmt.Errorf("a badge's %s cannot span lines: %q", what, field)
 		}
 	}
+	if b.Name != "" && !plain.Fit(b.Name, MaxName) {
+		return fmt.Errorf("a badge's name is not something that can be shown: %q", b.Name)
+	}
 	return nil
 }
+
+// MaxName bounds the name on a badge: long enough for any machine somebody really has, short
+// enough that it cannot fill a row of a listing.
+const MaxName = 64
 
 // Sign makes a badge and signs it.
 func Sign(by ssh.Signer, device, name string, now time.Time) (Badge, []byte, error) {
@@ -122,6 +136,11 @@ func Read(signed []byte, sig []byte, now time.Time) (Badge, error) {
 			Fingerprint(badge.User), Fingerprint(who))
 	}
 
+	// The same check the signer was held to, applied to what arrived: a badge is only as safe to
+	// show as the name inside it.
+	if err := badge.writable(); err != nil {
+		return Badge{}, err
+	}
 	if badge.Expired(now) {
 		return Badge{}, fmt.Errorf("that badge ran out on %s", badge.Until.UTC().Format(time.RFC3339))
 	}

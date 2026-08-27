@@ -8,6 +8,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
+	"github.com/bresilla/drop/src/pkg/plain"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -111,7 +112,10 @@ func decodeHello(body []byte) (Hello, error) {
 	if err != nil {
 		return out, err
 	}
-	out.Name, out.Version = name, version
+	// Everything a peer says about itself is bytes it chose and drop prints. Made safe here, at the
+	// one place it arrives, rather than at each of the places it is shown — a listing that forgot
+	// is a listing a peer can write on.
+	out.Name, out.Version = plain.Line(name), plain.Line(version)
 
 	count, err := r.Uint()
 	if err != nil {
@@ -159,13 +163,13 @@ func decodeHello(body []byte) (Hello, error) {
 			return out, err
 		}
 		out.Serves = append(out.Serves, Served{
-			Path:      path,
-			Archetype: archetype,
-			Shape:     shape,
+			Path:      plain.Text(path, MaxPathShown),
+			Archetype: plain.Line(archetype),
+			Shape:     plain.Line(shape),
 			Version:   int(version),
 			Writable:  writable,
 			Locked:    locked,
-			About:     about,
+			About:     plain.Line(about),
 			Shared:    shared,
 			Holders:   holders,
 		})
@@ -317,3 +321,7 @@ func AskHello(s io.ReadWriteCloser) (Hello, error) {
 	}
 	return ReadHello(s)
 }
+
+// MaxPathShown bounds a path as it is printed. A path is already bounded on the wire; this is what
+// keeps one long enough to be legal from pushing the rest of a listing off the screen.
+const MaxPathShown = 256

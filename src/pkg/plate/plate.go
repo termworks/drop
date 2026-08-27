@@ -20,6 +20,7 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/metal"
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/plain"
 )
 
 // Machine is the key standing for this machine, which is not the key standing for this drop.
@@ -138,20 +139,28 @@ func verified(id node.ID, message, sig []byte) error {
 	return id.PublicKey().Verify(message, key.NewSignature(raw))
 }
 
-// oneLine refuses a field that would be read back as something other than what was written. A field
-// carrying a newline would come back as a line of its own, and the line it came back as is not the
-// line that was signed.
+// oneLine refuses a field that would be read back as something other than what was written, or
+// that could act on the terminal it is printed to.
+//
+// Refused rather than cleaned up. A stamp is checked against the exact bytes somebody signed: a
+// name tidied on the way in would mean the string that was verified and the string that is shown
+// are two different strings, and only one of them was signed. So a name that is not fit to print
+// makes the whole stamp not a stamp.
 func oneLine(fields map[string]string) error {
 	for what, field := range fields {
-		if strings.ContainsAny(field, "\r\n") {
-			return fmt.Errorf("a stamp's %s cannot span lines: %q", what, field)
-		}
 		if field == "" {
 			return fmt.Errorf("a stamp needs a %s", what)
+		}
+		if !plain.Fit(field, MaxName) {
+			return fmt.Errorf("a stamp's %s is not something that can be shown: %q", what, field)
 		}
 	}
 	return nil
 }
+
+// MaxName bounds a name inside something signed. Long enough for any account somebody really has,
+// short enough that it cannot fill a row.
+const MaxName = 64
 
 // parse reads a stamp back from what was signed.
 //
@@ -195,8 +204,13 @@ func parse(signed []byte) (Stamp, error) {
 		}
 	}
 
-	if stamp.Machine.IsZero() || stamp.Endpoint.IsZero() || stamp.Whose == "" {
+	if stamp.Machine.IsZero() || stamp.Endpoint.IsZero() {
 		return Stamp{}, fmt.Errorf("that stamp does not say what is on what")
+	}
+	// Checked on the way in as well as on the way out: what is signed here is signed by a machine,
+	// and a machine that would sign a name full of escapes is exactly the one to refuse.
+	if err := oneLine(map[string]string{"whose": stamp.Whose}); err != nil {
+		return Stamp{}, err
 	}
 	if string(stamp.Bytes()) != string(signed) {
 		return Stamp{}, fmt.Errorf("that stamp is not written the way a stamp is written")

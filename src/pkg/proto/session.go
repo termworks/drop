@@ -144,19 +144,19 @@ func decodeOpen(body []byte) (Opening, error) {
 	if err != nil {
 		return out, err
 	}
-	plate, err := r.String(wire.MaxString)
+	plate, err := r.String(MaxSigned)
 	if err != nil {
 		return out, err
 	}
-	stamped, err := r.String(wire.MaxString)
+	stamped, err := r.String(MaxSignature)
 	if err != nil {
 		return out, err
 	}
-	moved, err := r.String(wire.MaxString)
+	moved, err := r.String(MaxSigned)
 	if err != nil {
 		return out, err
 	}
-	handed, err := r.String(wire.MaxString)
+	handed, err := r.String(MaxSignature)
 	if err != nil {
 		return out, err
 	}
@@ -193,3 +193,14 @@ func WasDeclined(err error) bool {
 	var declined Declined
 	return errors.As(err, &declined)
 }
+
+// What a plate and a handover may weigh on the wire.
+//
+// Both are a handful of fixed lines and an id or two — a few hundred bytes at the outside. The
+// general string limit is sixty-four kilobytes, which for these is sixty-four kilobytes of somebody
+// else's choosing that has to be parsed before anybody has been authenticated. Bounding them to
+// what they can actually be turns that into a length check.
+const (
+	MaxSigned    = 1024
+	MaxSignature = 64
+)
