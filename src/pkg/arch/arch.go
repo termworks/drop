@@ -202,3 +202,31 @@ func join(names []string) string {
 	}
 	return out + " or " + names[len(names)-1]
 }
+
+// Amiss is an archetype that can say a namespace needs a person's attention.
+//
+// Optional, and asked for by interface rather than by name: an archetype that has nothing to report
+// does not implement it, and one written next week that does needs no case anywhere. What it is
+// handed is the settings and not a path, because whoever asks is often not the process keeping the
+// namespace — `drop ns list` is its own process, and what it can see is what is on the disk.
+type Amiss interface {
+	// Amiss is a few words about what is unsettled, or empty when nothing is.
+	Amiss(Config) string
+}
+
+// Trouble asks an archetype whether a namespace wants attention, and says nothing for one that has
+// no opinion.
+func Trouble(known *Registry, name string, version int, c Config) string {
+	if known == nil {
+		return ""
+	}
+	a, ok := known.Lookup(name, version)
+	if !ok {
+		return ""
+	}
+	said, ok := a.(Amiss)
+	if !ok {
+		return ""
+	}
+	return said.Amiss(c)
+}

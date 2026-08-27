@@ -305,7 +305,7 @@ func (k *keeper) mark() string { return filepath.Join(k.log.Dir(), "wrote") }
 // written the first of several lines, shows the same size and the same time on both sides of the
 // read, and half a save signed as a change is half a note on every other machine.
 func steady(file string) ([]byte, bool, error) {
-	before, err := os.Stat(file)
+	before, err := os.Lstat(file)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	}
@@ -314,6 +314,14 @@ func steady(file string) ([]byte, bool, error) {
 	}
 	if before.IsDir() {
 		return nil, false, fmt.Errorf("reading %s: it is a directory", file)
+	}
+	// A note is written by replacing it, which would put a plain file where the link was and leave
+	// whatever it pointed at holding an old copy for ever. Refusing says so while it is still true.
+	if before.Mode()&os.ModeSymlink != 0 {
+		return nil, false, fmt.Errorf("reading %s: it is a symlink, and a note is a file", file)
+	}
+	if !before.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("reading %s: it is not a file", file)
 	}
 	if time.Since(before.ModTime()) < Still {
 		return nil, false, fmt.Errorf("reading %s: %w", file, busy)
@@ -324,9 +332,12 @@ func steady(file string) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("reading %s: %w", file, err)
 	}
 
-	after, err := os.Stat(file)
+	after, err := os.Lstat(file)
 	if err != nil {
 		return nil, false, fmt.Errorf("reading %s: %w", file, err)
+	}
+	if !after.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("reading %s: %w", file, busy)
 	}
 	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
 		return nil, false, fmt.Errorf("reading %s: %w", file, busy)

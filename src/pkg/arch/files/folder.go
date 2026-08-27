@@ -274,3 +274,34 @@ func decodeEdits(raw []byte) ([]Edit, error) {
 	}
 	return out, nil
 }
+
+// Snapshot is a folder written as the one change a fold leaves in its place, and says whether it
+// could be written at all.
+//
+// A change has a size, and a folder does not: a directory of a thousand files is not something one
+// change can carry. So the bytes held inline are dropped first — a snapshot that names a path and
+// its digest is still the whole truth about what the folder holds, and bytes are answered off this
+// disk or fetched from whoever has them, which is how a file too big to inline has always arrived.
+// A folder whose paths alone will not fit is left unfolded, which costs a longer history and loses
+// nothing.
+func Snapshot(f Folder) ([]byte, bool) {
+	paths := make([]string, 0, len(f))
+	for path := range f {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	full := make([]Edit, 0, len(paths))
+	for _, path := range paths {
+		full = append(full, Edit{Path: path, Held: f[path]})
+	}
+	if body := encodeEdits(full); len(body) <= history.MaxBody {
+		return body, true
+	}
+
+	for i := range full {
+		full[i].Held.Body = nil
+	}
+	body := encodeEdits(full)
+	return body, len(body) <= history.MaxBody
+}

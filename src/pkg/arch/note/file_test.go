@@ -325,3 +325,73 @@ func TestANoteSavedManyTimesFoldsItsHistory(t *testing.T) {
 		t.Fatalf("a machine reading the folded history holds %q, want %q", got, held(t, k.file))
 	}
 }
+
+// A note is written by replacing the file, so one that is a symlink would become a plain file and
+// leave whatever it pointed at holding a stale copy. It is refused instead, and said out loud.
+func TestANoteAtASymlinkIsRefusedRatherThanReplaced(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.md")
+	if err := os.WriteFile(real, []byte("one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "notes.md")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("this disk will not make a symlink: %v", err)
+	}
+	settled(t, real)
+
+	_, _, err := steady(link)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("a note at a symlink read as %v, want it refused for being a symlink", err)
+	}
+
+	asSomebody(t, "alice")
+	k := aKeeper(t)
+	k.file = link
+	if _, err := k.once(); err == nil {
+		t.Fatal("a note at a symlink was kept")
+	}
+	if at, err := os.Lstat(link); err != nil || at.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the symlink was replaced: %v, %v", at.Mode(), err)
+	}
+}
+
+// A conflict nobody has settled shows on the row for that namespace, so it is met while it is still
+// true rather than when somebody notices the file has gone strange.
+func TestAnUnsettledNoteSaysSoWithoutTheProcessThatKeepsIt(t *testing.T) {
+	asSomebody(t, "alice")
+	k := aKeeper(t)
+
+	save(t, k.file, "one\ntwo\nthree\n")
+	k.turn(t)
+	first := k.log.Heads()
+
+	save(t, k.file, "one\nALICE\nthree\n")
+	k.turn(t)
+
+	asSomebody(t, "bob")
+	theirs, err := history.Sign(k.log.At(), []byte("one\nBOB\nthree\n"), first)
+	if err != nil {
+		t.Fatalf("Sign(): %v", err)
+	}
+	if _, err := k.log.Add(theirs); err != nil {
+		t.Fatalf("Add(): %v", err)
+	}
+	k.turn(t)
+
+	if !strings.Contains(held(t, k.file), "<<<<<<<") {
+		t.Fatalf("two people changed one line and it merged silently: %q", held(t, k.file))
+	}
+
+	// A different process — nothing of the keeper, only the config and the disk.
+	said := New(Into{}).Amiss(Config{File: k.file})
+	if !strings.Contains(said, "unsettled") {
+		t.Fatalf("the listing says %q about a note with a conflict in it", said)
+	}
+
+	// And once somebody settles it, the row goes quiet again.
+	save(t, k.file, "one\nBOTH\nthree\n")
+	if said := New(Into{}).Amiss(Config{File: k.file}); said != "" {
+		t.Fatalf("a settled note still says %q", said)
+	}
+}

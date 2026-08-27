@@ -17,12 +17,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/history"
 	"github.com/bresilla/drop/src/pkg/ns"
+	"github.com/bresilla/drop/src/pkg/weave"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -227,4 +230,36 @@ func (n *Note) say(path, text string) {
 		return
 	}
 	n.into.Trouble(text)
+}
+
+// Amiss says whether this note has something in it somebody has to settle.
+//
+// Read off the disk rather than out of a keeper, because whoever asks is usually not the process
+// keeping the note: a listing is its own process and shares nothing with the daemon but the files.
+// What it looks for is what a merge leaves behind — markers in the file when two people changed the
+// same lines, a version kept beside it when the file was not text at all, and a save the history
+// would not take.
+func (n *Note) Amiss(c arch.Config) string {
+	cfg, ok := c.(Config)
+	if !ok || cfg.File == "" {
+		return ""
+	}
+
+	if raw, err := os.ReadFile(cfg.File); err == nil {
+		if who := weave.Unsettled(raw); len(who) > 0 {
+			return fmt.Sprintf("unsettled: %s", strings.Join(who, " and "))
+		}
+	}
+	if _, err := os.Stat(cfg.File + ".unrecorded"); err == nil {
+		return "a save its history would not take is kept beside it"
+	}
+
+	beside, err := filepath.Glob(cfg.File + ".*")
+	if err != nil {
+		return ""
+	}
+	if n := len(beside); n > 0 {
+		return fmt.Sprintf("%d version(s) kept beside it", n)
+	}
+	return ""
 }

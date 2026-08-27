@@ -100,6 +100,16 @@ func (k *keeper) once(fetch func(Wanted) error) (bool, error) {
 	}
 
 	trouble := k.apply(want, now, fetch)
+
+	// Once everybody holding this folder has caught up, what it came to stands in place of every
+	// change that made it. The history decides the moment; the folder only says what it holds.
+	if trouble == nil && k.log.Folding() {
+		if body, fits := Snapshot(want); fits {
+			if _, err := k.log.Fold(body); err != nil {
+				return made, fmt.Errorf("folding the history of %s: %w", k.dir, err)
+			}
+		}
+	}
 	if err := k.remember(); err != nil {
 		return made, err
 	}

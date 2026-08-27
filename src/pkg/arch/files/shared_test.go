@@ -497,3 +497,66 @@ func TestTheSameChangesInAnyOrderMakeTheSameFolder(t *testing.T) {
 		t.Fatalf("somebody's edit is missing:\n%s", text)
 	}
 }
+
+// A folder worked in for a long time must not carry every change that ever touched it. Once both
+// sides have caught up, what the folder came to stands in place of the lot — and a machine reading
+// the folded history holds exactly what a machine that replayed all of it would.
+func TestAFolderWorkedInForLongFoldsItsHistory(t *testing.T) {
+	a, b := joins(t, "alice"), joins(t, "bob")
+	meets(t, a, b)
+
+	for i := range history.Least * 2 {
+		save(t, a.dir, fmt.Sprintf("file%d.txt", i), fmt.Sprintf("body %d\n", i))
+		together(t, a, b)
+	}
+
+	changes, err := a.k.log.Ordered()
+	if err != nil {
+		t.Fatalf("Ordered(): %v", err)
+	}
+	if n := len(changes); n >= history.Least*2 {
+		t.Fatalf("%d saves left %d changes, and nothing was folded away", history.Least*2, n)
+	}
+
+	alike(t, a, b)
+	if got := len(listing(t, a)); got != history.Least*2 {
+		t.Fatalf("after folding the folder holds %d files, want %d", got, history.Least*2)
+	}
+	for i := range history.Least * 2 {
+		want := fmt.Sprintf("body %d\n", i)
+		if got := holding(t, a, fmt.Sprintf("file%d.txt", i)); got != want {
+			t.Fatalf("file%d.txt holds %q after folding, want %q", i, got, want)
+		}
+	}
+}
+
+// A snapshot that will not fit with its bytes in it still fits without them: what a folder holds is
+// its paths and their digests, and the bytes are fetched the way a big file always was.
+func TestASnapshotTooBigWithBytesDropsThemRatherThanTheFolder(t *testing.T) {
+	f := Folder{}
+	body := make([]byte, MaxInline)
+	for i := range 64 {
+		f[fmt.Sprintf("big%d.bin", i)] = Held{Size: int64(len(body)), Sum: blake3.Sum256(body), Body: body}
+	}
+
+	raw, fits := Snapshot(f)
+	if !fits {
+		t.Fatalf("a folder of %d files would not fold at all", len(f))
+	}
+	if len(raw) > history.MaxBody {
+		t.Fatalf("the snapshot is %d bytes, and a change may be %d", len(raw), history.MaxBody)
+	}
+
+	list, err := decodeEdits(raw)
+	if err != nil {
+		t.Fatalf("decodeEdits(): %v", err)
+	}
+	if len(list) != len(f) {
+		t.Fatalf("the snapshot names %d paths, want %d", len(list), len(f))
+	}
+	for _, e := range list {
+		if e.Held.Sum != f[e.Path].Sum || e.Held.Size != f[e.Path].Size {
+			t.Fatalf("%s came back as %v, want %v", e.Path, e.Held, f[e.Path])
+		}
+	}
+}

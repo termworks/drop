@@ -19,7 +19,11 @@ package files
 import (
 	"context"
 	"fmt"
+	"github.com/bresilla/drop/src/pkg/weave"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -239,3 +243,61 @@ func (f *Files) say(path, text string) {
 	}
 	f.into.Trouble(text)
 }
+
+// Amiss says whether anything in this folder has a change in it somebody has to settle.
+//
+// Read off the disk and not out of whatever keeps the folder, so a listing in its own process can
+// say it. The walk stops at the first few, because a row has room for a count and not for a list,
+// and a folder with a thousand of them is a folder with a problem the count already reports.
+func (f *Files) Amiss(c arch.Config) string {
+	cfg, ok := c.(Config)
+	if !ok || cfg.Dir == "" {
+		return ""
+	}
+
+	stuck, beside, first := 0, 0, ""
+	walk := func(at string, d fs.DirEntry, err error) error {
+		switch {
+		case err != nil, d.IsDir(), !d.Type().IsRegular():
+			return nil
+		case stuck+beside >= Enough:
+			return fs.SkipAll
+		}
+
+		if strings.HasSuffix(at, ".unrecorded") {
+			beside++
+			return nil
+		}
+		raw, err := os.ReadFile(at)
+		if err != nil || !weave.Textual(raw) {
+			return nil
+		}
+		if who := weave.Unsettled(raw); len(who) > 0 {
+			stuck++
+			if first == "" {
+				rest, err := filepath.Rel(cfg.Dir, at)
+				if err != nil {
+					rest = filepath.Base(at)
+				}
+				first = rest
+			}
+		}
+		return nil
+	}
+	if err := filepath.WalkDir(cfg.Dir, walk); err != nil {
+		return ""
+	}
+
+	switch {
+	case stuck == 1:
+		return fmt.Sprintf("unsettled: %s", first)
+	case stuck > 1:
+		return fmt.Sprintf("unsettled: %s and %d more", first, stuck-1)
+	case beside > 0:
+		return fmt.Sprintf("%d save(s) their history would not take", beside)
+	}
+	return ""
+}
+
+// Enough is how many unsettled files are looked for before the walk gives up and says "and more".
+const Enough = 64

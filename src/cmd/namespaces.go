@@ -53,12 +53,14 @@ func showOwnTable(known *arch.Registry) error {
 
 // unresolved is what a namespace says about a change it could not merge, for the row it is on.
 //
-// This is the seam and nothing is coming through it yet. What can be said about a namespace without
-// knowing what it is comes from arch.Note, and arch.Note has no word for a conflict — when it grows
-// one, read it off `known.Lookup(m.Archetype, m.Version).Note(m.Config)` here, which is where the
-// listing has room for it.
+// Asked of the archetype and not worked out here: what counts as unsettled is the archetype's own
+// business, and a listing that knew would be a listing with a case per archetype in it.
 func unresolved(known *arch.Registry, m ns.Mount) string {
-	return ""
+	said := arch.Trouble(known, m.Archetype, m.Version, m.Config)
+	if said == "" {
+		return ""
+	}
+	return "  " + said
 }
 
 // membership says what the rule column means for a namespace several machines hold.
