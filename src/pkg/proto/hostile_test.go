@@ -146,3 +146,42 @@ func TestRubbishInAHandoverMovesNothing(t *testing.T) {
 		}
 	}
 }
+
+// Who else holds a namespace is a list the far end writes, and it is printed when you look at
+// joining one. It is the last thing a peer says about itself, and it gets the same treatment.
+func TestTheHolderListCannotWriteOnYourTerminal(t *testing.T) {
+	said := Hello{
+		Name:   "orin",
+		Serves: []Served{{Path: "/notes", Holders: []string{"ssh-ed25519 AAAA\x1b[2Jowned"}}},
+	}
+
+	back, err := decodeHello(said.encode())
+	if err != nil {
+		t.Fatalf("decodeHello(): %v", err)
+	}
+	for _, who := range back.Serves[0].Holders {
+		for _, bad := range []string{"\x1b", "\r", "\n", "\x00"} {
+			if strings.Contains(who, bad) {
+				t.Errorf("a holder reached a listing carrying %q: %q", bad, who)
+			}
+		}
+	}
+
+	// A name longer than any key could be makes the whole message unreadable rather than being cut
+	// down to size. A sender is expected to cut its own lists — one that sends a name a thousand
+	// times longer than a key is not a sender whose listing is worth showing.
+	huge := Hello{Serves: []Served{{Path: "/x", Holders: []string{strings.Repeat("k", 40_000)}}}}
+	if _, err := decodeHello(huge.encode()); err == nil {
+		t.Fatal("a holder name of 40,000 characters was read off the wire")
+	}
+
+	// An ordinary key is untouched, because a key is printable already.
+	ordinary := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIbk9rJ4ec3MxEHxE2Grpt bob@laptop"
+	one, err := decodeHello(Hello{Serves: []Served{{Path: "/x", Holders: []string{ordinary}}}}.encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := one.Serves[0].Holders[0]; got != ordinary {
+		t.Fatalf("an ordinary key came back as %q", got)
+	}
+}

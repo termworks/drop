@@ -211,11 +211,13 @@ func decodeHolders(r *wire.Reader) ([]string, error) {
 
 	out := make([]string, 0, count)
 	for range count {
-		key, err := r.String(wire.MaxString)
+		key, err := r.String(MaxHolder)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, key)
+		// Named by the far end and printed here, the same as everything else it says about itself.
+		// A key is printable already, so this changes nothing about a real one.
+		out = append(out, plain.Line(key))
 	}
 	return out, nil
 }
@@ -325,3 +327,8 @@ func AskHello(s io.ReadWriteCloser) (Hello, error) {
 // MaxPathShown bounds a path as it is printed. A path is already bounded on the wire; this is what
 // keeps one long enough to be legal from pushing the rest of a listing off the screen.
 const MaxPathShown = 256
+
+// MaxHolder bounds one name in the list of who else holds a namespace. A user key written the way
+// authorized_keys writes one is a few hundred bytes; the general string limit is sixty-four
+// kilobytes of somebody else's choosing, times however many they claim.
+const MaxHolder = 1024

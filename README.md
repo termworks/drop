@@ -469,6 +469,35 @@ binds to knowledge, which spreads. It earns its place because it is the only one
 before you know who is coming. `drop me passwd` prints the hash to put in the config — the
 plaintext never goes in a file, so a leaked config is not a leaked password.
 
+### what a peer says, and what your terminal does with it
+
+A terminal is not a display, it is an interpreter. Everything a peer sends that drop then prints —
+what it calls itself, what it says a namespace is for, the name on a badge, a file in a listing,
+a message — is bytes somebody else chose, going to a program that obeys them. An escape in the
+middle of a listing moves the cursor up and rewrites the row above it, so a namespace can be made
+to look read-only while the row it overwrote said otherwise. The listing looks perfectly ordinary.
+
+So nothing off the wire reaches a terminal as it arrived. What survives is one line of printable
+characters, of bounded length, in the order it will be read: no escapes, no controls, nothing that
+reorders what follows it, nothing invisible, and nothing long enough to push the rest of a listing
+off the screen.
+
+Where that happens depends on whether anybody signed it.
+
+**Unsigned** — a hello, a listing, a directory — is cleaned where it arrives, so that a place that
+prints it later cannot forget to. **Signed** — a badge, a plate, a handover — is *refused* instead.
+Cleaning it would mean the bytes that were checked and the bytes that are shown are two different
+strings, with a signature over only one of them; a machine that would sign a name full of escapes
+is exactly the one to have nothing to do with.
+
+A conversation is kept as it was said. It is a record, and a record that quietly differs from what
+arrived is not one. The cleaning happens where it stops being a record and becomes output, so
+`drop me log` and the interface both show something safe while the file underneath still holds
+what was really sent.
+
+Names *you* wrote — what you called a machine in your own address book — are yours and are printed
+as you typed them. Nothing from the network is ever one of those.
+
 ### paired is not the same as trusted
 
 Pairing is recognition: it means a device arrives with a name instead of as a stranger. Trust is a
@@ -1045,6 +1074,17 @@ you talk to, and roughly how much. Files that arrived are left alone; somebody a
 directory they chose. `peers.json` is in the clear, and whoever takes it can *be* you to every
 device you have paired with.
 
+**Nothing loses anybody else's work.** The address book, the grants and the namespaces put up from
+the command line are each one file shared by every drop on the machine — the daemon, the interface,
+and each `drop peer pair` or `drop path create` you run. Read, change, write is three steps, and a
+second writer landing between the first and the third has its change thrown away by the third: a
+pairing that never happened, a grant that was made and is gone, with nothing to say so. Each of
+those changes now takes the file to itself first, so the three steps are one.
+
+That was worth having when the only thing that wrote was somebody typing. It matters more now that
+a machine saying it moved makes the daemon write, because then the moment is chosen by somebody
+else.
+
 A locked device — the key unplugged, the file gone — is a locked device, not an empty one. drop
 says so rather than reporting a conversation that is there as missing.
 
@@ -1288,7 +1328,8 @@ src/pkg/tui/           the full-screen interface
 src/pkg/conf/          the Lua configuration
 src/pkg/made/          the namespaces put up from the command line
 src/pkg/nudge/         hearing a file change, so a save is not waited for
-src/pkg/keep/          writing a file so a reader never sees half of one
+src/pkg/keep/          writing a file so a reader never sees half of one, and one writer at a time
+src/pkg/plain/         text from somewhere else, made safe to put on a terminal
 misc/                  the systemd user unit, and an example config
 ```
 
