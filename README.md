@@ -55,39 +55,53 @@ Discovery, pairing and transfer work.
 
 ## build
 
-```
-make build        # the static release binary, into ./drop
-make run peers    # run it; bare words pass through
-make verify       # fmt-check, vet, test, test-web, build
-make test         # the go suite
-make test-web     # the page rules, if bun or deno is installed
-make install      # into $PREFIX/bin
+There is no build system. It is one Go module and the go tool is enough.
+
+```console
+go build -o drop ./src                      # a working binary
+go test ./...                               # the suite
+gofmt -l src && go vet ./...                # what has to be clean before a commit
+go run ./src me machine                     # run it without building
 ```
 
-At an oslo prompt in this directory `make` is enough; everywhere else it is `oslo make`.
+The release binary is static and stripped:
+
+```console
+CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o drop ./src
+```
+
+`CGO_ENABLED=0` matters for more than size: cgo links the system resolver and pins the binary to
+the host it was built on. With it off, the same command cross-compiles to anything Go targets —
+which is how this is tested on two architectures at once:
+
+```console
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o drop-arm64 ./src
+```
 
 The toolchain comes from the flake — `nix develop`, or `direnv allow` and it is loaded on `cd`.
 
 ### size
 
-The binary is 6.4 MB packed, from 18 MB compiled. `-s -w`, `-trimpath` and
-`CGO_ENABLED=0` are already applied — `-s -w` strips DWARF and the symbol table, not
-`gopclntab`, which Go needs for panics and has no flag to remove. What is left is genuine
-code.
+19 MB compiled, 27 MB without `-s -w -trimpath`. `-s -w` strips DWARF and the symbol table but not
+`gopclntab`, which Go needs for panics and has no flag to remove. What is left is genuine code.
 
 It was 32 MB on libp2p. Moving to iroh took it to 15 MB compiled: 682 packages became 307.
 
-`build` packs with upx, and the compression level is free at startup — `-1`, `-5` and `-9` all
-unpack in the same 0.09s — so the default is the smallest of them. Only lzma is slow to
-unpack, which is why it is not the default.
+upx is in the dev shell and nothing runs it for you. `upx --best` takes the 19 MB to 6.8 MB, and
+that is not free: a packed binary starts in 0.054s against 0.003s unpacked, because it unpacks
+itself into memory every time. For a daemon that starts once it is worth it, for a command you run
+in a loop it is not. The compression *level* is free — `-1`, `-5` and `-9` all unpack in the same
+time — so if you pack at all, pack hardest. Only lzma is genuinely slow to unpack.
+
+## commands
+
+There are two ways in, and they reach the same node over the same protocol — everything below works
 whichever of these you are looking at.
 
 ```
 drop path ls beta     the command line: what beta shares with you
 drop                  a full-screen interface: enter a device, then a path
 ```
-
-## commands
 
 An address is whose machine, which machine, and what on it. The three parts read from the right,
 so leaving one out leaves out the one on the left:
@@ -672,10 +686,10 @@ $ drop me machine
 
   named by      the serial on the drive the system is on
   which reads   e5535c77824b
-  and by        this account, bresilla, so everyone with one here is
-                reachable as themselves
+  and by        where this drop keeps its things, so every account and
+                profile here is reachable as itself
   survives      a reinstall, because nothing about it is written down
-  changes if    the drive the system is on is replaced, or this account is renamed
+  changes if    the drive the system is on is replaced, or this drop is moved to another home
 ```
 
 | source | what it is | what changes it |
@@ -693,11 +707,16 @@ Nothing is written down when a machine will name itself, which is the point: **r
 comes back as the machine it was**, with no backup and nothing to restore. Carry a backup to
 another box and it does *not* come back as that machine, because the key was never in the backup.
 
-The seed is `KDF(purpose, what the hardware said, this account)`. The account is in there because a
-machine is one machine and the people with accounts on it are several — each runs a drop that has
-to be reachable as itself, and two of them deriving one key would be two programs answering to one
-address. Same account after a wipe: same name. Two accounts on one box: two names. Same account on
-another box: a different name.
+The seed is `KDF(purpose, what the hardware said, where this drop keeps its things)`. The second
+half is in there because a machine is one machine and the drops running on it are several — every
+account with one, every profile under an account, every node a test brings up. Each has to be
+reachable as itself, and two of them deriving one key would not be one machine with two people on
+it, it would be two programs answering to one address, which is nobody.
+
+Where a drop keeps its things is what makes it a different drop, and it is stable in exactly the
+way that is wanted: the same path comes back on the machine that comes back, and it does not travel
+to another one. Same place after a wipe: same name. Two accounts, or two profiles, or two test
+nodes: different names. Same place on another box: a different name, because the hardware differs.
 
 **What this is not.** On a machine without a TPM the serial is one every account there can read, so
 every account there can derive the machine key. Machine identity locates *hardware*; it is never a
@@ -754,8 +773,9 @@ the same time.
 Because every account on a machine can produce that machine's plate, **no access rule is satisfied
 by it**. It is there so a listing can say what is where, and for nothing else.
 
-This is a different thing from `$DROP_PROFILE` below, which is a second identity under *one*
-account for trying rules out. Two real accounts on one machine need nothing set up.
+`$DROP_PROFILE` below works the same way — it keeps its things somewhere else, so it gets a name of
+its own and is a stranger to the account it runs beside, which is what it is for. Two real accounts
+on one machine need nothing set up at all.
 
 ### moving to another machine
 
@@ -1287,16 +1307,30 @@ With nothing running, every command dials for itself, exactly as before.
 
 ## testing it
 
-`make test` is the unit suite. `make e2e` is two real nodes on this machine, driven from the
-command line over QUIC: pairing, a message each way, a file each way, standard input as a file, a
-link, a stream, a shell, a cast, and a message queued for a device that was switched off.
+`go test ./...` is the unit suite. Two more are behind build tags, because each builds the binary,
+starts daemons and takes a minute — that does not belong in the run you do on every save.
 
-It is behind a build tag and not part of `make test`, because it builds the binary, starts daemons
-and takes a minute.
+```console
+go test ./...                          # the unit suite
+go test -tags e2e -count=1 ./src/e2e/  # two real nodes on this machine
+go test -tags cross -count=1 ./src/e2e/ -v   # this machine and another one, over the network
+```
 
+**e2e** drives two nodes on this machine from the command line over QUIC: pairing, a message each
+way, a file each way, standard input as a file, a link, a stream, a shell, a cast, and a message
+queued for a device that was switched off.
+
+**cross** needs a second machine, reachable over ssh and running the same build — it is what proves
+a thing works between two architectures rather than between two processes that happen to agree.
+[`misc/orin.sh`](misc/orin.sh) builds for arm64, copies it over and restarts the daemon there.
+
+```console
+misc/orin.sh deploy      # build for arm64, copy it over, restart the daemon
+misc/orin.sh log 40      # what it said
+misc/orin.sh me machine  # bare words run drop there
 ```
-make e2e
-```
+
+`$ORIN` is the host it uses.
 
 ## environment
 
