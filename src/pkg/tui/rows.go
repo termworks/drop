@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+
+	"github.com/bresilla/drop/src/pkg/proto"
 	"io"
 	"strings"
 
@@ -10,7 +12,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/bresilla/drop/src/pkg/book"
-	"github.com/bresilla/drop/src/pkg/proto"
 )
 
 // Three lines per item: what it is, what is known about it, and where it goes. One line would fit
@@ -19,20 +20,49 @@ import (
 const rowHeight = 3
 
 // deviceItem is one paired device.
+// dividerItem separates the machines that are yours from everybody else's.
+type dividerItem struct{ label string }
+
+func (d dividerItem) FilterValue() string { return "" }
+
+// divider draws a rule with a word in it, over the height every other row takes.
+func divider(it dividerItem, width, _ int, _ bool) string {
+	blank := lipgloss.NewStyle().Width(width).Render("")
+
+	name := " " + strings.ToUpper(it.label) + " "
+	rule := width - lipgloss.Width(name) - 2
+	if rule < 2 {
+		return blank + "\n" + lipgloss.NewStyle().Foreground(muted).Render(name) + "\n" + blank
+	}
+
+	left := rule / 2
+	dashes := func(n int) string { return strings.Repeat("╌", n) }
+
+	line := lipgloss.NewStyle().Foreground(surface).Render(dashes(left)) +
+		lipgloss.NewStyle().Foreground(muted).Bold(true).Render(name) +
+		lipgloss.NewStyle().Foreground(surface).Render(dashes(rule-left))
+
+	return blank + "\n" + lipgloss.NewStyle().Width(width).Render(line) + "\n" + blank
+}
+
 type deviceItem struct {
-	entry book.Entry
-	addr  string
+	// self marks the row for this machine, which is not a peer and is not paired with itself.
+	self bool
+	// reaching marks a device a connection is being held to right now.
+	reaching bool
+	entry    book.Entry
+	addr     string
 }
 
 func (d deviceItem) FilterValue() string { return d.entry.Name }
 
 // pathItem is one path a device shares with us.
 type pathItem struct {
-	served proto.Served
-	on     string
+	step step
+	on   string
 }
 
-func (p pathItem) FilterValue() string { return p.served.Path }
+func (p pathItem) FilterValue() string { return p.step.at }
 
 // rows draws whichever kind of item the list is holding.
 type rows struct{}
@@ -49,10 +79,22 @@ func (d rows) Render(w io.Writer, m list.Model, index int, item list.Item) {
 	selected := index == m.Index()
 
 	switch it := item.(type) {
+	case dividerItem:
+		fmt.Fprint(w, divider(it, width, index, selected))
+	case userItem:
+		fmt.Fprint(w, user(it, width, index, selected))
 	case deviceItem:
 		fmt.Fprint(w, device(it, width, index, selected))
 	case pathItem:
 		fmt.Fprint(w, path(it, width, index, selected))
+	case accessItem:
+		fmt.Fprint(w, access(it, width, index, selected))
+	case knockItem:
+		fmt.Fprint(w, knock(it, width, index, selected))
+	case manageItem:
+		fmt.Fprint(w, manage(it, width, index, selected))
+	case heldItem:
+		fmt.Fprint(w, held(it, width, index, selected))
 	}
 }
 
@@ -71,8 +113,17 @@ func device(it deviceItem, width, index int, selected bool) string {
 
 	dot, dotColour := "●", green
 	state := "paired"
-	if !it.entry.Paired() {
+	switch {
+	case it.self:
+		// Not a peer and not paired with itself: what this row offers is a look at what this
+		// machine hands out.
+		dot, dotColour, state = "◈", second, "you"
+	case !it.entry.Paired():
 		dot, dotColour, state = "○", muted, "not paired"
+	case it.reaching:
+		// Held right now, which is worth saying: everything else in this list is a device that
+		// might answer, and this one is answering.
+		state = "reachable"
 	}
 
 	var name lipgloss.TerminalColor = plain
@@ -104,57 +155,378 @@ func path(it pathItem, width, index int, selected bool) string {
 	fill := func(s string) string { return base.Width(width).Render(s) }
 	inner := width - 2
 
-	kind := it.served.Kind.String()
+	var name lipgloss.TerminalColor = plain
+	if selected {
+		name = accent
+	}
+
+	// A way down reads as one: a folder glyph, how much is under it, and how to get there.
+	if it.step.below > 0 && !it.step.is {
+		first := fill(stripe(base, selected) +
+			cell(base, second, 2, "▸", false, false) +
+			cell(base, name, inner-2-16, it.step.name+"/", false, true) +
+			cell(base, muted, 16, count(it.step.below), true, false))
+
+		rest := fill(stripe(base, selected) +
+			cell(base, second, 10, "under", false, false) +
+			cell(base, muted, inner-10, "namespaces below this one", false, false))
+
+		last := fill(stripe(base, selected) +
+			cell(base, muted, inner, "enter to go in", false, false))
+
+		return first + "\n" + rest + "\n" + last
+	}
+
+	archetype := it.step.served.Archetype
+
+	// The row standing for the path that was walked into, so a path with something under it can
+	// still be opened.
+	if it.step.here {
+		first := fill(stripe(base, selected) +
+			cell(base, second, 2, "◉", false, false) +
+			cell(base, name, inner-2-16, it.step.at, false, true) +
+			cell(base, green, 16, sendable(it.step.served), true, false))
+
+		rest := fill(stripe(base, selected) +
+			cell(base, second, 10, kindOf(archetype), false, false) +
+			cell(base, muted, inner-10, "this path itself", false, false))
+
+		last := fill(stripe(base, selected) +
+			cell(base, muted, inner, "drop connect "+it.on+":"+it.step.at, false, false))
+
+		return first + "\n" + rest + "\n" + last
+	}
+
+	send := "read only"
+	sendColour := muted
+	if it.step.served.Writable {
+		send, sendColour = "you may send", green
+	}
+	if archetype == "" {
+		send, sendColour = "", muted
+	}
+
+	// Seen but not open. It is here to be asked for, and saying so is the whole point of the rung.
+	if it.step.served.Locked {
+		const lockCol = 16
+
+		first := fill(stripe(base, selected) +
+			cell(base, muted, 2, "⊘", false, false) +
+			cell(base, name, inner-2-lockCol, it.step.name, false, true) +
+			cell(base, peach, lockCol, "locked", true, false))
+
+		rest := fill(stripe(base, selected) +
+			cell(base, second, 10, kindOf(archetype), false, false) +
+			cell(base, muted, inner-10, "visible, not shared with you", false, false))
+
+		last := fill(stripe(base, selected) +
+			cell(base, muted, inner, "press a to ask for it", false, false))
+
+		return first + "\n" + rest + "\n" + last
+	}
+
+	shown := it.step.name
+	if it.step.below > 0 {
+		shown += "/  " + count(it.step.below)
+	}
+
+	sendCol := 16
+	first := fill(stripe(base, selected) +
+		cell(base, second, 2, viewOf(it.step.served).glyph, false, false) +
+		cell(base, name, inner-2-sendCol, shown, false, true) +
+		cell(base, sendColour, sendCol, send, true, false))
+
+	rest := fill(stripe(base, selected) +
+		cell(base, second, 10, kindOf(archetype), false, false) +
+		cell(base, muted, inner-10, it.step.served.About, false, false))
+
+	last := fill(stripe(base, selected) +
+		cell(base, muted, inner, "drop connect "+it.on+":"+it.step.at, false, false))
+
+	return first + "\n" + rest + "\n" + last
+}
+
+// sendable says whether the far end takes anything at a path.
+func sendable(s proto.Served) string {
+	if s.Writable {
+		return "you may send"
+	}
+	return "read only"
+}
+
+// count says how much is under a way down, in words rather than a bare number.
+func count(n int) string {
+	if n == 1 {
+		return "1 below"
+	}
+	return fmt.Sprintf("%d below", n)
+}
+
+// kindOf is what a path's type is called in a list. A path with no archetype is a branch: it holds
+// others and serves nothing itself.
+func kindOf(archetype string) string {
+	if archetype == "" {
+		return "branch"
+	}
+	return archetype
+}
+
+// held draws one thing in a directory: what it is called, how big it is, and where it sits.
+//
+// Glyphs rather than words, the same as a path row: what tells a directory from a file at a glance
+// is a shape, and the word is on the line below anyway.
+func held(it heldItem, width, index int, selected bool) string {
+	base := row(index, selected)
+	fill := func(s string) string { return base.Width(width).Render(s) }
+	inner := width - 2
 
 	var name lipgloss.TerminalColor = plain
 	if selected {
 		name = accent
 	}
 
-	send := "read only"
-	sendColour := muted
-	if it.served.Writable {
-		send, sendColour = "you may send", green
-	}
-	if kind == "branch" {
-		send, sendColour = "", muted
+	mark, what, size := "▪", "file", bytesOf(it.held.Size)
+	if it.held.Dir {
+		mark, what, size = "▸", "directory", ""
 	}
 
-	sendCol := 16
+	sizeCol := 12
 	first := fill(stripe(base, selected) +
-		cell(base, second, 2, glyph(kind), false, false) +
-		cell(base, name, inner-2-sendCol, it.served.Path, false, true) +
-		cell(base, sendColour, sendCol, send, true, false))
+		cell(base, second, 2, mark, false, false) +
+		cell(base, name, inner-2-sizeCol, it.held.Name, false, true) +
+		cell(base, muted, sizeCol, size, true, false))
 
+	when := "when it was written is not known"
+	if !it.held.At.IsZero() {
+		when = "last written " + it.held.At.Format("2 Jan 15:04")
+	}
 	rest := fill(stripe(base, selected) +
-		cell(base, second, 10, kind, false, false) +
-		cell(base, muted, inner-10, describe(kind), false, false))
+		cell(base, second, 10, what, false, false) +
+		cell(base, muted, inner-10, when, false, false))
 
 	last := fill(stripe(base, selected) +
-		cell(base, muted, inner, "drop to "+it.on+it.served.Path, false, false))
+		cell(base, muted, inner, it.on+":"+it.at, false, false))
 
 	return first + "\n" + rest + "\n" + last
 }
 
-// describe says what a kind of path is for, so the list is readable by someone who has not learnt
-// the vocabulary yet.
-func describe(kind string) string {
-	switch kind {
-	case "chat":
-		return "messages, kept as a conversation"
-	case "files":
-		return "send and receive files"
-	case "tty":
-		return "a terminal, as it is being used"
-	case "stream":
-		return "output from a command, as it comes"
-	case "link":
-		return "open a link over there"
-	case "branch":
-		return "holds other paths, serves nothing"
+// userItem is one user on the first screen: you, somebody you have paired with, or anon.
+type userItem struct {
+	name string
+	of   int
+	// trusted marks somebody you decided to trust, which is what the narrow rules key off.
+	trusted bool
+	// mine marks you, and anon the user that machines paired on their own belong to.
+	mine bool
+	anon bool
+	// reaching is how many of their machines are answering right now.
+	reaching int
+}
+
+func (u userItem) FilterValue() string { return u.name }
+
+// user draws one: who they are, how many machines, and how to write them into a rule.
+func user(it userItem, width, index int, selected bool) string {
+	base := row(index, selected)
+	fill := func(s string) string { return base.Width(width).Render(s) }
+	inner := width - 2
+
+	var name lipgloss.TerminalColor = plain
+	if selected {
+		name = accent
+	}
+
+	mark, markColour := "◈", second
+	switch {
+	case it.mine:
+		// No trust mark on yourself: it means "somebody I decided to trust", which says nothing
+		// about you.
+		mark, markColour = "◈", accent
+	case it.trusted:
+		mark, markColour = "★", green
+	case it.anon:
+		mark, markColour = "◌", muted
+	}
+
+	machines := fmt.Sprintf("%d machines", it.of)
+	if it.of == 1 {
+		machines = "one machine"
+	}
+
+	stateCol := 14
+	first := fill(stripe(base, selected) +
+		cell(base, markColour, 2, mark, false, false) +
+		cell(base, name, inner-2-stateCol, it.name, false, true) +
+		cell(base, subtext, stateCol, machines, true, false))
+
+	// What they are, in the words the rest of drop uses.
+	says := "a person you have paired with"
+	switch {
+	case it.mine:
+		says = "you — every machine your user key has signed"
+	case it.anon:
+		says = "machines paired on their own, belonging to nobody"
+	case it.trusted:
+		says = "a person you decided to trust"
+	}
+	rest := fill(stripe(base, selected) + cell(base, muted, inner, says, false, false))
+
+	// How to write them into a rule, and what is answering.
+	third := fmt.Sprintf("access = { %q }", it.name)
+	if it.anon {
+		third = "name each machine on its own; anon is not a rule"
+	}
+	if it.reaching > 0 {
+		third += fmt.Sprintf("   ·   %d reachable", it.reaching)
+	}
+	last := fill(stripe(base, selected) + cell(base, muted, inner, third, false, false))
+
+	return first + "\n" + rest + "\n" + last
+}
+
+// access draws one row of the access pane: somebody, and whether they get in.
+func access(it accessItem, width, index int, selected bool) string {
+	base := row(index, selected)
+	fill := func(s string) string { return base.Width(width).Render(s) }
+	inner := width - 2
+
+	var name lipgloss.TerminalColor = plain
+	if selected {
+		name = accent
+	}
+
+	mark, markColour, state := "·", muted, "not named"
+	switch it.group {
+	case groupAnyone:
+		state = "off"
+	case groupAsked:
+		mark, markColour, state = "◇", peach, "waiting"
+	}
+
+	switch it.who.At {
+	case Allowed:
+		mark, markColour, state = "✓", green, "may reach it"
+		if it.group == groupAnyone {
+			state = "on"
+		}
+	case Refused:
+		mark, markColour, state = "✗", red, "refused"
+	}
+
+	stateCol := 16
+	first := fill(stripe(base, selected) +
+		cell(base, markColour, 2, mark, false, false) +
+		cell(base, name, inner-2-stateCol, it.who.Name, false, true) +
+		cell(base, subtext, stateCol, state, true, false))
+
+	rest := fill(stripe(base, selected) +
+		cell(base, muted, inner, whatKind(it), false, false))
+
+	return first + "\n" + rest + "\n" + fill("")
+}
+
+// whatKind says what a row names, and where the answer came from.
+func whatKind(it accessItem) string {
+	switch {
+	case it.group == groupAsked:
+		if it.want.Why != "" {
+			return it.want.When + " — " + it.want.Why
+		}
+		return "asked " + it.want.When + ", and said nothing about why"
+	case it.group == groupAnyone:
+		return rung(it.who.Name)
+	case it.who.InConfig:
+		return "named in the config; refusable here, not removable"
+	case it.who.Person && it.who.Machines == 1:
+		return "a person, with one machine"
+	case it.who.Person:
+		return fmt.Sprintf("a person, with %d machines", it.who.Machines)
 	default:
-		return ""
+		return "one machine"
 	}
 }
 
-var _ = strings.Join
+// rung says what one of the rules that names nobody actually admits.
+func rung(name string) string {
+	switch name {
+	case "anyone with the id":
+		return "a public path: whoever learns this device's id"
+	case "anyone paired":
+		return "every device in the address book"
+	default:
+		return "knowledge rather than a key, so it spreads"
+	}
+}
+
+// knockItem is a device that dialled and was refused.
+type knockItem struct{ knock Knock }
+
+func (k knockItem) FilterValue() string { return k.knock.ID }
+
+// knock draws one, which is an id, when it tried, and what it wanted.
+func knock(it knockItem, width, index int, selected bool) string {
+	base := row(index, selected)
+	fill := func(s string) string { return base.Width(width).Render(s) }
+	inner := width - 2
+
+	var name lipgloss.TerminalColor = plain
+	if selected {
+		name = accent
+	}
+
+	whenCol := 18
+	first := fill(stripe(base, selected) +
+		cell(base, muted, 2, "○", false, false) +
+		cell(base, name, inner-2-whenCol, brief(it.knock.ID), false, true) +
+		cell(base, subtext, whenCol, it.knock.At.Format("2 Jan 15:04"), true, false))
+
+	wanted := it.knock.Asked
+	if wanted == "" {
+		wanted = "nothing it got as far as naming"
+	}
+	rest := fill(stripe(base, selected) +
+		cell(base, second, 10, "wanted", false, false) +
+		cell(base, muted, inner-10, wanted, false, false))
+
+	last := fill(stripe(base, selected) +
+		cell(base, muted, inner, it.knock.Why, false, false))
+
+	return first + "\n" + rest + "\n" + last
+}
+
+// brief is an endpoint id short enough to read, since the whole of one tells nobody anything.
+func brief(id string) string {
+	if len(id) <= 16 {
+		return id
+	}
+	return id[:8] + "…" + id[len(id)-8:]
+}
+
+// manage draws one row of the management screen.
+func manage(it manageItem, width, index int, selected bool) string {
+	base := row(index, selected)
+	fill := func(s string) string { return base.Width(width).Render(s) }
+	inner := width - 2
+
+	var name lipgloss.TerminalColor = plain
+	if selected {
+		name = accent
+	}
+
+	mark, markColour := "·", muted
+	switch {
+	case it.off:
+		mark, markColour = "✗", red
+	case it.on:
+		mark, markColour = "✓", green
+	}
+
+	first := fill(stripe(base, selected) +
+		cell(base, markColour, 2, mark, false, false) +
+		cell(base, name, inner-2, it.label, false, true))
+
+	rest := fill(stripe(base, selected) +
+		cell(base, muted, inner, it.note, false, false))
+
+	return first + "\n" + rest + "\n" + fill("")
+}

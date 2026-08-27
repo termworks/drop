@@ -27,6 +27,11 @@ type node struct {
 	name string
 	home string
 	port string
+	// profile makes this a second person under the same home, reached with $DROP_PROFILE. Its
+	// port is derived from the name, so it does not need one of its own.
+	profile string
+	// blind turns the local wire off, so finding a device has to go out to a relay and back.
+	blind bool
 }
 
 // binary is the drop under test, built once for the whole run.
@@ -60,7 +65,16 @@ func newNode(t *testing.T, name, port string) *node {
 }
 
 func (n *node) env() []string {
-	return append(os.Environ(),
+	if n.profile != "" {
+		return append(n.blindly(),
+			"DROP_PROFILE="+n.profile,
+			"XDG_CONFIG_HOME="+filepath.Join(n.home, "config"),
+			"XDG_DATA_HOME="+filepath.Join(n.home, "data"),
+			"DROP_OPENER=/bin/true",
+		)
+	}
+
+	return append(n.blindly(),
 		"DROP_NAME="+n.name,
 		"DROP_PORT="+n.port,
 		"XDG_CONFIG_HOME="+filepath.Join(n.home, "config"),
@@ -70,6 +84,15 @@ func (n *node) env() []string {
 	)
 }
 
+// blindly is the environment, with the ways of being found turned off when this node is meant to
+// be unfindable: the local wire, and publishing where it is. It can still find everybody else.
+func (n *node) blindly() []string {
+	if !n.blind {
+		return os.Environ()
+	}
+	return append(os.Environ(), "DROP_NO_MDNS=1", "DROP_NO_PUBLISH=1")
+}
+
 func (n *node) inbox() string { return filepath.Join(n.home, "inbox") }
 
 // serves writes this node's configuration.
@@ -77,6 +100,9 @@ func (n *node) serves(config string) {
 	n.t.Helper()
 
 	dir := filepath.Join(n.home, "config", "drop")
+	if n.profile != "" {
+		dir = filepath.Join(dir, "profiles", n.profile)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		n.t.Fatal(err)
 	}
@@ -188,10 +214,13 @@ func waitFor(t *testing.T, what string, within time.Duration, ready func() bool)
 }
 
 // pair links two nodes the way the documentation says to: one shows a ticket, the other takes it.
-func pair(t *testing.T, showing, taking *node) {
+func pair(t *testing.T, showing, taking *node) { pairing(t, showing, taking) }
+
+// pairing is the same, with whatever flags the far side should use.
+func pairing(t *testing.T, showing, taking *node, flags ...string) {
 	t.Helper()
 
-	_, said, stop := showing.background("pair", "--code", "e2e-test-code", "--wait", "3m")
+	_, said, stop := showing.background("peer", "pair", "--code", "e2e-test-code", "--wait", "3m")
 	defer stop()
 
 	var ticket string
@@ -200,7 +229,7 @@ func pair(t *testing.T, showing, taking *node) {
 		return ticket != ""
 	})
 
-	out := taking.must("pair", ticket)
+	out := taking.must(append([]string{"peer", "pair", ticket}, flags...)...)
 	if !strings.Contains(out, "reach the other") {
 		t.Fatalf("pairing did not finish:\n%s", out)
 	}
@@ -210,7 +239,7 @@ func pair(t *testing.T, showing, taking *node) {
 	})
 }
 
-// ticketIn finds the ticket in what `drop pair` printed.
+// ticketIn finds the ticket in what `drop peer pair` printed.
 func ticketIn(said string) string {
 	for _, line := range strings.Split(said, "\n") {
 		if _, rest, found := strings.Cut(line, "ticket:"); found {

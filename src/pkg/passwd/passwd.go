@@ -53,7 +53,10 @@ func Verify(hash, plain string) bool {
 		return false
 	}
 
-	sum := argon2.IDKey([]byte(plain), parsed.salt, parsed.time, parsed.memory, parsed.threads, uint32(len(parsed.sum)))
+	var sum []byte
+	spend(func() {
+		sum = argon2.IDKey([]byte(plain), parsed.salt, parsed.time, parsed.memory, parsed.threads, uint32(len(parsed.sum)))
+	})
 	return subtle.ConstantTimeCompare(sum, parsed.sum) == 1
 }
 

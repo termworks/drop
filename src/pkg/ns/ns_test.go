@@ -55,14 +55,20 @@ func TestCleanBoundsDepthAndLength(t *testing.T) {
 
 func TestParseAddress(t *testing.T) {
 	cases := []struct {
-		text string
-		peer string
-		path string
+		text    string
+		user    string
+		machine string
+		path    string
+		here    bool
 	}{
-		{"laptop", "laptop", Root},
-		{"laptop/inbox", "laptop", "/inbox"},
-		{"laptop/stream/of/one/specific/namespace", "laptop", "/stream/of/one/specific/namespace"},
-		{"12D3KooWCK6Vkp/chat", "12D3KooWCK6Vkp", "/chat"},
+		{"laptop", "", "laptop", Root, false},
+		{"laptop:/inbox", "", "laptop", "/inbox", false},
+		{"bob:laptop:/chat", "bob", "laptop", "/chat", false},
+		{"bob::/chat", "bob", "", "/chat", false},
+		{"laptop:/stream/of/one/specific/namespace", "", "laptop", "/stream/of/one/specific/namespace", false},
+		{"12D3KooWCK6Vkp:/chat", "", "12D3KooWCK6Vkp", "/chat", false},
+		{"/chat", "", "", "/chat", true},
+		{":/chat", "", "", "/chat", true},
 	}
 
 	for _, c := range cases {
@@ -71,12 +77,13 @@ func TestParseAddress(t *testing.T) {
 			t.Errorf("ParseAddress(%q): %v", c.text, err)
 			continue
 		}
-		if got.Peer != c.peer || got.Path != c.path {
-			t.Errorf("ParseAddress(%q) = %+v, want %s %s", c.text, got, c.peer, c.path)
+		if got.User != c.user || got.Machine != c.machine || got.Path != c.path || got.Here != c.here {
+			t.Errorf("ParseAddress(%q) = %+v, want %s %s %s here=%v", c.text, got, c.user, c.machine, c.path, c.here)
 		}
 	}
 
-	for _, bad := range []string{"", "   ", "/inbox"} {
+	// A slash where a name goes is the old form, and it is not this one.
+	for _, bad := range []string{"", "   ", "laptop/inbox", "bob:laptop:chat", "::"} {
 		if _, err := ParseAddress(bad); err == nil {
 			t.Errorf("ParseAddress(%q) succeeded, want an error", bad)
 		}
@@ -87,13 +94,13 @@ func TestParseAddress(t *testing.T) {
 // specific one still takes precedence.
 func TestLookupPrefersTheLongestPrefix(t *testing.T) {
 	table := NewTable()
-	mustAdd(t, table, Mount{Path: "/stream", Kind: KindStream, Command: "general"})
-	mustAdd(t, table, Mount{Path: "/stream/logs", Kind: KindStream, Command: "specific"})
+	mustAdd(t, table, Mount{Path: "/stream", Archetype: "stream", Config: "general"})
+	mustAdd(t, table, Mount{Path: "/stream/logs", Archetype: "stream", Config: "specific"})
 
 	cases := []struct {
-		ask     string
-		command string
-		rest    string
+		ask    string
+		served string
+		rest   string
 	}{
 		{"/stream", "general", "/"},
 		{"/stream/of/one/specific/namespace", "general", "/of/one/specific/namespace"},
@@ -107,8 +114,8 @@ func TestLookupPrefersTheLongestPrefix(t *testing.T) {
 			t.Errorf("Lookup(%q) found nothing", c.ask)
 			continue
 		}
-		if m.Command != c.command || rest != c.rest {
-			t.Errorf("Lookup(%q) = %s rest %q, want %s rest %q", c.ask, m.Command, rest, c.command, c.rest)
+		if m.Config != c.served || rest != c.rest {
+			t.Errorf("Lookup(%q) = %v rest %q, want %s rest %q", c.ask, m.Config, rest, c.served, c.rest)
 		}
 	}
 }
@@ -116,7 +123,7 @@ func TestLookupPrefersTheLongestPrefix(t *testing.T) {
 // Without a segment-boundary check, /stream would capture /streaming.
 func TestLookupDoesNotCaptureASimilarName(t *testing.T) {
 	table := NewTable()
-	mustAdd(t, table, Mount{Path: "/stream", Kind: KindStream, Command: "x"})
+	mustAdd(t, table, Mount{Path: "/stream", Archetype: "stream", Config: "x"})
 
 	if _, _, ok := table.Lookup("/streaming"); ok {
 		t.Fatal("/stream captured /streaming")
@@ -126,21 +133,21 @@ func TestLookupDoesNotCaptureASimilarName(t *testing.T) {
 // Re-declaring a path replaces it, so a config that is re-read cannot grow the table.
 func TestAddIsKeyedByPath(t *testing.T) {
 	table := NewTable()
-	mustAdd(t, table, Mount{Path: "/inbox", Kind: KindFiles, Dir: "/first"})
-	mustAdd(t, table, Mount{Path: "/inbox", Kind: KindFiles, Dir: "/second"})
+	mustAdd(t, table, Mount{Path: "/inbox", Archetype: "share", Config: "/first"})
+	mustAdd(t, table, Mount{Path: "/inbox", Archetype: "share", Config: "/second"})
 
 	if table.Len() != 1 {
 		t.Fatalf("Len() = %d, want 1", table.Len())
 	}
 	m, _, _ := table.Lookup("/inbox")
-	if m.Dir != "/second" {
-		t.Fatalf("Dir = %q, want the later declaration", m.Dir)
+	if m.Config != "/second" {
+		t.Fatalf("Config = %v, want the later declaration", m.Config)
 	}
 }
 
 func TestAddNormalisesThePath(t *testing.T) {
 	table := NewTable()
-	mustAdd(t, table, Mount{Path: "inbox/", Kind: KindFiles, Dir: "/x"})
+	mustAdd(t, table, Mount{Path: "inbox/", Archetype: "share", Config: "/x"})
 
 	if _, _, ok := table.Lookup("/inbox"); !ok {
 		t.Fatal("a mount declared as inbox/ is not found at /inbox")
@@ -156,27 +163,42 @@ func TestAddRefusesAnUntypedMount(t *testing.T) {
 
 func TestRootServesEverything(t *testing.T) {
 	table := NewTable()
-	mustAdd(t, table, Mount{Path: "/", Kind: KindFiles, Dir: "/x"})
+	mustAdd(t, table, Mount{Path: "/", Archetype: "share", Config: "/x"})
 
 	m, rest, ok := table.Lookup("/anything/at/all")
-	if !ok || m.Dir != "/x" || rest != "/anything/at/all" {
+	if !ok || m.Config != "/x" || rest != "/anything/at/all" {
 		t.Fatalf("Lookup() = %+v rest %q ok %v", m, rest, ok)
 	}
 }
 
-func TestParseKind(t *testing.T) {
-	for _, name := range []string{"files", "stream", "tty", "chat", "link"} {
-		kind, err := ParseKind(name)
-		if err != nil {
-			t.Errorf("ParseKind(%q): %v", name, err)
-			continue
-		}
-		if kind.String() != name {
-			t.Errorf("ParseKind(%q).String() = %q", name, kind.String())
-		}
+// A namespace knows which archetype it belongs to and nothing about what that means: whatever the
+// archetype made of the declaration is carried back untouched.
+func TestAMountCarriesItsConfigUnread(t *testing.T) {
+	type settings struct {
+		Dir      string
+		Writable bool
 	}
-	if _, err := ParseKind("nonsense"); err == nil {
-		t.Error("ParseKind() accepted a type that does not exist")
+
+	table := NewTable()
+	mustAdd(t, table, Mount{Path: "/work", Archetype: "files", Config: settings{Dir: "/x", Writable: true}})
+
+	m, _, ok := table.Lookup("/work")
+	if !ok {
+		t.Fatal("Lookup() found nothing")
+	}
+	if got, ok := m.Config.(settings); !ok || got.Dir != "/x" || !got.Writable {
+		t.Errorf("the config came back as %#v", m.Config)
+	}
+}
+
+// A mount with no archetype is a branch: it serves nothing and carries a rule for what is under it.
+func TestAMountWithNoTypeIsABranch(t *testing.T) {
+	table := NewTable()
+	mustAdd(t, table, Mount{Path: "/friends", Access: Access{AnyPaired: true}})
+
+	m, _, ok := table.Lookup("/friends")
+	if !ok || !m.Branch() {
+		t.Errorf("Lookup() = %+v, want a branch", m)
 	}
 }
 
@@ -184,5 +206,27 @@ func mustAdd(t *testing.T, table *Table, m Mount) {
 	t.Helper()
 	if err := table.Add(m); err != nil {
 		t.Fatalf("Add(%q): %v", m.Path, err)
+	}
+}
+
+// What an address prints as has to read back as the same address: it is what an error message
+// quotes back at somebody, and a form they cannot retype is worse than no form at all.
+func TestAnAddressReadsBackAsItself(t *testing.T) {
+	for _, text := range []string{
+		"bob:laptop:/chat", "laptop:/chat", "bob::/chat", "/chat",
+		"bob:laptop", "laptop", "orin:/work/deep",
+	} {
+		at, err := ParseAddress(text)
+		if err != nil {
+			t.Errorf("ParseAddress(%q): %v", text, err)
+			continue
+		}
+		if got := at.String(); got != text {
+			t.Errorf("ParseAddress(%q).String() = %q", text, got)
+		}
+		again, err := ParseAddress(at.String())
+		if err != nil || again != at {
+			t.Errorf("%q printed as %q, which reads back as %+v (%v)", text, at.String(), again, err)
+		}
 	}
 }

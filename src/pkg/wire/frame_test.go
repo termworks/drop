@@ -2,7 +2,10 @@ package wire
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"testing"
 )
 
@@ -76,3 +79,68 @@ type readWriter struct {
 	io.Reader
 	io.Writer
 }
+
+// A session ends by the stream ending. That is the one error a reader is allowed to call an
+// ordinary finish, and only where a frame was about to start.
+func TestClosedTellsAFinishFromAFault(t *testing.T) {
+	for _, at := range []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{io.EOF, true},
+		{fmt.Errorf("reading a request: %w", io.EOF), true},
+		{net.ErrClosed, true},
+		{fmt.Errorf("receiving: %w", net.ErrClosed), true},
+		{io.ErrUnexpectedEOF, false},
+		{errors.New("something else"), false},
+	} {
+		if got := Closed(at.err); got != at.want {
+			t.Errorf("Closed(%v) = %v, want %v", at.err, got, at.want)
+		}
+	}
+}
+
+// A stream that stops in the middle of a frame header did not finish, whatever the reader under it
+// calls that.
+func TestAHalfReadHeaderIsNotAFinish(t *testing.T) {
+	empty := NewConn(readWriter{bytes.NewReader(nil), io.Discard})
+	if _, _, err := empty.ReadHeader(); !Closed(err) {
+		t.Errorf("a stream that ended between frames came back as %v", err)
+	}
+
+	half := NewConn(readWriter{bytes.NewReader([]byte{KindData}), io.Discard})
+	if _, _, err := half.ReadHeader(); Closed(err) {
+		t.Errorf("a stream that ended inside a frame came back as a finish: %v", err)
+	}
+}
+
+// A frame nobody can read is not worth sending.
+//
+// Every reader refuses a body over the limit at the header, which ends the session — so a writer
+// that puts one on the wire has told whoever wrote it nothing about which frame was too big, and
+// has broken a connection that was working.
+func TestAFrameOverTheLimitIsNotWritten(t *testing.T) {
+	var out bytes.Buffer
+	c := NewConn(&both{r: bytes.NewReader(nil), w: &out})
+
+	if err := c.WriteFrame(KindItem, make([]byte, MaxFrame+1)); err == nil {
+		t.Fatal("a frame over the limit was written")
+	}
+	if out.Len() != 0 {
+		t.Fatalf("%d bytes went out for a frame that was refused", out.Len())
+	}
+
+	if err := c.WriteFrame(KindItem, make([]byte, MaxFrame)); err != nil {
+		t.Fatalf("a frame of exactly the limit was refused: %v", err)
+	}
+}
+
+// both is a stream that reads from one place and writes to another.
+type both struct {
+	r io.Reader
+	w io.Writer
+}
+
+func (b *both) Read(p []byte) (int, error)  { return b.r.Read(p) }
+func (b *both) Write(p []byte) (int, error) { return b.w.Write(p) }

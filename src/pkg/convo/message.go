@@ -137,8 +137,19 @@ func (m Message) Encode() []byte {
 // MaxBody caps a single message. Anything larger is a file, and files have their own channel.
 const MaxBody = 1 << 20
 
+// MaxPacked caps a whole encoded message: the id, the kind, the body, the extra and the clock.
+//
+// One bound over all of it, and the same bound everywhere a message is read, so that anything
+// accepted from a peer is something the log can hand back. A per-field cap does not do that: a body
+// just under MaxBody with a full extra beside it packs larger than any single field allows.
+const MaxPacked = MaxBody + 4096
+
 func Decode(body []byte) (Message, error) {
 	var out Message
+
+	if len(body) > MaxPacked {
+		return out, fmt.Errorf("reading a message: %d bytes, over the %d limit", len(body), MaxPacked)
+	}
 
 	r := wire.NewReader(body)
 	id, err := r.String(256)

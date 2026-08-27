@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -18,7 +19,6 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/node"
-	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 )
 
@@ -41,16 +41,48 @@ type fake struct {
 	offered   bool
 	took      string
 	arriving  chan struct{}
+	queued    map[string]bool
+	mine      []proto.Served
+	slow      bool
 	sentFiles []string
 	posted    []string
 	refuse    error
 	paired    chan string
 	stream    string
+	self      Identity
+	rules     map[string]Rule
+	// remembered is what a device said last time, handed back when it cannot be reached.
+	remembered   map[string][]proto.Served
+	refuseServes error
+	reaching     map[string]bool
+	holding      map[string][]Held
+	listed       []string
+	fetched      []string
+	uploaded     []string
+	removedIt    []string
+	refuseWalk   error
+	knocked      []Knock
+	askedFor     []string
+	manages      map[string]Managed
+	forgot       []string
+	spoke        *saidTo
 }
 
 func (f *fake) Peers() ([]book.Entry, error) { return f.peers, nil }
 
 func (f *fake) Serves(ctx context.Context, with book.Entry) ([]proto.Served, error) {
+	f.mu.Lock()
+	slow := f.slow
+	f.mu.Unlock()
+
+	if slow {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	if f.refuseServes != nil {
+		return f.remembered[with.Name], f.refuseServes
+	}
 	return f.serves[with.Name], nil
 }
 
@@ -61,27 +93,84 @@ func (f *fake) History(with book.Entry) ([]convo.Message, error) {
 	return append([]convo.Message(nil), f.log...), nil
 }
 
-func (f *fake) Say(ctx context.Context, to book.Entry, body string) error {
+func (f *fake) Mine() ([]proto.Served, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.mine, nil
+}
+
+func (f *fake) Compose(to book.Entry, body string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.said = append(f.said, body)
+	f.log = append(f.log, convo.Message{Kind: convo.KindText, Body: body, Dir: convo.Out, At: 1})
 	return nil
 }
 
-func (f *fake) Watch(ctx context.Context, on book.Entry, path string, into io.Writer, resize func(int, int)) error {
+func (f *fake) Deliver(ctx context.Context, to book.Entry) error {
 	f.mu.Lock()
-	f.watched = path
+	defer f.mu.Unlock()
+
+	return f.refuse
+}
+
+func (f *fake) Waiting(with book.Entry) (map[string]bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.queued, nil
+}
+
+func (f *fake) Watch(ctx context.Context, w Watching) error {
+	f.mu.Lock()
+	f.watched = w.Path
 	stream := f.stream
+	talk := &saidTo{}
+	f.spoke = talk
 	f.mu.Unlock()
 
+	if w.Ready != nil {
+		w.Ready(talk)
+	}
 	if stream != "" {
-		if _, err := io.WriteString(into, stream); err != nil {
+		if _, err := io.WriteString(w.Into, stream); err != nil {
 			return err
 		}
 	}
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+// saidTo records what the interface said to a live path.
+type saidTo struct {
+	mu    sync.Mutex
+	sized [][2]int
+	typed []byte
+}
+
+func (s *saidTo) Resize(cols, rows int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.sized = append(s.sized, [2]int{cols, rows})
+	return nil
+}
+
+func (s *saidTo) Type(p []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.typed = append(s.typed, p...)
+	return nil
+}
+
+func (s *saidTo) shape() ([][2]int, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([][2]int(nil), s.sized...), string(s.typed)
 }
 
 func withOne() *fake {
@@ -91,10 +180,10 @@ func withOne() *fake {
 		},
 		serves: map[string][]proto.Served{
 			"beta": {
-				{Path: "/friends/chat", Kind: ns.KindChat},
-				{Path: "/inbox", Kind: ns.KindFiles},
-				{Path: "/open", Kind: ns.KindLink},
-				{Path: "/term", Kind: ns.KindTTY},
+				{Path: "/friends/chat", Archetype: "chat"},
+				{Path: "/inbox", Archetype: "share"},
+				{Path: "/open", Archetype: "link"},
+				{Path: "/term", Archetype: "tty"},
 			},
 		},
 	}
@@ -212,7 +301,12 @@ func start(t *testing.T, back Backend) Model {
 	return settleFrom(t, m, m.Init(), tea.WindowSizeMsg{Width: 120, Height: 30})
 }
 
-func (f *fake) Self() (Identity, error) { return Identity{Name: "alpha", ID: "e88c42df318c…"}, nil }
+func (f *fake) Self() (Identity, error) {
+	if f.self.Name != "" {
+		return f.self, nil
+	}
+	return Identity{Name: "alpha", ID: "e88c42df318c…"}, nil
+}
 
 // A pane is narrow and a path is not. Wrapping would break the column, so the head gives way and
 // the tail — which is what tells two paths apart — is kept.
@@ -235,7 +329,7 @@ func back(t *testing.T, m Model) Model {
 func TestItStartsOnTheDeviceList(t *testing.T) {
 	m := start(t, withOne())
 
-	if m.at != levelDevices {
+	if m.at != levelUsers {
 		t.Fatalf("started at level %d", m.at)
 	}
 	if len(m.peers) != 1 {
@@ -251,7 +345,7 @@ func TestItStartsOnTheDeviceList(t *testing.T) {
 }
 
 func TestEnteringADeviceAsksWhatItShares(t *testing.T) {
-	m := enter(t, start(t, withOne()))
+	m := intoPeer(t, start(t, withOne()), 0)
 
 	if m.at != levelPaths {
 		t.Fatalf("at level %d after entering", m.at)
@@ -262,7 +356,7 @@ func TestEnteringADeviceAsksWhatItShares(t *testing.T) {
 }
 
 func TestEnteringAPathOpensIt(t *testing.T) {
-	m := enter(t, enter(t, start(t, withOne())))
+	m := openPath(t, withOne(), "/friends/chat")
 
 	if m.at != levelOpen {
 		t.Fatalf("at level %d", m.at)
@@ -274,19 +368,30 @@ func TestEnteringAPathOpensIt(t *testing.T) {
 
 // Going back has to undo the level, not the program.
 func TestGoingBackWalksOutOneLevelAtATime(t *testing.T) {
-	m := enter(t, enter(t, start(t, withOne())))
+	m := openPath(t, withOne(), "/friends/chat")
 
 	m = back(t, m)
 	if m.at != levelPaths {
 		t.Fatalf("back from a path left level %d", m.at)
 	}
 
+	// The folder it was in is a level of its own.
 	m = back(t, m)
-	if m.at != levelDevices {
+	if m.at != levelPaths || m.under != "/" {
+		t.Fatalf("back from a folder left level %d under %q", m.at, m.under)
+	}
+
+	m = back(t, m)
+	if m.at != levelMachines {
 		t.Fatalf("back from a device left level %d", m.at)
 	}
 	if len(m.paths) != 0 {
 		t.Fatal("leaving a device kept its paths")
+	}
+
+	m = back(t, m)
+	if m.at != levelUsers {
+		t.Fatalf("back from a user left level %d", m.at)
 	}
 }
 
@@ -309,7 +414,7 @@ func TestAWatchLastsAsLongAsThePathIsOpen(t *testing.T) {
 
 func TestWritingAMessageSendsIt(t *testing.T) {
 	back := withOne()
-	m := enter(t, enter(t, start(t, back)))
+	m := openPath(t, back, "/friends/chat")
 
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
 	if !m.writing {
@@ -330,7 +435,7 @@ func TestWritingAMessageSendsIt(t *testing.T) {
 
 // While composing, q is a letter and not a way out.
 func TestQIsALetterWhileWriting(t *testing.T) {
-	m := enter(t, enter(t, start(t, withOne())))
+	m := openPath(t, withOne(), "/friends/chat")
 
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
@@ -340,18 +445,37 @@ func TestQIsALetterWhileWriting(t *testing.T) {
 	}
 }
 
-// q leaves the level rather than the program, until there is nowhere left to go.
+// q leaves the level rather than the program, until there is nowhere left to go. A folder is a
+// level like any other: walking three deep and being thrown out of the device is not what going
+// back means anywhere else.
 func TestQClimbsOutBeforeItQuits(t *testing.T) {
-	m := enter(t, enter(t, start(t, withOne())))
+	m := openPath(t, withOne(), "/friends/chat")
 
+	if m.under != "/friends" {
+		t.Fatalf("opening /friends/chat left the list at %q", m.under)
+	}
+
+	// Out of the conversation, into the folder it was in.
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	if m.at != levelPaths {
-		t.Fatalf("q at a path left level %d", m.at)
+	if m.at != levelPaths || m.under != "/friends" {
+		t.Fatalf("q at a path left level %d under %q", m.at, m.under)
+	}
+
+	// Out of the folder, to the top of what the device shares.
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if m.at != levelPaths || m.under != "/" {
+		t.Fatalf("q in a folder left level %d under %q", m.at, m.under)
+	}
+
+	// And out of the device, then out of the user.
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if m.at != levelMachines {
+		t.Fatalf("q at the top of a device left level %d", m.at)
 	}
 
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	if m.at != levelDevices {
-		t.Fatalf("q at a device left level %d", m.at)
+	if m.at != levelUsers {
+		t.Fatalf("q at the top of a user left level %d", m.at)
 	}
 }
 
@@ -435,7 +559,7 @@ func (f *fake) Send(ctx context.Context, to book.Entry, path string, files []str
 	return nil
 }
 
-func (f *fake) Post(ctx context.Context, to book.Entry, path string, kind byte, body string) error {
+func (f *fake) Post(ctx context.Context, to book.Entry, path, archetype string, kind byte, body string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -495,7 +619,7 @@ func TestPairingCanBeStartedFromTheInterface(t *testing.T) {
 	if m.linking == nil {
 		t.Fatal("p did not start a pairing")
 	}
-	if !strings.Contains(m.View(), "drop pair") {
+	if !strings.Contains(m.View(), "drop peer pair") {
 		t.Fatalf("the pairing screen does not show the ticket:\n%s", m.View())
 	}
 }
@@ -664,31 +788,41 @@ func TestTabCompletesAPath(t *testing.T) {
 	}
 }
 
-// openPath walks the interface to a path on the one paired device, the way a person would.
-// openPath walks the interface to a path on the one paired device, the way a person would.
-func openPath(t *testing.T, back *fake, path string) Model {
+// openPath walks the interface to a path on the one paired device, the way a person would: into
+// each folder along the way, then into the namespace itself.
+func openPath(t *testing.T, back *fake, want string) Model {
 	t.Helper()
 
-	m := settle(t, start(t, back), tea.KeyMsg{Type: tea.KeyEnter})
+	m := intoPeer(t, start(t, back), 0)
 	if m.at != levelPaths {
 		t.Fatalf("did not reach the path list, at %v", m.at)
 	}
 
 	for range 8 {
-		// Opened, not merely highlighted: the highlight is where the cursor is, and a test that
-		// stopped there would be checking a list rather than a screen.
-		if at, ok := m.path(); ok && m.at == levelOpen && at.Path == path {
+		if at, ok := m.path(); ok && m.at == levelOpen && at.Path == want {
 			return m
 		}
-
-		if m.at == levelOpen {
-			m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-			m = settle(t, m, tea.KeyMsg{Type: tea.KeyDown})
+		if m.at != levelPaths {
+			t.Fatalf("ended up at level %v looking for %s", m.at, want)
 		}
+
+		// The step that leads towards it: the one it is at, or the folder it is under.
+		found := -1
+		for i, step := range m.steps {
+			if step.at == want || within(folder(step.at), want) {
+				found = i
+				break
+			}
+		}
+		if found < 0 {
+			t.Fatalf("nothing on the way to %s in %+v", want, m.steps)
+		}
+
+		m.list.Select(found)
 		m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	}
 
-	t.Fatalf("never opened %s", path)
+	t.Fatalf("never opened %s", want)
 	return m
 }
 
@@ -749,5 +883,1164 @@ func TestWaitingEndsWhenTheNodeDoes(t *testing.T) {
 
 	if msg := listenFor(knocks)(); msg != nil {
 		t.Fatalf("a closed channel produced %T", msg)
+	}
+}
+
+// Entering a device must show what it said last time rather than emptying the list while it is
+// asked again. A list that blanks for the length of a round trip reads as the screen losing its
+// place, not as waiting.
+func TestEnteringADeviceTwiceKeepsWhatItShares(t *testing.T) {
+	back := withOne()
+	m := intoPeer(t, start(t, back), 0)
+
+	if len(m.paths) == 0 {
+		t.Fatal("entering a device the first time showed nothing")
+	}
+	before := m.View()
+
+	// Back out, and in again. The far end is now slow to answer.
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+
+	back.mu.Lock()
+	back.slow = true
+	back.mu.Unlock()
+
+	// Entered, before any answer has had a chance to arrive.
+	shown, _ := m.enter()
+	m = shown.(Model)
+
+	if len(m.paths) == 0 {
+		t.Fatalf("entering a device again emptied what it shares:\n%s", m.View())
+	}
+	if m.loading {
+		t.Error("it says it is asking when it already has something to show")
+	}
+	if now := m.View(); now != before {
+		t.Errorf("what is shown changed while asking again:\nwas:\n%s\nnow:\n%s", before, now)
+	}
+}
+
+// A device that fails to answer keeps whatever it said before, because that is still the best
+// guess at what it shares.
+func TestAFailedRefreshKeepsTheLastAnswer(t *testing.T) {
+	back := withOne()
+	m := intoPeer(t, start(t, back), 0)
+
+	had := len(m.paths)
+	if had == 0 {
+		t.Fatal("nothing was listed to begin with")
+	}
+
+	m = settle(t, m, pathsLoaded{peer: "beta", err: errors.New("the network went away")})
+
+	if len(m.paths) != had {
+		t.Errorf("a failed refresh emptied the list: %d paths, was %d", len(m.paths), had)
+	}
+	if !strings.Contains(m.View(), "went away") {
+		t.Errorf("the failure was not reported:\n%s", m.View())
+	}
+}
+
+// A message to a device that is switched off is written down and goes out later. It has to appear
+// straight away all the same: a conversation that hides what you just said until the far end wakes
+// up looks like it lost it.
+func TestAMessageThatCouldNotBeDeliveredStillShows(t *testing.T) {
+	back := withOne()
+	m := openPath(t, back, "/friends/chat")
+
+	back.mu.Lock()
+	back.refuse = errors.New("nobody answered")
+	back.log = append(back.log, convo.Message{Kind: convo.KindText, Body: "said into the void", At: 1, Dir: convo.Out})
+	back.mu.Unlock()
+
+	m = settle(t, m, delivered{err: errors.New("nobody answered")})
+
+	if !strings.Contains(m.View(), "said into the void") {
+		t.Errorf("an undelivered message is not on screen:\n%s", m.View())
+	}
+	if !strings.Contains(m.View(), "still on its way") {
+		t.Errorf("it does not say the message is still waiting:\n%s", m.View())
+	}
+}
+
+// What somebody types appears at the speed of a disk write, not at the speed of the far end's
+// network. Waiting for delivery to draw it is what makes a chat feel broken on a slow link.
+func TestAMessageIsShownBeforeItIsSent(t *testing.T) {
+	back := withOne()
+	m := openPath(t, back, "/friends/chat")
+
+	// Delivery never finishes while this runs.
+	back.mu.Lock()
+	back.slow = true
+	back.mu.Unlock()
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	for _, r := range "typed and shown" {
+		m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if !strings.Contains(m.View(), "typed and shown") {
+		t.Fatalf("what was typed is not on screen until it is delivered:\n%s", m.View())
+	}
+}
+
+// A message still in the outbox is marked as such, so a slow link looks slow rather than silent.
+func TestAWaitingMessageIsMarked(t *testing.T) {
+	back := withOne()
+
+	back.mu.Lock()
+	back.log = []convo.Message{{ID: "abc", Kind: convo.KindText, Body: "on its way", Dir: convo.Out, At: 1}}
+	back.queued = map[string]bool{"abc": true}
+	back.mu.Unlock()
+
+	m := openPath(t, back, "/friends/chat")
+	if !strings.Contains(m.View(), "◐") {
+		t.Errorf("a queued message is not marked as waiting:\n%s", m.View())
+	}
+
+	back.mu.Lock()
+	back.queued = nil
+	back.mu.Unlock()
+
+	if m = settle(t, m, arrived{}); !strings.Contains(m.View(), "✓") {
+		t.Errorf("a delivered message is not marked as delivered:\n%s", m.View())
+	}
+}
+
+// A long conversation has to be readable back through, and what is on screen has to change when it
+// is scrolled. Nothing else here is worth calling scrolling.
+func TestAConversationScrollsBack(t *testing.T) {
+	back := withOne()
+
+	var many []convo.Message
+	for i := range 40 {
+		many = append(many, convo.Message{
+			ID:   fmt.Sprint(i),
+			Kind: convo.KindText,
+			Body: fmt.Sprintf("message number %d", i),
+			At:   int64(i),
+		})
+	}
+
+	back.mu.Lock()
+	back.log = many
+	back.mu.Unlock()
+
+	m := openPath(t, back, "/friends/chat")
+
+	// The newest is on screen, the oldest is not.
+	if !strings.Contains(m.View(), "message number 39") {
+		t.Fatalf("the newest message is not on screen:\n%s", m.View())
+	}
+	if strings.Contains(m.View(), "message number 0\n") {
+		t.Fatal("the whole conversation is on screen, so there is nothing to scroll")
+	}
+
+	// Wheel up, far enough to leave the bottom behind.
+	for range 20 {
+		m = m.scrollBy(3)
+	}
+
+	if strings.Contains(m.View(), "message number 39") {
+		t.Errorf("scrolling back did not move the window:\n%s", m.View())
+	}
+	if !strings.Contains(m.View(), "more line(s) above") {
+		t.Errorf("it does not say there is more above:\n%s", m.View())
+	}
+
+	// And back down to the newest.
+	m = m.scrollBy(-len(m.chatLines()))
+	if !strings.Contains(m.View(), "message number 39") {
+		t.Errorf("scrolling forward did not return to the newest:\n%s", m.View())
+	}
+}
+
+// Scrolling stops at the ends rather than running off into blank screens.
+func TestScrollingStopsAtBothEnds(t *testing.T) {
+	back := withOne()
+
+	back.mu.Lock()
+	back.log = []convo.Message{{ID: "1", Kind: convo.KindText, Body: "the only thing said", At: 1}}
+	back.mu.Unlock()
+
+	m := openPath(t, back, "/friends/chat")
+
+	if m = m.scrollBy(500); m.scroll != 0 {
+		t.Errorf("scrolled %d past a conversation that fits on one screen", m.scroll)
+	}
+	if m = m.scrollBy(-500); m.scroll != 0 {
+		t.Errorf("scrolled to %d, want the newest", m.scroll)
+	}
+	if !strings.Contains(m.View(), "the only thing said") {
+		t.Errorf("scrolling lost the conversation:\n%s", m.View())
+	}
+}
+
+// Reading back through a conversation while it is still going must not be dragged along by it.
+// The window counts from the newest, so an arriving message moves the ground under the reader.
+func TestArrivingMessagesDoNotDragTheReader(t *testing.T) {
+	back := withOne()
+
+	var many []convo.Message
+	for i := range 40 {
+		many = append(many, convo.Message{ID: fmt.Sprint(i), Kind: convo.KindText, Body: fmt.Sprintf("message number %d", i), At: int64(i)})
+	}
+
+	back.mu.Lock()
+	back.log = many
+	back.mu.Unlock()
+
+	m := openPath(t, back, "/friends/chat")
+	for range 10 {
+		m = m.scrollBy(3)
+	}
+
+	reading := m.View()
+
+	// The far end says something more while it is being read.
+	back.mu.Lock()
+	back.log = append(back.log, convo.Message{ID: "new", Kind: convo.KindText, Body: "said while reading", At: 99})
+	back.mu.Unlock()
+
+	if m = settle(t, m, arrived{}); m.View() != reading {
+		t.Errorf("an arriving message moved what was being read:\nwas:\n%s\nnow:\n%s", reading, m.View())
+	}
+}
+
+// What this device shares is the one thing you cannot see from anywhere else, and a list of every
+// device except your own is a strange list to be handed.
+func TestThisDeviceIsInTheList(t *testing.T) {
+	back := withOne()
+
+	back.mu.Lock()
+	back.mine = []proto.Served{{Path: "/inbox", Archetype: "share"}, {Path: "/chat", Archetype: "chat"}}
+	back.mu.Unlock()
+
+	m := start(t, back)
+
+	// Your own user is first, and this machine is inside it.
+	if !strings.Contains(m.View(), Me) {
+		t.Fatalf("your own user is not on the first screen:\n%s", m.View())
+	}
+
+	m = intoUser(t, m, Me)
+	if !strings.Contains(m.View(), "this device") {
+		t.Fatalf("this device is not among your machines:\n%s", m.View())
+	}
+
+	m.list.Select(0)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if !m.onSelf {
+		t.Fatal("entering the first row did not open this device")
+	}
+	for _, want := range []string{"inbox", "chat"} {
+		if !strings.Contains(m.View(), want) {
+			t.Errorf("what this device serves does not include %s:\n%s", want, m.View())
+		}
+	}
+}
+
+// And a peer is still a peer: entering the second row opens the device it names, not this one.
+func TestAPeerIsStillEnteredByName(t *testing.T) {
+	back := withOne()
+	m := start(t, back)
+
+	m = intoPeer(t, m, 0)
+
+	if m.onSelf {
+		t.Fatal("entering a peer opened this device instead")
+	}
+	if with, ok := m.peer(); !ok || with.Name != "beta" {
+		t.Fatalf("entered %+v, want beta", with)
+	}
+}
+
+// Walking into a path that is also a namespace has to leave a way to open it. Otherwise declaring
+// anything underneath a path silently takes the path itself away.
+func TestAPathThatIsAlsoAFolderCanBeOpened(t *testing.T) {
+	back := withOne()
+
+	back.mu.Lock()
+	back.serves["beta"] = []proto.Served{
+		{Path: "/one/two", Archetype: "chat"},
+		{Path: "/one/two/three", Archetype: "chat"},
+	}
+	back.mu.Unlock()
+
+	m := openPath(t, back, "/one/two")
+
+	if m.at != levelOpen {
+		t.Fatalf("never opened it, at level %d under %q", m.at, m.under)
+	}
+	if at, _ := m.path(); at.Path != "/one/two" {
+		t.Fatalf("opened %q", at.Path)
+	}
+}
+
+// The first screen holds one kind of thing: users. Machines are inside them, and a machine that
+// belongs to nobody is under a user called anon rather than in a group of its own.
+func TestTheFirstScreenHoldsOnlyUsers(t *testing.T) {
+	m := start(t, withOne())
+
+	for _, item := range m.rows.items {
+		if _, ok := item.(deviceItem); ok {
+			t.Errorf("a machine is on the users screen: %+v", item)
+		}
+	}
+
+	// Entering a user goes in rather than opening anything.
+	m = intoUser(t, m, Anon)
+	if m.at != levelMachines {
+		t.Errorf("entering a user went to level %d", m.at)
+	}
+}
+
+// With nobody paired there is nobody to label, so the rest of the dividers stay away.
+func TestTheSecondDividerNeedsSomebodyToPointAt(t *testing.T) {
+	m := start(t, &fake{})
+
+	for _, gone := range []string{"PEOPLE", "MACHINES"} {
+		if strings.Contains(m.View(), gone) {
+			t.Errorf("a %q divider for nobody:\n%s", gone, m.View())
+		}
+	}
+}
+
+// The list holds three different kinds of thing, and says which is which: your own machines, other
+// people's, and the machines that are nobody's.
+func TestTheFirstScreenIsUsersNotMachines(t *testing.T) {
+	back := &fake{
+		self: Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
+		peers: []book.Entry{
+			{Name: "laptop", ID: idFor(2), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 MINE", Person: "me"},
+			{Name: "bob-desk", ID: idFor(3), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"},
+			{Name: "bob-phone", ID: idFor(4), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"},
+			{Name: "buildbox", ID: idFor(5), Secret: make([]byte, book.SecretBytes)},
+		},
+	}
+
+	m := start(t, back)
+
+	// You first, then people by name, then the machines that belong to nobody.
+	var users []string
+	for _, item := range m.rows.items {
+		if it, ok := item.(userItem); ok {
+			users = append(users, it.name)
+		}
+	}
+	if got, want := strings.Join(users, " "), "me bob anon"; got != want {
+		t.Errorf("the users screen reads %q, wanted %q", got, want)
+	}
+
+	// You are a user with machines in it, exactly as bob is: this machine plus the one paired.
+	for who, want := range map[string]int{Me: 2, "bob": 2, Anon: 1} {
+		at, ok := m.rows.row[who]
+		if !ok {
+			t.Fatalf("no user %q", who)
+		}
+		if got := m.rows.items[at].(userItem).of; got != want {
+			t.Errorf("%s has %d machines, wanted %d", who, got, want)
+		}
+	}
+
+	// Entering a user shows the machines, and each still leads back to its entry.
+	m = intoUser(t, m, "bob")
+	if m.at != levelMachines {
+		t.Fatalf("entering a user went to level %d", m.at)
+	}
+	if len(m.list.Items()) != 2 {
+		t.Fatalf("bob has %d machines on screen", len(m.list.Items()))
+	}
+	for _, peer := range []int{1, 2} {
+		if got := m.peerFor(m.rowFor(peer)); got != peer {
+			t.Errorf("peer %d reads back as %d", peer, got)
+		}
+	}
+}
+
+// A machine paired on its own belongs to nobody, and nobody is a user called anon. It is not a
+// third kind of row on the first screen.
+func TestAMachineWithNoPersonLivesUnderAnon(t *testing.T) {
+	back := &fake{
+		self:  Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
+		peers: []book.Entry{{Name: "buildbox", ID: idFor(5), Secret: make([]byte, book.SecretBytes)}},
+	}
+
+	m := start(t, back)
+	m = intoUser(t, m, Anon)
+
+	if len(m.list.Items()) != 1 {
+		t.Fatalf("anon holds %d machines", len(m.list.Items()))
+	}
+	if it, ok := m.list.Items()[0].(deviceItem); !ok || it.entry.Name != "buildbox" {
+		t.Errorf("anon holds %+v", m.list.Items()[0])
+	}
+}
+
+// Your own user holds this machine as well as the ones you paired, or it is not the same kind of
+// thing as everybody else's.
+func TestYourOwnUserHoldsThisMachineToo(t *testing.T) {
+	back := &fake{
+		self:  Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
+		peers: []book.Entry{{Name: "laptop", ID: idFor(2), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 MINE", Person: "me"}},
+	}
+
+	m := start(t, back)
+	m = intoUser(t, m, Me)
+
+	var names []string
+	for _, item := range m.list.Items() {
+		if it, ok := item.(deviceItem); ok {
+			names = append(names, it.entry.Name)
+		}
+	}
+	if got, want := strings.Join(names, " "), "tron laptop"; got != want {
+		t.Errorf("your machines read %q, wanted %q", got, want)
+	}
+}
+
+// Going back comes out one level at a time: a machine, then the user, then the users screen.
+func TestBackComesOutOneLevelAtATime(t *testing.T) {
+	back := &fake{
+		self:  Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
+		peers: []book.Entry{{Name: "bob", ID: idFor(3), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"}},
+		serves: map[string][]proto.Served{
+			"bob": {{Path: "/chat", Archetype: "chat"}},
+		},
+	}
+
+	m := start(t, back)
+	m = intoPeer(t, m, 0)
+	if m.at != levelPaths {
+		t.Fatalf("opening a machine went to level %d", m.at)
+	}
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.at != levelMachines || m.atUser != "bob" {
+		t.Fatalf("back went to level %d, user %q", m.at, m.atUser)
+	}
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.at != levelUsers {
+		t.Fatalf("back again went to level %d", m.at)
+	}
+}
+
+func (f *fake) Access(path string) (Rule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	rule := f.rules[path]
+	rule.Path = path
+	return rule, nil
+}
+
+func (f *fake) Grant(path, who string) error  { return f.stand(path, who, Allowed) }
+func (f *fake) Refuse(path, who string) error { return f.stand(path, who, Refused) }
+func (f *fake) Unset(path, who string) error  { return f.stand(path, who, NotNamed) }
+
+// stand is the fake's whole grant store: it moves one name to one standing.
+func (f *fake) stand(path, who string, to Standing) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.rules == nil {
+		f.rules = map[string]Rule{}
+	}
+
+	rule := f.rules[path]
+	rule.Path = path
+	for i := range rule.Who {
+		if rule.Who[i].Name == who {
+			rule.Who[i].At = to
+			f.rules[path] = rule
+			return nil
+		}
+	}
+	rule.Who = append(rule.Who, Who{Name: who, At: to})
+	f.rules[path] = rule
+	return nil
+}
+
+// Who may reach one of your own paths is a thing you look at and change from here, because the
+// alternative is editing a config by hand every time somebody gets a new laptop.
+func TestWhoMayReachAPathIsShownAndChanged(t *testing.T) {
+	back := &fake{
+		self:  Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
+		peers: []book.Entry{{Name: "beta", ID: idFor(2), Secret: make([]byte, book.SecretBytes)}},
+		mine:  []proto.Served{{Path: "/work", Archetype: "chat"}},
+		rules: map[string]Rule{
+			"/work": {Who: []Who{
+				{Name: "bob", Person: true, Machines: 2},
+				{Name: "carol", Person: true, Machines: 1, At: Allowed, InConfig: true},
+			}},
+		},
+	}
+
+	m := start(t, back)
+
+	// Into this machine's own paths, then onto /work.
+	m = intoSelf(t, m)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+
+	if m.at != levelAccess {
+		t.Fatalf("w did not open the access list, at level %d", m.at)
+	}
+	shown := m.View()
+	for _, want := range []string{"who may reach it", "bob", "carol", "ANYONE"} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("the access list is missing %q:\n%s", want, shown)
+		}
+	}
+
+	// Allowing bob, from the list.
+	onto(t, &m, "bob")
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+
+	if got := standingFor(m, "bob"); got != Allowed {
+		t.Errorf("bob stands at %d after being allowed", got)
+	}
+
+	// And refusing him again, which is what revocation is from here.
+	onto(t, &m, "bob")
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+
+	if got := standingFor(m, "bob"); got != Refused {
+		t.Errorf("bob stands at %d after being refused", got)
+	}
+}
+
+// The rules that name nobody are shown but not toggled: making a path public is a decision that
+// belongs in the config, where it can be read back, rather than behind one keystroke.
+func TestThePublicRungIsNotAKeystroke(t *testing.T) {
+	back := &fake{
+		mine:  []proto.Served{{Path: "/work", Archetype: "chat"}},
+		rules: map[string]Rule{"/work": {}},
+	}
+
+	m := start(t, back)
+	m = intoSelf(t, m)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+
+	onto(t, &m, "anyone with the id")
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+
+	if rule, _ := back.Access("/work"); rule.Anyone {
+		t.Error("a keystroke made a path public")
+	}
+}
+
+// onto puts the cursor on the access row for one name.
+func onto(t *testing.T, m *Model, name string) {
+	t.Helper()
+
+	for i, item := range m.list.Items() {
+		if it, ok := item.(accessItem); ok && it.who.Name == name {
+			m.list.Select(i)
+			return
+		}
+	}
+	t.Fatalf("no row for %q in:\n%s", name, m.View())
+}
+
+// standingFor is how somebody stands, as the list has it.
+func standingFor(m Model, name string) Standing {
+	for _, who := range m.rule.Who {
+		if who.Name == name {
+			return who.At
+		}
+	}
+	return NotNamed
+}
+
+// A device that is off still has a conversation sitting on this disk, and the way in to it is the
+// list of paths — which comes from the device. What it last shared is what makes that reachable.
+func TestADeviceThatIsOffStillOpens(t *testing.T) {
+	back := withOne()
+	back.refuseServes = errors.New("could not reach beta")
+	back.remembered = map[string][]proto.Served{
+		"beta": {{Path: "/chat", Archetype: "chat"}},
+	}
+
+	m := start(t, back)
+	m = intoPeer(t, m, 0)
+
+	if m.at != levelPaths {
+		t.Fatalf("entering an unreachable device went to level %d", m.at)
+	}
+	if len(m.paths) != 1 || m.paths[0].Path != "/chat" {
+		t.Fatalf("nothing to enter: %+v", m.paths)
+	}
+
+	// And it says the list is from memory rather than from the device, because a stale list shown
+	// as current is a lie about what is there now.
+	if !strings.Contains(m.View(), "last shared") {
+		t.Errorf("the list does not say it is from memory:\n%s", m.View())
+	}
+}
+
+func (f *fake) Reaching() map[string]bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.reaching
+}
+
+// The daemon holds a connection to every device it has reached, so it knows who is answering. The
+// list is worth nothing if it does not say.
+func TestTheListSaysWhoIsReachable(t *testing.T) {
+	back := withOne()
+	back.reaching = map[string]bool{"beta": true}
+
+	// On the users screen it is a count, because a user has more than one machine.
+	if shown := start(t, back).View(); !strings.Contains(shown, "1 reachable") {
+		t.Errorf("the users screen does not say anybody is reachable:\n%s", shown)
+	}
+
+	// And inside, the machine itself says so.
+	m := intoUser(t, start(t, back), Anon)
+	if !strings.Contains(m.View(), "reachable") {
+		t.Errorf("the machine does not say it is reachable:\n%s", m.View())
+	}
+
+	back.reaching = nil
+	m = intoUser(t, start(t, back), Anon)
+	if strings.Contains(m.View(), "reachable") {
+		t.Errorf("a device nothing is held to came out reachable:\n%s", m.View())
+	}
+}
+
+func (f *fake) Holding(path, dir string) ([]Held, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.holding[inside(path, dir)], nil
+}
+
+func (f *fake) Listing(ctx context.Context, on book.Entry, path, dir string) ([]Held, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.listed = append(f.listed, on.Name+" "+inside(path, dir))
+	if f.refuseWalk != nil {
+		return nil, f.refuseWalk
+	}
+	return f.holding[inside(path, dir)], nil
+}
+
+func (f *fake) Fetch(ctx context.Context, from book.Entry, path, dir, name string, progress func(string, int64, int64)) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.fetched = append(f.fetched, inside(path, dir)+"/"+name)
+	return "/somewhere/drop/" + name, nil
+}
+
+func (f *fake) Put(ctx context.Context, to book.Entry, path, dir, from string, progress func(string, int64, int64)) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.uploaded = append(f.uploaded, inside(path, dir)+"/"+filepath.Base(from))
+	return nil
+}
+
+func (f *fake) Remove(ctx context.Context, on book.Entry, path, dir, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.removedIt = append(f.removedIt, inside(path, dir)+"/"+name)
+
+	// Taken off for real, so what the screen shows next is what happened rather than what was asked.
+	at := inside(path, dir)
+	var left []Held
+	for _, one := range f.holding[at] {
+		if one.Name != name {
+			left = append(left, one)
+		}
+	}
+	f.holding[at] = left
+	return nil
+}
+
+// inside names one directory of one namespace, which is how the fake files a listing.
+func inside(path, dir string) string {
+	if dir == "" {
+		return path
+	}
+	return path + "/" + dir
+}
+
+// Your own files namespace is a directory. Offering to send a file to your own disk is not what
+// that screen is for; saying what is in it is.
+func TestYourOwnFilesNamespaceListsWhatIsInIt(t *testing.T) {
+	back := &fake{
+		mine: []proto.Served{{Path: "/inbox", Archetype: "share"}},
+		holding: map[string][]Held{
+			"/inbox": {
+				{Name: "report.txt", Size: 4096, At: time.Date(2026, 8, 24, 21, 5, 0, 0, time.UTC)},
+				{Name: "holiday.jpg", Size: 3 << 20, At: time.Date(2026, 8, 25, 9, 30, 0, 0, time.UTC)},
+			},
+		},
+	}
+
+	m := start(t, back)
+	m = intoSelf(t, m)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	shown := m.View()
+	for _, want := range []string{"report.txt", "holiday.jpg", "4.0 kB", "3.0 MB"} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("the listing is missing %q:\n%s", want, shown)
+		}
+	}
+	if strings.Contains(shown, "send a file") {
+		t.Errorf("it offered to send a file to this machine's own disk:\n%s", shown)
+	}
+}
+
+// Somebody else's is still a place to send things.
+func TestSomebodyElsesFilesNamespaceStillSends(t *testing.T) {
+	back := withOne()
+
+	m := start(t, back)
+	m = intoPeer(t, m, 0)
+
+	// Onto /inbox, which is what beta shares.
+	for i, item := range m.list.Items() {
+		if it, ok := item.(pathItem); ok && it.step.at == "/inbox" {
+			m.list.Select(i)
+		}
+	}
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if !strings.Contains(m.View(), "send") {
+		t.Errorf("a peer's files namespace does not offer to send:\n%s", m.View())
+	}
+}
+
+func (f *fake) Knocked() ([]Knock, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.knocked, nil
+}
+
+// A device that dialled and was refused is worth listing: it is how letting a bare id in stops
+// meaning copying sixty-four characters of hex out of a log.
+func TestWhatKnockedIsListed(t *testing.T) {
+	back := withOne()
+	back.knocked = []Knock{{
+		ID:    "7b97c1de4a20f3e5c8b1d0a9f6e4c2b70d3a5e8f1c9b7a6d4e2f0c8b5a3d1e9f",
+		At:    time.Date(2026, 8, 24, 22, 10, 0, 0, time.UTC),
+		Asked: "/work",
+		Why:   "nothing here is shared with anyone",
+	}}
+
+	shown := start(t, back).View()
+	for _, want := range []string{"SEEN", "7b97c1de", "/work", "shared with anyone"} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("the list is missing %q:\n%s", want, shown)
+		}
+	}
+
+	// A device that is not one of your own, so it must not be mistaken for one.
+	if strings.Contains(shown, "paired\n") && !strings.Contains(shown, "SEEN") {
+		t.Error("a refused device was drawn as a paired one")
+	}
+}
+
+func (f *fake) AskFor(ctx context.Context, on book.Entry, path, why string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.askedFor = append(f.askedFor, on.Name+path)
+	return f.refuse
+}
+
+// A path that is visible but not shared shows up locked, and a is how you ask for it.
+func TestALockedPathIsShownAndCanBeAskedFor(t *testing.T) {
+	back := &fake{
+		peers: []book.Entry{{Name: "beta", ID: idFor(2), Secret: make([]byte, book.SecretBytes)}},
+		serves: map[string][]proto.Served{
+			"beta": {
+				{Path: "/chat", Archetype: "chat", Writable: true},
+				{Path: "/vault", Archetype: "chat", Locked: true},
+			},
+		},
+	}
+
+	m := start(t, back)
+	m = intoPeer(t, m, 0)
+
+	shown := m.View()
+	for _, want := range []string{"vault", "locked", "ask for it"} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("a locked path is missing %q:\n%s", want, shown)
+		}
+	}
+
+	// Onto it, and ask.
+	for i, item := range m.list.Items() {
+		if it, ok := item.(pathItem); ok && it.step.at == "/vault" {
+			m.list.Select(i)
+		}
+	}
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+
+	back.mu.Lock()
+	got := append([]string(nil), back.askedFor...)
+	back.mu.Unlock()
+
+	if len(got) != 1 || got[0] != "beta/vault" {
+		t.Fatalf("asked for %v", got)
+	}
+	if !strings.Contains(m.View(), "somebody there decides") {
+		t.Errorf("it did not say what asking means:\n%s", m.View())
+	}
+}
+
+// The other side: a request waiting on an answer sits in the access pane, where the keys that
+// answer it are the same keys that grant anything else.
+func TestARequestWaitsInTheAccessPane(t *testing.T) {
+	back := &fake{
+		mine: []proto.Served{{Path: "/vault", Archetype: "chat"}},
+		rules: map[string]Rule{
+			"/vault": {
+				Seen: true,
+				Asked: []Wanting{{
+					Who:  "carol",
+					Why:  "for the thing we discussed",
+					When: "24 Aug 21:05",
+				}},
+			},
+		},
+	}
+
+	m := start(t, back)
+	m = intoSelf(t, m)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+
+	shown := m.View()
+	for _, want := range []string{"ASKED FOR IT", "carol", "waiting", "for the thing we discussed"} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("the pending request is missing %q:\n%s", want, shown)
+		}
+	}
+
+	// Answering it is the ordinary allow.
+	onto(t, &m, "carol")
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+
+	if got := standingFor(m, "carol"); got != Allowed {
+		t.Errorf("carol stands at %d after being allowed", got)
+	}
+}
+
+func (f *fake) Managed(name string) (Managed, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	who := f.manages[name]
+	who.Name = name
+	return who, nil
+}
+
+func (f *fake) Trust(name string, trusted bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.manages == nil {
+		f.manages = map[string]Managed{}
+	}
+	who := f.manages[name]
+	who.Name, who.Trusted = name, trusted
+	f.manages[name] = who
+	return nil
+}
+
+func (f *fake) Forget(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.forgot = append(f.forgot, name)
+	return nil
+}
+
+// Managing somebody is a different question from reaching them, and has a screen of its own: who
+// they are, whether they are trusted, and what they have been given.
+func TestSomebodyCanBeManaged(t *testing.T) {
+	back := &fake{
+		self:  Identity{Name: "tron", ID: "e88c…", User: "ssh-ed25519 MINE"},
+		peers: []book.Entry{{Name: "bob", ID: idFor(3), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"}},
+		manages: map[string]Managed{
+			"bob": {
+				Person:   "bob",
+				User:     "ssh-ed25519 BOB",
+				Machines: 2,
+				Paired:   true,
+				Allowed:  []string{"/work"},
+				Refused:  []string{"/keys"},
+			},
+		},
+	}
+
+	m := start(t, back)
+
+	// From bob's row on the users screen: trust and grants belong to the user.
+	onUser(t, &m, "bob")
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+
+	if m.at != levelManage {
+		t.Fatalf("m did not open the management screen, at level %d", m.at)
+	}
+	// Read off the list rather than the screen: the rows are three lines each and more of them
+	// than a terminal holds, and what is being tested is what is there, not what fits.
+	var rows []string
+	for _, item := range m.list.Items() {
+		switch it := item.(type) {
+		case dividerItem:
+			rows = append(rows, strings.ToUpper(it.label))
+		case manageItem:
+			rows = append(rows, it.label)
+		}
+	}
+	got := strings.Join(rows, " | ")
+
+	for _, want := range []string{"bob", "not trusted", "/work", "/keys", "forget them",
+		"WHO THEY ARE", "TRUST", "WHAT THEY MAY REACH", "WHAT THEY ARE SHUT OUT OF"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the management screen is missing %q:\n  %s", want, got)
+		}
+	}
+	if !strings.Contains(m.View(), "2 machines") {
+		t.Errorf("it does not say how many machines they have:\n%s", m.View())
+	}
+
+	// Trust is the one thing here that changes what the rules do.
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	if !m.managed.Trusted {
+		t.Error("t did not trust them")
+	}
+	if !strings.Contains(m.View(), "trusted") {
+		t.Errorf("the screen did not say so:\n%s", m.View())
+	}
+
+	// And out again, back to the list.
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.at != levelUsers {
+		t.Errorf("esc left the management screen at level %d", m.at)
+	}
+}
+
+// Forgetting drops the pairing and goes back to the list, because there is nobody left to show.
+func TestForgettingSomebodyLeavesTheScreen(t *testing.T) {
+	back := &fake{
+		peers:   []book.Entry{{Name: "bob", ID: idFor(3), Secret: make([]byte, book.SecretBytes)}},
+		manages: map[string]Managed{"bob": {Paired: true}},
+	}
+
+	// bob has no user key here, so he is a machine under anon and is managed as the machine.
+	m := start(t, back)
+	m = intoUser(t, m, Anon)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+
+	back.mu.Lock()
+	forgot := append([]string(nil), back.forgot...)
+	back.mu.Unlock()
+
+	if len(forgot) != 1 || forgot[0] != "bob" {
+		t.Fatalf("forgot %v", forgot)
+	}
+	if m.at == levelManage {
+		t.Errorf("it stayed on a screen for somebody who is gone")
+	}
+}
+
+// intoUser opens somebody's machines from the users screen.
+func intoUser(t *testing.T, m Model, who string) Model {
+	t.Helper()
+
+	at, ok := m.rows.row[who]
+	if !ok {
+		t.Fatalf("no user called %q in %v", who, m.rows.order)
+	}
+	m.list.Select(at)
+
+	return settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+}
+
+// intoSelf opens this machine, which lives inside your own user.
+func intoSelf(t *testing.T, m Model) Model {
+	t.Helper()
+
+	m = intoUser(t, m, Me)
+	m.list.Select(0)
+
+	return settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+}
+
+// intoPeer opens one machine of the address book, whoever it belongs to.
+func intoPeer(t *testing.T, m Model, peer int) Model {
+	t.Helper()
+
+	if peer >= len(m.peers) {
+		t.Fatalf("no peer %d", peer)
+	}
+	m = intoUser(t, m, userOf(m.me, m.peers[peer]))
+	m.list.Select(m.rowFor(peer))
+
+	return settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+}
+
+// onUser puts the cursor on somebody in the users screen without entering.
+func onUser(t *testing.T, m *Model, who string) {
+	t.Helper()
+
+	at, ok := m.rows.row[who]
+	if !ok {
+		t.Fatalf("no user called %q", who)
+	}
+	m.list.Select(at)
+}
+
+// Leaving a live path while it is still sending must not take the interface down with it.
+//
+// The far end goes on writing for a moment after a watch is over — a read already in flight has to
+// land somewhere — so the screen is written from one goroutine while the interface is taking it
+// down from another. Closing the channel that carries "there is something new" turned that into a
+// panic on a channel nobody owned any more, and it took the whole program with it.
+func TestLeavingALivePathWhileItIsStillWriting(t *testing.T) {
+	s := newScreen(40, 10)
+
+	// Whoever is reading the far end, still going.
+	stop := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_, _ = s.Write([]byte("still arriving\r\n"))
+			}
+		}
+	}()
+
+	// The interface, waiting for repaints and then giving up on the screen.
+	for range 20 {
+		waitForFrame(s)()
+	}
+	s.Finish()
+
+	// Everything after this used to panic.
+	for range 200 {
+		_, _ = s.Write([]byte("after the watch ended\r\n"))
+		s.Resize(40, 10)
+	}
+
+	close(stop)
+	<-done
+
+	// And whoever is waiting for a repaint is let go rather than left there.
+	if msg := waitForFrame(s)(); msg != nil {
+		t.Errorf("waiting for a frame on a finished screen gave %T", msg)
+	}
+	// Twice, because being finished with is not a thing that happens once per waiter.
+	s.Finish()
+}
+
+// A terminal takes its shape from whoever is looking at it, whether or not they may type into it.
+// A pty drawing for a window nobody has wraps every line in the wrong place.
+func TestWatchingATerminalTellsItTheWindowShape(t *testing.T) {
+	back := withOne()
+	back.serves["beta"] = []proto.Served{{Path: "/term", Archetype: "tty"}}
+
+	m := intoPeer(t, start(t, back), 0)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if !m.live {
+		t.Fatal("it is not watching")
+	}
+
+	back.mu.Lock()
+	spoke := back.spoke
+	back.mu.Unlock()
+
+	sized, _ := spoke.shape()
+	if len(sized) == 0 {
+		t.Fatal("it never said how big the window is")
+	}
+	if sized[0][0] < 1 || sized[0][1] < 1 {
+		t.Errorf("it said the window is %v", sized[0])
+	}
+
+	// And says so again when the window changes.
+	was := len(sized)
+	m = settle(t, m, tea.WindowSizeMsg{Width: 100, Height: 40})
+
+	if sized, _ = spoke.shape(); len(sized) <= was {
+		t.Error("the far end was not told the window had changed")
+	}
+}
+
+// A terminal that takes input is typed into by saying so first, and every key then goes to it —
+// including the ones this interface would otherwise use for itself.
+func TestTypingIntoATerminalTakesEveryKey(t *testing.T) {
+	back := withOne()
+	back.serves["beta"] = []proto.Served{{Path: "/term", Archetype: "tty", Writable: true}}
+
+	m := intoPeer(t, start(t, back), 0)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+
+	if !m.atKeyboard {
+		t.Fatal("i did not give the terminal the keyboard")
+	}
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("ls")},
+		{Type: tea.KeyEnter},
+		// q and esc belong to the terminal now, not to this list.
+		{Type: tea.KeyRunes, Runes: []rune("q")},
+		{Type: tea.KeyEsc},
+	} {
+		m = settle(t, m, key)
+	}
+
+	if m.at != levelOpen {
+		t.Fatalf("a key meant for the terminal moved the interface, to level %d", m.at)
+	}
+
+	back.mu.Lock()
+	spoke := back.spoke
+	back.mu.Unlock()
+
+	if _, typed := spoke.shape(); typed != "ls\rq\x1b" {
+		t.Errorf("the terminal was sent %q", typed)
+	}
+
+	// And ctrl+] gives the keyboard back.
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyCtrlCloseBracket})
+	if m.atKeyboard {
+		t.Error("ctrl+] did not give the keyboard back")
+	}
+}
+
+// A terminal that says it takes no input is not typed into: there is nothing to focus.
+func TestAReadOnlyTerminalIsNotTypedInto(t *testing.T) {
+	back := withOne()
+	back.serves["beta"] = []proto.Served{{Path: "/term", Archetype: "tty"}}
+
+	m := intoPeer(t, start(t, back), 0)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+
+	if m.atKeyboard {
+		t.Error("a read-only terminal took the keyboard")
 	}
 }

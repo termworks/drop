@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/tmc/go-iroh/iroh"
 
@@ -27,12 +28,21 @@ func reach(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.Ent
 // reachAt is reach with addresses the caller already knows, which is how a ticket works: it
 // carries where the far end is so the first connection needs nothing to resolve it.
 func reachAt(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.Entry, alpn string, known []netip.AddrPort) (*iroh.Conn, *iroh.Stream, error) {
-	// rendezvousFor is consulted lazily, so a command that never needs one never builds it.
-	var moved dial.Finder
+	return dial.At(ctx, n, lan, finder(n), entry, alpn, known)
+}
+
+// finder is the rendezvous as something to look a device up with, or nothing at all.
+//
+// Nothing at all has to be a nil interface, not an interface holding a nil pointer. rendezvousFor
+// returns a typed nil when there is no rendezvous, and handing that straight over makes a value
+// that is not nil and cannot be called: the dial checks it, finds something, and dereferences
+// nothing. It only shows up when the local wire fails to find the device — which is to say, the
+// first time somebody carries a laptop to another network.
+func finder(n *node.Node) dial.Finder {
 	if rv := rendezvousFor(n); rv != nil {
-		moved = rv
+		return rv
 	}
-	return dial.At(ctx, n, lan, moved, entry, alpn, known)
+	return nil
 }
 
 // serveLoop accepts connections and routes each by the protocol it negotiated.
@@ -40,6 +50,21 @@ func reachAt(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.E
 // ALPN is per connection in iroh rather than per stream, so the protocol is known before a byte is
 // read and every stream on a connection belongs to the same one.
 func serveLoop(ctx context.Context, n *node.Node, handlers map[string]func(node.ID, *iroh.Stream)) {
+	serveLoopKeeping(ctx, n, handlers, nil, nil)
+}
+
+// serveLoopKeeping is the same, and keeps every connection that arrives.
+//
+// A device behind a NAT that nothing can dial can still dial out, and the connection it opens is a
+// way back to it for as long as it holds it. Keeping it means whatever is queued for that device
+// can go down the same pipe instead of waiting for a dial that will never succeed.
+func serveLoopKeeping(
+	ctx context.Context,
+	n *node.Node,
+	handlers map[string]func(node.ID, *iroh.Stream),
+	held *dial.Kept,
+	arrived func(node.ID),
+) {
 	for {
 		conn, err := n.Accept(ctx)
 		if err != nil {
@@ -48,6 +73,17 @@ func serveLoop(ctx context.Context, n *node.Node, handlers map[string]func(node.
 			}
 			continue
 		}
+
+		// Only a session connection is worth keeping. A hello is one question from a command that
+		// exits straight after, and holding it means the next question goes down a pipe whose far
+		// end left — which answers nothing, slowly.
+		if held != nil && conn.ALPN() == node.ALPNSession {
+			held.Adopt(conn.RemoteID(), conn.ALPN(), conn)
+		}
+		if arrived != nil {
+			go arrived(conn.RemoteID())
+		}
+
 		go serveConn(ctx, conn, handlers)
 	}
 }
@@ -152,6 +188,20 @@ type listener struct {
 }
 
 func listenOn(ctx context.Context, n *node.Node, handlers map[string]func(node.ID, *iroh.Stream)) *listener {
+	return listenKeeping(ctx, n, handlers, nil, nil)
+}
+
+// listenKeeping is the same, keeping every session connection that arrives.
+//
+// The interface serves while it is open, so it needs what the daemon needs: a device that cannot be
+// dialled reaches it, and what is waiting for that device goes back down the connection it opened.
+func listenKeeping(
+	ctx context.Context,
+	n *node.Node,
+	handlers map[string]func(node.ID, *iroh.Stream),
+	held *dial.Kept,
+	arrived func(node.ID),
+) *listener {
 	if handlers == nil {
 		handlers = map[string]func(node.ID, *iroh.Stream){}
 	}
@@ -166,11 +216,45 @@ func listenOn(ctx context.Context, n *node.Node, handlers map[string]func(node.I
 				}
 				continue
 			}
+
+			if held != nil && conn.ALPN() == node.ALPNSession {
+				held.Adopt(conn.RemoteID(), conn.ALPN(), conn)
+			}
+			if arrived != nil {
+				go arrived(conn.RemoteID())
+			}
+
 			go l.answer(ctx, conn)
 		}
 	}()
 
 	return l
+}
+
+// holding keeps a connection to everybody paired, so a device that nothing can dial is reachable
+// for as long as this is open — and so a message costs a stream rather than a handshake.
+func holding(ctx context.Context, pinned *book.Book, held *dial.Kept) {
+	tick := time.NewTicker(flushEvery)
+	defer tick.Stop()
+
+	for {
+		_ = pinned.Refresh()
+
+		for _, entry := range pinned.Paired() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			_ = held.Reach(ctx, entry, node.ALPNSession)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 // Handle adds a protocol, or takes one away when given nil — which is how a pairing stops being

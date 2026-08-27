@@ -7,70 +7,56 @@ import (
 	"sync"
 )
 
-// Kind is what lives at a path, and therefore what happens when someone opens it.
-type Kind byte
+// Source is where a namespace came from.
+//
+// Lifecycle belongs to the namespace layer, so this says nothing about what the archetype means: a
+// chat, a camera and a terminal are written down or held up in exactly the same way.
+type Source uint8
 
 const (
-	KindFiles  Kind = 1
-	KindStream Kind = 2
-	KindTTY    Kind = 3
-	KindChat   Kind = 4
-	KindLink   Kind = 5
-	// KindBranch serves nothing. It exists to carry an access rule for what is under it.
-	KindBranch Kind = 6
+	// Configured is declared by hand in the config file.
+	Configured Source = iota
+	// Written is written down by a command, and is here again after a restart.
+	Written
+	// Held is up for as long as a command is running: a cast, a handoff, a namespace created
+	// without being kept. It goes when that command does.
+	Held
 )
 
-var kindNames = map[Kind]string{
-	KindFiles:  "files",
-	KindStream: "stream",
-	KindTTY:    "tty",
-	KindChat:   "chat",
-	KindLink:   "link",
-	KindBranch: "branch",
-}
-
-func (k Kind) String() string {
-	if name, ok := kindNames[k]; ok {
-		return name
+// String is what a listing calls it.
+func (s Source) String() string {
+	switch s {
+	case Written:
+		return "written"
+	case Held:
+		return "held"
 	}
-	return fmt.Sprintf("kind(%d)", byte(k))
-}
-
-// ParseKind reads the name a config writes.
-func ParseKind(name string) (Kind, error) {
-	for kind, known := range kindNames {
-		if known == name {
-			return kind, nil
-		}
-	}
-
-	valid := make([]string, 0, len(kindNames))
-	for _, known := range kindNames {
-		valid = append(valid, known)
-	}
-	sort.Strings(valid)
-	return 0, fmt.Errorf("%q is not a namespace type: try %s", name, strings.Join(valid, ", "))
+	return "config"
 }
 
 // Mount is one namespace this node serves.
 type Mount struct {
 	Path string
-	Kind Kind
-
-	// Dir is where a files namespace writes.
-	Dir string
-	// Command is what a stream namespace runs and reads.
-	Command string
-	// Shell is what a tty namespace starts; empty means $SHELL.
-	Shell string
-	// Input lets the far end type into a tty namespace.
-	Input bool
-	// Action is what a link namespace hands a URL to; empty means it only records it.
-	Action string
+	// Source is where this came from, so a listing can say why a path is here and a command knows
+	// what it may take down.
+	Source Source
+	// Archetype is what is here, by name. Empty is a branch: it serves nothing itself and exists
+	// to carry an access rule for the paths under it.
+	Archetype string
+	// Version pins which revision of that archetype this is. Zero is whatever is newest.
+	Version int
+	// Config is what that archetype made of the declaration. Nothing here looks inside it.
+	Config any
+	// Shared says several machines hold this one namespace, and what they all call it. Undeclared
+	// is a namespace that is this machine's own.
+	Shared Shared
 	// Access is who may reach this path and everything under it, until something deeper says
 	// otherwise. Undeclared means nobody.
 	Access Access
 }
+
+// Branch reports whether this serves nothing itself and is here to carry a rule.
+func (m Mount) Branch() bool { return m.Archetype == "" }
 
 // Table is every namespace this node serves.
 //
@@ -81,6 +67,9 @@ type Table struct {
 	// arriving or ending adds and removes a path while they do.
 	mu     sync.RWMutex
 	mounts map[string]Mount
+	// granted is what the interface has allowed and refused, kept apart from the config so that
+	// editing one never rewrites the other.
+	granted Granting
 }
 
 func NewTable() *Table {
@@ -96,11 +85,8 @@ func (t *Table) Add(m Mount) error {
 	// A mount with no type is a branch: it serves nothing itself and exists to carry an access rule
 	// for the paths beneath it. One that is neither a type nor a rule is a typo, and saying so is
 	// better than quietly keeping a line that does nothing.
-	if _, ok := kindNames[m.Kind]; !ok {
-		if !m.Access.Declared() {
-			return fmt.Errorf("%s has neither a type nor an access rule, so it does nothing", path)
-		}
-		m.Kind = KindBranch
+	if m.Branch() && !m.Access.Declared() {
+		return fmt.Errorf("%s has neither a type nor an access rule, so it does nothing", path)
 	}
 
 	m.Path = path

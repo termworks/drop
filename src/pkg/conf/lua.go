@@ -8,8 +8,10 @@ import (
 	"github.com/arnodel/golua/lib"
 	rt "github.com/arnodel/golua/runtime"
 
+	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/passwd"
+	"github.com/bresilla/drop/src/pkg/user"
 )
 
 // runtime is the Lua state a config left behind.
@@ -204,6 +206,42 @@ func run(cfg *Config, path string) error {
 	}
 
 	readSettings(cfg, module)
+	if err := cfg.name(); err != nil {
+		return fail(err)
+	}
+	return nil
+}
+
+// name works out what the namespaces declared as shared are called, now that the whole file has
+// been read.
+//
+// The key this person signs with is one of the things a config may name, and the name of a shared
+// namespace is derived from it. Doing this while the file was still running would name a namespace
+// after whichever key happened to be in force at that line.
+func (c *Config) name() error {
+	if len(c.shares) == 0 {
+		return nil
+	}
+	if c.UserKey != "" {
+		user.Use(expand(c.UserKey))
+	}
+
+	key, err := user.Public()
+	if err != nil {
+		return fmt.Errorf("naming what this machine shares: %w", err)
+	}
+	creator := user.Text(key)
+
+	for at, word := range c.shares {
+		m, _, ok := c.Mounts.Lookup(at)
+		if !ok || m.Path != at {
+			continue
+		}
+		m.Shared = ns.Shared{Creator: creator, At: at, Nonce: word}
+		if err := c.Mounts.Add(m); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -224,8 +262,27 @@ func readSettings(cfg *Config, module *rt.Table) {
 	if on, ok := optBool(module, "rendezvous"); ok {
 		cfg.Rendezvous, cfg.HasRendezvous = on, true
 	}
+	if on, ok := optBool(module, "direct"); ok {
+		cfg.Direct, cfg.HasDirect = on, true
+	}
 	if list, ok := optStrings(module, "relays"); ok {
 		cfg.Relays = list
+	}
+
+	// A vault is one recipient or several. A bare string is the common case -- a key file beside
+	// the config -- and writing it as a list of one is the sort of thing a config makes you do
+	// once and resent afterwards.
+	if key, ok := optString(module, "user_key"); ok {
+		cfg.UserKey = key
+	}
+	if command, ok := optString(module, "user_sign"); ok {
+		cfg.UserSign = command
+	}
+	if list, ok := optStrings(module, "vault"); ok {
+		cfg.Vault = list
+	}
+	if one, ok := optString(module, "vault"); ok {
+		cfg.Vault = []string{one}
 	}
 }
 
@@ -276,6 +333,10 @@ func listLen(t *rt.Table) int {
 }
 
 // mount is `drop.mount("/path", { type = "...", ... })`.
+//
+// Nothing here reads a setting by name except the two the namespace layer owns: what kind of thing
+// this is, and who may reach it. The rest of the table is handed to the archetype, which is the
+// only thing that knows what any of those words mean.
 func mount(c *rt.GoCont, cfg *Config) (rt.Cont, error) {
 	if err := c.CheckNArgs(2); err != nil {
 		return nil, err
@@ -291,64 +352,118 @@ func mount(c *rt.GoCont, cfg *Config) (rt.Cont, error) {
 
 	access := readAccess(opts)
 
-	// A mount with no type is a branch: it serves nothing and exists to carry an access rule for the
-	// paths under it. The table refuses one that is neither, so a typo is still caught.
-	var kind ns.Kind
-	if typeName := fieldString(opts, "type"); typeName != "" {
-		parsed, err := ns.ParseKind(typeName)
-		if err != nil {
-			return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
-		}
-		kind = parsed
-	} else if !access.Declared() {
-		return nil, fmt.Errorf("drop.mount(%q): needs a type, or an access rule if it is a branch", path)
-	}
-
 	// A password written in plain is one a config leak hands over. Say so at load time rather than
 	// letting it never match and look like a broken rule.
 	if access.Password != "" && !passwd.Looks(access.Password) {
-		return nil, fmt.Errorf("drop.mount(%q): the password must be a hash from `drop passwd`, not the word itself", path)
+		return nil, fmt.Errorf("drop.mount(%q): the password must be a hash from `drop me passwd`, not the word itself", path)
 	}
 
 	m := ns.Mount{
-		Path:    path,
-		Kind:    kind,
-		Dir:     expand(fieldString(opts, "dir")),
-		Command: fieldString(opts, "command"),
-		Shell:   fieldString(opts, "shell"),
-		Input:   fieldBool(opts, "input"),
-		Action:  fieldString(opts, "action"),
-		Access:  access,
+		Path:      path,
+		Archetype: fieldString(opts, "type"),
+		Version:   fieldInt(opts, "version"),
+		Access:    access,
 	}
 
-	if err := check(m); err != nil {
-		return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
+	word, wanted := sharedWord(opts)
+
+	// A mount with no type is a branch: it serves nothing and exists to carry an access rule for
+	// the paths under it. The table refuses one that is neither, so a typo is still caught.
+	if !m.Branch() {
+		answers, err := answering(cfg.known, m.Archetype, m.Version)
+		if err != nil {
+			return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
+		}
+		settings, err := answers.Read(declared{opts})
+		if err != nil {
+			return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
+		}
+		m.Config = settings
+
+		if wanted && !answers.Note(settings).Shareable {
+			return nil, fmt.Errorf("drop.mount(%q): a %s is one machine's own, so it cannot be shared", path, m.Archetype)
+		}
+	} else if !access.Declared() {
+		return nil, fmt.Errorf("drop.mount(%q): needs a type, or an access rule if it is a branch", path)
+	} else if wanted {
+		return nil, fmt.Errorf("drop.mount(%q): a path that holds others and serves nothing has nothing to share", path)
 	}
+
 	if err := cfg.Mounts.Add(m); err != nil {
 		return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
+	}
+
+	// Named after the whole file has run rather than here, because who this machine signs as is
+	// one of the things the file may say, and a name worked out before it was read would be a
+	// different name from the one everybody else uses.
+	if wanted {
+		at, err := ns.Clean(path)
+		if err != nil {
+			return nil, fmt.Errorf("drop.mount(%q): %w", path, err)
+		}
+		if cfg.shares == nil {
+			cfg.shares = map[string]string{}
+		}
+		cfg.shares[at] = word
 	}
 	return c.Next(), nil
 }
 
-// check catches a namespace that cannot work at load time, where the error names the file and the
-// line, rather than when somebody opens it and gets silence.
-func check(m ns.Mount) error {
-	switch m.Kind {
-	case ns.KindFiles:
-		if m.Dir == "" {
-			return fmt.Errorf("a files namespace needs a dir")
-		}
-	case ns.KindStream:
-		if m.Command == "" {
-			return fmt.Errorf("a stream namespace needs a command")
-		}
+// sharedWord reads whether a namespace is one several machines hold, and the word that tells it
+// from another made at the same path.
+//
+//	shared = true       one thing at this path
+//	shared = "second"   a different thing at the same path
+func sharedWord(opts *rt.Table) (string, bool) {
+	value := opts.Get(rt.StringValue("shared"))
+	if value.IsNil() {
+		return "", false
 	}
-	return nil
+	if word, ok := value.TryString(); ok {
+		return word, word != ""
+	}
+	return "", rt.Truth(value)
 }
+
+// answering finds what a mount's type is, so a config that names one this build does not have is
+// refused where it is written.
+func answering(known *arch.Registry, name string, version int) (arch.Archetype, error) {
+	if known == nil {
+		return nil, fmt.Errorf("this build registered no namespace types")
+	}
+	answers, ok := known.Lookup(name, version)
+	if !ok {
+		return nil, known.Missing(name, version)
+	}
+	return answers, nil
+}
+
+// declared is one mount's table, read the way an archetype reads it: by name, and saying whether
+// the config mentioned the setting at all, so "off" can be told from "unset".
+type declared struct {
+	t *rt.Table
+}
+
+// String reads a setting. A value beginning with ~ is a path somebody typed, and is resolved here:
+// the archetype should not have to know that a config is written by a person.
+func (d declared) String(key string) (string, bool) {
+	s, ok := optString(d.t, key)
+	return expand(s), ok
+}
+
+func (d declared) Bool(key string) (bool, bool) { return optBool(d.t, key) }
+
+func (d declared) Strings(key string) ([]string, bool) { return optStrings(d.t, key) }
 
 func fieldString(t *rt.Table, key string) string {
 	s, _ := t.Get(rt.StringValue(key)).TryString()
 	return s
+}
+
+// fieldInt reads a whole number a config wrote, which is nothing at all when it wrote none.
+func fieldInt(t *rt.Table, key string) int {
+	n, _ := t.Get(rt.StringValue(key)).TryInt()
+	return int(n)
 }
 
 func fieldBool(t *rt.Table, key string) bool {
@@ -391,24 +506,28 @@ func optStrings(t *rt.Table, key string) ([]string, bool) {
 
 // readAccess reads who a path is shared with.
 //
-// Two shorthands, because almost every path wants one of them: a list of names is a list of paired
-// devices, and the bare word "paired" is anyone in the address book. The long form is for a path
-// that needs a key or a password.
+// Three shorthands, because almost every path wants one of them: a list of names is a list of
+// people and devices, the bare word "paired" is anyone in the address book, and the bare word
+// "anyone" is exactly what it says. The long form is for a path that needs a key or a password.
 func readAccess(opts *rt.Table) ns.Access {
 	value := opts.Get(rt.StringValue("access"))
 
 	if word, ok := value.TryString(); ok {
-		return ns.Access{AnyPaired: word == "paired"}
+		return withVisible(opts, ns.Access{
+			AnyPaired:  word == "paired",
+			AnyTrusted: word == "trusted",
+			Anyone:     word == "anyone",
+		})
 	}
 
 	table, ok := value.TryTable()
 	if !ok {
-		return ns.Access{}
+		return withVisible(opts, ns.Access{})
 	}
 
 	// A list of names, rather than a table of rules.
 	if names := listOfStrings(table); len(names) > 0 {
-		return ns.Access{Named: names}
+		return withVisible(opts, ns.Access{Named: names})
 	}
 
 	out := ns.Access{
@@ -417,9 +536,37 @@ func readAccess(opts *rt.Table) ns.Access {
 		Password: fieldString(table, "password"),
 		All:      fieldString(table, "require") == "all",
 	}
-	if word, ok := table.Get(rt.StringValue("paired")).TryString(); ok && word == "paired" {
-		out.AnyPaired = true
-		out.Named = nil
+	if word, ok := table.Get(rt.StringValue("paired")).TryString(); ok {
+		switch word {
+		case "paired":
+			out.AnyPaired, out.Named = true, nil
+		case "trusted":
+			out.AnyTrusted, out.Named = true, nil
+		}
+	}
+	out.AnyTrusted = out.AnyTrusted || fieldBool(table, "trusted")
+	out.Anyone = fieldBool(table, "anyone")
+	return withVisible(opts, out)
+}
+
+// withVisible reads who may see a path without being able to open it.
+//
+// Its own option rather than a rung inside access, because it is a different question: access says
+// who gets in, visible says who is told there is a door. A path can have both -- shared with one
+// person and merely visible to another, who then asks.
+//
+//	visible = "paired"        everybody in the address book
+//	visible = { "carol" }     that person, and every machine of theirs
+func withVisible(opts *rt.Table, out ns.Access) ns.Access {
+	value := opts.Get(rt.StringValue("visible"))
+
+	if word, ok := value.TryString(); ok {
+		out.AnyVisible = word == "paired" || word == "anyone"
+		out.TrustedVisible = word == "trusted"
+		return out
+	}
+	if table, ok := value.TryTable(); ok {
+		out.Visible = listOfStrings(table)
 	}
 	return out
 }

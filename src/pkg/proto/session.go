@@ -1,73 +1,124 @@
 package proto
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
-// What a session is for.
-const (
-	// ModeFiles is one side pushing items to the other, each ending with a digest.
-	ModeFiles byte = 1
-	// ModeDuplex is both sides writing until one of them stops. No sizes, no digests.
-	ModeDuplex byte = 2
-)
+// MaxSecret bounds what may be offered as a password.
+//
+// A password is a thing somebody types, and checking one costs 64 MiB and three passes of argon2 —
+// so the length is worth refusing before any of that work is done. This field also carries what an
+// ask says about itself, which MaxWhy cuts shorter still.
+const MaxSecret = 1024
 
-// SizeUnknown is the size of an item whose length is not known before it is sent: a pipe, a
-// growing file, a terminal. The receiver reads until the item ends rather than counting down.
-const SizeUnknown int64 = -1
-
-// Item describes one thing being sent. Name is a base name; a sender does not choose where on the
-// receiving machine its bytes land.
-type Item struct {
-	Name string
-	Size int64
-	Mode uint32
-}
-
-// Known reports whether this item's length was settled before sending.
-func (i Item) Known() bool {
-	return i.Size >= 0
-}
-
-// Open is the first frame of a session.
-type Open struct {
-	Mode byte
+// Opening is the first frame of a session, and the only one this package writes on the way in.
+//
+// It names a path and, when the caller knows what it expects to find there, an archetype. What is
+// said after the far end accepts belongs to that archetype, and nothing here reads a byte of it.
+type Opening struct {
+	// Archetype is what the caller expects at the path, and Version which revision of it. An empty
+	// name asks for whatever is mounted, which is what somebody typing a path rather than reading
+	// a listing is doing.
+	Archetype string
+	Version   int
+	// Path is the namespace being opened.
+	Path string
 	From string
-	// Path is the namespace being opened. What is there decides what happens, which is why
-	// a sender does not have to name a mode the far end might not serve.
-	Path  string
-	Items []Item
 	// Secret is a password offered for a path that asks for one. Empty when none was given.
 	Secret string
+	// Ask says this is not an open at all: it rings the bell on a path the caller can see and
+	// cannot open, and Secret carries whatever they said about why.
+	Ask bool
+	// Meet says this is not an open either: the caller holds the same namespace and wants to catch
+	// up with it. What is said afterwards is heads and changes rather than anything the archetype
+	// would recognise.
+	//
+	// Held is which namespace, by the name every machine holding it works out for itself. A meeting
+	// is about a thing rather than about a path: a path is one machine's own word for it, and two
+	// machines that spell it differently would otherwise catch up about two different things.
+	Meet bool
+	Held string
+	// Badge says whose machine this is, and Signed is the proof of it.
+	//
+	// The transport already proves which machine is calling. This is what turns that into a
+	// person, so a rule can name one.
+	Badge  []byte
+	Signed []byte
+	// Plate says which machine this drop is running on, and Stamped is the proof of it.
+	//
+	// Separate from the badge because it answers a different question. The badge says whose drop
+	// this is; the plate says what it is sitting on, so several people with accounts on one
+	// machine are seen as one machine with several people rather than as unrelated machines.
+	Plate   []byte
+	Stamped []byte
+	// Moved says this machine is the one another machine became, and Handed is the proof of it.
+	//
+	// Carried on every opening because there is no telling which peer has not heard yet, and a
+	// peer that has heard does nothing with it. It is signed by the old machine, so what it costs
+	// somebody who was never told is one signature check they refuse.
+	Moved  []byte
+	Handed []byte
 }
 
-func (o Open) encode() []byte {
+func (o Opening) encode() []byte {
 	w := wire.NewWriter()
-	w.Byte(o.Mode)
+	w.Bool(o.Ask)
+	w.Bool(o.Meet)
+	w.String(o.Archetype)
+	w.Uint(uint64(o.Version))
 	w.String(o.From)
 	w.String(o.Path)
+	w.String(o.Held)
 	w.String(o.Secret)
-	w.Uint(uint64(len(o.Items)))
-	for _, item := range o.Items {
-		w.String(item.Name)
-		w.Int(item.Size)
-		w.Uint(uint64(item.Mode))
-	}
+	w.String(string(o.Badge))
+	w.String(string(o.Signed))
+	w.String(string(o.Plate))
+	w.String(string(o.Stamped))
+	w.String(string(o.Moved))
+	w.String(string(o.Handed))
 	return w.Body()
 }
 
-// maxItems caps how many entries one offer may carry, so a small frame cannot ask for a huge slice.
-const maxItems = 1 << 16
+// MaxHeld bounds the name of a namespace several machines hold. It is a hash written in hex, and a
+// longer one names nothing this node could be holding.
+const MaxHeld = 128
 
-func decodeOpen(body []byte) (Open, error) {
-	var out Open
+// what is the namespace an opening is about, in the words its failures use.
+func (o Opening) what() string {
+	if o.Meet {
+		return "the namespace named " + o.Held
+	}
+	return o.Path
+}
+
+// MaxVersion bounds the revision a caller may name, so a number off the wire stays a number.
+const MaxVersion = 1 << 16
+
+func decodeOpen(body []byte) (Opening, error) {
+	var out Opening
 
 	r := wire.NewReader(body)
-	mode, err := r.Byte()
+	ask, err := r.Bool()
 	if err != nil {
 		return out, err
+	}
+	meet, err := r.Bool()
+	if err != nil {
+		return out, err
+	}
+	archetype, err := r.String(256)
+	if err != nil {
+		return out, err
+	}
+	version, err := r.Uint()
+	if err != nil {
+		return out, err
+	}
+	if version > MaxVersion {
+		return out, fmt.Errorf("an open asks for version %d, over the %d limit", version, MaxVersion)
 	}
 	from, err := r.String(wire.MaxString)
 	if err != nil {
@@ -77,180 +128,89 @@ func decodeOpen(body []byte) (Open, error) {
 	if err != nil {
 		return out, err
 	}
-	secret, err := r.String(wire.MaxString)
+	held, err := r.String(MaxHeld)
 	if err != nil {
 		return out, err
 	}
-	out.Secret = secret
-
-	count, err := r.Uint()
+	secret, err := r.String(MaxSecret)
 	if err != nil {
 		return out, err
 	}
-	if count > maxItems {
-		return out, fmt.Errorf("open claims %d items, over the %d limit", count, maxItems)
+	badge, err := r.String(wire.MaxString)
+	if err != nil {
+		return out, err
+	}
+	signed, err := r.String(wire.MaxString)
+	if err != nil {
+		return out, err
+	}
+	plate, err := r.String(MaxSigned)
+	if err != nil {
+		return out, err
+	}
+	stamped, err := r.String(MaxSignature)
+	if err != nil {
+		return out, err
+	}
+	moved, err := r.String(MaxSigned)
+	if err != nil {
+		return out, err
+	}
+	handed, err := r.String(MaxSignature)
+	if err != nil {
+		return out, err
 	}
 
-	out.Mode, out.From, out.Path = mode, from, path
-	out.Items = make([]Item, 0, count)
-	for i := uint64(0); i < count; i++ {
-		name, err := r.String(wire.MaxString)
-		if err != nil {
-			return out, err
-		}
-		size, err := r.Int()
-		if err != nil {
-			return out, err
-		}
-		perm, err := r.Uint()
-		if err != nil {
-			return out, err
-		}
-		out.Items = append(out.Items, Item{Name: name, Size: size, Mode: uint32(perm)})
-	}
+	out.Ask, out.Meet, out.Archetype, out.Version = ask, meet, archetype, int(version)
+	out.From, out.Path, out.Held, out.Secret = from, path, held, secret
+	out.Badge, out.Signed = []byte(badge), []byte(signed)
+	out.Plate, out.Stamped = []byte(plate), []byte(stamped)
+	out.Moved, out.Handed = []byte(moved), []byte(handed)
 	return out, nil
 }
 
-// Accept answers an Open. Resume carries, per item, how many bytes the receiver already holds; it
-// is zero for an item whose size is unknown, because there is nothing to resume against.
-type Accept struct {
-	Resume []int64
-}
-
-func (a Accept) encode() []byte {
-	w := wire.NewWriter()
-	w.Uint(uint64(len(a.Resume)))
-	for _, at := range a.Resume {
-		w.Int(at)
-	}
-	return w.Body()
-}
-
-func decodeAccept(body []byte) (Accept, error) {
-	var out Accept
-
-	r := wire.NewReader(body)
-	count, err := r.Uint()
-	if err != nil {
-		return out, err
-	}
-	if count > maxItems {
-		return out, fmt.Errorf("accept claims %d items, over the %d limit", count, maxItems)
-	}
-
-	out.Resume = make([]int64, 0, count)
-	for i := uint64(0); i < count; i++ {
-		at, err := r.Int()
-		if err != nil {
-			return out, err
-		}
-		out.Resume = append(out.Resume, at)
-	}
-	return out, nil
-}
-
-// End closes one item: how much was actually sent, and the digest of all of it. For an unknown-size
-// item this is where the length is finally learned.
-type End struct {
-	Size   int64
-	Digest []byte
-}
-
-func (e End) encode() []byte {
-	w := wire.NewWriter()
-	w.Int(e.Size)
-	w.Bytes(e.Digest)
-	return w.Body()
-}
-
-func decodeEnd(body []byte) (End, error) {
-	var out End
-
-	r := wire.NewReader(body)
-	size, err := r.Int()
-	if err != nil {
-		return out, err
-	}
-	digest, err := r.Bytes(64)
-	if err != nil {
-		return out, err
-	}
-	out.Size = size
-	out.Digest = append([]byte(nil), digest...)
-	return out, nil
-}
-
-// Ack is the receiver's verdict on one item, after hashing what arrived.
-type Ack struct {
-	OK     bool
+// Declined is a far end that answered and said no.
+//
+// Worth telling apart from a far end that could not be reached: one is a device that is off, which
+// is what a queue is for, and the other is an answer. Queueing an answer means retrying forever
+// against a decision somebody made.
+type Declined struct {
 	Reason string
+	// Settled says the far end decided about this caller rather than being unable to answer.
+	Settled bool
 }
 
-func (a Ack) encode() []byte {
-	w := wire.NewWriter()
-	w.Bool(a.OK)
-	w.String(a.Reason)
-	return w.Body()
+func (d Declined) Error() string { return "declined: " + d.Reason }
+
+// Settled reports whether a refusal was a decision that asking again will not change.
+func Settled(err error) bool {
+	var declined Declined
+	return errors.As(err, &declined) && declined.Settled
 }
 
-func decodeAck(body []byte) (Ack, error) {
-	var out Ack
-
-	r := wire.NewReader(body)
-	ok, err := r.Bool()
-	if err != nil {
-		return out, err
-	}
-	reason, err := r.String(wire.MaxString)
-	if err != nil {
-		return out, err
-	}
-	out.OK, out.Reason = ok, reason
-	return out, nil
+// WasDeclined reports whether an error is a refusal rather than a failure to reach anybody.
+func WasDeclined(err error) bool {
+	var declined Declined
+	return errors.As(err, &declined)
 }
 
-// Reject declines a session.
-type Reject struct {
-	Reason string
-}
+// What a plate and a handover may weigh on the wire.
+//
+// Both are a handful of fixed lines and an id or two — a few hundred bytes at the outside. The
+// general string limit is sixty-four kilobytes, which for these is sixty-four kilobytes of somebody
+// else's choosing that has to be parsed before anybody has been authenticated. Bounding them to
+// what they can actually be turns that into a length check.
+const (
+	MaxSigned    = 1024
+	MaxSignature = 64
+)
 
-func (x Reject) encode() []byte {
-	w := wire.NewWriter()
-	w.String(x.Reason)
-	return w.Body()
-}
-
-func decodeReject(body []byte) (Reject, error) {
-	r := wire.NewReader(body)
-	reason, err := r.String(wire.MaxString)
-	return Reject{Reason: reason}, err
-}
-
-// Resize reports a new terminal size on a duplex session.
-type Resize struct {
-	Cols uint16
-	Rows uint16
-}
-
-func (z Resize) encode() []byte {
-	w := wire.NewWriter()
-	w.Uint(uint64(z.Cols))
-	w.Uint(uint64(z.Rows))
-	return w.Body()
-}
-
-func decodeResize(body []byte) (Resize, error) {
-	var out Resize
-
-	r := wire.NewReader(body)
-	cols, err := r.Uint()
-	if err != nil {
-		return out, err
-	}
-	rows, err := r.Uint()
-	if err != nil {
-		return out, err
-	}
-	out.Cols, out.Rows = uint16(cols), uint16(rows)
-	return out, nil
-}
+// MaxUnknown is the largest first frame this node will hear from somebody it has decided nothing
+// about yet.
+//
+// Every field an opening or a hello ask can carry is bounded already, and the two of them together
+// come to a little over two hundred kilobytes. The general frame limit is twenty times that,
+// because a transfer needs it — but a transfer happens after somebody has been let in, and the size
+// of a frame is a number the sender chooses. Read before authentication, that number is a stranger
+// naming how much of this machine's memory to set aside for them, at a few bytes each.
+const MaxUnknown = 256 << 10

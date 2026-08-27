@@ -1,0 +1,336 @@
+package dial
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+
+	"github.com/tmc/go-iroh/iroh"
+
+	"github.com/bresilla/drop/src/pkg/book"
+	"github.com/bresilla/drop/src/pkg/node"
+)
+
+// Kept holds open connections, one per device and protocol, so reaching a device costs the finding
+// and the handshake once rather than every time.
+//
+// Finding a device is the expensive part: local discovery, a relay, or a rendezvous, then a QUIC
+// handshake. On a good wire that is milliseconds; on a bad one it is tens of seconds. Doing it
+// again for every message a person types is what makes a chat feel like a form submission. QUIC
+// multiplexes, so a held connection costs one socket and carries as many streams as are asked of it.
+type Kept struct {
+	node *node.Node
+	wire Wire
+	find Finder
+
+	mu   sync.Mutex
+	open map[string]*iroh.Conn
+	// dialling is the dial in progress for a device and protocol, so that everybody asking for one
+	// at the same moment waits for the same connection instead of opening one each.
+	dialling map[string]*flight
+	// ctx bounds the accept loops on connections we made.
+	ctx context.Context
+	// serve is what answers streams the far end opens on a connection we made.
+	//
+	// A connection is only served by the side that accepted it, so without this a device we
+	// dialled cannot say anything back on the same pipe -- it opens a stream and nobody is
+	// listening. That is the whole of what makes a device behind a NAT reachable.
+	serve func(node.ID, string, *iroh.Stream)
+
+	// bookMu guards known, which is the address book as this last read it.
+	bookMu sync.Mutex
+	known  *book.Book
+}
+
+func Hold(n *node.Node, wire Wire, find Finder) *Kept {
+	return &Kept{
+		node:     n,
+		wire:     wire,
+		find:     find,
+		open:     map[string]*iroh.Conn{},
+		dialling: map[string]*flight{},
+	}
+}
+
+// flight is one dial in progress. Whoever started it fills in the answer and closes done; everybody
+// else waits there and takes what it found.
+type flight struct {
+	done chan struct{}
+	conn *iroh.Conn
+	err  error
+}
+
+// Serving says what to do with streams the far end opens on a connection we made. Without it those
+// streams are never accepted, and a device we dialled can only ever answer, never ask.
+func (k *Kept) Serving(ctx context.Context, answer func(node.ID, string, *iroh.Stream)) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	k.serve, k.ctx = answer, ctx
+}
+
+// answerOn accepts whatever the far end opens on a connection we made.
+func (k *Kept) answerOn(conn *iroh.Conn) {
+	k.mu.Lock()
+	answer, ctx := k.serve, k.ctx
+	k.mu.Unlock()
+
+	if answer == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	from, alpn := conn.RemoteID(), conn.ALPN()
+	for {
+		s, err := conn.AcceptStream(ctx)
+		if err != nil {
+			return
+		}
+		go answer(from, alpn, s)
+	}
+}
+
+// To opens a stream to a device, over the connection already held if there is one.
+//
+// The stream is the caller's to close. The connection is not: it stays for the next one.
+func (k *Kept) To(ctx context.Context, entry book.Entry, alpn string) (*iroh.Stream, error) {
+	if conn := k.held(entry.ID, alpn); conn != nil {
+		if s, err := conn.OpenStreamSync(ctx); err == nil {
+			return s, nil
+		}
+		// It was held but is no longer good. Forgotten, and dialled again below.
+		k.drop(entry.ID, alpn, conn)
+	}
+
+	conn, err := k.dial(ctx, entry, alpn)
+	if err != nil {
+		return nil, err
+	}
+
+	s, err := conn.OpenStreamSync(ctx)
+	if err != nil {
+		k.drop(entry.ID, alpn, conn)
+		return nil, fmt.Errorf("opening a stream to %s: %w", entry.Name, err)
+	}
+	return s, nil
+}
+
+// dial makes the connection, or waits for the one somebody else is already making.
+//
+// Without this, two callers reaching for the same device at the same moment each open a connection
+// and the second one takes the first one's place — closing a pipe the first caller is in the middle
+// of using.
+func (k *Kept) dial(ctx context.Context, entry book.Entry, alpn string) (*iroh.Conn, error) {
+	at := key(entry.ID, alpn)
+
+	k.mu.Lock()
+	if going, ok := k.dialling[at]; ok {
+		k.mu.Unlock()
+
+		select {
+		case <-going.done:
+			return going.conn, going.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	ours := &flight{done: make(chan struct{})}
+	k.dialling[at] = ours
+	k.mu.Unlock()
+
+	conn, s, err := To(ctx, k.node, k.wire, k.find, entry, alpn)
+	if err == nil {
+		// The stream was only what proves the connection carries anything. Every caller opens its
+		// own, so this one is done with.
+		_ = s.Close()
+		k.keep(entry.ID, alpn, conn)
+	}
+
+	ours.conn, ours.err = conn, err
+	close(ours.done)
+
+	k.mu.Lock()
+	delete(k.dialling, at)
+	k.mu.Unlock()
+
+	return conn, err
+}
+
+// held is the live connection for a device, or nil.
+func (k *Kept) held(id node.ID, alpn string) *iroh.Conn {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	conn, ok := k.open[key(id, alpn)]
+	if !ok {
+		return nil
+	}
+
+	// A connection whose context is done is closed, however it got that way.
+	select {
+	case <-conn.Context().Done():
+		delete(k.open, key(id, alpn))
+		return nil
+	default:
+		return conn
+	}
+}
+
+func (k *Kept) keep(id node.ID, alpn string, conn *iroh.Conn) {
+	k.mu.Lock()
+
+	if was, ok := k.open[key(id, alpn)]; ok && was != conn {
+		was.Close()
+	}
+	k.open[key(id, alpn)] = conn
+
+	answering := k.serve != nil
+
+	k.mu.Unlock()
+
+	// We made this one, so nothing else is accepting on it. Whatever the far end opens here is
+	// ours to answer, and it is how a device that cannot be dialled says anything at all.
+	if answering {
+		go k.answerOn(conn)
+	}
+}
+
+// drop lets go of a connection, and only while it is still the one being held.
+//
+// A stream failing says the connection it was opened on is finished, not that whatever is held now
+// is: another caller may have dialled a fresh one in between, and closing that would take down a
+// conversation to clean up after somebody else's failure.
+func (k *Kept) drop(id node.ID, alpn string, conn *iroh.Conn) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	at := key(id, alpn)
+	if held, ok := k.open[at]; ok && held == conn {
+		held.Close()
+		delete(k.open, at)
+	}
+}
+
+// Close lets go of everything held.
+func (k *Kept) Close() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	for at, conn := range k.open {
+		conn.Close()
+		delete(k.open, at)
+	}
+}
+
+func key(id node.ID, alpn string) string { return id.String() + "\x00" + alpn }
+
+// Reaching reports whether a connection to a device is being held.
+//
+// Not a probe: this says a connection exists and was good the last time it was used, which is what
+// makes it worth showing. Dialling everybody in the address book to draw a list would spend a
+// handshake per device per redraw.
+func (k *Kept) Reaching(id node.ID) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	for at := range k.open {
+		if strings.HasPrefix(at, id.String()+"\x00") {
+			return true
+		}
+	}
+	return false
+}
+
+// Adopt takes a connection somebody else opened to us and keeps it like one we made.
+//
+// A device behind a NAT that nothing can dial can still dial out. When it does, the connection it
+// opened is a way back to it that exists for as long as it holds it — and QUIC does not care which
+// side opened it, so a stream can be started in either direction on the same pipe.
+//
+// Without this, a queue for such a device never empties: whatever is waiting is waiting for a dial
+// that cannot succeed, while the device itself is connected and idle.
+//
+// Only a device the book has. Nothing ever looks for a connection to anybody else — every caller of
+// To, Reach and Existing hands in an entry read out of the book — so a stranger's connection is one
+// nobody can use, and an id costs a keypair to mint, so keeping one entry per stranger that ever
+// connected is a map anybody can grow for as long as this runs.
+func (k *Kept) Adopt(id node.ID, alpn string, conn *iroh.Conn) {
+	if conn == nil || !k.knows(id) {
+		return
+	}
+
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	// Only when nothing is held. Two devices that can both dial will each open one, and replacing
+	// a working connection with the other side's would have them closing each other's every time
+	// round — which is a conversation that stops mid-sentence every few seconds.
+	//
+	// A connection that has stopped working is dropped when it is next used, so keeping the older
+	// one costs nothing but one failed stream.
+	if _, ok := k.open[key(id, alpn)]; ok {
+		return
+	}
+	k.open[key(id, alpn)] = conn
+}
+
+// knows reports whether the address book has this device.
+//
+// Read again whenever the file has changed, because pairing is a separate process: without that a
+// device paired while this was running stays a stranger to it until the daemon is restarted.
+func (k *Kept) knows(id node.ID) bool {
+	k.bookMu.Lock()
+	defer k.bookMu.Unlock()
+
+	if k.known == nil {
+		pinned, err := book.Load()
+		if err != nil {
+			return false
+		}
+		k.known = pinned
+	} else {
+		_ = k.known.Refresh()
+	}
+
+	_, ok := k.known.ByID(id)
+	return ok
+}
+
+// Reach makes sure a connection to a device exists, without asking it anything.
+//
+// A device nothing can dial has to be the one that dials, and it has to do so before it has
+// something to say: a connection opened only when a message is written is a connection that does
+// not exist while somebody on the other side is writing one. Holding it open is what makes a
+// conversation work in both directions when only one of them can be reached.
+func (k *Kept) Reach(ctx context.Context, entry book.Entry, alpn string) error {
+	if conn := k.held(entry.ID, alpn); conn != nil {
+		return nil
+	}
+
+	// The connection is the point, and one dial serves everybody who asked for it.
+	_, err := k.dial(ctx, entry, alpn)
+	return err
+}
+
+// Existing opens a stream only on a connection already held, and refuses rather than dialling.
+//
+// For pushing down a connection somebody else opened. Dialling there would be a loop: their
+// connection makes us reach for them, ours makes them reach for us, and two devices that can both
+// dial would spend their time opening connections at each other.
+func (k *Kept) Existing(ctx context.Context, entry book.Entry, alpn string) (*iroh.Stream, error) {
+	conn := k.held(entry.ID, alpn)
+	if conn == nil {
+		return nil, fmt.Errorf("no connection to %s is being held", entry.Name)
+	}
+
+	s, err := conn.OpenStreamSync(ctx)
+	if err != nil {
+		k.drop(entry.ID, alpn, conn)
+		return nil, err
+	}
+	return s, nil
+}

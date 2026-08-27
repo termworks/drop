@@ -1,0 +1,231 @@
+package cmd
+
+import (
+	"fmt"
+
+	"github.com/bresilla/drop/src/pkg/arch"
+	"github.com/bresilla/drop/src/pkg/arch/chat"
+	"github.com/bresilla/drop/src/pkg/arch/files"
+	"github.com/bresilla/drop/src/pkg/arch/link"
+	"github.com/bresilla/drop/src/pkg/arch/note"
+	"github.com/bresilla/drop/src/pkg/arch/share"
+	"github.com/bresilla/drop/src/pkg/arch/stream"
+	"github.com/bresilla/drop/src/pkg/arch/tty"
+	"github.com/bresilla/drop/src/pkg/book"
+	"github.com/bresilla/drop/src/pkg/cast"
+	"github.com/bresilla/drop/src/pkg/conf"
+	"github.com/bresilla/drop/src/pkg/convo"
+	"github.com/bresilla/drop/src/pkg/node"
+)
+
+// What a process can be asked for.
+//
+// Which archetypes a process registers is a property of that process: the daemon answers everything
+// a config can name, a chat window answers one, and a cast answers the terminal it is showing. So
+// a registry is built where it is needed and handed in, rather than kept as a package variable.
+
+// doings is what the archetypes a process registers report back to.
+type doings struct {
+	pinned *book.Book
+	// cfg is the config once it has been read. Archetypes are registered before that, because
+	// reading a config is what needs them.
+	cfg *conf.Config
+	// notes, when set, prints one line about something that happened.
+	notes func(text string)
+	// bar, when set, prints transfers as they go.
+	bar *progress
+	// said, when set, is told about a message that was stored.
+	said func(from node.ID, m convo.Message)
+	// noticed, when set, is nudged whenever anything lands, for an interface that redraws.
+	noticed func()
+	// changed, when set, is told that something in a namespace has moved, so that whoever else
+	// holds it hears about it rather than finding out the next time they ask.
+	changed arch.Changed
+	// took, when set, is told that something arrived in a share namespace, for a handoff that is
+	// up for one transfer.
+	took func()
+	// shown, when set, answers whether a path is a screen this process is already running rather
+	// than a shell to start.
+	shown func(path string) (*cast.Caster, bool)
+	// shells is the terminals this process is running, held so they can all be ended at once.
+	shells *tty.TTY
+	// pages is the notes this process keeps, held so that the config and the timer that watches
+	// them are looking at the same ones.
+	pages *note.Note
+	// folders is the shared folders this process keeps, held for the same reason.
+	folders *files.Files
+	// pulls, when set, gets the bytes of a file a shared folder is missing from whoever has them.
+	pulls func(w files.Wanted) error
+}
+
+// reading registers every archetype for its settings alone.
+//
+// A command that only wants to read a config still needs each mount understood by the thing that
+// declared it, and nothing at all of what happens when one is opened.
+func reading() *arch.Registry {
+	return (&doings{}).serving()
+}
+
+// serving registers everything a config can name.
+func (d *doings) serving() *arch.Registry {
+	known := arch.NewRegistry()
+	known.Register(share.New(share.Into{Progress: d.moving, Landed: d.dropped}))
+	known.Register(d.filing())
+	known.Register(chat.New(chat.Into{Store: d.store}))
+	known.Register(link.New(link.Into{Store: d.store}))
+	known.Register(stream.New(stream.Into{Opened: d.opened}))
+	known.Register(d.terminals())
+	known.Register(d.noting())
+	return known
+}
+
+// talking registers the one archetype a chat answers while it is open.
+func (d *doings) talking() *arch.Registry {
+	known := arch.NewRegistry()
+	known.Register(chat.New(chat.Into{Store: d.store}))
+	return known
+}
+
+// watching registers the terminal a cast is shown at, and nothing else.
+func (d *doings) watching() *arch.Registry {
+	known := arch.NewRegistry()
+	known.Register(d.terminals())
+	return known
+}
+
+// terminals is this process's shells, made once so that two watchers of a path meet on one.
+func (d *doings) terminals() *tty.TTY {
+	if d.shells == nil {
+		d.shells = tty.New(tty.Into{Watched: d.watched, Showing: d.showing})
+	}
+	return d.shells
+}
+
+// filing is this process's directories, made once so that the config reads the same ones the timer
+// keeps level with their histories.
+func (d *doings) filing() *files.Files {
+	if d.folders == nil {
+		d.folders = files.New(files.Into{
+			Progress: d.moving,
+			Landed:   d.landed,
+			Changed:  d.moved,
+			Fetch:    d.pull,
+			Trouble:  d.note,
+		})
+	}
+	return d.folders
+}
+
+// pull gets the bytes of a file a shared folder is missing, and says so plainly in a process that
+// has nobody to get them from.
+func (d *doings) pull(w files.Wanted) error {
+	if d.pulls == nil {
+		return fmt.Errorf("there is nobody here to fetch %s from", w.Name)
+	}
+	return d.pulls(w)
+}
+
+// noting is this process's notes, made once so that the config reads the same ones the timer keeps.
+func (d *doings) noting() *note.Note {
+	if d.pages == nil {
+		d.pages = note.New(note.Into{Changed: d.moved, Named: d.person, Trouble: d.note})
+	}
+	return d.pages
+}
+
+// moved says that something in a namespace has changed, and says nothing at all in a process that
+// has nobody to say it to.
+func (d *doings) moved(path string) {
+	if d.changed != nil {
+		d.changed(path)
+	}
+}
+
+// person is what this machine calls whoever signs with a key, and empty for somebody it has never
+// met.
+func (d *doings) person(author string) string {
+	if author == "" {
+		return ""
+	}
+	if author == myKey() {
+		return node.DisplayName()
+	}
+	if d.pinned == nil {
+		return ""
+	}
+	if owner, known := d.pinned.ByUser(author); known {
+		return personOf(owner)
+	}
+	return ""
+}
+
+// stop ends whatever the archetypes are holding open.
+func (d *doings) stop() {
+	if d.shells != nil {
+		d.shells.Stop()
+	}
+}
+
+func (d *doings) showing(path string) (*cast.Caster, bool) {
+	if d.shown == nil {
+		return nil, false
+	}
+	return d.shown(path)
+}
+
+func (d *doings) moving(name string, done, total int64) {
+	if d.bar != nil {
+		d.bar.update(name, done, total)
+	}
+}
+
+// landed records a file that arrived, wherever it arrived.
+func (d *doings) landed(from node.ID, name string, size int64) {
+	d.note(fmt.Sprintf("received %s (%s)", name, bytes(size)))
+	noteFile(from, convo.In, name, size)
+	if d.cfg != nil {
+		d.cfg.FireFile(conf.File{From: nameFor(d.pinned, from), Name: name, Size: size})
+	}
+	d.knock()
+}
+
+// dropped records a file that arrived in a share namespace, which is the one kind of arrival a
+// handoff is put up for.
+func (d *doings) dropped(from node.ID, name string, size int64) {
+	d.landed(from, name, size)
+	if d.took != nil {
+		d.took()
+	}
+}
+
+// store puts an arriving message away, and acts on the kinds that ask for it.
+func (d *doings) store(from node.ID, m convo.Message) error {
+	openLinks := d.cfg != nil && d.cfg.OpenLinks
+
+	return receiving(d.pinned, openLinks, func(from node.ID, m convo.Message) {
+		if d.said != nil {
+			d.said(from, m)
+		}
+		d.knock()
+	})(from, m)
+}
+
+func (d *doings) watched(path string, from node.ID, watching int) {
+	d.note(fmt.Sprintf("%s is watching %s (%d total)", nameFor(d.pinned, from), path, watching))
+}
+
+func (d *doings) opened(path string, from node.ID) {
+	d.note(fmt.Sprintf("%s opened %s", nameFor(d.pinned, from), path))
+}
+
+func (d *doings) note(text string) {
+	if d.notes != nil {
+		d.notes(text)
+	}
+}
+
+func (d *doings) knock() {
+	if d.noticed != nil {
+		d.noticed()
+	}
+}

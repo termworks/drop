@@ -13,6 +13,7 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/convo"
+	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/proto"
 	tickets "github.com/bresilla/drop/src/pkg/ticket"
 	"io"
@@ -25,12 +26,53 @@ type Backend interface {
 	Self() (Identity, error)
 	// Peers is the address book.
 	Peers() ([]book.Entry, error)
+	// Reaching is which devices a connection is being held to, by the name they are filed under.
+	// Not a probe: it reports what is open, because dialling everybody to draw a list would spend
+	// a handshake per device per redraw.
+	Reaching() map[string]bool
+	// Knocked is what has dialled this device and been turned away, most recent first.
+	Knocked() ([]Knock, error)
+	// Managed is everything known about somebody, for the screen that manages them rather than
+	// reaches them: who they are, whether they are trusted, and what they have been granted.
+	Managed(name string) (Managed, error)
+	// Trust marks somebody trusted or not, and every machine of theirs with them.
+	Trust(name string, trusted bool) error
+	// Forget drops a pairing, so they arrive as a stranger from then on.
+	Forget(name string) error
 	// Serves asks a device what it shares with us.
 	Serves(ctx context.Context, with book.Entry) ([]proto.Served, error)
+	// Mine is what this device serves, read from its own config rather than asked over a wire.
+	Mine() ([]proto.Served, error)
+	// Holding is what is in one directory of one of this machine's own namespaces, the empty
+	// directory being its root. Read off this disk: your own namespace is a directory here, and
+	// asking a peer what is in your own pocket would be a strange way to find out.
+	Holding(path, dir string) ([]Held, error)
+	// Listing is what is in a files namespace on another device, at one directory inside it.
+	Listing(ctx context.Context, on book.Entry, path, dir string) ([]Held, error)
+	// Fetch copies one thing out of a files namespace onto this disk, and says where it landed.
+	Fetch(ctx context.Context, from book.Entry, path, dir, name string, progress func(name string, done, size int64)) (string, error)
+	// Put copies one thing from this disk into a files namespace on another device.
+	Put(ctx context.Context, to book.Entry, path, dir, from string, progress func(name string, done, size int64)) error
+	// Remove deletes one thing from a files namespace on another device.
+	Remove(ctx context.Context, on book.Entry, path, dir, name string) error
+	// Access is who may reach one of this machine's own paths: what the config says, and what
+	// has been granted here.
+	Access(path string) (Rule, error)
+	// Grant lets somebody reach a path, Refuse stops them whatever else says otherwise, and
+	// Unset leaves them to whatever the config says. All three write drop's own file, never the
+	// config.
+	Grant(path, who string) error
+	Refuse(path, who string) error
+	Unset(path, who string) error
 	// History is a conversation as it stands.
 	History(with book.Entry) ([]convo.Message, error)
-	// Say sends a message.
-	Say(ctx context.Context, to book.Entry, body string) error
+	// Compose writes a message into the conversation without sending it. It returns as fast as a
+	// disk write, because that is all it is.
+	Compose(to book.Entry, body string) error
+	// Deliver sends whatever is queued for a device.
+	Deliver(ctx context.Context, to book.Entry) error
+	// Waiting is which messages have not been acknowledged yet, by id.
+	Waiting(with book.Entry) (map[string]bool, error)
 	// Offer puts this device up for pairing and reports the name it paired with. The ticket comes
 	// back at once so it can be shown; the channel yields once the far end has finished.
 	Offer(ctx context.Context) (ticket string, done <-chan string, err error)
@@ -41,15 +83,20 @@ type Backend interface {
 	// Send copies files to a path on another device, reporting progress as it goes.
 	Send(ctx context.Context, to book.Entry, path string, files []string, progress func(name string, done, size int64)) error
 
-	// Post sends one message to a path: a line of text to a chat, a URL to a link.
-	Post(ctx context.Context, to book.Entry, path string, kind byte, body string) error
+	// AskFor rings the bell on a path that can be seen but not opened. Nothing is granted by it:
+	// the request is written down on the far machine for somebody there to answer.
+	AskFor(ctx context.Context, on book.Entry, path, why string) error
+
+	// Post sends one message to a path: a line of text to a chat, a URL to a link. The archetype
+	// is what the far end said is there, so a path is opened as the thing it is.
+	Post(ctx context.Context, to book.Entry, path, archetype string, kind byte, body string) error
 
 	// Arrivals reports when something lands from another device, so what is on screen is what
 	// has happened rather than what had happened when it was last drawn.
 	Arrivals() <-chan struct{}
 
 	// Watch reads a live path, writing what arrives into screen until ctx ends.
-	Watch(ctx context.Context, on book.Entry, path string, into io.Writer, resize func(cols, rows int)) error
+	Watch(ctx context.Context, w Watching) error
 }
 
 // level is how deep you have gone. Entering rather than tabbing: what a path is depends on the
@@ -57,9 +104,19 @@ type Backend interface {
 type level int
 
 const (
-	levelDevices level = iota
+	// levelUsers is the first screen: people, not machines.
+	levelUsers level = iota
+	// levelMachines is one user's machines.
+	levelMachines
 	levelPaths
 	levelOpen
+	// levelBrowse is one directory inside a namespace that is a directory, on this machine or on
+	// another. A level of its own, so it stands on the list the way every other screen does.
+	levelBrowse
+	// levelAccess is who may reach one of this machine's own paths, and where that is changed.
+	levelAccess
+	// levelManage is one person or machine: who they are, and what they have been given.
+	levelManage
 )
 
 // Model is the whole interface.
@@ -78,13 +135,53 @@ type Model struct {
 	linking *pairing
 	peers   []book.Entry
 	atPeer  int
-	paths   []proto.Served
+	// onSelf is true while the list is showing what this device serves rather than a peer's.
+	onSelf bool
+	paths  []proto.Served
+	// rows is how the address book was arranged into the users screen.
+	rows users
+	// atUser is whose machines are being shown, and ofUser is which peer each row came from.
+	atUser string
+	ofUser []int
+	// reaching is which devices a connection is being held to, by name.
+	reaching map[string]bool
+	// knocked is what has dialled this device and been turned away.
+	knocked []Knock
+	// rule is who may reach the path whose access is being looked at.
+	rule Rule
+	// managed is whoever the management screen is showing.
+	managed Managed
+	// under is where in a device's paths the list is standing, "/" being the top.
+	under string
+	// steps is what is at that level: namespaces, and the ways further down.
+	steps []step
+	// known is what each device said it shares, kept from last time.
+	//
+	// Asking takes a round trip over somebody else's network. Without this the list empties the
+	// moment a device is entered and fills again when the answer comes, which reads as the screen
+	// losing its mind rather than as waiting.
+	known   map[string][]proto.Served
 	atPath  int
 	loading bool
 	trouble string
 
+	// held is the directory the browse level is standing in, and dir is where in the namespace
+	// that is, "" being its root.
+	held []Held
+	dir  string
+	// removing is what has been asked about before it is taken off another machine.
+	removing string
 	// history is the conversation being shown, when the open path is a chat.
 	history []convo.Message
+	// waiting is which of those have not been acknowledged yet, by id.
+	waiting map[string]bool
+	// scroll is how many lines back from the newest the conversation is being read, so a person
+	// looking at something older is not dragged to the bottom every time somebody says a word.
+	scroll int
+	// typingAt is the live path being watched, when it can be spoken to, and atKeyboard says every
+	// key is going to it rather than to this interface.
+	typingAt   Talk
+	atKeyboard bool
 	// screen is the far end's terminal, when the open path is live.
 	screen  *screen
 	live    bool
@@ -104,6 +201,11 @@ type Model struct {
 
 	typing  string
 	writing bool
+
+	// helping is whether the keys are being shown. They are behind a press rather than along the
+	// bottom of every screen: what they are changes with where you are, and a line of them is a
+	// line the thing you came to look at does not get.
+	helping bool
 }
 
 // New builds the interface over a backend.
@@ -115,7 +217,7 @@ func New(back Backend) Model {
 	shown.SetFilteringEnabled(true)
 	shown.SetShowPagination(true)
 
-	return Model{back: back, at: levelDevices, list: shown}
+	return Model{back: back, at: levelUsers, list: shown}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -126,7 +228,11 @@ func (m Model) Init() tea.Cmd {
 
 type peersLoaded struct {
 	peers []book.Entry
-	err   error
+	// reaching is which of them a connection is being held to.
+	reaching map[string]bool
+	// knocked is what has dialled and been turned away.
+	knocked []Knock
+	err     error
 }
 
 type pathsLoaded struct {
@@ -136,9 +242,10 @@ type pathsLoaded struct {
 }
 
 type historyLoaded struct {
-	peer string
-	log  []convo.Message
-	err  error
+	peer    string
+	log     []convo.Message
+	waiting map[string]bool
+	err     error
 }
 
 // framePainted says the far end's terminal has changed and the view should be redrawn. The screen
@@ -152,7 +259,8 @@ type saidIt struct{ err error }
 func loadPeers(back Backend) tea.Cmd {
 	return func() tea.Msg {
 		peers, err := back.Peers()
-		return peersLoaded{peers: peers, err: err}
+		knocked, _ := back.Knocked()
+		return peersLoaded{peers: peers, reaching: back.Reaching(), knocked: knocked, err: err}
 	}
 }
 
@@ -176,7 +284,14 @@ func loadPaths(back Backend, with book.Entry) tea.Cmd {
 func loadHistory(back Backend, with book.Entry) tea.Cmd {
 	return func() tea.Msg {
 		log, err := back.History(with)
-		return historyLoaded{peer: with.Name, log: log, err: err}
+		if err != nil {
+			return historyLoaded{peer: with.Name, err: err}
+		}
+
+		// Which of them are still on their way, read at the same moment as the conversation: two
+		// reads a frame apart would show a message as both sent and waiting.
+		queued, err := back.Waiting(with)
+		return historyLoaded{peer: with.Name, log: log, waiting: queued, err: err}
 	}
 }
 
@@ -189,11 +304,17 @@ func (m Model) peer() (book.Entry, bool) {
 	return m.peers[m.atPeer], true
 }
 
+// path is the namespace that is open, which is whichever step of the tree was entered.
 func (m Model) path() (proto.Served, bool) {
-	if m.atPath < 0 || m.atPath >= len(m.paths) {
+	if m.atPath < 0 || m.atPath >= len(m.steps) {
 		return proto.Served{}, false
 	}
-	return m.paths[m.atPath], true
+
+	at := m.steps[m.atPath]
+	if !at.is {
+		return proto.Served{}, false
+	}
+	return at.served, true
 }
 
 // stop ends whatever is being watched, so moving away from a terminal does not leave one being read
@@ -206,8 +327,6 @@ func (m *Model) stop() {
 	m.live = false
 	m.screen = nil
 }
-
-func kindOf(s proto.Served) string { return s.Kind.String() }
 
 func shortID(e book.Entry) string {
 	id := e.ID.String()
@@ -230,35 +349,67 @@ func joinPanes(width int, panes ...string) string {
 }
 
 // say puts a message on the wire.
+// say writes a message down. It does not send it: that happens next, and takes as long as somebody
+// else's network takes, which is not how long a person should watch an empty screen.
 func say(back Backend, to book.Entry, body string) tea.Cmd {
 	return func() tea.Msg {
-		return saidIt{err: back.Say(context.Background(), to, body)}
+		return saidIt{err: back.Compose(to, body)}
 	}
 }
+
+// deliver sends what is queued, and says how it went.
+func deliver(back Backend, to book.Entry) tea.Cmd {
+	return func() tea.Msg {
+		ctx, stop := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer stop()
+
+		return delivered{err: back.Deliver(ctx, to)}
+	}
+}
+
+type delivered struct{ err error }
 
 // watch reads a live path into a screen until the context ends.
 //
 // The screen is written from this goroutine and read from the interface's, which is why the nudge
 // carries nothing: by the time the interface reacts, what it reads is whatever is there now.
-func watch(back Backend, on book.Entry, path string, into *screen, ctx context.Context) tea.Cmd {
+func watch(back Backend, on book.Entry, at proto.Served, into *screen, ctx context.Context, ready func(Talk)) tea.Cmd {
 	return func() tea.Msg {
-		err := back.Watch(ctx, on, path, into, into.Resize)
-		close(into.nudge)
+		err := back.Watch(ctx, Watching{
+			On:        on,
+			Path:      at.Path,
+			Archetype: at.Archetype,
+			Into:      into,
+			Sized:     into.Resize,
+			Ready:     ready,
+		})
+		into.Finish()
+
 		return watchEnded{err: err}
 	}
 }
 
 // waitForFrame blocks until the far end has drawn something, so the interface repaints when there is
 // a reason to rather than on a timer.
-func waitForFrame(nudge chan struct{}) tea.Cmd {
-	if nudge == nil {
+func waitForFrame(s *screen) tea.Cmd {
+	if s == nil {
 		return nil
 	}
 	return func() tea.Msg {
-		if _, ok := <-nudge; !ok {
+		// Finished wins over a repaint left in the queue. Otherwise a screen that is being taken
+		// down goes on asking to be drawn for as long as there are stale nudges behind it.
+		select {
+		case <-s.done:
+			return nil
+		default:
+		}
+
+		select {
+		case <-s.nudge:
+			return framePainted{}
+		case <-s.done:
 			return nil
 		}
-		return framePainted{}
 	}
 }
 
@@ -301,9 +452,66 @@ func (m Model) viewHeight() int {
 }
 
 // Identity is this device, as the header shows it.
+// Reach says how this device is reachable while the interface is open.
+type Reach byte
+
+const (
+	// ReachServing: this process holds the address, so it is the node.
+	ReachServing Reach = iota
+	// ReachDaemon: another process on this machine holds it and is answering for this identity.
+	ReachDaemon
+)
+
 type Identity struct {
 	Name string
 	ID   string
+	// User is the person this machine belongs to, written the way authorized_keys writes a key.
+	// It is what tells your own machines apart from everybody else's in the list.
+	User string
+	// How this device is reachable while the interface is open.
+	Reach Reach
+}
+
+// Watching is one live path being read, and everything the interface needs around it.
+type Watching struct {
+	On   book.Entry
+	Path string
+	// Archetype is what the far end said is at that path.
+	Archetype string
+	// Into is where what arrives is written.
+	Into io.Writer
+	// Sized is called when the far end reports the shape of its terminal.
+	Sized func(cols, rows int)
+	// Ready hands back a way to speak to it, once there is one.
+	Ready func(Talk)
+}
+
+// Talk is a live path that can be spoken to.
+//
+// Shape and keystrokes are two different things. A terminal takes its shape from whoever is looking
+// at it, whether or not they may type into it — a pty drawing for a window nobody has wraps every
+// line in the wrong place. What is typed is the part a namespace decides, and the far end is what
+// decides it: anything sent here is simply dropped when it says no.
+type Talk interface {
+	Resize(cols, rows int) error
+	Type(p []byte) error
+}
+
+// loadMine reads what this device serves, from its own config.
+func loadMine(back Backend) tea.Cmd {
+	return func() tea.Msg {
+		mine, err := back.Mine()
+		return pathsLoaded{peer: "", paths: mine, err: err}
+	}
+}
+
+// idOf turns a printed identity back into one, for the rows that show this device.
+func idOf(text string) node.ID {
+	id, err := node.ParseID(text)
+	if err != nil {
+		return node.ID{}
+	}
+	return id
 }
 
 type selfLoaded struct {
@@ -402,5 +610,31 @@ func listenFor(from <-chan struct{}) tea.Cmd {
 			return nil
 		}
 		return arrived{}
+	}
+}
+
+// Knock is one device that dialled this one and was not let in.
+type Knock struct {
+	ID string
+	// At is when it last tried, and Asked is the path it wanted.
+	At    time.Time
+	Asked string
+	Why   string
+}
+
+// talking carries the way to speak to a live path back into the model.
+type talking struct{ talk Talk }
+
+// waitForTalk hands the model a way to speak to a live path, and tells the far end the shape of the
+// window as soon as there is one to tell.
+func waitForTalk(said chan Talk, cols, rows int) tea.Cmd {
+	return func() tea.Msg {
+		talk, ok := <-said
+		if !ok || talk == nil {
+			return nil
+		}
+		_ = talk.Resize(cols, rows)
+
+		return talking{talk: talk}
 	}
 }

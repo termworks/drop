@@ -152,7 +152,7 @@ func tree(t *testing.T, mounts ...Mount) *Table {
 func TestAccessInheritsDownThePath(t *testing.T) {
 	table := tree(t,
 		Mount{Path: "/friends", Access: Access{Named: []string{"bob", "carol"}}},
-		Mount{Path: "/friends/chat", Kind: KindChat},
+		Mount{Path: "/friends/chat", Archetype: "chat"},
 	)
 
 	if ok, why := table.Admits("/friends/chat", bob()); !ok {
@@ -168,7 +168,7 @@ func TestADeeperRuleReplacesTheOneAbove(t *testing.T) {
 	hash, _ := passwd.Hash("word")
 	table := tree(t,
 		Mount{Path: "/friends", Access: Access{Named: []string{"bob", "carol"}}},
-		Mount{Path: "/friends/scratch", Kind: KindFiles, Access: Access{Password: hash}},
+		Mount{Path: "/friends/scratch", Archetype: "share", Access: Access{Password: hash}},
 	)
 
 	// carol still has the branch
@@ -187,7 +187,7 @@ func TestADeeperRuleReplacesTheOneAbove(t *testing.T) {
 func TestAPathWithNoRuleAnywhereAboveIsClosed(t *testing.T) {
 	table := tree(t,
 		Mount{Path: "/friends", Access: Access{Named: []string{"bob"}}},
-		Mount{Path: "/private", Kind: KindFiles},
+		Mount{Path: "/private", Archetype: "share"},
 	)
 
 	if ok, _ := table.Admits("/private", bob()); ok {
@@ -202,7 +202,7 @@ func TestAPathWithNoRuleAnywhereAboveIsClosed(t *testing.T) {
 func TestARuleDoesNotReachASibling(t *testing.T) {
 	table := tree(t,
 		Mount{Path: "/a", Access: Access{Named: []string{"bob"}}},
-		Mount{Path: "/b", Kind: KindChat, Access: Access{Named: []string{"carol"}}},
+		Mount{Path: "/b", Archetype: "chat", Access: Access{Named: []string{"carol"}}},
 	)
 
 	if ok, _ := table.Admits("/b", bob()); ok {
@@ -217,7 +217,7 @@ func TestARuleDoesNotReachASibling(t *testing.T) {
 func TestARuleDoesNotReachAPathThatMerelyStartsTheSame(t *testing.T) {
 	table := tree(t,
 		Mount{Path: "/friends", Access: Access{Named: []string{"bob"}}},
-		Mount{Path: "/friendsonly", Kind: KindChat},
+		Mount{Path: "/friendsonly", Archetype: "chat"},
 	)
 
 	if ok, _ := table.Admits("/friendsonly", bob()); ok {
@@ -229,7 +229,7 @@ func TestTheDeepestRuleWins(t *testing.T) {
 	table := tree(t,
 		Mount{Path: "/one", Access: Access{AnyPaired: true}},
 		Mount{Path: "/one/two", Access: Access{Named: []string{"bob"}}},
-		Mount{Path: "/one/two/five/eight", Kind: KindFiles},
+		Mount{Path: "/one/two/five/eight", Archetype: "share"},
 	)
 
 	if ok, _ := table.Admits("/one/two/five/eight", carol()); ok {
@@ -240,5 +240,308 @@ func TestTheDeepestRuleWins(t *testing.T) {
 	}
 	if ok, _ := table.Admits("/one", carol()); !ok {
 		t.Fatal("carol lost the shallower branch")
+	}
+}
+
+// A name on its own is a person: any machine they have signed a badge for.
+func TestANameAdmitsAnyMachineOfThatPerson(t *testing.T) {
+	rule := Access{Named: []string{"bob"}}
+
+	for _, machine := range []string{"laptop", "phone", "a machine nobody has seen before"} {
+		who := Caller{ID: "abc", Name: machine, UserName: "bob", Paired: true}
+		if ok, why := rule.Admits(who); !ok {
+			t.Errorf("bob's %s was refused: %s", machine, why)
+		}
+	}
+
+	// Somebody else's machine is not bob's, whatever it is called.
+	if ok, _ := rule.Admits(Caller{ID: "abc", Name: "laptop", UserName: "carol", Paired: true}); ok {
+		t.Error("carol was admitted by a rule naming bob")
+	}
+}
+
+// A name with a machine after it is that machine and no other.
+func TestANameWithAMachineAdmitsOnlyThatOne(t *testing.T) {
+	rule := Access{Named: []string{"bob@laptop"}}
+
+	if ok, why := rule.Admits(Caller{ID: "abc", Name: "laptop", UserName: "bob", Paired: true}); !ok {
+		t.Errorf("bob's laptop was refused: %s", why)
+	}
+	if ok, _ := rule.Admits(Caller{ID: "abc", Name: "phone", UserName: "bob", Paired: true}); ok {
+		t.Error("bob's phone was admitted by a rule naming his laptop")
+	}
+}
+
+// A device paired with --machine belongs to nobody here and answers to its own name. It is the only
+// way to write a rule for a build server, or anything else that is not somebody's identity.
+func TestAMachinePairedOnItsOwnIsNamedByItself(t *testing.T) {
+	rule := Access{Named: []string{"buildbox"}}
+
+	if ok, why := rule.Admits(Caller{ID: "abc", Name: "buildbox", Paired: true}); !ok {
+		t.Errorf("a machine paired on its own was refused by its own name: %s", why)
+	}
+}
+
+// A public path is reachable by whoever knows the id, paired or not. It is the only rule that
+// admits a stranger, and it has to be asked for.
+func TestAPublicPathAdmitsAnybody(t *testing.T) {
+	stranger := Caller{ID: "somebody nobody has met"}
+
+	if ok, _ := (Access{}).Admits(stranger); ok {
+		t.Fatal("a path with no rule admitted a stranger")
+	}
+	if ok, _ := (Access{AnyPaired: true}).Admits(stranger); ok {
+		t.Fatal("a paired-only path admitted a stranger")
+	}
+	if ok, why := (Access{Anyone: true}).Admits(stranger); !ok {
+		t.Fatalf("a public path refused a stranger: %s", why)
+	}
+}
+
+// A visible path says it exists and refuses to be opened. It is the rung between shared and
+// secret: somebody can ask for it by name rather than having to be told it is there.
+func TestAVisiblePathIsSeenButNotOpened(t *testing.T) {
+	rule := Access{Named: []string{"bob"}, Visible: []string{"carol"}}
+
+	carol := Caller{ID: "abc", Name: "laptop", UserName: "carol", Paired: true}
+	if ok, _ := rule.Admits(carol); ok {
+		t.Error("a visible path let somebody in")
+	}
+	if !rule.Sees(carol) {
+		t.Error("a visible path was hidden from the person it is visible to")
+	}
+
+	// Somebody it says nothing about learns nothing.
+	dave := Caller{ID: "def", Name: "phone", UserName: "dave", Paired: true}
+	if rule.Sees(dave) {
+		t.Error("a visible path was shown to somebody it does not name")
+	}
+
+	// And whoever may open it can obviously see it.
+	bob := Caller{ID: "ghi", Name: "laptop", UserName: "bob", Paired: true}
+	if !rule.Sees(bob) {
+		t.Error("somebody who may open a path cannot see it")
+	}
+}
+
+// Visible to anybody paired, which is the ordinary way to put something up to be asked for.
+func TestAPathCanBeVisibleToEveryonePaired(t *testing.T) {
+	rule := Access{Named: []string{"bob"}, AnyVisible: true}
+
+	stranger := Caller{ID: "abc"}
+	if rule.Sees(stranger) {
+		t.Error("a stranger saw a path that is visible to paired devices")
+	}
+
+	carol := Caller{ID: "def", Name: "laptop", UserName: "carol", Paired: true}
+	if !rule.Sees(carol) {
+		t.Error("somebody paired could not see it")
+	}
+	if ok, _ := rule.Admits(carol); ok {
+		t.Error("being able to see it let them in")
+	}
+}
+
+// A refusal beats being visible too, or revoking somebody would still leave them able to see what
+// they used to reach and ask for it again.
+func TestARefusalHidesAPathAsWell(t *testing.T) {
+	rule := Access{AnyVisible: true, Refused: []string{"bob"}}
+
+	bob := Caller{ID: "abc", Name: "laptop", UserName: "bob", Paired: true}
+	if rule.Sees(bob) {
+		t.Error("somebody refused could still see the path")
+	}
+}
+
+// Pairing is recognition; trust is the second, deliberate step. A narrow rule is written against
+// the second, or "everybody I have ever met" and "everybody I trust" would be the same set.
+func TestTrustedIsNarrowerThanPaired(t *testing.T) {
+	met := Caller{ID: "abc", Name: "laptop", Paired: true}
+	trusted := Caller{ID: "def", Name: "desk", Paired: true, Trusted: true}
+
+	wide := Access{AnyPaired: true}
+	if ok, why := wide.Admits(met); !ok {
+		t.Errorf("a paired device was refused a paired rule: %s", why)
+	}
+
+	narrow := Access{AnyTrusted: true}
+	if ok, _ := narrow.Admits(met); ok {
+		t.Error("somebody merely paired with got into a trusted rule")
+	}
+	if ok, why := narrow.Admits(trusted); !ok {
+		t.Errorf("a trusted device was refused: %s", why)
+	}
+
+	// And an unpaired stranger is neither.
+	if ok, _ := narrow.Admits(Caller{ID: "ghi", Trusted: true}); ok {
+		t.Error("an unpaired caller claiming trust got in")
+	}
+}
+
+// Visibility follows the same line: something put up to be asked for is shown to the people you
+// trust, not to everybody you have ever met.
+func TestVisibilityCanFollowTrust(t *testing.T) {
+	rule := Access{TrustedVisible: true}
+
+	met := Caller{ID: "abc", Name: "laptop", Paired: true}
+	if rule.Sees(met) {
+		t.Error("somebody merely paired with saw a path visible to trusted devices")
+	}
+
+	trusted := Caller{ID: "def", Name: "desk", Paired: true, Trusted: true}
+	if !rule.Sees(trusted) {
+		t.Error("a trusted device could not see it")
+	}
+	if ok, _ := rule.Admits(trusted); ok {
+		t.Error("being trusted enough to see it was enough to open it")
+	}
+}
+
+// The table is read from a goroutine per connection while a cast goes up and a handoff goes down on
+// another. Reading the mounts without the lock is a fatal runtime error that no recover catches, so
+// what is at stake is the whole daemon and every connection it holds.
+func TestTheTableIsJudgedWhileMountsComeAndGo(t *testing.T) {
+	table := NewTable()
+	if err := table.Add(Mount{Path: "/work", Archetype: "files", Access: Access{AnyPaired: true}}); err != nil {
+		t.Fatalf("adding /work: %v", err)
+	}
+
+	churning := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-churning:
+				return
+			default:
+			}
+			_ = table.Add(Mount{Path: "/cast", Archetype: "tty", Access: Access{AnyTrusted: true}})
+			table.Drop("/cast")
+		}
+	}()
+
+	for range 20000 {
+		if _, found := table.AccessFor("/work/deep/enough"); !found {
+			t.Fatal("the rule on /work stopped governing what is under it")
+		}
+	}
+	close(churning)
+	<-stopped
+}
+
+// A guess costs this machine 64 MiB and three passes of argon2, and it is whoever dialled that
+// chooses when to spend them. A caller some other rule already admits must never reach the hash.
+func TestACallerAdmittedOtherwiseNeverPaysForAGuess(t *testing.T) {
+	hash, err := passwd.Hash("let me in")
+	if err != nil {
+		t.Fatalf("hashing: %v", err)
+	}
+
+	guarded := Access{AnyPaired: true, Password: hash}
+	paired := Caller{ID: "aaaa", Name: "bob", Paired: true, Password: "nope"}
+
+	// Counted rather than timed: how many guesses were paid for is the question, and a stopwatch
+	// answers it only on a machine doing nothing else.
+	before := passwd.Spent()
+
+	if ok, _ := guarded.Admits(paired); !ok {
+		t.Fatal("a paired caller was refused a path shared with anyone paired")
+	}
+	if paid := passwd.Spent() - before; paid != 0 {
+		t.Errorf("admitting a paired caller paid for %d guesses", paid)
+	}
+}
+
+// Under All every rule has to pass, so one that has already failed settles it. Hashing afterwards
+// is work a stranger asked for and nothing turns on.
+func TestARuleThatAlreadyFailedDoesNotReachTheHash(t *testing.T) {
+	hash, err := passwd.Hash("let me in")
+	if err != nil {
+		t.Fatalf("hashing: %v", err)
+	}
+
+	both := Access{All: true, AnyPaired: true, Password: hash}
+	before := passwd.Spent()
+
+	if ok, _ := both.Admits(Caller{ID: "cccc", Password: "let me in"}); ok {
+		t.Fatal("a path needing pairing and a password was opened with the password alone")
+	}
+	if paid := passwd.Spent() - before; paid != 0 {
+		t.Errorf("refusing an unpaired caller paid for %d guesses", paid)
+	}
+}
+
+// What machine a caller is sitting at must never be what lets them in.
+//
+// A plate is signed by a machine key, and on a machine without a TPM that key is derived from a
+// serial every account there can read — so every account there can produce it. It says which
+// hardware, and it can never say which person. If a rule could be satisfied by it, anybody with a
+// login on a machine you trust would inherit that trust.
+func TestWhatMachineSomebodyIsAtNeverLetsThemIn(t *testing.T) {
+	// A caller who is nobody: no pairing, no user key, no password — but standing on a machine
+	// with a name, and claiming an account on it.
+	standing := Caller{
+		ID:      "0123456789abcdef",
+		Machine: "a machine you have paired with a hundred times",
+		Whose:   "me",
+	}
+
+	for what, rule := range map[string]Access{
+		"paired":         {AnyPaired: true},
+		"trusted":        {AnyTrusted: true},
+		"a person":       {Named: []string{"me"}},
+		"a machine":      {Named: []string{"a machine you have paired with a hundred times"}},
+		"a key":          {Keys: []string{"a machine you have paired with a hundred times"}},
+		"nothing at all": {},
+	} {
+		if ok, _ := rule.Admits(standing); ok {
+			t.Errorf("a rule for %q was satisfied by what machine somebody is at", what)
+		}
+	}
+
+	// And the same caller, once actually paired, is let in on the strength of the pairing — so the
+	// check above is refusing the plate and not refusing everything.
+	paired := standing
+	paired.Paired = true
+	if ok, why := (Access{AnyPaired: true}).Admits(paired); !ok {
+		t.Fatalf("a paired caller was refused: %s", why)
+	}
+}
+
+// One guess is paid for once, however many rules ask about it.
+//
+// Resolving a path walks every rule above it, and each one that guards with a password asks the
+// same question of the same guess. Each asking is 64 MiB and three passes of argon2. Without
+// somewhere to remember the answer, the allowance that counts six guesses is really letting a peer
+// spend six times however many rules they can get in the way — which they choose, by choosing how
+// deep a path to ask for.
+func TestOneGuessIsPaidForOnce(t *testing.T) {
+	hash, err := passwd.Hash("open sesame")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	who := Caller{ID: "abc", Password: "not it", Tried: passwd.NewTried()}
+	rule := Access{Password: hash}
+
+	was := passwd.Spent()
+	for range 8 {
+		if ok, _ := rule.Admits(who); ok {
+			t.Fatal("the wrong password was admitted")
+		}
+	}
+	if cost := passwd.Spent() - was; cost != 1 {
+		t.Fatalf("one guess against eight rules cost %d hashes, want 1", cost)
+	}
+
+	// A different guess is a different question, and is paid for.
+	other := who
+	other.Password = "open sesame"
+	if ok, _ := rule.Admits(other); !ok {
+		t.Fatal("the right password was refused")
+	}
+	if cost := passwd.Spent() - was; cost != 2 {
+		t.Fatalf("two guesses cost %d hashes, want 2", cost)
 	}
 }

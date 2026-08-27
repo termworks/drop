@@ -352,10 +352,12 @@ laptop's current network:
                               │
   ┌────────────────────────────────────────────────────────────────────┐
   │ 4. TALK                                                            │
-  │    open the namespace ─┬─ files    (known or unknown size)         │
+  │    open a namespace, and the archetype it names answers:           │
+  │                        ┌─ share    (pushed in, once)               │
+  │                        ├─ files    (a folder, walked)              │
   │                        ├─ stream   (endless, one direction)        │
   │                        ├─ tty      (a terminal, fanned out)        │
-  │                        ├─ chat     (messages, links)               │
+  │                        ├─ chat     (messages)                      │
   │                        └─ link     (open it over there)            │
   │    many streams multiplexed over the one connection                │
   └────────────────────────────────────────────────────────────────────┘
@@ -373,13 +375,15 @@ ordinary work, `drop/pair/1` for pairing, `drop/hello/1` for a liveness check.
 
 ## 8. Namespaces, so this is not a pile of subcommands
 
-A device has one identity and serves named paths under it. What a path *is* is
-declared in the config, not baked into a command:
+A device has one identity and serves named paths under it. Each path is a
+**namespace**, and what it *means* is its **archetype** — declared in the
+config, not baked into a command:
 
 ```
    laptop
-     ├── /inbox          files    ~/Downloads
-     ├── /inbox/photos   files    ~/Pictures/drop
+     ├── /inbox          share    ~/Downloads          things land here
+     ├── /inbox/photos   share    ~/Pictures/drop
+     ├── /papers         files    ~/papers             read-only, walked
      ├── /logs           stream   journalctl -f
      ├── /term           tty      /bin/sh, read-only
      ├── /chat           chat
@@ -391,9 +395,19 @@ what happens is whatever the far side said that path is. Lookup is
 longest-declared-prefix on segment boundaries, so `/inbox/photos` wins over
 `/inbox` without `/inbox` having to know it exists.
 
+Two namespaces of one archetype are two instances of the same thing, with
+separate settings, rules and state — `/inbox` and `/inbox/photos` above. The
+layer that resolves a path and checks a rule knows only which archetype a
+namespace names, never what that name means; every one of them is an
+implementation of `arch.Archetype` and a line in `src/cmd/archetypes.go`.
+
+`share` and `files` both point at a directory and are opposites. A `share` is
+pushed into and never read; a `files` is listed and read, and written to only
+when the mount says `writable = true`, which also means deleted from.
+
 A `tty` namespace serves **one** terminal fanned out to every watcher, not one
-shell per caller — the terminal belongs to the namespace, and joining sends a
-clear plus the scrollback so a late watcher sees the same screen.
+shell per caller — the terminal belongs to the namespace, and joining hands over
+the screen as it stands so a late watcher sees the same picture.
 
 ---
 
@@ -449,7 +463,8 @@ src/pkg/rendezvous/derive.go    rung 3: the derived identity and the windows
 src/pkg/rendezvous/service.go   publishing one record per pair, and resolving
 src/pkg/proto/pair.go           the exchange the shared secret comes from
 src/pkg/proto/session.go        what a connection can be asked to do
-src/pkg/ns/                     paths, kinds, and the mount table
+src/pkg/ns/                     namespaces: paths, access rules, the mount table
+src/pkg/arch/                   archetypes: what a namespace means, one package each
 src/pkg/term/screen.go          the terminal grid another device is drawing on
 src/pkg/term/frame.go           what changed since a watcher was last told
 src/cmd/dial.go                 the ladder itself, in twenty lines

@@ -7,18 +7,32 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/bresilla/drop/src/pkg/arch/chat"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/plain"
 	"github.com/bresilla/drop/src/pkg/proto"
 )
+
+// ChatPath is where a conversation is served, and where a queue for a peer is delivered.
+const ChatPath = "/chat"
 
 // deliverTo sends whatever is waiting for a peer and clears what the far end confirms it stored.
 //
 // Undelivered messages stay queued rather than being dropped, which is what makes sending to a
 // device that is asleep work: it goes out when the device comes back.
-func deliverTo(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.Entry, path string) (int, error) {
+func deliverTo(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.Entry, path, archetype string) (int, error) {
+	return deliverOver(ctx, best(n, lan), entry, path, archetype)
+}
+
+// deliverOver sends what is queued over whatever connection the caller has.
+//
+// A held one where there is one. Finding a device and standing up a relay session is five seconds;
+// a message on a connection that already exists is eight milliseconds. Dialling again for every
+// line somebody types throws that away.
+func deliverOver(ctx context.Context, over reaches, entry book.Entry, path, archetype string) (int, error) {
 	store, err := convo.Open(entry.ID)
 	if err != nil {
 		return 0, err
@@ -32,26 +46,31 @@ func deliverTo(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book
 		return 0, nil
 	}
 
-	conn, s, err := reach(ctx, n, lan, entry, node.ALPNSession)
+	done, s, err := over.To(ctx, entry, node.ALPNSession)
 	if err != nil {
 		return 0, err
 	}
-	defer conn.Close()
+	defer done.Close()
 	defer s.Close()
 
-	stored, err := proto.SendMessages(ctx, s, path, waiting, node.DisplayName())
-	if err != nil {
-		return 0, err
+	conn, err := proto.Open(s, path, archetype, 0, "", node.DisplayName())
+	if err == nil {
+		var stored []string
+		if stored, err = chat.Send(conn, waiting); err == nil {
+			return len(stored), store.Delivered(stored...)
+		}
 	}
-	if err := store.Delivered(stored...); err != nil {
-		return 0, err
-	}
-	return len(stored), nil
-}
 
-// deliver sends into the default chat namespace.
-func deliver(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.Entry) (int, error) {
-	return deliverTo(ctx, n, lan, entry, "/chat")
+	// A settled refusal is an answer. Leaving those queued would retry them against a decision on
+	// every connection from now on, and go on telling the sender they are on their way. A device
+	// answering with one namespace up — a chat, a cast, a handoff — says no to everything else it
+	// will serve again a minute later, and that is not settled.
+	if proto.Settled(err) {
+		if done := ids(waiting); len(done) > 0 {
+			_ = store.Delivered(done...)
+		}
+	}
+	return 0, err
 }
 
 // compose queues a message for a peer without needing the network.
@@ -123,6 +142,11 @@ func nameFor(pinned *book.Book, id node.ID) string {
 }
 
 // render prints one message the way a log reads.
+// render is one message as a line of a conversation.
+//
+// What somebody said is theirs, and it is also bytes going to a terminal. Kept as it arrived on the
+// disk, because a conversation is a record of what was said; made safe here, because this is where
+// it stops being a record and starts being output.
 func render(who string, m convo.Message) string {
 	arrow := "→"
 	if m.Dir == convo.In {
@@ -130,19 +154,24 @@ func render(who string, m convo.Message) string {
 	}
 
 	stamp := m.When().Format("15:04")
+	body, extra := plain.Text(m.Body, MaxSaid), plain.Line(m.Extra)
 	switch m.Kind {
 	case convo.KindLink:
-		return fmt.Sprintf("%s %s %-12s link  %s", stamp, arrow, who, m.Body)
+		return fmt.Sprintf("%s %s %-12s link  %s", stamp, arrow, who, body)
 	case convo.KindFile:
-		return fmt.Sprintf("%s %s %-12s file  %s (%s)", stamp, arrow, who, m.Body, m.Extra)
+		return fmt.Sprintf("%s %s %-12s file  %s (%s)", stamp, arrow, who, body, extra)
 	case convo.KindEvent:
-		return fmt.Sprintf("%s   %-12s %s", stamp, who, m.Body)
+		return fmt.Sprintf("%s   %-12s %s", stamp, who, body)
 	default:
-		return fmt.Sprintf("%s %s %-12s %s", stamp, arrow, who, m.Body)
+		return fmt.Sprintf("%s %s %-12s %s", stamp, arrow, who, body)
 	}
 }
 
-// noteFile records a file changing hands, so `drop log` reads as the whole story.
+// MaxSaid is how much of one message a line of a conversation shows. Generous, because a message is
+// the thing somebody wanted to say, and bounded, because it is going onto somebody else's screen.
+const MaxSaid = 2000
+
+// noteFile records a file changing hands, so `drop me log` reads as the whole story.
 func noteFile(with node.ID, dir byte, name string, size int64) {
 	store, err := convo.Open(with)
 	if err != nil {
@@ -163,4 +192,13 @@ func kindName(kind byte) string {
 	default:
 		return "text"
 	}
+}
+
+// ids is what a batch of messages is called, for taking them off the queue.
+func ids(all []convo.Message) []string {
+	out := make([]string, 0, len(all))
+	for _, m := range all {
+		out = append(out, m.ID)
+	}
+	return out
 }

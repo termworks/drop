@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/hkdf"
 
@@ -21,6 +22,10 @@ const SecretBytes = 32
 // nonceBytes is each side's contribution to the derivation.
 const nonceBytes = 32
 
+// mostName is as long a name as a far end may suggest for itself. It becomes a key in the address
+// book and something a person types, not somewhere to put a paragraph.
+const mostName = 64
+
 // pairMsg is what each side sends. The stream is already encrypted and both ends authenticated by
 // libp2p, so the nonces need only be fresh, not secret in transit.
 type pairMsg struct {
@@ -29,6 +34,10 @@ type pairMsg struct {
 	Addrs []string
 	Name  string
 	Nonce []byte
+	// Badge and Signed say who this machine belongs to, so that pairing is with a person rather
+	// than only with the device in front of you.
+	Badge  []byte
+	Signed []byte
 }
 
 func (m pairMsg) encode() []byte {
@@ -41,6 +50,8 @@ func (m pairMsg) encode() []byte {
 		w.String(a)
 	}
 	w.Bytes(m.Nonce)
+	w.Bytes(m.Badge)
+	w.Bytes(m.Signed)
 	return w.Body()
 }
 
@@ -52,7 +63,7 @@ func decodePairMsg(body []byte) (pairMsg, error) {
 	if err != nil {
 		return out, err
 	}
-	name, err := r.String(wire.MaxString)
+	name, err := r.String(mostName)
 	if err != nil {
 		return out, err
 	}
@@ -83,6 +94,16 @@ func decodePairMsg(body []byte) (pairMsg, error) {
 		return out, err
 	}
 	out.Nonce = append([]byte(nil), nonce...)
+
+	badge, err := r.Bytes(wire.MaxString)
+	if err != nil {
+		return out, err
+	}
+	signed, err := r.Bytes(wire.MaxString)
+	if err != nil {
+		return out, err
+	}
+	out.Badge, out.Signed = badge, signed
 	return out, nil
 }
 
@@ -94,6 +115,11 @@ type Pairing struct {
 	// Proof is what the initiator sent to show it held the pairing code.
 	Proof []byte
 	Addrs []string
+	// User is the far end's user key, if its badge checked out. Pairing with a person means
+	// keeping this: it is what lets their other machines be recognised without pairing again.
+	User string
+	// Machine is what they call this machine of theirs.
+	Machine string
 }
 
 // NewCode generates a one-time pairing code: 60 bits, which is far past guessing when the only way
@@ -129,15 +155,24 @@ func deriveSecret(self, other node.ID, selfNonce, otherNonce []byte) ([]byte, er
 }
 
 // AnswerPairing completes the exchange from the receiving side, returning what was derived.
-func AnswerPairing(s Stream, self node.ID, name string, addrs []string) (Pairing, error) {
+//
+// from is the id the transport authenticated for the far end. It is the id that is paired with;
+// what the message says about itself is only checked against it.
+func AnswerPairing(s Stream, self, from node.ID, name string, addrs []string) (Pairing, error) {
 	var out Pairing
 
 	conn := wire.NewConn(s)
+
+	// A pairing window is open to whoever dials during it, so the request is bounded: a stream that
+	// says nothing is a goroutine held for the rest of the process's life.
+	_ = s.SetReadDeadline(time.Now().Add(settleIn))
 
 	_, body, err := conn.ReadFrame()
 	if err != nil {
 		return out, err
 	}
+	_ = s.SetReadDeadline(time.Time{})
+
 	theirs, err := decodePairMsg(body)
 	if err != nil {
 		return out, err
@@ -147,6 +182,7 @@ func AnswerPairing(s Stream, self node.ID, name string, addrs []string) (Pairing
 	}
 
 	mine := pairMsg{From: self.String(), Name: name, Addrs: addrs, Nonce: make([]byte, nonceBytes)}
+	mine.Badge, mine.Signed = carried()
 	if _, err := rand.Read(mine.Nonce); err != nil {
 		return out, err
 	}
@@ -154,16 +190,18 @@ func AnswerPairing(s Stream, self node.ID, name string, addrs []string) (Pairing
 		return out, err
 	}
 
-	return finishPairing(self, theirs, mine)
+	return finishPairing(self, from, theirs, mine)
 }
 
-// Pair runs the exchange from the initiating side.
-func Pair(s Stream, self node.ID, name string, proof []byte, addrs []string) (Pairing, error) {
+// Pair runs the exchange from the initiating side. from is the id the transport authenticated for
+// the device whose ticket is being answered.
+func Pair(s Stream, self, from node.ID, name string, proof []byte, addrs []string) (Pairing, error) {
 	var out Pairing
 
 	conn := wire.NewConn(s)
 
 	mine := pairMsg{From: self.String(), Name: name, Proof: proof, Addrs: addrs, Nonce: make([]byte, nonceBytes)}
+	mine.Badge, mine.Signed = carried()
 	if _, err := rand.Read(mine.Nonce); err != nil {
 		return out, fmt.Errorf("generating a nonce: %w", err)
 	}
@@ -183,22 +221,55 @@ func Pair(s Stream, self node.ID, name string, proof []byte, addrs []string) (Pa
 		return out, fmt.Errorf("malformed pairing response")
 	}
 
-	return finishPairing(self, theirs, mine)
+	return finishPairing(self, from, theirs, mine)
 }
 
-// finishPairing is the half both sides share: the remote id comes from the connection, which the
-// transport has already authenticated, so nothing here has to be taken on trust from the message.
-func finishPairing(self node.ID, theirs, mine pairMsg) (Pairing, error) {
+// finishPairing is the half both sides share: the remote id is the one the connection proved, so
+// nothing here is taken on trust from the message.
+//
+// The id in the message is a cross-check and nothing more. A device that names somebody else's id
+// is trying to write an address book entry for a machine it does not hold the key to, and the
+// exchange ends there rather than filing it.
+func finishPairing(self, from node.ID, theirs, mine pairMsg) (Pairing, error) {
 	var out Pairing
 
-	remote, err := node.ParseID(theirs.From)
+	claimed, err := node.ParseID(theirs.From)
 	if err != nil {
 		return out, fmt.Errorf("reading the far end's id: %w", err)
 	}
+	if claimed != from {
+		return out, fmt.Errorf("pairing with %s: it calls itself %s", from, claimed)
+	}
 
-	secret, err := deriveSecret(self, remote, mine.Nonce, theirs.Nonce)
+	secret, err := deriveSecret(self, from, mine.Nonce, theirs.Nonce)
 	if err != nil {
 		return out, err
 	}
-	return Pairing{Peer: remote, Name: theirs.Name, Secret: secret, Proof: theirs.Proof, Addrs: theirs.Addrs}, nil
+	out = Pairing{Peer: from, Name: bookName(theirs.Name), Secret: secret, Proof: theirs.Proof, Addrs: theirs.Addrs}
+
+	// The badge is checked against the id the transport proved, so a message claiming somebody
+	// else's badge is worth exactly nothing.
+	if badge := vouched(from, Opening{Badge: theirs.Badge, Signed: theirs.Signed}); badge.Shown() {
+		out.User, out.Machine = badge.Key, badge.As
+	}
+	return out, nil
+}
+
+// bookName is what a far end's suggestion of what to call it is worth as an address book key.
+//
+// A name the far end chose is a convenience, and it ends up as a key in a file and as something
+// typed on a command line. Anything with a control character, a newline or a path separator in it
+// is worth nothing, and so is anything longer than a name; the caller falls back to the id.
+func bookName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > mostName {
+		return ""
+	}
+
+	for _, r := range name {
+		if r < ' ' || r == 0x7f || r == '/' || r == '\\' {
+			return ""
+		}
+	}
+	return name
 }

@@ -147,18 +147,11 @@ make.recipe{
   end,
 }
 
--- UPX at -9. The compression level is free at startup: -1, -5 and -9 all unpack in the same
--- 0.09s, because the default decompressor runs at a speed the level does not change. Only lzma is
--- slow to unpack (0.40s), which is why it is not used here.
---
---   uncompressed   32.1 MB   0.005s to start
---   -9             11.7 MB   0.09s
---   --best --lzma   8.6 MB   0.40s
---
--- Without upx the raw binary is copied through, so a machine that lacks it still builds.
+-- Copied rather than compressed. A packer trades startup time for a smaller file, and this is a
+-- binary that gets run, not shipped over a wire that charges by the megabyte.
 make.recipe{
   name = "_pack",
-  desc = "pack the compiled binary",
+  desc = "put the compiled binary where it is run from",
   inputs = { RAW },
   outputs = { BIN },
   stale = "content",
@@ -169,13 +162,6 @@ make.recipe{
     local staging = BIN .. ".new"
 
     sh.cp(RAW, staging)
-
-    if oslo.run{ "sh", "-c", "command -v upx" }.ok then
-      sh.upx("-9", "-q", staging)
-    else
-      print(oslo.ui.style("upx not found; shipping the binary uncompressed", { fg = "yellow" }))
-    end
-
     sh.mv("-f", staging, BIN)
   end,
 }

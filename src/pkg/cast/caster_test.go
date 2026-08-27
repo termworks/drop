@@ -3,6 +3,7 @@ package cast
 import (
 	"bytes"
 	"testing"
+	"time"
 )
 
 func drain(v *Viewer) []byte {
@@ -36,17 +37,17 @@ func TestEveryWatcherGetsEveryChunk(t *testing.T) {
 	}
 }
 
-// A watcher that joins late gets the recent scrollback, or it renders onto a blank screen.
-func TestLateWatcherGetsTheScrollback(t *testing.T) {
+// A watcher that joins late is handed the screen as it stands, or it renders onto a blank one.
+func TestLateWatcherGetsTheScreen(t *testing.T) {
 	c := New(80, 24)
 
 	c.Write([]byte("printed before anyone was watching\n"))
 
-	v, replay, cols, rows := c.Join()
+	v, picture, cols, rows := c.Join()
 	defer c.Leave(v)
 
-	if string(replay) != "printed before anyone was watching\n" {
-		t.Fatalf("replay = %q", replay)
+	if !bytes.Contains(picture, []byte("printed before anyone was watching")) {
+		t.Fatalf("what was on the screen is missing: %q", picture)
 	}
 	if cols != 80 || rows != 24 {
 		t.Fatalf("size came back as %dx%d, want 80x24", cols, rows)
@@ -99,7 +100,9 @@ func TestLeaveIsSafeAfterBeingDropped(t *testing.T) {
 	c.Leave(v)
 }
 
-func TestScrollbackIsCapped(t *testing.T) {
+// What a watcher is handed on joining is a screen, not a log. However long a terminal has been
+// running, the picture is one screenful.
+func TestWhatAWatcherJoinsWithIsOneScreen(t *testing.T) {
 	c := New(80, 24)
 
 	chunk := bytes.Repeat([]byte{'x'}, 8<<10)
@@ -107,9 +110,49 @@ func TestScrollbackIsCapped(t *testing.T) {
 		c.Write(chunk)
 	}
 
-	_, replay, _, _ := c.Join()
-	if len(replay) > Scrollback {
-		t.Fatalf("scrollback grew to %d bytes, past the %d cap", len(replay), Scrollback)
+	_, picture, _, _ := c.Join()
+
+	// A screen of 80x24 with escapes around it, not the 320KB that was written.
+	if len(picture) > 64<<10 {
+		t.Fatalf("a watcher was handed %d bytes to render one screen", len(picture))
+	}
+	if len(picture) == 0 {
+		t.Fatal("a watcher was handed nothing at all")
+	}
+}
+
+// A program that draws by moving the cursor is the case replaying bytes cannot serve: what matters
+// is where the cursor left things, not which bytes went past lately.
+func TestAWatcherJoiningSeesWhatIsOnTheScreen(t *testing.T) {
+	c := New(80, 24)
+
+	// Drawn once, long ago, and never sent again — exactly what a full-screen program does.
+	c.Write([]byte("\x1b[5;10Hlong gone from any tail"))
+
+	// Then a great deal of unrelated traffic somewhere else on the screen.
+	for i := 0; i < 200; i++ {
+		c.Write([]byte("\x1b[20;1Hbusy"))
+	}
+
+	_, picture, _, _ := c.Join()
+	if !bytes.Contains(picture, []byte("long gone from any tail")) {
+		t.Error("what was drawn once is missing from what a watcher joins with")
+	}
+	if !bytes.Contains(picture, []byte("busy")) {
+		t.Error("what was drawn last is missing too")
+	}
+}
+
+// A prompt that has been cleared is not handed to whoever joins next.
+func TestClearingLeavesNothingForTheNextWatcher(t *testing.T) {
+	c := New(80, 24)
+	c.Write([]byte("Password:"))
+
+	c.Clear()
+
+	_, picture, _, _ := c.Join()
+	if bytes.Contains(picture, []byte("Password")) {
+		t.Error("a cleared prompt was handed to the next watcher")
 	}
 }
 
@@ -120,5 +163,50 @@ func TestResizeIsRememberedForLaterWatchers(t *testing.T) {
 	_, _, cols, rows := c.Join()
 	if cols != 120 || rows != 40 {
 		t.Fatalf("watcher joined at %dx%d, want 120x40", cols, rows)
+	}
+}
+
+// Joining a cast that has already stopped hands back a feed nothing will ever close, unless the
+// caster says the cast is over — and then whoever is watching reads nothing and finishes.
+func TestJoiningAfterTheCastEndedIsOver(t *testing.T) {
+	c := New(80, 24)
+	c.Stop()
+
+	v, picture, cols, rows := c.Join()
+	if len(picture) != 0 {
+		t.Errorf("a cast that ended handed out a screen: %q", picture)
+	}
+	if cols != 80 || rows != 24 {
+		t.Errorf("size came back as %dx%d, want 80x24", cols, rows)
+	}
+
+	select {
+	case _, open := <-v.Frames():
+		if open {
+			t.Fatal("a cast that ended handed out a feed with something on it")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a watcher joining a stopped cast waits for a channel nobody closes")
+	}
+
+	// And leaving is still safe, though it was never in the list.
+	c.Leave(v)
+}
+
+// Nothing written or resized after the cast is over goes anywhere.
+func TestWritingAfterTheCastEndedGoesNowhere(t *testing.T) {
+	c := New(80, 24)
+	c.Stop()
+
+	if n, err := c.Write([]byte("too late")); n != len("too late") || err != nil {
+		t.Fatalf("Write() after Stop came back %d, %v", n, err)
+	}
+	c.Resize(120, 40)
+
+	if cols, rows := c.Size(); cols != 80 || rows != 24 {
+		t.Errorf("a stopped cast resized to %dx%d", cols, rows)
+	}
+	if _, picture, _, _ := c.Join(); len(picture) != 0 {
+		t.Errorf("what was written after the cast ended is on the screen: %q", picture)
 	}
 }

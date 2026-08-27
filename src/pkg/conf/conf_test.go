@@ -8,8 +8,29 @@ import (
 
 	rt "github.com/arnodel/golua/runtime"
 
+	"github.com/bresilla/drop/src/pkg/arch"
+	"github.com/bresilla/drop/src/pkg/arch/chat"
+	"github.com/bresilla/drop/src/pkg/arch/files"
+	"github.com/bresilla/drop/src/pkg/arch/link"
+	"github.com/bresilla/drop/src/pkg/arch/share"
+	"github.com/bresilla/drop/src/pkg/arch/stream"
+	"github.com/bresilla/drop/src/pkg/arch/tty"
+	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 )
+
+// known is what a config may name here: the archetypes drop ships, which is what the reader is
+// handed by every command that serves.
+func known() *arch.Registry {
+	r := arch.NewRegistry()
+	r.Register(share.New(share.Into{}))
+	r.Register(files.New(files.Into{}))
+	r.Register(chat.New(chat.Into{}))
+	r.Register(link.New(link.Into{}))
+	r.Register(stream.New(stream.Into{}))
+	r.Register(tty.New(tty.Into{}))
+	return r
+}
 
 func write(t *testing.T, body string) string {
 	t.Helper()
@@ -26,9 +47,9 @@ func load(t *testing.T, body string) *Config {
 	t.Helper()
 
 	write(t, body)
-	cfg, err := Load()
+	cfg, err := Load(known())
 	if err != nil {
-		t.Fatalf("Load(): %v", err)
+		t.Fatalf("Load(known()): %v", err)
 	}
 	t.Cleanup(cfg.Close)
 	return cfg
@@ -57,18 +78,23 @@ func TestSettingsAreAssigned(t *testing.T) {
 func TestMountsAreRegistered(t *testing.T) {
 	cfg := load(t, `
 		local drop = require("drop")
-		drop.mount("/inbox", { type = "files", dir = "/tmp/in" })
+		drop.mount("/inbox", { type = "share", dir = "/tmp/in" })
 		drop.mount("/logs",  { type = "stream", command = "tail -f /var/log/x" })
 		drop.mount("/term",  { type = "tty", input = true })
+		drop.mount("/work",  { type = "files", dir = "/tmp/work", writable = true })
 	`)
 
 	m, _, ok := cfg.Mounts.Lookup("/inbox")
-	if !ok || m.Kind != ns.KindFiles || m.Dir != "/tmp/in" {
+	if !ok || m.Archetype != "share" || m.Config != (share.Config{Dir: "/tmp/in"}) {
 		t.Fatalf("/inbox = %+v ok %v", m, ok)
 	}
 	m, _, _ = cfg.Mounts.Lookup("/term")
-	if !m.Input {
-		t.Error("/term did not keep input = true")
+	if m.Config != (tty.Config{Input: true}) {
+		t.Errorf("/term = %+v", m.Config)
+	}
+	m, _, ok = cfg.Mounts.Lookup("/work")
+	if !ok || m.Archetype != "files" || m.Config != (files.Config{Dir: "/tmp/work", Writable: true}) {
+		t.Errorf("/work = %+v ok %v", m, ok)
 	}
 }
 
@@ -101,9 +127,9 @@ func TestConfigCanBranch(t *testing.T) {
 func TestBrokenConfigIsFatalAndNamesTheFile(t *testing.T) {
 	path := write(t, "this is not lua at all ((((")
 
-	_, err := Load()
+	_, err := Load(known())
 	if err == nil {
-		t.Fatal("Load() accepted a config that does not parse")
+		t.Fatal("Load(known()) accepted a config that does not parse")
 	}
 	if !strings.Contains(err.Error(), filepath.Base(path)) {
 		t.Errorf("the error does not name the file: %v", err)
@@ -116,36 +142,77 @@ func TestMountWithoutATypeIsRefused(t *testing.T) {
 		drop.mount("/nowhere", { dir = "/tmp" })
 	`)
 
-	if _, err := Load(); err == nil {
-		t.Fatal("Load() accepted a mount with no type")
+	if _, err := Load(known()); err == nil {
+		t.Fatal("Load(known()) accepted a mount with no type")
 	}
 }
 
-func TestFilesMountWithoutADirIsRefused(t *testing.T) {
+func TestAShareMountWithoutADirIsRefused(t *testing.T) {
 	write(t, `
 		local drop = require("drop")
-		drop.mount("/inbox", { type = "files" })
+		drop.mount("/inbox", { type = "share" })
 	`)
 
-	if _, err := Load(); err == nil {
-		t.Fatal("Load() accepted a files namespace with no dir")
+	if _, err := Load(known()); err == nil {
+		t.Fatal("Load(known()) accepted a share namespace with no dir")
+	}
+}
+
+func TestAFilesMountWithoutADirIsRefused(t *testing.T) {
+	write(t, `
+		local drop = require("drop")
+		drop.mount("/work", { type = "files" })
+	`)
+
+	if _, err := Load(known()); err == nil {
+		t.Fatal("Load(known()) accepted a files namespace with no dir")
+	}
+}
+
+// A type nobody registered is a typo, and the answer says what this build does have.
+func TestAnUnknownTypeIsRefusedAtLoad(t *testing.T) {
+	write(t, `
+		local drop = require("drop")
+		drop.mount("/camera", { type = "camera" })
+	`)
+
+	_, err := Load(known())
+	if err == nil {
+		t.Fatal("Load() accepted a namespace type that does not exist")
+	}
+	for _, word := range []string{"camera", "chat", "share", "tty"} {
+		if !strings.Contains(err.Error(), word) {
+			t.Errorf("the refusal does not mention %q: %v", word, err)
+		}
+	}
+}
+
+// A stream with nothing to run cannot work, and the archetype says so where it is written.
+func TestAStreamMountWithoutACommandIsRefused(t *testing.T) {
+	write(t, `
+		local drop = require("drop")
+		drop.mount("/logs", { type = "stream" })
+	`)
+
+	if _, err := Load(known()); err == nil {
+		t.Fatal("Load() accepted a stream namespace with no command")
 	}
 }
 
 func TestConfigServingNothingIsRefused(t *testing.T) {
 	write(t, `local drop = require("drop")`)
 
-	if _, err := Load(); err == nil {
-		t.Fatal("Load() accepted a config that declares no namespaces")
+	if _, err := Load(known()); err == nil {
+		t.Fatal("Load(known()) accepted a config that declares no namespaces")
 	}
 }
 
 func TestDefaultsWhenThereIsNoFile(t *testing.T) {
 	t.Setenv("DROP_CONFIG", filepath.Join(t.TempDir(), "absent.lua"))
 
-	cfg, err := Load()
+	cfg, err := Load(known())
 	if err != nil {
-		t.Fatalf("Load(): %v", err)
+		t.Fatalf("Load(known()): %v", err)
 	}
 	if cfg.Path != "" {
 		t.Errorf("Path = %q, want empty for the defaults", cfg.Path)
@@ -155,8 +222,8 @@ func TestDefaultsWhenThereIsNoFile(t *testing.T) {
 	}
 	// The defaults must not run a command or share a terminal; those are decisions.
 	for _, m := range cfg.Mounts.All() {
-		if m.Kind == ns.KindStream || m.Kind == ns.KindTTY {
-			t.Errorf("the defaults serve a %s namespace at %s", m.Kind, m.Path)
+		if m.Archetype == "stream" || m.Archetype == "tty" {
+			t.Errorf("the defaults serve a %s namespace at %s", m.Archetype, m.Path)
 		}
 	}
 }
@@ -200,7 +267,7 @@ func TestARaisingHandlerDoesNotStopTheRest(t *testing.T) {
 func TestFileHandlersReceiveTheDetails(t *testing.T) {
 	cfg := load(t, `
 		local drop = require("drop")
-		drop.mount("/inbox", { type = "files", dir = "/tmp/x" })
+		drop.mount("/inbox", { type = "share", dir = "/tmp/x" })
 		seen = {}
 		drop.on.file(function(f) seen[#seen + 1] = f.name .. ":" .. tostring(f.size) end)
 	`)
@@ -236,12 +303,12 @@ func TestTildeIsExpanded(t *testing.T) {
 
 	cfg := load(t, `
 		local drop = require("drop")
-		drop.mount("/inbox", { type = "files", dir = "~/Downloads" })
+		drop.mount("/inbox", { type = "share", dir = "~/Downloads" })
 	`)
 
 	m, _, _ := cfg.Mounts.Lookup("/inbox")
-	if m.Dir != filepath.Join(home, "Downloads") {
-		t.Fatalf("Dir = %q, want it expanded", m.Dir)
+	if m.Config != (share.Config{Dir: filepath.Join(home, "Downloads")}) {
+		t.Fatalf("dir = %+v, want it expanded", m.Config)
 	}
 }
 
@@ -345,7 +412,7 @@ func TestRequireAndGlobalAreTheSameTable(t *testing.T) {
 		local required = require("drop")
 		same = { tostring(required == drop) }
 		required.mount("/chat", { type = "chat" })
-		drop.mount("/inbox", { type = "files", dir = "/tmp/x" })
+		drop.mount("/inbox", { type = "share", dir = "/tmp/x" })
 	`)
 
 	got := luaStrings(t, cfg, "same")
@@ -362,9 +429,9 @@ func TestRequireAndGlobalAreTheSameTable(t *testing.T) {
 func TestLoadTimeRaiseNamesFileAndLine(t *testing.T) {
 	path := write(t, "local drop = require(\"drop\")\ndrop.mount(\"/x\", { type = \"nonsense\" })\n")
 
-	_, err := Load()
+	_, err := Load(known())
 	if err == nil {
-		t.Fatal("Load() accepted a mount with an unknown type")
+		t.Fatal("Load(known()) accepted a mount with an unknown type")
 	}
 	if !strings.Contains(err.Error(), filepath.Base(path)) {
 		t.Errorf("the error does not name the file: %v", err)
@@ -372,4 +439,149 @@ func TestLoadTimeRaiseNamesFileAndLine(t *testing.T) {
 	if !strings.Contains(err.Error(), "nonsense") {
 		t.Errorf("the error does not say what was wrong: %v", err)
 	}
+}
+
+// A path anybody may reach has to be asked for in as many words, and it must not be reachable by
+// mistake: every other spelling of access leaves it shut.
+func TestAPublicPathIsAskedForByName(t *testing.T) {
+	cfg := load(t, `
+		local drop = require("drop")
+		drop.mount("/wide",   { type = "chat", access = "anyone" })
+		drop.mount("/table",  { type = "chat", access = { anyone = true } })
+		drop.mount("/paired", { type = "chat", access = "paired" })
+		drop.mount("/named",  { type = "chat", access = { "bob" } })
+	`)
+
+	for path, want := range map[string]bool{
+		"/wide": true, "/table": true, "/paired": false, "/named": false,
+	} {
+		mount, _, ok := cfg.Mounts.Lookup(path)
+		if !ok {
+			t.Fatalf("%s is not mounted", path)
+		}
+		if mount.Access.Anyone != want {
+			t.Errorf("%s: public is %v, wanted %v", path, mount.Access.Anyone, want)
+		}
+	}
+}
+
+// A vault is one recipient or several, and both spellings mean the same thing.
+func TestAVaultIsOneRecipientOrSeveral(t *testing.T) {
+	one := load(t, `
+		local drop = require("drop")
+		drop.vault = "~/.config/drop/vault.key"
+		drop.mount("/chat", { type = "chat" })
+	`)
+	if len(one.Vault) != 1 || one.Vault[0] != "~/.config/drop/vault.key" {
+		t.Errorf("one recipient came out as %+v", one.Vault)
+	}
+
+	many := load(t, `
+		local drop = require("drop")
+		drop.vault = { "age1yubikey1abc", "age1def" }
+		drop.mount("/chat", { type = "chat" })
+	`)
+	if len(many.Vault) != 2 {
+		t.Errorf("two recipients came out as %+v", many.Vault)
+	}
+
+	none := load(t, `
+		local drop = require("drop")
+		drop.mount("/chat", { type = "chat" })
+	`)
+	if len(none.Vault) != 0 {
+		t.Errorf("a config with no vault came out as %+v", none.Vault)
+	}
+}
+
+// Visible is its own option, because it answers a different question from access: access says who
+// gets in, visible says who is told there is a door.
+func TestVisibleIsReadSeparatelyFromAccess(t *testing.T) {
+	cfg := load(t, `
+		local drop = require("drop")
+		drop.mount("/shared", { type = "chat", access = { "bob" }, visible = { "carol" } })
+		drop.mount("/asked",  { type = "chat", visible = "paired" })
+		drop.mount("/secret", { type = "chat", access = { "bob" } })
+	`)
+
+	shared, _, _ := cfg.Mounts.Lookup("/shared")
+	if len(shared.Access.Named) != 1 || shared.Access.Named[0] != "bob" {
+		t.Errorf("access = %v", shared.Access.Named)
+	}
+	if len(shared.Access.Visible) != 1 || shared.Access.Visible[0] != "carol" {
+		t.Errorf("visible = %v", shared.Access.Visible)
+	}
+
+	asked, _, _ := cfg.Mounts.Lookup("/asked")
+	if !asked.Access.AnyVisible {
+		t.Error("visible = \"paired\" did not take")
+	}
+	if asked.Access.Declared() {
+		t.Error("a path that is only visible was read as being shared with somebody")
+	}
+
+	secret, _, _ := cfg.Mounts.Lookup("/secret")
+	if secret.Access.Shows() {
+		t.Error("a path with no visible option came out visible")
+	}
+
+	// And a path that is only visible still governs itself, rather than falling through to nothing.
+	carol := ns.Caller{ID: "abc", Name: "laptop", UserName: "carol", Paired: true}
+	if !cfg.Mounts.Sees("/asked", carol) {
+		t.Error("a visible-only path could not be seen by anybody")
+	}
+	if ok, _ := cfg.Mounts.Admits("/asked", carol); ok {
+		t.Error("a visible-only path let somebody in")
+	}
+}
+
+// A config may pin which revision of an archetype it means, and is answered plainly when this
+// build has no such revision.
+func TestAMountCanPinAVersion(t *testing.T) {
+	cfg := load(t, `
+		local drop = require("drop")
+		drop.mount("/chat", { type = "chat", version = 1 })
+	`)
+
+	if m, _, _ := cfg.Mounts.Lookup("/chat"); m.Version != 1 {
+		t.Errorf("/chat = %+v", m)
+	}
+
+	write(t, `
+		local drop = require("drop")
+		drop.mount("/chat", { type = "chat", version = 4 })
+	`)
+
+	_, err := Load(known())
+	if err == nil {
+		t.Fatal("Load() accepted a revision this build does not have")
+	}
+	if !strings.Contains(err.Error(), "chat/4") {
+		t.Errorf("the refusal does not name the revision: %v", err)
+	}
+}
+
+// Publishing the addresses this machine is on is what lets two devices on one wire reach each
+// other without a relay, and it is also what tells a reader which networks this machine is on. A
+// config that turns it off must be obeyed.
+func TestDirectCanBeTurnedOff(t *testing.T) {
+	write(t, `
+		local drop = require("drop")
+		drop.direct = false
+		drop.mount("/chat", { type = "chat", access = "paired" })
+	`)
+
+	cfg, err := Load(known())
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if !cfg.HasDirect || cfg.Direct {
+		t.Fatalf("direct = %v, said = %v", cfg.Direct, cfg.HasDirect)
+	}
+
+	cfg.Apply()
+	if node.Direct() {
+		t.Error("the config said not to publish this machine's own addresses, and it does")
+	}
+	node.SetDirect(true)
 }

@@ -18,7 +18,6 @@ result-*
 .devbox
 /.vscode/
 /__debug_bin
-docs/
 
 # Android build output
 android/.gradle/

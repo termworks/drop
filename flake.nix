@@ -13,8 +13,7 @@
       let
         pkgs = import nixpkgs { inherit system; };
 
-        # Everything needed to compile, vet and test. CI enters this rather than the full shell so
-        # it does not pull the release tooling on every job.
+        # Everything needed to compile, vet and test, without the tools only a release needs.
         buildTools = [
           pkgs.go
           pkgs.gopls
@@ -25,20 +24,26 @@
         ];
       in
       {
+        # For a job that wants the toolchain without the release tools. The release workflow uses
+        # actions/setup-go rather than entering this.
         devShells.ci = pkgs.mkShell { packages = buildTools; };
 
         devShells.default = pkgs.mkShell {
           packages = buildTools ++ [
-            pkgs.goreleaser
+            # `make changelog` shells out to this.
             pkgs.git-cliff
             pkgs.gh
-            pkgs.mdbook
-            # Only for `make compress`, which is opt-in: it trades startup time for disk.
+            # The release workflow packs with `upx -9`; this is here to reproduce that locally.
+            # It takes the binary from 19 MB to 6.8 MB and costs 0.054s of startup against
+            # 0.003s, because a packed binary unpacks itself every time.
             pkgs.upx
           ];
 
-          # bin is pure Go; cgo would link the system resolver and pin the binary to this host's
+          # drop is pure Go; cgo would link the system resolver and pin the binary to this host's
           # libc, which on Nix is an absolute /nix/store path.
+          #
+          # It also means `go test -race` will not build in this shell, because the race detector
+          # needs cgo. Run that one as `CGO_ENABLED=1 go test -race ./...`.
           CGO_ENABLED = "0";
         };
       }

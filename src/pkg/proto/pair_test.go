@@ -2,11 +2,15 @@ package proto
 
 import (
 	"bytes"
+	"net"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/tmc/go-iroh/key"
 
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/wire"
 )
 
 // Every field a pairing message carries has to come back in the same order it went out.
@@ -89,6 +93,102 @@ func TestDeriveSecretIsSymmetric(t *testing.T) {
 	}
 }
 
+// Whoever holds a pairing code may still only pair as themselves.
+//
+// The message says who the far end is and the transport proves it, and taking the first over the
+// second would let anybody holding one code write a paired entry for a machine they have no key
+// to -- which is a way into every path that admits paired devices.
+func TestAPeerClaimingSomebodyElsesIdIsRefused(t *testing.T) {
+	host, caller, victim := testEndpointID(t, 1), testEndpointID(t, 2), testEndpointID(t, 3)
+
+	ours, theirs := net.Pipe()
+	defer ours.Close()
+	defer theirs.Close()
+
+	go func() {
+		conn := wire.NewConn(theirs)
+		lie := pairMsg{From: victim.String(), Name: "laptop", Nonce: make([]byte, nonceBytes)}
+		_ = conn.WriteFrame(wire.KindOpen, lie.encode())
+		_, _, _ = conn.ReadFrame()
+	}()
+
+	if _, err := AnswerPairing(ours, host, caller, "host", nil); err == nil {
+		t.Fatal("a device paired under an id it does not hold")
+	}
+}
+
+// The ordinary exchange: both sides come out with the id the transport proved for the other, and
+// with the same secret.
+func TestPairingKeepsTheIdTheTransportProved(t *testing.T) {
+	a, b := testEndpointID(t, 1), testEndpointID(t, 2)
+
+	one, two := net.Pipe()
+	defer one.Close()
+	defer two.Close()
+
+	type answer struct {
+		p   Pairing
+		err error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		p, err := AnswerPairing(two, b, a, "host", nil)
+		answered <- answer{p, err}
+	}()
+
+	joined, err := Pair(one, a, b, "laptop", []byte("proof"), nil)
+	if err != nil {
+		t.Fatalf("Pair(): %v", err)
+	}
+	got := <-answered
+	if got.err != nil {
+		t.Fatalf("AnswerPairing(): %v", got.err)
+	}
+
+	if joined.Peer != b {
+		t.Errorf("the joining side paired with %s, want %s", joined.Peer, b)
+	}
+	if got.p.Peer != a {
+		t.Errorf("the offering side paired with %s, want %s", got.p.Peer, a)
+	}
+	if !bytes.Equal(joined.Secret, got.p.Secret) {
+		t.Error("the two sides derived different secrets")
+	}
+	if got.p.Name != "laptop" {
+		t.Errorf("the far end came out called %q", got.p.Name)
+	}
+}
+
+// A name the far end chose becomes a key in the address book, so it has to look like a name.
+func TestASuggestedNameIsBounded(t *testing.T) {
+	for what, name := range map[string]string{
+		"nothing":       "",
+		"only spaces":   "   ",
+		"a path":        "up/two",
+		"another line":  "laptop\ndevice elsewhere",
+		"an escape":     "laptop\x1b[2J",
+		"a whole essay": strings.Repeat("x", mostName+1),
+	} {
+		if got := bookName(name); got != "" {
+			t.Errorf("%s was taken as a name: %q", what, got)
+		}
+	}
+
+	if got := bookName("  laptop  "); got != "laptop" {
+		t.Errorf("an ordinary name came out as %q", got)
+	}
+}
+
+// The bound holds on the wire as well, so an oversized name is a message that does not decode
+// rather than one that is read and then thrown away.
+func TestAnOversizedNameDoesNotDecode(t *testing.T) {
+	sent := pairMsg{From: "who", Name: strings.Repeat("x", mostName+1), Nonce: make([]byte, nonceBytes)}
+
+	if _, err := decodePairMsg(sent.encode()); err == nil {
+		t.Fatal("a pairing message with an essay for a name decoded")
+	}
+}
+
 // testEndpointID mints a distinct id without needing a network.
 func testEndpointID(t *testing.T, seed byte) node.ID {
 	t.Helper()
@@ -98,4 +198,26 @@ func testEndpointID(t *testing.T, seed byte) node.ID {
 		raw[i] = seed
 	}
 	return key.NewSecretKey(raw).Public().EndpointID()
+}
+
+// A pairing window answers whoever dials during it, so a dialler that opens a stream and says
+// nothing must not hold a goroutine for the rest of the process's life.
+func TestAPairingRequestThatSaysNothingIsNotHeldForever(t *testing.T) {
+	host, caller := testEndpointID(t, 1), testEndpointID(t, 2)
+	silent := &deadlined{set: make(chan struct{})}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := AnswerPairing(silent, host, caller, "host", nil)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a pairing request that said nothing was answered")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AnswerPairing is still reading a stream that will never say anything")
+	}
 }

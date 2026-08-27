@@ -13,7 +13,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/bresilla/drop/src/pkg/book"
-	"github.com/bresilla/drop/src/pkg/convo"
 )
 
 // Putting something into a namespace: a file into a files path, a URL into a link path.
@@ -68,14 +67,15 @@ func putFile(back Backend, to book.Entry, path, file string, into *moving) tea.C
 	}
 }
 
-// putLink sends a URL to a path on another device.
-func putLink(back Backend, to book.Entry, path, url string) tea.Cmd {
+// putLink sends one line to a path on another device, written down as the kind of thing the
+// namespace records.
+func putLink(back Backend, to book.Entry, path, archetype string, kind byte, body string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, stop := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer stop()
 
-		err := back.Post(ctx, to, path, convo.KindLink, url)
-		return putDone{what: url, err: err}
+		err := back.Post(ctx, to, path, archetype, kind, body)
+		return putDone{what: body, err: err}
 	}
 }
 

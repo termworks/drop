@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+	safe "github.com/bresilla/drop/src/pkg/plain"
 	"strings"
 
 	"github.com/bresilla/drop/src/pkg/proto"
@@ -20,61 +22,176 @@ func (m Model) View() string {
 	return m.frame(m.body())
 }
 
-// frame is the shape of every screen: a line saying where you are, the screen itself, and the keys
-// along the bottom.
+// frame is the shape of every screen: a line saying where you are, and the screen itself.
 //
-// The body is given exactly the room that is left and no more, so the keys sit on the last line of
-// the terminal rather than wherever the content happened to stop. A footer that floats halfway up
-// the screen reads as part of the content.
+// The body is given exactly the room that is left and no more, so a notice sits on the last line of
+// the terminal rather than wherever the content happened to stop. What the keys are is behind ?,
+// which the header says.
 func (m Model) frame(body string) string {
-	head, foot := m.header(), m.footer()
+	head, said := m.header(), m.notice()
 
-	room := m.height - lipgloss.Height(head) - lipgloss.Height(foot)
+	room := m.bodyHeight()
+	middle := lipgloss.NewStyle().Height(room).MaxHeight(room).Render(body)
+
+	out := head + "\n" + middle
+	if said != "" {
+		out += "\n" + said
+	}
+	return out
+}
+
+// bodyHeight is the room a screen has: everything the header and any notice leave.
+func (m Model) bodyHeight() int {
+	room := m.height - 2
+	if m.notice() != "" {
+		room--
+	}
 	if room < 1 {
 		room = 1
 	}
+	return room
+}
 
-	middle := lipgloss.NewStyle().Height(room).MaxHeight(room).Render(body)
+// notice is the one line above the keys, for whatever went wrong or just went right.
+//
+// A line of its own rather than something appended to the screen: a list fills the height it is
+// given, so anything written after it falls off the bottom and is never seen.
+func (m Model) notice() string {
+	switch {
+	case m.removing != "":
+		return " " + peachStyle.Render("? ") + fit("remove "+m.removing+" over there? y takes it off, anything else leaves it", m.width-4)
+	case m.offering != nil && m.at == levelBrowse:
+		name, done, size := m.offering.read()
+		return " " + peachStyle.Render("↔ ") + fit(name+"  "+sizeOf(done)+" of "+sizeOf(size), m.width-4)
+	case m.trouble != "":
+		// Cut from the end: what went wrong is said first, and the tail of a failure is usually a
+		// node id nobody can act on.
+		return " " + badStyle.Render("✗ ") + clip(m.trouble, m.width-4)
+	case m.said != "":
+		return " " + goodStyle.Render("✓ ") + fit(m.said, m.width-4)
+	}
+	return ""
+}
 
-	return head + "\n" + middle + "\n" + foot
+// asking is the mark in the header saying the keys are one press away, lit while they are up.
+func (m Model) asking() string {
+	if m.helping {
+		return brandStyle.Render("?")
+	}
+	return faintStyle.Render("?")
 }
 
 // body is whatever screen is open.
 func (m Model) body() string {
 	switch {
+	case m.helping:
+		return panel("keys", m.width, m.bodyHeight(), m.keysView())
+
 	case m.joining:
 		return m.joiningView()
 
 	case m.linking != nil:
 		return m.pairingView()
 
+	// Naming a file to put into a directory, which has no open path to draw the line inside of.
+	case m.putting && m.at == levelBrowse:
+		return m.middle(panel("send a file", m.panelWidth(), 0, m.naming("a file", true)))
+
 	case m.at == levelOpen:
 		return m.openView()
 
-	case m.at == levelDevices && len(m.peers) == 0:
+	case m.at == levelUsers && len(m.peers) == 0:
 		return m.nothingPaired()
 	}
 
 	shown := m.list.View()
 
-	// Trouble at a list level has nowhere else to go: without this a mistyped ticket is
-	// indistinguishable from a key that did nothing.
-	if m.trouble != "" {
-		shown += "\n\n" + badStyle.Render("✗ ") + m.trouble
+	// The toolkit's own words for an empty list say nothing about why it is empty.
+	if len(m.list.Items()) == 0 {
+		shown = m.emptyList()
 	}
 
-	return panel(m.listTitle(), m.width, m.height-3, shown)
+	return panel(m.listTitle(), m.width, m.bodyHeight(), shown)
+}
+
+// emptyList says why there is nothing to show, which is never the same reason twice.
+func (m Model) emptyList() string {
+	switch {
+	case m.loading:
+		return faintStyle.Render("asking…")
+	case m.trouble != "":
+		// Saying a device shares nothing when the question never got there is a lie about the
+		// device rather than a report about the network.
+		return dimStyle.Render("could not ask this device.") + "\n\n" +
+			faintStyle.Render("what it shares is unknown, not empty.")
+	case m.at == levelPaths:
+		return dimStyle.Render("this device shares nothing with you.") + "\n\n" +
+			faintStyle.Render("what appears here was decided over there, not here.")
+	case m.at == levelBrowse:
+		return dimStyle.Render("nothing in this directory.")
+	case m.list.FilterState() != 0:
+		return faintStyle.Render("nothing matches.")
+	}
+	return faintStyle.Render("nothing here.")
 }
 
 // listTitle names what is being listed, in the panel's top edge.
 func (m Model) listTitle() string {
-	if m.at == levelPaths {
-		if with, ok := m.peer(); ok {
-			return with.Name + " shares"
-		}
-		return "shares"
+	if m.at == levelManage {
+		return m.managed.Name + "  ·  who they are, and what you have given them"
 	}
-	return "devices"
+	if m.at == levelAccess {
+		return m.rule.Path + "  ·  who may reach it"
+	}
+	if m.at == levelUsers {
+		return "users"
+	}
+	if m.at == levelMachines {
+		return m.atUser + "  ·  machines"
+	}
+	if m.at == levelBrowse {
+		return m.walking()
+	}
+	if m.at != levelPaths {
+		return "users"
+	}
+
+	name := "shares"
+	switch {
+	case m.onSelf:
+		name = "this device shares"
+	default:
+		if with, ok := m.peer(); ok {
+			name = with.Name + " shares"
+		}
+	}
+
+	// Where in the tree, so walking three folders deep still says where you are.
+	if m.under != "/" && m.under != "" {
+		return name + "  ·  " + m.under
+	}
+	return name
+}
+
+// walking names the directory the browse level is standing in, and says when nothing may be put
+// into it — which is the difference between the two screens that look the same.
+func (m Model) walking() string {
+	at, ok := m.path()
+	if !ok {
+		return "a directory"
+	}
+
+	where := at.Path
+	if m.dir != "" {
+		where = folder(at.Path) + m.dir
+	}
+	if m.onSelf {
+		return where + "  ·  on this device"
+	}
+	if !at.Writable {
+		return where + "  ·  read only"
+	}
+	return where
 }
 
 // header is where you are and which device you are.
@@ -84,15 +201,16 @@ func (m Model) header() string {
 		left += faintStyle.Render("  ›  ") + trail
 	}
 
-	right := badge(true, m.me.Name, m.me.Name)
+	// What this device is doing, then what it is called. Reachability first, because it is the
+	// thing that changes: the name never does.
+	right := m.reach() + "   " + faintStyle.Render(m.me.Name)
 	switch {
 	case m.live:
 		right = goodStyle.Render("● live") + "   " + faintStyle.Render(m.me.Name)
 	case m.loading:
 		right = peachStyle.Render("◐ asking") + "   " + faintStyle.Render(m.me.Name)
-	default:
-		right = faintStyle.Render(m.me.Name)
 	}
+	right += "   " + m.asking()
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if gap < 1 {
@@ -107,26 +225,67 @@ func (m Model) header() string {
 
 // where is the trail of what has been entered, without the program's own name: the name is already
 // on the line, in the accent, and saying it twice is how a header stops being read.
+// reach says whether this device can be reached, and by whose doing.
+//
+// A daemon keeps answering after the interface is closed. This process answering means the address
+// is only up while somebody is looking at it, which is worth knowing before walking away.
+func (m Model) reach() string {
+	switch m.me.Reach {
+	case ReachDaemon:
+		return kindStyle.Render("◆ daemon")
+	default:
+		if m.me.ID == "" {
+			return faintStyle.Render("○ starting")
+		}
+		return goodStyle.Render("● serving")
+	}
+}
+
 func (m Model) where() string {
 	var parts []string
 
 	if m.linking != nil {
 		return crumb("pairing")
 	}
+	if m.at == levelManage {
+		return crumb(m.managed.Name)
+	}
 	if m.joining {
 		return crumb("pairing")
 	}
+	if m.onSelf && m.at >= levelPaths {
+		parts = append(parts, Me, m.me.Name)
+		return crumb(append(parts, m.opened()...)...)
+	}
+	if m.at == levelMachines {
+		return crumb(m.atUser)
+	}
 	if m.at >= levelPaths {
+		if m.atUser != "" {
+			parts = append(parts, m.atUser)
+		}
 		if with, ok := m.peer(); ok {
 			parts = append(parts, with.Name)
 		}
 	}
-	if m.at == levelOpen {
-		if at, ok := m.path(); ok {
-			parts = append(parts, at.Path)
-		}
+	return crumb(append(parts, m.opened()...)...)
+}
+
+// opened is the trail below a device: the path that was entered, and where in it the browse level
+// is standing.
+func (m Model) opened() []string {
+	if m.at != levelOpen && m.at != levelBrowse {
+		return nil
 	}
-	return crumb(parts...)
+
+	at, ok := m.path()
+	if !ok {
+		return nil
+	}
+	if m.at == levelBrowse && m.dir != "" {
+		return []string{at.Path, m.dir}
+	}
+	return []string{at.Path}
 }
 
 // openView is whatever is at the path that was entered.
@@ -137,67 +296,70 @@ func (m Model) openView() string {
 	}
 
 	title := at.Path
-	if m.live {
+	switch {
+	case m.atKeyboard:
+		title = at.Path + " · typing"
+	case m.live:
 		title = at.Path + " · live"
 	}
 
-	return panel(title, m.width, m.height-3, m.inside(at))
+	return panel(title, m.width, m.bodyHeight(), m.inside(at))
 }
 
-// inside is what the open path shows, without the box around it.
+// inside is what the open path shows, without the box around it. Which screen that is comes from
+// the view registered for the archetype.
 func (m Model) inside(at proto.Served) string {
-	if m.trouble != "" && !m.putting && m.offering == nil {
-		return badStyle.Render("✗ ") + m.trouble
-	}
-
-	switch kindOf(at) {
-	case "chat":
+	switch m.showing(at) {
+	case showsTalk:
 		return m.chatView()
 
-	case "tty", "stream":
+	case showsLive:
 		if m.screen == nil {
 			return faintStyle.Render("not watching.")
 		}
-		return lines(m.screen.Draw(), m.viewHeight())
+		return m.canvas(lines(m.screen.Draw(), m.viewHeight()))
 
-	case "files":
-		return m.putView("a file", "files", m.transfers())
-
-	case "link", "bookmark":
-		return m.putView("a link", "link", m.links())
-
-	case "branch":
-		return dimStyle.Render("holds other paths.") + "\n" +
-			faintStyle.Render("go back and pick one under it.")
-
-	default:
-		return dimStyle.Render("a " + kindOf(at) + " path.")
+	case showsPut:
+		return m.putView(at)
 	}
+	return m.aboutView(at)
 }
 
-// putView is the files and links screen: what has gone before, and the line for sending the next.
+// aboutView is a path with nothing of its own on screen: one of this machine's own, a branch, or a
+// kind of namespace this interface was built before.
 //
-// The same shape for both, because they are the same act. What differs is the word for the thing
-// and whether a path can be completed, and neither is worth a second screen.
-func (m Model) putView(what, kind string, before []string) string {
-	var out strings.Builder
+// The name and whatever the far end said it is for, and no keys. An archetype nobody here has heard
+// of is still a real thing on the other machine, and saying so is more honest than a blank pane.
+func (m Model) aboutView(at proto.Served) string {
+	switch {
+	case m.onSelf:
+		return dimStyle.Render("this is what other devices reach.") + "\n\n" +
+			faintStyle.Render("what passed over it is in the conversation with whoever it was.")
 
-	if m.putting {
-		out.WriteString("\n " + brandStyle.Render("send") + " " + faintStyle.Render(what) + "\n")
-		out.WriteString("\n " + kindStyle.Render(tailOf(m.typing, m.width-4)) + keyStyle.Render("▏") + "\n")
-
-		if len(m.options) > 0 {
-			out.WriteString("\n " + faintStyle.Render(strings.Join(shortly(m.options, m.width-4), "  ")) + "\n")
-		}
-
-		hint := "enter sends, esc goes back"
-		if kind == "files" {
-			hint = "tab completes, " + hint
-		}
-		out.WriteString("\n " + faintStyle.Render(hint))
-		return out.String()
+	case at.Archetype == "":
+		return dimStyle.Render("holds other paths.") + "\n" +
+			faintStyle.Render("go back and pick one under it.")
 	}
 
+	out := dimStyle.Render("a " + at.Archetype + " path.")
+	if at.About != "" {
+		out += "\n" + faintStyle.Render(at.About)
+	}
+	return out + "\n\n" + faintStyle.Render("this interface has nothing to do with one.")
+}
+
+// putView is the screen for a namespace something is sent to: what has gone before, and the line
+// for sending the next.
+//
+// One shape for all of them, because it is one act. What differs is the word for the thing and
+// whether what is typed can be completed, and the view says both.
+func (m Model) putView(at proto.Served) string {
+	of := viewOf(at)
+	if m.putting {
+		return m.naming(of.sends, of.onDisk)
+	}
+
+	var out strings.Builder
 	if m.offering != nil {
 		name, done, size := m.offering.read()
 		out.WriteString("\n " + goodStyle.Render("sending ") + kindStyle.Render(name) + "\n")
@@ -206,58 +368,82 @@ func (m Model) putView(what, kind string, before []string) string {
 		return out.String()
 	}
 
-	if m.said != "" {
-		out.WriteString("\n " + goodStyle.Render("✓ ") + dimStyle.Render(m.said) + "\n")
-	}
-	if m.trouble != "" {
-		out.WriteString("\n " + badStyle.Render("✗ ") + m.trouble + "\n")
-	}
-
+	before := m.before(of.kind)
 	if len(before) == 0 {
-		out.WriteString("\n " + dimStyle.Render("nothing here yet."))
+		out.WriteString(dimStyle.Render("nothing here yet.") + "\n")
 	}
 	for _, line := range before {
-		out.WriteString("\n " + line)
+		out.WriteString(line + "\n")
 	}
 
-	out.WriteString("\n\n " + faintStyle.Render("press ") + keyStyle.Render("s") + faintStyle.Render(" to send "+what))
+	out.WriteString("\n" + faintStyle.Render("press ") + keyStyle.Render("s") + faintStyle.Render(" to send "+of.sends))
 	return out.String()
 }
 
-// transfers is what has changed hands on this conversation, newest last.
-func (m Model) transfers() []string {
-	var out []string
+// naming is the line something is typed on, and whatever this machine can complete it to.
+func (m Model) naming(what string, onDisk bool) string {
+	var out strings.Builder
 
-	for _, at := range m.history {
-		if at.Kind != convo.KindFile {
-			continue
-		}
+	out.WriteString("\n " + brandStyle.Render("send") + " " + faintStyle.Render(what) + "\n")
+	out.WriteString("\n " + kindStyle.Render(tailOf(m.typing, m.width-4)) + keyStyle.Render("▏") + "\n")
 
-		arrow := dimStyle.Render("→")
-		if at.Dir == convo.In {
-			arrow = goodStyle.Render("←")
-		}
-		out = append(out, arrow+" "+kindStyle.Render(at.Body)+"  "+faintStyle.Render(at.Extra))
+	if len(m.options) > 0 {
+		out.WriteString("\n " + faintStyle.Render(strings.Join(shortly(m.options, m.width-4), "  ")) + "\n")
 	}
-	return lastOf(out, m.viewHeight()-6)
+
+	hint := "enter sends, esc goes back"
+	if onDisk {
+		hint = "tab completes, " + hint
+	}
+	return out.String() + "\n " + faintStyle.Render(hint)
 }
 
-// links is what has been sent to a link path, newest last.
-func (m Model) links() []string {
+// before is what has changed hands on this conversation of one kind, newest last.
+//
+// Two lines each, the way every other list here is: the name is what you look for, and when it
+// happened and how big it was are what you look at once you have found it.
+func (m Model) before(kind byte) []string {
 	var out []string
 
-	for _, at := range m.history {
-		if at.Kind != convo.KindLink {
+	for i, at := range m.history {
+		if at.Kind != kind {
 			continue
 		}
-
-		arrow := dimStyle.Render("→")
-		if at.Dir == convo.In {
-			arrow = goodStyle.Render("←")
-		}
-		out = append(out, arrow+" "+kindStyle.Render(at.Body))
+		out = append(out, m.item(i, at.Dir == convo.In, at.Body, at.Extra, at.At)...)
 	}
-	return lastOf(out, m.viewHeight()-6)
+	return lastOf(out, m.viewHeight()-4)
+}
+
+// item is one thing that changed hands, as the two lines it occupies.
+func (m Model) item(index int, incoming bool, name, about string, at int64) []string {
+	width := m.viewWidth()
+	base := row(index, false)
+
+	arrow := "→"
+	var colour lipgloss.TerminalColor = plain
+	if incoming {
+		arrow, colour = "←", green
+	}
+
+	// Where it went, then what it was, then when — one column each, so a list of them reads down
+	// rather than across.
+	first := base.Width(width).Render(
+		cell(base, colour, 2, arrow, false, false) +
+			cell(base, plain, width-2-8, fit(name, width-10), false, true) +
+			cell(base, muted, 8, time.UnixMilli(at).Format("15:04"), true, false))
+
+	said := about
+	if said == "" {
+		said = "a link"
+		if !incoming {
+			said = "sent from here"
+		}
+	}
+	second := base.Width(width).Render(
+		cell(base, muted, 2, "", false, false) +
+			cell(base, muted, width-2, said, false, false))
+
+	return []string{first, second}
 }
 
 // bar draws how far along a transfer is. A size nobody knows yet gets a moving mark rather than a
@@ -337,18 +523,19 @@ func (m Model) joiningView() string {
 	out.WriteString("\n" + faintStyle.Render("press ") + keyStyle.Render("enter") +
 		faintStyle.Render(" to pair, ") + keyStyle.Render("esc") + faintStyle.Render(" to go back"))
 
-	if m.trouble != "" {
-		out.WriteString("\n\n" + badStyle.Render("✗ ") + m.trouble)
-	}
-
 	return m.middle(panel("take a code", m.panelWidth(), 0, out.String()))
 }
 
-func (m Model) footer() string {
-	type hint struct{ key, does string }
+// hint is one key, and what pressing it does.
+type hint struct{ key, does string }
 
+// keys is what pressing something does on the screen that is open.
+func (m Model) keys() []hint {
 	var keys []hint
 	switch {
+	case m.removing != "":
+		keys = []hint{{"y", "take it off"}, {"any key", "leave it"}}
+
 	case m.writing:
 		keys = []hint{{"enter", "send"}, {"esc", "cancel"}}
 
@@ -358,19 +545,44 @@ func (m Model) footer() string {
 	case m.linking != nil:
 		keys = []hint{{"esc", "cancel"}}
 
-	case m.at == levelDevices:
-		keys = []hint{{"p", "show code"}, {"t", "take code"}, {"↑↓", "move"}, {"enter", "open"}, {"r", "reload"}, {"q", "quit"}}
+	case m.at == levelUsers:
+		keys = []hint{{"p", "show code"}, {"t", "take code"}, {"m", "manage"}, {"enter", "machines"}, {"q", "quit"}}
+
+	case m.at == levelMachines:
+		keys = []hint{{"↑↓", "move"}, {"enter", "open"}, {"m", "manage"}, {"esc", "users"}, {"r", "reload"}}
 
 	case m.at == levelPaths:
 		keys = []hint{{"↑↓", "move"}, {"enter", "open"}, {"esc", "devices"}, {"r", "reload"}}
+		if m.onSelf {
+			keys = append([]hint{{"w", "who may reach it"}}, keys...)
+		}
+		if row, ok := m.list.SelectedItem().(pathItem); ok && !m.onSelf && row.step.served.Locked {
+			keys = append([]hint{{"a", "ask for it"}}, keys...)
+		}
+
+	case m.at == levelBrowse:
+		keys = m.walkKeys()
+
+	case m.at == levelAccess:
+		keys = []hint{{"↑↓", "move"}, {"a", "allow"}, {"x", "refuse"}, {"d", "config decides"}, {"esc", "back"}}
+
+	case m.at == levelManage:
+		keys = []hint{{"t", "trust"}, {"x", "revoke"}, {"f", "forget"}, {"esc", "back"}}
+
+	case m.atKeyboard:
+		keys = []hint{{"ctrl+]", "give the keyboard back"}}
 
 	default:
 		keys = []hint{{"esc", "back"}}
 		if at, ok := m.path(); ok {
-			switch {
-			case kindOf(at) == "chat":
+			switch m.showing(at) {
+			case showsTalk:
 				keys = append([]hint{{"i", "write"}}, keys...)
-			case putsInto(kindOf(at)):
+			case showsLive:
+				if at.Writable {
+					keys = append([]hint{{"i", "type into it"}}, keys...)
+				}
+			case showsPut:
 				keys = append([]hint{{"s", "send"}}, keys...)
 			}
 		}
@@ -379,11 +591,28 @@ func (m Model) footer() string {
 		}
 	}
 
-	var parts []string
-	for _, k := range keys {
-		parts = append(parts, chip(k.key, k.does))
+	return keys
+}
+
+// keysView is the keys, one to a line, for as long as ? is held open.
+func (m Model) keysView() string {
+	var out strings.Builder
+	out.WriteString("\n")
+
+	for _, k := range m.keys() {
+		out.WriteString(" " + keyStyle.Render(fitted(k.key, 8)) + "  " + faintStyle.Render(k.does) + "\n")
 	}
-	return " " + strings.Join(parts, "  ")
+
+	out.WriteString("\n " + faintStyle.Render("? closes this"))
+	return out.String()
+}
+
+// fitted pads a key out so what each one does lines up down the screen.
+func fitted(key string, width int) string {
+	if n := lipgloss.Width(key); n < width {
+		return key + strings.Repeat(" ", width-n)
+	}
+	return key
 }
 
 func fold(text string, width int) []string {
@@ -399,38 +628,230 @@ func fold(text string, width int) []string {
 	return append(out, text)
 }
 
+// chatView is the conversation, as a conversation looks.
+//
+// Each message is a block rather than a line: a rule to separate it from the one before, who said
+// it and when, then what they said on a ground a shade off the page. Mine on the right, theirs on
+// the left, and neither running the full width — a block that reaches both edges is a paragraph,
+// not a message.
 func (m Model) chatView() string {
+	// The line to write on is always there, whether or not anything is being written: it is the
+	// one part of this screen that does not move, so it should not appear and disappear either.
+	compose := m.compose()
+
+	room := m.viewHeight() - lipgloss.Height(compose)
+	if room < 1 {
+		room = 1
+	}
+
+	said := m.chatLines()
+
+	// The window ends wherever it has been scrolled back to, and at the newest line otherwise.
+	end := len(said) - m.scrolledBy(room)
+	if end < 0 {
+		end = 0
+	}
+
+	start := end - room
+	if start < 0 {
+		start = 0
+	}
+	shown := said[start:end]
+
+	// Pushed to the bottom: a conversation grows downwards, and half a screen of it should sit
+	// above what is being typed rather than hanging from the top.
+	for len(shown) < room {
+		shown = append([]string{""}, shown...)
+	}
+
+	view := strings.Join(shown, "\n")
+
+	// Only while reading back. At the newest there is always more above in any long conversation,
+	// and saying so costs a line of what somebody came to read.
+	if m.scroll > 0 && start > 0 {
+		view = m.olderAbove(view, start)
+	}
+	return view + "\n" + compose
+}
+
+// chatLines is the whole conversation, as the lines it occupies.
+//
+// Rendered rather than measured: a message is as many lines as its text wraps to, and the only way
+// to know is to lay it out. Scrolling counts these, so both this and the scrolling agree.
+func (m Model) chatLines() []string {
 	var said []string
-
 	for _, msg := range m.history {
-		when := faintStyle.Render(time.UnixMilli(msg.At).Format("15:04"))
-
-		arrow := kindStyle.Render("←")
-		if msg.Dir == convo.Out {
-			arrow = pickStyle.Render("→")
-		}
-		said = append(said, when+" "+arrow+" "+msg.Body)
+		said = append(said, m.bubble(msg)...)
 	}
 
 	if len(said) == 0 {
 		said = []string{faintStyle.Render("nothing said yet.")}
 	}
+	return said
+}
 
-	// Room for the conversation: everything the panel has, less the line to write on.
-	room := m.viewHeight() - 1
-	said = lastOf(said, room)
+// scrolledBy is how far back the conversation is being read, never past its own start.
+func (m Model) scrolledBy(room int) int {
+	most := len(m.chatLines()) - room
+	if most < 0 {
+		most = 0
+	}
+	if m.scroll > most {
+		return most
+	}
+	return m.scroll
+}
 
-	// Pushed to the bottom, because that is where a conversation is: the newest line sits just
-	// above what you are typing, wherever the older ones happen to have got to.
-	for len(said) < room {
-		said = append([]string{""}, said...)
+// olderAbove marks that there is more above what is on screen, so scrolled-back is never mistaken
+// for the start of the conversation.
+func (m Model) olderAbove(view string, above int) string {
+	rows := strings.Split(view, "\n")
+	if len(rows) == 0 {
+		return view
 	}
 
-	body := strings.Join(said, "\n")
-	if m.writing {
-		return body + "\n" + pickStyle.Render("›") + " " + m.typing + pickStyle.Render("▏")
+	rows[0] = faintStyle.Render(fmt.Sprintf("↑ %d more line(s) above", above))
+	return strings.Join(rows, "\n")
+}
+
+// compose is the line to write on, on the same ground as what has been said.
+//
+// No bar beside it: a bar says whose message this is, and nothing has been said yet.
+func (m Model) compose() string {
+	width := m.viewWidth()
+
+	// The same box a message sits in, padding and all: a blank line of its own colour above and
+	// below, so it reads as part of the conversation rather than a strip under it.
+	box := lipgloss.NewStyle().Background(saidBg).Width(width).Padding(1, 2)
+
+	if !m.writing {
+		return box.Foreground(muted).Render("press i to write")
 	}
-	return body + "\n" + faintStyle.Render("press ") + keyStyle.Render("i") + faintStyle.Render(" to write")
+
+	// Every part carries the box's own ground. A style that sets only a foreground ends by
+	// resetting, and everything after it on the line falls back to whatever the terminal calls
+	// default — which is how a box turns black from the cursor onwards.
+	mark := lipgloss.NewStyle().Background(saidBg).Foreground(accent).Bold(true)
+	written := lipgloss.NewStyle().Background(saidBg).Foreground(plain)
+
+	typed := tailOf(m.typing, width-6)
+	return box.Render(mark.Render("› ") + written.Render(typed) + mark.Render("▏"))
+}
+
+// bubble draws one message: a coloured bar down the side of it, and what was said on a shaded
+// ground beside the bar.
+//
+// The bar is what tells the two apart at a glance — theirs down the left, mine down the right —
+// and it runs the height of the message so a long one still reads as one thing.
+func (m Model) bubble(msg convo.Message) []string {
+	width := m.viewWidth()
+
+	// Three quarters, so the two sides cannot meet in the middle and a long message still has a
+	// margin to be read against. One of that is the bar.
+	block := width*3/4 - 1
+	if block < 12 {
+		block = width - 2
+	}
+
+	mine := msg.Dir == convo.Out
+	when := time.UnixMilli(msg.At).Format("15:04")
+
+	// A blank line of the box's own colour above and below what was said, so the words sit inside
+	// something rather than against its edge.
+	shade := lipgloss.NewStyle().Background(saidBg).Width(block).Padding(1, 2)
+
+	colour := second
+	if mine {
+		colour = accent
+	}
+
+	// Who at one end of the top line and when at the other, spaced by hand: two styled columns
+	// would each be padded to their own width and the line would wrap onto a second.
+	inside := block - 4
+	who := m.speaker(mine)
+
+	// A mark beside the time on what this device said: still on its way, or acknowledged.
+	if mine {
+		when = m.mark(msg) + " " + when
+	}
+
+	gap := inside - lipgloss.Width(who) - 2 - lipgloss.Width(when)
+	if gap < 1 {
+		gap = 1
+		who = fit(who, inside-lipgloss.Width(when)-3)
+	}
+
+	// The name is a tag in the same colour as the bar, written in the terminal's own background:
+	// the two together say whose message this is twice, in the same glance.
+	tag := lipgloss.NewStyle().Background(colour).Foreground(sunken).Bold(true).Render(" " + who + " ")
+
+	label := lipgloss.NewStyle().Background(saidBg).Foreground(muted)
+
+	// The head takes the top padding and the body the bottom, so the two together are one box
+	// rather than two with a seam across the middle.
+	head := shade.Padding(1, 2, 0, 2).
+		Render(tag + label.Render(strings.Repeat(" ", gap)) + label.Render(when))
+
+	body := shade.Padding(0, 2, 1, 2)
+
+	// What arrived is somebody else's bytes and this is a terminal. Styling wraps text in escapes;
+	// it does not take any out, so a message carrying its own would draw wherever it liked.
+	told, more := safe.Text(msg.Body, MaxSaid), safe.Line(msg.Extra)
+
+	said := body.Foreground(plain).Render(told)
+	switch msg.Kind {
+	case convo.KindLink:
+		said = body.Foreground(second).Render(told)
+	case convo.KindFile:
+		said = body.Foreground(plain).Render("▣ " + told + "  " + more)
+	}
+
+	bar := lipgloss.NewStyle().Foreground(colour).Render("┃")
+
+	// Against the box, not a column away from it: the bar glyph is already inset in its own cell,
+	// which is all the gap there is room for.
+	var out []string
+	for _, line := range strings.Split(head+"\n"+said, "\n") {
+		beside := bar + line
+		if mine {
+			beside = line + bar
+		}
+		out = append(out, lipgloss.NewStyle().Width(width).Align(sideOf(mine)).Render(beside))
+	}
+
+	return append(out, "")
+}
+
+// mark says whether a message has been delivered.
+//
+// Only for what this device said: what arrived is here by definition, and marking that would be
+// telling somebody their own screen is working.
+func (m Model) mark(msg convo.Message) string {
+	on := lipgloss.NewStyle().Background(saidBg)
+
+	if m.waiting[msg.ID] {
+		return on.Foreground(peach).Render("◐")
+	}
+	return on.Foreground(green).Render("✓")
+}
+
+// sideOf is which edge a message sits against.
+func sideOf(mine bool) lipgloss.Position {
+	if mine {
+		return lipgloss.Right
+	}
+	return lipgloss.Left
+}
+
+// speaker is whose message this is, by name.
+func (m Model) speaker(mine bool) string {
+	if mine {
+		return m.me.Name
+	}
+	if with, ok := m.peer(); ok {
+		return with.Name
+	}
+	return "them"
 }
 
 // middle puts something in the centre of the room a screen has, for the screens that are one thing
@@ -467,7 +888,7 @@ func (m Model) nothingPaired() string {
 		keyStyle.Render("p") + sayStyle.Render("  show a code for the other device to scan or type in"),
 		keyStyle.Render("t") + sayStyle.Render("  take a code the other device is showing"),
 		"",
-		faintStyle.Render("or run ") + kindStyle.Render("drop pair") + faintStyle.Render(" on both, from a terminal"),
+		faintStyle.Render("or run ") + kindStyle.Render("drop peer pair") + faintStyle.Render(" on both, from a terminal"),
 		"",
 	}, "\n")
 
@@ -482,7 +903,7 @@ func (m Model) pairingView() string {
 	var out strings.Builder
 
 	width := m.panelWidth()
-	folded := fold("drop pair "+m.linking.ticket, width-4)
+	folded := fold("drop peer pair "+m.linking.ticket, width-4)
 
 	// What the panel has room for: the body, less its own two edges, less the line that says what
 	// to do with the code, the ticket under it, and the line saying we are waiting.
@@ -507,3 +928,66 @@ func (m Model) pairingView() string {
 
 	return m.middle(panel("show a code", width, 0, out.String()))
 }
+
+// canvas is what a terminal from another machine is drawn on.
+//
+// Black, whatever this terminal's own background is. What arrives is a screen somebody else's
+// programs painted, with their own idea of what the background should be, and letting this page
+// show through the gaps makes two screens out of one.
+func (m Model) canvas(drawn string) string {
+	ground := lipgloss.NewStyle().Background(lipgloss.Color("0")).Width(m.viewWidth())
+
+	// The far end's own escapes reset the background to whatever this terminal calls default, so
+	// the black has to be asserted again after each one. Without this the canvas is black only up
+	// to the first colour the other machine chose.
+	drawn = strings.ReplaceAll(drawn, "\x1b[0m", "\x1b[0m\x1b[40m")
+
+	rows := strings.Split(drawn, "\n")
+	for i, row := range rows {
+		rows[i] = ground.Render(row)
+	}
+
+	// Filled to the bottom, so the canvas is a rectangle rather than a ragged edge where the far
+	// end happened to stop writing.
+	for len(rows) < m.viewHeight() {
+		rows = append(rows, ground.Render(""))
+	}
+	return strings.Join(rows, "\n")
+}
+
+// walkKeys is what a directory offers, which is what the far end said it will take.
+func (m Model) walkKeys() []hint {
+	moving := []hint{{"↑↓", "move"}, {"enter", "go in"}, {"esc", "back"}, {"r", "reload"}}
+	if m.putting {
+		return []hint{{"tab", "complete"}, {"enter", "send"}, {"esc", "cancel"}}
+	}
+
+	at, ok := m.path()
+	if !ok || m.onSelf {
+		return moving
+	}
+
+	acts := []hint{{"g", "download"}}
+	if at.Writable {
+		acts = append(acts, hint{"s", "send"}, hint{"x", "remove"})
+	}
+	return append(acts, moving...)
+}
+
+// bytesOf is a size as somebody reads it rather than as a machine counts it.
+func bytesOf(n int64) string {
+	switch {
+	case n < 1024:
+		return fmt.Sprintf("%d B", n)
+	case n < 1024*1024:
+		return fmt.Sprintf("%.1f kB", float64(n)/1024)
+	case n < 1024*1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1024*1024))
+	default:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1024*1024*1024))
+	}
+}
+
+// MaxSaid is how much of one message the interface draws. A message is what somebody wanted to say,
+// so it is generous; it is still somebody else's screen, so it is bounded.
+const MaxSaid = 2000

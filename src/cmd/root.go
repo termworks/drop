@@ -22,8 +22,14 @@ func Execute(v string, exit func(int), args []string) {
 	root := &cobra.Command{
 		Use:   "drop",
 		Short: "Distributed peer-to-peer file transfer, streams and chat",
-		Long: "One identity per device, and named namespaces under it. What a namespace does is\n" +
-			"declared in the config, so opening one is the same command whatever it turns out to be.",
+		Long: "One identity per machine, and named namespaces under it. What a namespace does is\n" +
+			"declared in the config, so opening one is the same command whatever it turns out to be.\n\n" +
+			"An address is whose machine, which machine, and what on it:\n\n" +
+			"  bob:laptop:/chat   bob's laptop, its /chat\n" +
+			"  laptop:/chat       the machine called laptop\n" +
+			"  bob::/chat         bob, whichever machine of his answers\n" +
+			"  /chat              this machine\n\n" +
+			"With no arguments at all, drop opens the interface.",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -38,21 +44,21 @@ func Execute(v string, exit func(int), args []string) {
 
 	// Settings before any command runs, so one that only dials still knows what it is allowed
 	// to do. The commands that serve load the whole config themselves.
-	root.PersistentPreRun = func(*cobra.Command, []string) { conf.ApplySettings() }
+	root.PersistentPreRunE = func(*cobra.Command, []string) error {
+		conf.ApplySettings(reading())
+		unlocking()
+
+		return wearBadge()
+	}
 
 	root.SetArgs(args)
 	root.AddCommand(
-		newToCmd(),
+		newConnectCmd(),
 		newServeCmd(),
-		newCastCmd(),
-		newPairCmd(),
-		newPeersCmd(),
-		newLogCmd(),
-		newChatCmd(),
-		newIDCmd(),
-		newNamespacesCmd(),
-		newPasswdCmd(),
-		newListCmd(),
+		newFileCmd(),
+		newPeerCmd(),
+		newPathCmd(),
+		newMeCmd(),
 	)
 
 	if err := root.Execute(); err != nil {

@@ -9,7 +9,7 @@ import (
 // Access is denied unless something grants it. A cast that declares a namespace and no rule is one
 // nobody can ever watch, and the only sign of it is a refusal on the watcher's screen.
 func TestACastIsWatchableByAPairedDevice(t *testing.T) {
-	table := castMounts()
+	table := castMounts(reading())
 
 	paired := ns.Caller{ID: "beta", Name: "beta", Paired: true}
 	if ok, why := table.Admits(CastPath, paired); !ok {

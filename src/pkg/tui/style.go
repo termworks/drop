@@ -65,70 +65,29 @@ func badge(on bool, yes, no string) string {
 	return faintStyle.Render("○ " + no)
 }
 
-// panel is a rounded box with its name written into the top edge, which is how every pane here is
-// separated from the next without a line of its own.
-func panel(title string, width, height int, body string) string {
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(surface).
-		Padding(0, 1)
-
-	if width > 2 {
-		box = box.Width(width - 2)
-	}
-	if height > 2 {
-		box = box.Height(height - 2)
-	}
-	if title != "" {
-		box = box.BorderTop(true)
-	}
-	return withTitle(box.Render(body), title)
-}
-
-// withTitle writes a name into the top border of an already-drawn box.
+// panel is a screen with its name above it.
 //
-// Lip Gloss has no titled border, and drawing the box by hand to get one would mean owning every
-// corner and join. Overwriting the top edge keeps the box the toolkit's problem.
-func withTitle(box, title string) string {
+// No box: a border costs two columns and two rows of every screen and says nothing the title does
+// not. What separates one pane from the next is the name at the top and the space around it.
+func panel(title string, width, height int, body string) string {
+	room := height
+	if title != "" {
+		room--
+	}
+
+	inside := lipgloss.NewStyle().Padding(0, 1)
+	if width > 2 {
+		inside = inside.Width(width)
+	}
+	if room > 0 {
+		inside = inside.Height(room)
+	}
+
+	shown := inside.Render(body)
 	if title == "" {
-		return box
+		return shown
 	}
-
-	lines := strings.Split(box, "\n")
-	if len(lines) == 0 {
-		return box
-	}
-
-	edge := lipgloss.NewStyle().Foreground(surface)
-	name := " " + brandStyle.Render(title) + " "
-	corner := edge.Render("╭─")
-
-	// What is left of the top edge once the corner, the name and the far corner have had theirs.
-	rest := lipgloss.Width(lines[0]) - lipgloss.Width(corner) - lipgloss.Width(name) - 1
-	if rest < 0 {
-		return box
-	}
-	lines[0] = corner + name + edge.Render(strings.Repeat("─", rest)+"╮")
-
-	return strings.Join(lines, "\n")
-}
-
-// What each kind of path looks like in a list. Glyphs rather than words: the word is already on the
-// line below, and a shape is quicker to scan down a column than a second string.
-var glyphs = map[string]string{
-	"chat":   "▤",
-	"files":  "▣",
-	"tty":    "▮",
-	"stream": "▶",
-	"link":   "◈",
-	"branch": "▸",
-}
-
-func glyph(kind string) string {
-	if g, ok := glyphs[kind]; ok {
-		return g
-	}
-	return "·"
+	return " " + brandStyle.Render(title) + "\n" + shown
 }
 
 // fit shortens text to a width, keeping the end.
@@ -151,16 +110,29 @@ func fit(text string, width int) string {
 // A row carries a solid background across its whole width, so three lines read as one block and
 // columns line up down the list. Alternating shades separate neighbours without a rule between them.
 //
-// Only what is selected carries one: banding every other row competes with the selection, and the
-// terminal's own background is what the rest should be.
-var rowBgOn = surface
+// From the grayscale ramp rather than the sixteen, because this is the one place a colour must be
+// a known distance from the one beside it: bright black is wherever a theme put it, and next to a
+// dark background it can be lighter than the text.
+var (
+	rowBg    = lipgloss.Color("232")
+	rowBgAlt = lipgloss.Color("235")
+	rowBgOn  = lipgloss.Color("237")
+
+	// A message sits on something you can see the edges of, a step further from the page than a
+	// list row: a box whose ground is almost the page is a box nobody can find the sides of.
+	saidBg = lipgloss.Color("236")
+)
 
 // row is the background a line of an item is drawn on.
-func row(_ int, selected bool) lipgloss.Style {
-	if selected {
+func row(index int, selected bool) lipgloss.Style {
+	switch {
+	case selected:
 		return lipgloss.NewStyle().Background(rowBgOn)
+	case index%2 == 1:
+		return lipgloss.NewStyle().Background(rowBgAlt)
+	default:
+		return lipgloss.NewStyle().Background(rowBg)
 	}
-	return lipgloss.NewStyle()
 }
 
 // cell draws text in a fixed-width column carrying the row's background, which is what keeps the

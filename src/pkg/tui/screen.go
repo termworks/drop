@@ -4,6 +4,8 @@ import (
 	"strings"
 	"sync"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/bresilla/drop/src/pkg/term"
 )
 
@@ -18,11 +20,28 @@ type screen struct {
 
 	// nudge tells the interface a repaint is worth doing. Depth one, and a full channel is simply
 	// left alone: the signal carries nothing, so one pending nudge means the same as ten.
+	//
+	// Never closed. Whatever is reading the far end goes on writing for a moment after the watch
+	// is over -- the read that was already in flight has to land somewhere -- and closing this
+	// would turn that into a panic on a channel nobody owns any more.
 	nudge chan struct{}
+	// done says the screen is finished with, so whoever is waiting for a repaint stops waiting.
+	done chan struct{}
+	over sync.Once
 }
 
 func newScreen(cols, rows int) *screen {
-	return &screen{inner: term.New(cols, rows), nudge: make(chan struct{}, 1)}
+	return &screen{
+		inner: term.New(cols, rows),
+		nudge: make(chan struct{}, 1),
+		done:  make(chan struct{}),
+	}
+}
+
+// Finish says nothing more will be drawn from this screen. Safe to call more than once, and safe
+// while somebody is still writing to it.
+func (s *screen) Finish() {
+	s.over.Do(func() { close(s.done) })
 }
 
 func (s *screen) Write(p []byte) (int, error) {
@@ -66,7 +85,60 @@ func (s *screen) Draw() string {
 
 func (s *screen) wake() {
 	select {
+	case <-s.done:
+		return
+	default:
+	}
+
+	select {
 	case s.nudge <- struct{}{}:
 	default:
 	}
+}
+
+// keyBytes is a keypress as the bytes a terminal expects.
+//
+// Bubbletea has already decoded the escape sequences into keys, so this puts back the ones a pty
+// on the far end is waiting for. Runes go as themselves; the rest are what a terminal sends.
+func keyBytes(msg tea.KeyMsg) []byte {
+	switch msg.Type {
+	case tea.KeyRunes:
+		return []byte(string(msg.Runes))
+	case tea.KeySpace:
+		return []byte(" ")
+	case tea.KeyEnter:
+		return []byte("\r")
+	case tea.KeyTab:
+		return []byte("\t")
+	case tea.KeyBackspace:
+		return []byte{0x7f}
+	case tea.KeyEsc:
+		return []byte{0x1b}
+	case tea.KeyUp:
+		return []byte("\x1b[A")
+	case tea.KeyDown:
+		return []byte("\x1b[B")
+	case tea.KeyRight:
+		return []byte("\x1b[C")
+	case tea.KeyLeft:
+		return []byte("\x1b[D")
+	case tea.KeyHome:
+		return []byte("\x1b[H")
+	case tea.KeyEnd:
+		return []byte("\x1b[F")
+	case tea.KeyDelete:
+		return []byte("\x1b[3~")
+	case tea.KeyPgUp:
+		return []byte("\x1b[5~")
+	case tea.KeyPgDown:
+		return []byte("\x1b[6~")
+	}
+
+	// The control keys are their letter minus sixty-four: ctrl+c is 3, ctrl+d is 4, and so on.
+	if name := msg.String(); strings.HasPrefix(name, "ctrl+") && len(name) == 6 {
+		if c := name[5]; c >= 'a' && c <= 'z' {
+			return []byte{c - 'a' + 1}
+		}
+	}
+	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"strconv"
+	"sync"
 
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/netaddr"
@@ -26,6 +27,35 @@ var ALPNs = []string{ALPNSession, ALPNHello, ALPNPair}
 // Node is this machine on the drop network.
 type Node struct {
 	Endpoint *iroh.Endpoint
+
+	// borrowed is true when this node could not take the port its identity is reached on, because
+	// another process on this machine already has it. That process is the node as far as anybody
+	// dialling is concerned; this one can still ask questions, but nobody can reach it.
+	borrowed bool
+	// wanted is the port it tried for, which is the one to name when saying so.
+	wanted uint16
+
+	mu sync.Mutex
+	// pinned is this machine's own addresses as last handed to the endpoint.
+	pinned []netip.AddrPort
+}
+
+// Own reports whether this process holds the address its identity is reached on.
+func (n *Node) Own() bool { return !n.borrowed }
+
+// Trouble is what is wrong with this node itself, or empty when nothing is.
+//
+// One thing so far, and it is the one that cannot be seen from a failed dial: another process on
+// this machine already had the port this identity is reached on, so this node bound somewhere else.
+// Nothing dialling this device arrives here, and a hole punched for it is punched at the wrong
+// port — so every connection ends in a transport timeout that says only that nothing answered.
+func (n *Node) Trouble() string {
+	if n.Own() {
+		return ""
+	}
+	return fmt.Sprintf(
+		"another process on this machine holds port %d, so this one bound elsewhere and cannot be reached; stop it, or set DROP_PORT to a free port",
+		n.wanted)
 }
 
 // Start brings up the endpoint under this node's persisted identity.
@@ -49,21 +79,38 @@ func Start(ctx context.Context) (*Node, error) {
 	// third party, and traffic should not start crossing one because a default said so.
 	if Rendezvous() {
 		opts = append(opts, iroh.WithRelayMode(relayMode()), iroh.WithNetReport())
+
+		// Being able to turn somebody else's id into an address. Costs them nothing and is what
+		// lets a ticket be pasted between two machines that are not on the same wire.
+		if lookup, err := resolving(); err == nil {
+			opts = append(opts, lookup)
+		}
 	}
+
+	borrowed := false
 
 	ep, err := iroh.Bind(ctx, opts...)
 	if err != nil && Port() != 0 {
 		// The preferred port is taken. An address others wrote down will not reach this node
 		// until it is free again, but refusing to start would be worse: everything that does not
 		// depend on a remembered address still works.
-		fmt.Fprintf(os.Stderr, "drop: port %d is in use; listening on any port\n", Port())
+		borrowed = true
 		opts[0] = iroh.WithBindAddr(netip.AddrPortFrom(netip.IPv4Unspecified(), 0))
 		ep, err = iroh.Bind(ctx, opts...)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("starting the endpoint: %w", err)
 	}
-	return &Node{Endpoint: ep}, nil
+
+	n := &Node{Endpoint: ep, borrowed: borrowed, wanted: Port()}
+
+	// Before anything reads Addr(), so the first record written already carries somewhere a peer
+	// on the same wire can dial. Then again on a tick, because a machine moves between networks
+	// while it is running and nothing else looks.
+	n.Pin()
+	go n.repinning(ctx, repin)
+
+	return n, nil
 }
 
 // ID is this node's address.
@@ -114,12 +161,13 @@ const DefaultPort = 47777
 func Port() uint16 {
 	written := os.Getenv("DROP_PORT")
 	if written == "" {
-		return DefaultPort
+		// A profile listens somewhere of its own, or two of them could not be up at once.
+		return profilePort()
 	}
 
 	chosen, err := strconv.ParseUint(written, 10, 16)
 	if err != nil {
-		return DefaultPort
+		return profilePort()
 	}
 	return uint16(chosen)
 }

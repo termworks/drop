@@ -2,7 +2,9 @@ package passwd
 
 import (
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestAPasswordVerifiesAgainstItsHash(t *testing.T) {
@@ -92,5 +94,71 @@ func TestTheHashIsShapedAsExpected(t *testing.T) {
 	}
 	if !strings.HasPrefix(hash, "$argon2id$v=19$m=65536,t=3,p=4$") {
 		t.Fatalf("unexpected shape: %s", hash)
+	}
+}
+
+// A path guarded by a password is reachable by anybody who knows this device's id, so the guessing
+// happens on somebody else's machine and the 64 MiB is committed on this one. What one session
+// offers must be hashed once, however many times it is asked about.
+func TestAGuessIsHashedOnce(t *testing.T) {
+	hash, err := Hash("open sesame")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tried := NewTried()
+
+	once := time.Now()
+	if !tried.Says(hash, "open sesame") {
+		t.Fatal("the right password was refused")
+	}
+	first := time.Since(once)
+
+	again := time.Now()
+	for i := 0; i < 50; i++ {
+		if !tried.Says(hash, "open sesame") {
+			t.Fatal("the right password was refused on the way back")
+		}
+	}
+	rest := time.Since(again)
+
+	if rest > first {
+		t.Errorf("fifty remembered answers took %v, one hash took %v", rest, first)
+	}
+
+	// A different guess is a different question and is really asked.
+	if tried.Says(hash, "not it") {
+		t.Error("a wrong password was admitted")
+	}
+	// And a nil memory still answers, it just pays every time.
+	var none *Tried
+	if !none.Says(hash, "open sesame") {
+		t.Error("a caller with no memory could not be let in")
+	}
+}
+
+// However many are guessing at once, only so much memory is committed to it.
+func TestOnlySoManyGuessesRunAtOnce(t *testing.T) {
+	hash, err := Hash("crowded")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 24; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			Verify(hash, "crowded")
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatal("twenty-four guesses did not finish; the queue is not draining")
 	}
 }
