@@ -23,6 +23,8 @@ document says so, because those are the sentences worth reading twice.
 |---|---|
 | [The command line](cli.md) | one noun per group, and an address that reads right to left |
 | [The archetypes](archetypes.md) | share, files, chat, note, link, stream, tty — what each is for |
+| [Sharing a terminal](terminal.md) | one shell and many watchers, the screen rather than a replay |
+| [The interface](interface.md) | people, then machines, then paths — and managing somebody |
 | [One thing, several machines](shared.md) | signed changes, merging, and how a history stays small |
 | [An archetype in Lua](lua.md) | a plugin both ends load, and the sandbox it runs in |
 

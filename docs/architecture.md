@@ -78,6 +78,41 @@ If no daemon is running, the command dials for itself and stops when it is done.
 `drop file ls` work on a machine where nothing was started — and why a command that needs to *be*
 reachable, like pairing by ticket, tells you to start one.
 
+
+## Staying reachable
+
+`drop serve` keeps the node reachable. As a user service, the device is reachable whenever it is on:
+
+```console
+install -m 0644 misc/drop.service ~/.config/systemd/user/
+systemctl --user enable --now drop
+```
+
+Without a daemon, `drop connect laptop:/…` only reaches the laptop while somebody there is running
+something that serves.
+
+## When only one side can be reached
+
+Behind a strict NAT a device can open connections and nothing can open one to it. Its address never
+resolves to anywhere anybody can dial, so a queue for it would wait forever while the device itself
+sits there connected and idle.
+
+So the direction of a connection is not the direction of the traffic. A device holds a session open
+to everybody it has paired with, whether or not it has anything to say, and the far end keeps that
+connection and pushes whatever is waiting back down it. QUIC does not care which side opened a
+connection; either can start a stream on it.
+
+```
+    behind a NAT                              reachable
+    ────────────                              ─────────
+    holds a connection open  ──────────────▶  keeps it
+                             ◀──────────────  pushes what is queued
+```
+
+Nothing here depends on the NAT being friendly, on a relay hole being punched, or on the unreachable
+side being findable at all. It only needs it to be able to dial out, which is the one thing such a
+device can always do.
+
 ## Where things live
 
 ```
