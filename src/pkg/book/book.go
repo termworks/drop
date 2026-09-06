@@ -408,7 +408,17 @@ func Resolve(target string) (Entry, error) {
 //
 // Only when it changes something. A dial is not a reason to rewrite a file.
 func (b *Book) Reached(id node.ID, at string) (bool, error) {
+	changed := false
+	err := b.Change(func() (bool, error) {
+		changed = b.reached(id, at)
+		return changed, nil
+	})
+	return changed, err
+}
+
+func (b *Book) reached(id node.ID, at string) bool {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	name, entry, found := "", Entry{}, false
 	for known, e := range b.entries {
@@ -418,8 +428,7 @@ func (b *Book) Reached(id node.ID, at string) (bool, error) {
 		}
 	}
 	if !found || (len(entry.Addrs) > 0 && entry.Addrs[0] == at) {
-		b.mu.Unlock()
-		return false, nil
+		return false
 	}
 
 	// First, and once: the rest keep their order behind it, because they were worth trying before
@@ -437,9 +446,7 @@ func (b *Book) Reached(id node.ID, at string) (bool, error) {
 
 	entry.Addrs = addrs
 	b.entries[name] = entry
-	b.mu.Unlock()
-
-	return true, b.Save()
+	return true
 }
 
 // mostAddrs caps what is remembered for one device. A machine that moves between a few networks is
@@ -503,7 +510,7 @@ func (b *Book) Change(alter func() (bool, error)) error {
 	}
 
 	return keep.While(file, func() error {
-		if err := b.Refresh(); err != nil {
+		if err := b.reload(); err != nil {
 			return err
 		}
 		changed, err := alter()
@@ -512,4 +519,20 @@ func (b *Book) Change(alter func() (bool, error)) error {
 		}
 		return b.Save()
 	})
+}
+
+func (b *Book) reload() error {
+	fresh, err := Load()
+	if err != nil {
+		return err
+	}
+
+	fresh.mu.RLock()
+	entries, read := fresh.entries, fresh.read
+	fresh.mu.RUnlock()
+
+	b.mu.Lock()
+	b.entries, b.read = entries, read
+	b.mu.Unlock()
+	return nil
 }

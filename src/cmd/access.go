@@ -281,16 +281,22 @@ func (l *running) Trust(name string, trusted bool) error {
 		return err
 	}
 
-	pinned.Trust(name, trusted)
-	if _, ok := pinned.Lookup(name); !ok {
+	return pinned.Change(func() (bool, error) {
+		changed := false
+		pinned.Trust(name, trusted)
+		if _, ok := pinned.Lookup(name); ok {
+			return true, nil
+		}
+
 		// A person's heading: trust every machine filed under them.
 		for _, one := range pinned.All() {
 			if one.Person == name {
 				pinned.Trust(one.Name, trusted)
+				changed = true
 			}
 		}
-	}
-	return pinned.Save()
+		return changed, nil
+	})
 }
 
 // Forget drops a pairing, and everything kept about it that is now meaningless.
@@ -300,25 +306,35 @@ func (l *running) Forget(name string) error {
 		return err
 	}
 
-	gone := []string{name}
-	if _, ok := pinned.Lookup(name); !ok {
-		gone = nil
-		for _, one := range pinned.All() {
-			if one.Person == name {
-				gone = append(gone, one.Name)
+	var forgotten []node.ID
+	err = pinned.Change(func() (bool, error) {
+		gone := []string{name}
+		if _, ok := pinned.Lookup(name); !ok {
+			gone = nil
+			for _, one := range pinned.All() {
+				if one.Person == name {
+					gone = append(gone, one.Name)
+				}
 			}
 		}
-	}
 
-	for _, at := range gone {
-		entry, ok := pinned.Lookup(at)
-		if !ok {
-			continue
+		for _, at := range gone {
+			entry, ok := pinned.Lookup(at)
+			if !ok {
+				continue
+			}
+			pinned.Remove(at)
+			forgotten = append(forgotten, entry.ID)
 		}
-		pinned.Remove(at)
-
-		// What that device said it shares is worth nothing once it is a stranger again.
-		_ = shares.Forget(entry.ID)
+		return len(forgotten) > 0, nil
+	})
+	if err != nil {
+		return err
 	}
-	return pinned.Save()
+
+	// What that device said it shares is worth nothing once it is a stranger again.
+	for _, id := range forgotten {
+		_ = shares.Forget(id)
+	}
+	return nil
 }

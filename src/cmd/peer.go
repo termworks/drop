@@ -79,12 +79,13 @@ func newPeerTrustCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, known := pinned.Lookup(args[0]); !known {
-				return fmt.Errorf("%q is not a machine this one knows", args[0])
-			}
-
-			pinned.Trust(args[0], !undo)
-			if err := pinned.Save(); err != nil {
+			if err := pinned.Change(func() (bool, error) {
+				if _, known := pinned.Lookup(args[0]); !known {
+					return false, fmt.Errorf("%q is not a machine this one knows", args[0])
+				}
+				pinned.Trust(args[0], !undo)
+				return true, nil
+			}); err != nil {
 				return err
 			}
 
@@ -114,10 +115,12 @@ func newPeerForgetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if !pinned.Remove(args[0]) {
-				return fmt.Errorf("%q is not known", args[0])
-			}
-			if err := pinned.Save(); err != nil {
+			if err := pinned.Change(func() (bool, error) {
+				if !pinned.Remove(args[0]) {
+					return false, fmt.Errorf("%q is not known", args[0])
+				}
+				return true, nil
+			}); err != nil {
 				return err
 			}
 

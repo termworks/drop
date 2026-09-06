@@ -297,18 +297,19 @@ func filed(p proto.Pairing, as string, machine bool) (string, error) {
 		return "", err
 	}
 
-	// A name is this machine's own label, and the far end suggested one. Letting a pairing take a
-	// name that is already somebody else's would hand that name, and every rule written against
-	// it, to whoever paired last.
-	if held, taken := b.Lookup(name); taken && held.ID != p.Peer {
-		return "", fmt.Errorf("%q is already %s here; pair with --as to choose another name", name, node.Brief(held.ID))
-	}
+	err = b.Change(func() (bool, error) {
+		// Refuse to reassign a name held by another machine.
+		if held, taken := b.Lookup(name); taken && held.ID != p.Peer {
+			return false, fmt.Errorf("%q is already %s here; pair with --as to choose another name", name, node.Brief(held.ID))
+		}
 
-	b.Pair(name, p.Peer, p.Secret, p.Addrs...)
-	if !machine {
-		b.Belongs(name, p.User)
-	}
-	return name, b.Save()
+		b.Pair(name, p.Peer, p.Secret, p.Addrs...)
+		if !machine {
+			b.Belongs(name, p.User)
+		}
+		return true, nil
+	})
+	return name, err
 }
 
 // announce says who was paired with, for the interfaces that print rather than draw.
