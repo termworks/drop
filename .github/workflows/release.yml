@@ -66,6 +66,18 @@ jobs:
           CGO_ENABLED: '1'
         run: go test -race ./...
 
+      - name: Fuzz wire decoders
+        run: |
+          set -euo pipefail
+          grep -R '^func Fuzz' -n src --include='*_test.go' |
+            while IFS=: read -r file _ declaration; do
+              name="${declaration#func }"
+              name="${name%%(*}"
+              package="./$(dirname "${file}")"
+              echo "fuzzing ${package} ${name}"
+              go test "${package}" -run '^$' -fuzz "^${name}$" -fuzztime=3s
+            done
+
       - name: End-to-end test
         env:
           CGO_ENABLED: '0'
