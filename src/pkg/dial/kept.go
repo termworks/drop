@@ -114,7 +114,7 @@ func (k *Kept) answerOn(conn *iroh.Conn) {
 }
 
 const (
-	maxAnsweringStreams = 64
+	maxAnsweringStreams = 16
 	maxAnsweringTotal   = 64
 )
 

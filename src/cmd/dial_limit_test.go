@@ -74,3 +74,9 @@ func TestBoundedWorkSharesCapacityAcrossConnections(t *testing.T) {
 		t.Fatal("accepted stream did not run")
 	}
 }
+
+func TestOneConnectionCannotConsumeEveryStreamSlot(t *testing.T) {
+	if maxStreamsPerConnection >= maxServingStreams {
+		t.Fatalf("one connection may consume %d of %d stream slots", maxStreamsPerConnection, maxServingStreams)
+	}
+}

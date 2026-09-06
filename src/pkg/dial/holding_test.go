@@ -153,3 +153,9 @@ func TestAnsweringWorkSharesCapacityAcrossConnections(t *testing.T) {
 		t.Fatal("accepted answer did not run")
 	}
 }
+
+func TestOneHeldConnectionCannotConsumeEveryAnswerSlot(t *testing.T) {
+	if maxAnsweringStreams >= maxAnsweringTotal {
+		t.Fatalf("one connection may consume %d of %d answer slots", maxAnsweringStreams, maxAnsweringTotal)
+	}
+}

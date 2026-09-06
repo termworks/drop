@@ -131,7 +131,7 @@ func serveConn(ctx context.Context, conn *iroh.Conn, handlers map[string]func(no
 const (
 	maxServingConnections   = 256
 	maxServingStreams       = 64
-	maxStreamsPerConnection = 64
+	maxStreamsPerConnection = 16
 	maxArrivalPushes        = 64
 )
 
