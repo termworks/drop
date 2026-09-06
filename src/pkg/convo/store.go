@@ -34,6 +34,7 @@ type Store struct {
 	// a decrypt pass of everything said so far, per message.
 	ids   map[string]bool
 	size  int64
+	seen  os.FileInfo
 	reads int
 }
 
@@ -227,12 +228,17 @@ func appendTo(path string, body []byte) error {
 // length prefix says where the next one starts, so one damaged entry costs one entry rather than
 // every message written after it.
 func readAll(path, peer string) ([]Message, error) {
-	raw, err := keep.ReadFile(path, MaxLog)
+	out, _, err := readAllInfo(path, peer)
+	return out, err
+}
+
+func readAllInfo(path, peer string) ([]Message, os.FileInfo, error) {
+	raw, info, err := keep.ReadFileInfo(path, MaxLog)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 
 	var out []Message
@@ -251,33 +257,31 @@ func readAll(path, peer string) ([]Message, error) {
 		if errors.Is(err, ErrLocked) {
 			// Not a truncated tail: the records are whole and the key is not here. Reporting an
 			// empty conversation would be a lie about the disk rather than a report about the key.
-			return nil, err
+			return nil, nil, err
 		}
 		if err != nil {
 			continue
 		}
 		out = append(out, m)
 	}
-	return out, nil
+	return out, info, nil
 }
 
 // known is the set of ids in the history, walking the log only when it has changed under this
 // process -- a chat window in another terminal appending to the same conversation.
 func (s *Store) known() error {
-	var size int64
-	at, err := os.Stat(s.history)
+	current, err := os.Stat(s.history)
 	switch {
 	case err == nil:
-		size = at.Size()
 	case !errors.Is(err, os.ErrNotExist):
 		return fmt.Errorf("reading %s: %w", s.history, err)
 	}
-	if s.ids != nil && size == s.size {
+	if s.ids != nil && sameRevision(s.seen, current) {
 		return nil
 	}
 
 	s.reads++
-	all, err := readAll(s.history, s.peer.String())
+	all, seen, err := readAllInfo(s.history, s.peer.String())
 	if err != nil {
 		return err
 	}
@@ -285,8 +289,18 @@ func (s *Store) known() error {
 	for _, m := range all {
 		ids[m.ID] = true
 	}
-	s.ids, s.size = ids, size
+	s.ids, s.seen = ids, seen
+	if seen == nil {
+		s.size = 0
+	} else {
+		s.size = seen.Size()
+	}
 	return nil
+}
+
+func sameRevision(left, right os.FileInfo) bool {
+	return left == nil && right == nil || left != nil && right != nil && os.SameFile(left, right) &&
+		left.Size() == right.Size() && left.ModTime().Equal(right.ModTime())
 }
 
 // Add records a message in the history, ignoring one already there. Returns whether it was new,
@@ -313,9 +327,9 @@ func (s *Store) Add(m Message) (bool, error) {
 
 		s.ids[m.ID] = true
 		if at, err := os.Stat(s.history); err == nil {
-			s.size = at.Size()
+			s.size, s.seen = at.Size(), at
 		} else {
-			s.ids = nil
+			s.ids, s.seen = nil, nil
 		}
 		fresh = true
 		return nil
@@ -481,7 +495,7 @@ func (s *Store) Rewrite(to []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.ids = nil
+	s.ids, s.seen = nil, nil
 
 	for _, at := range []string{s.history, s.outbox} {
 		all, err := readAll(at, s.peer.String())

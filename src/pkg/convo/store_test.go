@@ -520,3 +520,39 @@ func TestStoringDoesNotRereadTheWholeLog(t *testing.T) {
 		t.Fatalf("storing 1600 messages read the whole log %d times", s.reads)
 	}
 }
+
+func TestDedupeNoticesAnEqualSizedReplacement(t *testing.T) {
+	s := openStore(t)
+	first := Message{ID: "first-id", Kind: KindText, Dir: In, Body: "first", At: 1}
+	if fresh, err := s.Add(first); err != nil || !fresh {
+		t.Fatalf("Add(first) = %v, %v", fresh, err)
+	}
+
+	second := Message{ID: "other-id", Kind: KindText, Dir: In, Body: "other", At: 2}
+	body, err := record(second, s.peer.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var head [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(head[:], uint64(len(body)))
+	replacement := append(append([]byte{}, head[:n]...), body...)
+	if stat, err := os.Stat(s.history); err != nil {
+		t.Fatal(err)
+	} else if int64(len(replacement)) != stat.Size() {
+		t.Fatalf("replacement is %d bytes, want %d", len(replacement), stat.Size())
+	}
+	if err := keep.Replace(s.history, replacement); err != nil {
+		t.Fatal(err)
+	}
+
+	if fresh, err := s.Add(first); err != nil || !fresh {
+		t.Fatalf("Add(first) after replacement = %v, %v", fresh, err)
+	}
+	history, err := s.History()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("History() = %d messages, want both records", len(history))
+	}
+}

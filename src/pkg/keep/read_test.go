@@ -27,6 +27,25 @@ func TestReadFileReadsWithinItsLimit(t *testing.T) {
 	}
 }
 
+func TestReadFileInfoIdentifiesTheOpenedFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "state")
+	if err := os.WriteFile(file, []byte("state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, info, err := ReadFileInfo(file, 5)
+	if err != nil {
+		t.Fatalf("ReadFileInfo(): %v", err)
+	}
+	current, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "state" || !os.SameFile(info, current) {
+		t.Fatalf("ReadFileInfo() = %q, %v", raw, info)
+	}
+}
+
 func TestReadFileRefusesAnOversizedSparseFile(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "state")
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
