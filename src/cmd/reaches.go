@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/dial"
@@ -118,9 +119,20 @@ func viaDaemon(entry book.Entry, alpn string) (*lent, error) {
 		_ = conn.Close()
 		return nil, errNoDaemon
 	}
+	return acceptLent(conn, entry.Name)
+}
 
-	// One line: whether there is a stream on the other side of this socket now.
-	said, err := bufio.NewReader(conn).ReadString('\n')
+func acceptLent(conn net.Conn, name string) (*lent, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(localHelloWithin)); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	reading := bufio.NewReader(conn)
+	said, err := readLocalLine(reading)
+	if resetErr := conn.SetReadDeadline(time.Time{}); err == nil && resetErr != nil {
+		_ = conn.Close()
+		return nil, resetErr
+	}
 	if err != nil {
 		_ = conn.Close()
 		return nil, errNoDaemon
@@ -129,16 +141,21 @@ func viaDaemon(entry book.Entry, alpn string) (*lent, error) {
 	what, why, _ := strings.Cut(strings.TrimSpace(said), " ")
 	if what != "ok" {
 		_ = conn.Close()
-		return nil, fmt.Errorf("reaching %s: %s", entry.Name, why)
+		return nil, fmt.Errorf("reaching %s: %s", name, why)
 	}
-	return &lent{conn}, nil
+	return &lent{Conn: conn, read: reading}, nil
 }
 
 // lent is a stream the daemon is holding on this command's behalf.
 //
 // Close half-closes, the way a real stream does: the far end reads an end of file and its own
 // writes keep working. Done closes the socket, which is what ends the borrowing.
-type lent struct{ net.Conn }
+type lent struct {
+	net.Conn
+	read io.Reader
+}
+
+func (l *lent) Read(p []byte) (int, error) { return l.read.Read(p) }
 
 func (l *lent) Close() error {
 	if half, ok := l.Conn.(interface{ CloseWrite() error }); ok {
