@@ -34,6 +34,23 @@ type node struct {
 	blind bool
 }
 
+type lockedBuffer struct {
+	sync.Mutex
+	text strings.Builder
+}
+
+func (b *lockedBuffer) WriteString(text string) {
+	b.Lock()
+	defer b.Unlock()
+	b.text.WriteString(text)
+}
+
+func (b *lockedBuffer) String() string {
+	b.Lock()
+	defer b.Unlock()
+	return b.text.String()
+}
+
 // binary is the drop under test, built once for the whole run.
 var binary = sync.OnceValues(func() (string, error) {
 	out, err := filepath.Abs(filepath.Join(os.TempDir(), "drop-e2e", "drop"))
@@ -153,7 +170,7 @@ func (n *node) must(args ...string) string {
 }
 
 // background starts a command that is meant to keep running, and hands back what it prints.
-func (n *node) background(args ...string) (*exec.Cmd, *strings.Builder, func()) {
+func (n *node) background(args ...string) (*exec.Cmd, *lockedBuffer, func()) {
 	n.t.Helper()
 
 	drop, err := binary()
@@ -172,8 +189,7 @@ func (n *node) background(args ...string) (*exec.Cmd, *strings.Builder, func()) 
 	}
 	cmd.Stderr = cmd.Stdout
 
-	said := &strings.Builder{}
-	var mu sync.Mutex
+	said := &lockedBuffer{}
 
 	if err := cmd.Start(); err != nil {
 		stop()
@@ -184,9 +200,7 @@ func (n *node) background(args ...string) (*exec.Cmd, *strings.Builder, func()) 
 		reader := bufio.NewReader(pipe)
 		for {
 			line, err := reader.ReadString('\n')
-			mu.Lock()
 			said.WriteString(line)
-			mu.Unlock()
 			if err != nil {
 				return
 			}
@@ -251,7 +265,7 @@ func ticketIn(said string) string {
 
 // backgroundWriting starts a command whose standard input the test keeps writing to, which is what
 // a cast is: something that goes on producing output until whatever is producing it stops.
-func (n *node) backgroundWriting(args ...string) (io.WriteCloser, *strings.Builder, func()) {
+func (n *node) backgroundWriting(args ...string) (io.WriteCloser, *lockedBuffer, func()) {
 	n.t.Helper()
 
 	drop, err := binary()
@@ -276,7 +290,7 @@ func (n *node) backgroundWriting(args ...string) (io.WriteCloser, *strings.Build
 	}
 	cmd.Stderr = cmd.Stdout
 
-	said := &strings.Builder{}
+	said := &lockedBuffer{}
 	if err := cmd.Start(); err != nil {
 		stop()
 		n.t.Fatalf("%s: starting drop %s: %v", n.name, strings.Join(args, " "), err)
