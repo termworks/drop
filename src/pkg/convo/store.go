@@ -313,7 +313,18 @@ func (s *Store) Queue(m Message) error {
 	if err != nil {
 		return err
 	}
-	return keep.While(s.outbox, func() error { return appendTo(s.outbox, body) })
+	return keep.While(s.outbox, func() error {
+		waiting, err := readAll(s.outbox, s.peer.String())
+		if err != nil {
+			return err
+		}
+		for _, queued := range waiting {
+			if queued.ID == m.ID {
+				return nil
+			}
+		}
+		return appendTo(s.outbox, body)
+	})
 }
 
 // Pending is what has not been delivered, oldest first.

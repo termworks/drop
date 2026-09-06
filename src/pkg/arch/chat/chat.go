@@ -65,6 +65,7 @@ func Take(conn *wire.Conn, from node.ID, store func(node.ID, convo.Message) erro
 
 	var stored []string
 	seen := 0
+	seenIDs := make(map[string]bool)
 
 	for {
 		kind, body, err := conn.ReadFrame()
@@ -82,6 +83,13 @@ func Take(conn *wire.Conn, from node.ID, store func(node.ID, convo.Message) erro
 			if err != nil {
 				return fmt.Errorf("reading a message from %s: %w", from, err)
 			}
+			if m.ID == "" {
+				return fmt.Errorf("reading a message from %s: it has no id", from)
+			}
+			if seenIDs[m.ID] {
+				return fmt.Errorf("%s sent message %s twice in one session", from, m.ID)
+			}
+			seenIDs[m.ID] = true
 			m.Dir = convo.In
 			if err := store(from, m); err != nil {
 				// Not stored, so not acknowledged: the sender keeps it and tries again.

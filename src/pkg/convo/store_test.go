@@ -71,6 +71,28 @@ func TestQueuedMessageIsAlreadyHistory(t *testing.T) {
 	}
 }
 
+func TestQueueIsIdempotent(t *testing.T) {
+	s := openStore(t)
+	m, err := New(KindText, "hello", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Queue(m); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Queue(m); err != nil {
+		t.Fatal(err)
+	}
+
+	waiting, err := s.Pending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(waiting) != 1 {
+		t.Fatalf("Pending() = %d copies, want 1", len(waiting))
+	}
+}
+
 // Only what the far end confirmed leaves the outbox; a partial delivery is retried, not lost.
 func TestDeliveredClearsOnlyWhatWasConfirmed(t *testing.T) {
 	s := openStore(t)

@@ -17,6 +17,16 @@ func Send(conn *wire.Conn, batch []convo.Message) ([]string, error) {
 	if len(batch) > MaxBatch {
 		return nil, fmt.Errorf("sending %d messages, over the %d limit", len(batch), MaxBatch)
 	}
+	waiting := make(map[string]bool, len(batch))
+	for _, m := range batch {
+		if m.ID == "" {
+			return nil, fmt.Errorf("sending a message with no id")
+		}
+		if waiting[m.ID] {
+			return nil, fmt.Errorf("sending message %s twice in one batch", m.ID)
+		}
+		waiting[m.ID] = true
+	}
 	for _, m := range batch {
 		if err := conn.WriteFrame(wire.KindItem, m.Encode()); err != nil {
 			return nil, err
@@ -40,7 +50,17 @@ func Send(conn *wire.Conn, batch []convo.Message) ([]string, error) {
 	if kind != wire.KindAck {
 		return nil, fmt.Errorf("expected an ack, got frame kind %d", kind)
 	}
-	return decodeStored(body)
+	stored, err := decodeStored(body)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range stored {
+		if !waiting[id] {
+			return nil, fmt.Errorf("the receipt names message %s, which was not sent", id)
+		}
+		delete(waiting, id)
+	}
+	return stored, nil
 }
 
 // stored is the receipt: which message ids are now on the far end's disk.

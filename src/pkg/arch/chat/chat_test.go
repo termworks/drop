@@ -80,3 +80,61 @@ func TestReceiptRefusesTrailingBytes(t *testing.T) {
 		t.Fatal("a receipt with trailing bytes was accepted")
 	}
 }
+
+func TestTakeRefusesMissingOrRepeatedMessageIDs(t *testing.T) {
+	for name, messages := range map[string][]convo.Message{
+		"missing":  {{ID: ""}},
+		"repeated": {{ID: "one"}, {ID: "one"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := messageFrames(t, messages, int64(len(messages)))
+			err := Take(wire.NewConn(readWriter{in, &bytes.Buffer{}}), node.ID{}, func(node.ID, convo.Message) error { return nil })
+			if err == nil {
+				t.Fatal("Take() accepted ambiguous message identity")
+			}
+		})
+	}
+}
+
+func TestSendRefusesMissingOrRepeatedMessageIDsBeforeWriting(t *testing.T) {
+	for name, messages := range map[string][]convo.Message{
+		"missing":  {{ID: ""}},
+		"repeated": {{ID: "one"}, {ID: "one"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var stream bytes.Buffer
+			if _, err := Send(wire.NewConn(readWriter{&stream, &stream}), messages); err == nil {
+				t.Fatal("Send() accepted ambiguous message identity")
+			}
+			if stream.Len() != 0 {
+				t.Fatalf("Send() wrote %d bytes before rejecting the batch", stream.Len())
+			}
+		})
+	}
+}
+
+func TestSendRefusesAReceiptForAnotherMessage(t *testing.T) {
+	var answer bytes.Buffer
+	if err := wire.NewConn(readWriter{&answer, &answer}).WriteFrame(wire.KindAck, encodeStored([]string{"not-sent"})); err != nil {
+		t.Fatal(err)
+	}
+
+	var sent bytes.Buffer
+	stored, err := Send(wire.NewConn(readWriter{&answer, &sent}), []convo.Message{{ID: "sent"}})
+	if err == nil || len(stored) != 0 {
+		t.Fatalf("Send() accepted receipt %v with %v", stored, err)
+	}
+}
+
+func TestSendAcceptsAPartialReceiptForItsBatch(t *testing.T) {
+	var answer bytes.Buffer
+	if err := wire.NewConn(readWriter{&answer, &answer}).WriteFrame(wire.KindAck, encodeStored([]string{"one"})); err != nil {
+		t.Fatal(err)
+	}
+
+	var sent bytes.Buffer
+	stored, err := Send(wire.NewConn(readWriter{&answer, &sent}), []convo.Message{{ID: "one"}, {ID: "two"}})
+	if err != nil || len(stored) != 1 || stored[0] != "one" {
+		t.Fatalf("Send() = %v, %v", stored, err)
+	}
+}
