@@ -1,10 +1,13 @@
 package user
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A key drop can read is signed here, with no command and nothing to configure.
@@ -66,5 +69,23 @@ func TestASigningCommandThatSaysNothingFails(t *testing.T) {
 	}
 	if string(out) != "sign me" {
 		t.Errorf("the message did not reach the command: %q", out)
+	}
+}
+
+func TestASigningCommandCannotRunForever(t *testing.T) {
+	started := time.Now()
+	_, err := signViaWithin("sleep 10", []byte("sign me"), 50*time.Millisecond, maxCommandSignature)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a stuck signer returned %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("a stuck signer took %s to stop", elapsed)
+	}
+}
+
+func TestASigningCommandCannotFillMemory(t *testing.T) {
+	_, err := signViaWithin("printf "+strings.Repeat("x", 128), nil, time.Second, 32)
+	if err == nil || !strings.Contains(err.Error(), "more than 32") {
+		t.Fatalf("an oversized signature returned %v", err)
 	}
 }
