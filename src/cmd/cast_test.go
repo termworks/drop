@@ -1,10 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/bresilla/drop/src/pkg/asciicast"
 	"github.com/bresilla/drop/src/pkg/ns"
 )
 
@@ -47,5 +51,31 @@ func TestAddressCleanupOnlyRemovesItsOwnFile(t *testing.T) {
 	removeSecond()
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("address remained after its owner left: %v", err)
+	}
+}
+
+func TestCastReaderStopsDeliveringAfterCancellation(t *testing.T) {
+	reader, _, err := asciicast.NewReader(strings.NewReader(
+		"{\"version\":2,\"width\":80,\"height\":24}\n[0.1,\"o\",\"first\"]\n[0.2,\"o\",\"second\"]\n",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	events := reads(ctx, reader)
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+
+	for {
+		select {
+		case _, ok := <-events:
+			if !ok {
+				return
+			}
+		case <-deadline.C:
+			t.Fatal("cast reader remained blocked after cancellation")
+		}
 	}
 }

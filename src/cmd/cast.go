@@ -155,14 +155,18 @@ func runCast(parent context.Context, addressFile string) error {
 
 // pump turns the cast into what watchers see, and stops when whoever started it asks.
 func pump(ctx context.Context, reader *asciicast.Reader, stage *cast.Caster) error {
-	events := reads(reader)
+	events := reads(ctx, reader)
 
 	for {
 		var next read
+		var ok bool
 		select {
 		case <-ctx.Done():
 			return nil
-		case next = <-events:
+		case next, ok = <-events:
+			if !ok {
+				return nil
+			}
 		}
 
 		if err := next.err; err != nil {
@@ -197,18 +201,19 @@ type read struct {
 	err   error
 }
 
-// reads takes the recording apart on a goroutine of its own.
-//
-// A read of standard input cannot be cancelled: it ends when whatever is writing stops. On the
-// reading goroutine that is fine, because the one waiting on this channel can be told to stop by a
-// signal without waiting for a line that may never come.
-func reads(reader *asciicast.Reader) <-chan read {
+// reads emits recording events until input ends or cancellation follows a completed read.
+func reads(ctx context.Context, reader *asciicast.Reader) <-chan read {
 	out := make(chan read, 1)
 
 	go func() {
+		defer close(out)
 		for {
 			event, err := reader.Next()
-			out <- read{event: event, err: err}
+			select {
+			case out <- read{event: event, err: err}:
+			case <-ctx.Done():
+				return
+			}
 			if err != nil {
 				return
 			}
