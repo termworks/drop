@@ -180,6 +180,13 @@ func (k *keeper) told(path string, m mark) Held {
 // record signs what happened here and hands it to the history, in as many changes as it takes to
 // stay inside what one change may carry.
 func (k *keeper) record(list []Edit) error {
+	for _, edit := range list {
+		if len(edit.Path) > MaxRel {
+			return fmt.Errorf("recording %s: %s is %d bytes, and a path may be %d",
+				k.dir, edit.Path, len(edit.Path), MaxRel)
+		}
+	}
+
 	for len(list) > 0 {
 		n := len(list)
 		for n > 1 && len(encodeEdits(list[:n])) > history.MaxBody {
@@ -406,6 +413,9 @@ func scan(dir string, was map[string]mark) (map[string]mark, error) {
 		}
 		rel = filepath.ToSlash(rel)
 		if partial(gopath.Base(rel)) {
+			return nil
+		}
+		if len(rel) > MaxRel {
 			return nil
 		}
 		if len(out) >= MaxPaths {

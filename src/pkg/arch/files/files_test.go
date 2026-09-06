@@ -1043,6 +1043,39 @@ func TestScanRefusesSparseFiles(t *testing.T) {
 	}
 }
 
+func TestScanLeavesOutPathsTheProtocolCannotCarry(t *testing.T) {
+	dir := t.TempDir()
+	deep := dir
+	for i := range 5 {
+		deep = filepath.Join(deep, strings.Repeat(string(rune('a'+i)), 220))
+	}
+	if err := os.MkdirAll(deep, 0o700); err != nil {
+		t.Skipf("this disk cannot make a path over %d bytes: %v", MaxRel, err)
+	}
+	long := filepath.Join(deep, "too-long")
+	if err := os.WriteFile(long, []byte("not carried"), 0o600); err != nil {
+		t.Skipf("this disk cannot make a path over %d bytes: %v", MaxRel, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "carried"), []byte("yes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := scan(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["carried"]; !ok {
+		t.Fatal("a supported path was lost beside an unsupported one")
+	}
+	rel, err := filepath.Rel(dir, long)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got[filepath.ToSlash(rel)]; ok {
+		t.Fatal("a path longer than the wire limit was included")
+	}
+}
+
 // A pipe under a name is answered, not waited on: an open that waits for a writer has no deadline
 // and nothing to end it.
 func TestAPipeUnderANameIsNotWaitedOn(t *testing.T) {

@@ -113,6 +113,23 @@ func (p *person) fetching(from *person) func(Wanted) error {
 	}
 }
 
+func TestAChangeCannotRecordAnUnsendablePath(t *testing.T) {
+	p := joins(t, "alice")
+	p.at(t)
+
+	err := p.k.record([]Edit{{Path: strings.Repeat("x", MaxRel+1)}})
+	if err == nil {
+		t.Fatal("a path longer than the protocol limit was recorded")
+	}
+	changes, readErr := p.log.Ordered()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("the refused path left %d changes", len(changes))
+	}
+}
+
 // folder is what this machine's history says the folder holds.
 func (p *person) folder(t *testing.T) Folder {
 	t.Helper()
