@@ -79,3 +79,10 @@ func TestReaderOnEmptyMessage(t *testing.T) {
 		t.Fatal("Uint() succeeded on an empty message")
 	}
 }
+
+func TestReaderRefusesAnInvalidBoolean(t *testing.T) {
+	r := NewReader([]byte{2})
+	if _, err := r.Bool(); err == nil {
+		t.Fatal("Bool() accepted a value other than zero or one")
+	}
+}

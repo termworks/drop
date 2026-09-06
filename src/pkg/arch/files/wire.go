@@ -61,7 +61,13 @@ func (y ready) encode() []byte {
 func decodeReady(body []byte) (ready, error) {
 	r := wire.NewReader(body)
 	writable, err := r.Bool()
-	return ready{Writable: writable}, err
+	if err != nil {
+		return ready{}, err
+	}
+	if !r.Done() {
+		return ready{}, fmt.Errorf("a ready message has trailing bytes")
+	}
+	return ready{Writable: writable}, nil
 }
 
 // request is one operation. Size, Mode and At describe an upload; To is the destination of a move.
@@ -134,6 +140,12 @@ func decodeRequest(body []byte) (request, error) {
 	if size < wire.SizeUnknown {
 		return out, fmt.Errorf("invalid size %d", size)
 	}
+	if mode > uint64(^uint32(0)) {
+		return out, fmt.Errorf("invalid mode %d", mode)
+	}
+	if !r.Done() {
+		return out, fmt.Errorf("a request has trailing bytes")
+	}
 	out.Op, out.Name, out.To, out.Size, out.Mode = op, name, to, size, uint32(mode)
 	out.At, out.Sum, out.From = at, append([]byte(nil), sum...), from
 	return out, nil
@@ -204,6 +216,9 @@ func decodeReply(body []byte) (reply, error) {
 		if err != nil {
 			return out, err
 		}
+		if mode > uint64(^uint32(0)) {
+			return out, fmt.Errorf("invalid mode %d", mode)
+		}
 		dir, err := r.Bool()
 		if err != nil {
 			return out, err
@@ -219,6 +234,9 @@ func decodeReply(body []byte) (reply, error) {
 			Dir:  dir,
 			At:   at,
 		})
+	}
+	if !r.Done() {
+		return out, fmt.Errorf("a reply has trailing bytes")
 	}
 	return out, nil
 }

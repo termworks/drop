@@ -68,6 +68,12 @@ func decodeResize(body []byte) (Resize, error) {
 	if err != nil {
 		return out, err
 	}
+	if cols > uint64(^uint16(0)) || rows > uint64(^uint16(0)) {
+		return out, fmt.Errorf("resize %dx%d is outside the wire range", cols, rows)
+	}
+	if !r.Done() {
+		return out, fmt.Errorf("a resize has trailing bytes")
+	}
 	out.Cols, out.Rows = uint16(cols), uint16(rows)
 	return out, nil
 }

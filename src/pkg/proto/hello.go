@@ -141,6 +141,9 @@ func decodeHello(body []byte) (Hello, error) {
 		if err != nil {
 			return out, err
 		}
+		if version > MaxVersion {
+			return out, fmt.Errorf("a namespace claims version %d, over the %d limit", version, MaxVersion)
+		}
 		writable, err := r.Bool()
 		if err != nil {
 			return out, err
@@ -172,6 +175,9 @@ func decodeHello(body []byte) (Hello, error) {
 			Shared:    shared,
 			Holders:   holders,
 		})
+	}
+	if !r.Done() {
+		return out, fmt.Errorf("a hello has trailing bytes")
 	}
 	return out, nil
 }

@@ -104,6 +104,9 @@ func decodePairMsg(body []byte) (pairMsg, error) {
 		return out, err
 	}
 	out.Badge, out.Signed = badge, signed
+	if !r.Done() {
+		return out, fmt.Errorf("a pairing message has trailing bytes")
+	}
 	return out, nil
 }
 

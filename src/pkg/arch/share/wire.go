@@ -72,7 +72,13 @@ func decodeOffer(body []byte) (offer, error) {
 		if err != nil {
 			return out, err
 		}
+		if mode > uint64(^uint32(0)) {
+			return out, fmt.Errorf("invalid mode %d", mode)
+		}
 		out.Items = append(out.Items, Item{Name: name, Size: size, Mode: uint32(mode)})
+	}
+	if !r.Done() {
+		return out, fmt.Errorf("an offer has trailing bytes")
 	}
 	return out, nil
 }
@@ -110,7 +116,13 @@ func decodeResume(body []byte) (resume, error) {
 		if err != nil {
 			return out, err
 		}
+		if at < 0 {
+			return out, fmt.Errorf("an answer resumes at negative offset %d", at)
+		}
 		out.At = append(out.At, at)
+	}
+	if !r.Done() {
+		return out, fmt.Errorf("an answer has trailing bytes")
 	}
 	return out, nil
 }

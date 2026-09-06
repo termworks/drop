@@ -303,6 +303,9 @@ func decodeAnnounce(packet []byte) (string, []netip.AddrPort, bool) {
 		}
 		addrs = append(addrs, ap)
 	}
+	if !r.Done() {
+		return "", nil, false
+	}
 	return id, addrs, true
 }
 

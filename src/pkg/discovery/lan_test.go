@@ -82,6 +82,13 @@ func TestAnnounceRefusesAnAbsurdCount(t *testing.T) {
 	}
 }
 
+func TestAnnounceRefusesTrailingBytes(t *testing.T) {
+	body := append(encodeAnnounce("an-id", addrs(t, "192.168.1.10:47901")), 0)
+	if _, _, ok := decodeAnnounce(body); ok {
+		t.Fatal("decodeAnnounce() accepted trailing bytes")
+	}
+}
+
 // One unreadable address should not throw away the ones beside it.
 func TestAnnounceKeepsTheReadableAddresses(t *testing.T) {
 	w := wire.NewWriter()

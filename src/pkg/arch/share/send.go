@@ -48,8 +48,14 @@ func FileFromReader(name string, r io.Reader) Source {
 
 // Send offers sources on an opened share namespace and writes the ones it accepts.
 func Send(conn *wire.Conn, sources []Source, progress func(name string, done, total int64)) error {
+	if len(sources) > maxItems {
+		return fmt.Errorf("offering %d items, over the %d limit", len(sources), maxItems)
+	}
 	out := offer{}
 	for _, src := range sources {
+		if src.Size < wire.SizeUnknown {
+			return fmt.Errorf("%s has invalid size %d", src.Name, src.Size)
+		}
 		out.Items = append(out.Items, Item{Name: src.Name, Size: src.Size, Mode: src.Mode})
 	}
 	if err := conn.WriteFrame(wire.KindItem, out.encode()); err != nil {
@@ -76,13 +82,21 @@ func Send(conn *wire.Conn, sources []Source, progress func(name string, done, to
 	if err != nil {
 		return err
 	}
+	if len(picked.At) != len(sources) {
+		return fmt.Errorf("the answer covers %d items, expected %d", len(picked.At), len(sources))
+	}
+	for i, at := range picked.At {
+		src := sources[i]
+		if !src.Known() && at != 0 {
+			return fmt.Errorf("the answer resumes unknown-size item %s at %d", src.Name, at)
+		}
+		if src.Known() && at > src.Size {
+			return fmt.Errorf("the answer resumes %s at %d, beyond its %d bytes", src.Name, at, src.Size)
+		}
+	}
 
 	for i, src := range sources {
-		var at int64
-		if i < len(picked.At) {
-			at = picked.At[i]
-		}
-		if err := sendOne(conn, src, at, progress); err != nil {
+		if err := sendOne(conn, src, picked.At[i], progress); err != nil {
 			return err
 		}
 	}

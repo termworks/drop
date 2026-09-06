@@ -172,6 +172,9 @@ func Decode(body []byte) (Message, error) {
 	if err != nil {
 		return out, err
 	}
+	if !r.Done() {
+		return out, fmt.Errorf("reading a message: trailing bytes")
+	}
 
 	out = Message{ID: id, Kind: kind, Body: text, Extra: extra, At: at}
 	return out, nil

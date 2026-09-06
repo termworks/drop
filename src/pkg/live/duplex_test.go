@@ -130,6 +130,22 @@ func TestAnEmptyResizeIsNotPassedOn(t *testing.T) {
 	}
 }
 
+func TestResizeDecoderRefusesValuesOutsideItsType(t *testing.T) {
+	w := wire.NewWriter()
+	w.Uint(uint64(^uint16(0)) + 1)
+	w.Uint(1)
+	if _, err := decodeResize(w.Body()); err == nil {
+		t.Fatal("decodeResize() accepted a column count wider than uint16")
+	}
+}
+
+func TestResizeDecoderRefusesTrailingBytes(t *testing.T) {
+	body := append(Resize{Cols: 80, Rows: 24}.encode(), 0)
+	if _, err := decodeResize(body); err == nil {
+		t.Fatal("decodeResize() accepted trailing bytes")
+	}
+}
+
 // resized sends one shape and reports what the far end was told.
 func resized(t *testing.T, cols, rows uint16) (uint16, uint16, bool) {
 	t.Helper()
