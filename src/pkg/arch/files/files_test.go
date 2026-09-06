@@ -18,6 +18,7 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -59,6 +60,8 @@ type endedEar struct {
 
 func (e *endedEar) Heard() <-chan struct{} { return e.heard }
 
+func (e *endedEar) Dirty() ([]string, bool) { return nil, true }
+
 func (e *endedEar) Mind([]string) {
 	select {
 	case e.minded <- struct{}{}:
@@ -88,6 +91,62 @@ func TestAClosedNudgeFallsBackToTheFilesTimer(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("the watcher did not stop")
+	}
+}
+
+func TestOnlyADirtySharedFolderNeedsAnEventRound(t *testing.T) {
+	first := filepath.Join(t.TempDir(), "first")
+	second := filepath.Join(t.TempDir(), "second")
+	watched := watchedFolder{dir: first}
+
+	if !needsReconciliation(false, first, watched, true, []string{filepath.Join(first, "inside")}) {
+		t.Fatal("a changed directory inside the folder was skipped")
+	}
+	if needsReconciliation(false, first, watched, true, []string{filepath.Join(second, "inside")}) {
+		t.Fatal("an unrelated folder selected this one")
+	}
+	if needsReconciliation(false, first, watched, true, []string{first + "-copy"}) {
+		t.Fatal("a sibling with the same path prefix selected this folder")
+	}
+	if !needsReconciliation(true, first, watched, true, nil) {
+		t.Fatal("the full backstop skipped a clean folder")
+	}
+	if !needsReconciliation(false, first, watchedFolder{dir: second}, true, nil) {
+		t.Fatal("a changed folder location was skipped")
+	}
+	if !needsReconciliation(false, first, watchedFolder{}, false, nil) {
+		t.Fatal("a new folder was skipped")
+	}
+}
+
+func TestAnEventRoundReconcilesOnlyItsDirtyFolder(t *testing.T) {
+	block := filepath.Join(t.TempDir(), "block")
+	if err := os.WriteFile(block, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(block, "first")
+	second := filepath.Join(block, "second")
+	table := ns.NewTable()
+	shared := ns.Shared{Creator: "tester", At: "/shared"}
+	for _, mount := range []ns.Mount{
+		{Path: "/first", Archetype: "files", Config: Config{Dir: first}, Shared: shared},
+		{Path: "/second", Archetype: "files", Config: Config{Dir: second}, Shared: shared},
+	} {
+		if err := table.Add(mount); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var trouble []string
+	f := New(Into{Trouble: func(text string) { trouble = append(trouble, text) }})
+	watched := watchedFolders{
+		"/first":  {dir: first, dirs: []string{first}},
+		"/second": {dir: second, dirs: []string{second}},
+	}
+	f.round(t.Context(), table, watched, []string{first}, false)
+
+	if len(trouble) != 1 || !strings.HasPrefix(trouble[0], "/first:") {
+		t.Fatalf("event round reported %q", trouble)
 	}
 }
 

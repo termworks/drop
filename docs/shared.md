@@ -89,6 +89,10 @@ A save is heard rather than waited for: an inotify watch nudges the round, with 
 backstop, because inotify misses things — watch limits, network filesystems, a directory replaced
 wholesale. Local detection is about 500 ms, which is the settling period.
 
+For shared folders, an event scans only the folder containing the changed watched directory. A full
+round still runs every 30 seconds so an event that was lost or never produced cannot leave a folder
+permanently behind.
+
 ## Keeping it small
 
 A note saved a thousand times would otherwise be a thousand copies of the file. Once **everybody

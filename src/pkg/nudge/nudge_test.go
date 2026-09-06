@@ -2,10 +2,13 @@ package nudge
 
 import (
 	"context"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // waited is a nudge, or nothing within long enough that nothing is the answer.
@@ -46,9 +49,60 @@ func TestASaveIsHeard(t *testing.T) {
 	if !waited(t, e, 2*time.Second) {
 		t.Fatal("a file saved under a watched directory was not heard")
 	}
+	dirty, all := e.Dirty()
+	if all || len(dirty) != 1 || dirty[0] != dir {
+		t.Fatalf("dirty directories = %q, all = %v", dirty, all)
+	}
 }
 
-// Many events for one save are one nudge, because whoever is told goes and looks at everything.
+func TestAReplacedDirectoryCanBeMindedAgain(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "shared")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e := listening(t, dir)
+
+	if err := os.Rename(dir, dir+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if !waited(t, e, 2*time.Second) {
+		t.Fatal("the watched directory moving was not heard")
+	}
+	_, _ = e.Dirty()
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e.Mind([]string{dir})
+	for waited(t, e, 3*Settle) {
+		_, _ = e.Dirty()
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "new"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !waited(t, e, 2*time.Second) {
+		t.Fatal("the replacement directory was not watched")
+	}
+	dirty, all := e.Dirty()
+	if all || len(dirty) != 1 || dirty[0] != dir {
+		t.Fatalf("dirty directories = %q, all = %v", dirty, all)
+	}
+}
+
+func TestAnOverflowRequestsAFullRound(t *testing.T) {
+	raw := make([]byte, unix.SizeofInotifyEvent)
+	binary.NativeEndian.PutUint32(raw[0:4], ^uint32(0))
+	binary.NativeEndian.PutUint32(raw[4:8], unix.IN_Q_OVERFLOW)
+	e := &Ear{by: map[string]int{}, at: map[int]string{}}
+
+	dirty, all := e.changes(raw)
+	if !all || len(dirty) != 0 {
+		t.Fatalf("dirty directories = %q, all = %v", dirty, all)
+	}
+}
+
+// Many events for one save are one nudge.
 func TestOneSaveIsOneNudge(t *testing.T) {
 	dir := t.TempDir()
 	e := listening(t, dir)

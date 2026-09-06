@@ -13,7 +13,9 @@ package nudge
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -36,9 +38,11 @@ type Ear struct {
 
 	mu sync.Mutex
 	// by is the watch descriptor for each directory, and at is the reverse.
-	by   map[string]int
-	at   map[int]string
-	shut bool
+	by    map[string]int
+	at    map[int]string
+	dirty map[string]struct{}
+	all   bool
+	shut  bool
 }
 
 // Listen starts hearing. It returns an error on a system with no inotify, and a caller that gets one
@@ -49,7 +53,13 @@ func Listen(ctx context.Context) (*Ear, error) {
 		return nil, fmt.Errorf("listening for changes: %w", err)
 	}
 
-	e := &Ear{fd: fd, heard: make(chan struct{}, 1), by: map[string]int{}, at: map[int]string{}}
+	e := &Ear{
+		fd:    fd,
+		heard: make(chan struct{}, 1),
+		by:    map[string]int{},
+		at:    map[int]string{},
+		dirty: map[string]struct{}{},
+	}
 	if err := unix.Pipe2(e.wake[:], unix.O_CLOEXEC|unix.O_NONBLOCK); err != nil {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("listening for changes: %w", err)
@@ -65,6 +75,23 @@ func Listen(ctx context.Context) (*Ear, error) {
 
 // Heard is told whenever something under a watched directory changed, at most once per settling.
 func (e *Ear) Heard() <-chan struct{} { return e.heard }
+
+// Dirty returns the watched directories changed since the preceding call. All is true when the
+// event queue could not identify every changed directory.
+func (e *Ear) Dirty() (dirs []string, all bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	dirs = make([]string, 0, len(e.dirty))
+	for dir := range e.dirty {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	all = e.all
+	e.dirty = map[string]struct{}{}
+	e.all = false
+	return dirs, all
+}
 
 // Mind watches exactly these directories and stops watching any other.
 //
@@ -150,16 +177,62 @@ func (e *Ear) read() {
 		case err != nil, n <= 0:
 			return
 		}
-		e.say()
+		dirs, all := e.changes(raw[:n])
+		e.say(dirs, all)
 	}
+}
+
+func (e *Ear) changes(raw []byte) ([]string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	dirty := map[string]struct{}{}
+	all := false
+	for len(raw) >= unix.SizeofInotifyEvent {
+		wd := int(int32(binary.NativeEndian.Uint32(raw[0:4])))
+		mask := binary.NativeEndian.Uint32(raw[4:8])
+		nameLen := int(binary.NativeEndian.Uint32(raw[12:16]))
+		size := unix.SizeofInotifyEvent + nameLen
+		if size > len(raw) {
+			all = true
+			break
+		}
+
+		if mask&unix.IN_Q_OVERFLOW != 0 {
+			all = true
+		} else if dir, known := e.at[wd]; known {
+			dirty[dir] = struct{}{}
+			if mask&(unix.IN_MOVE_SELF|unix.IN_DELETE_SELF|unix.IN_IGNORED) != 0 {
+				if mask&unix.IN_IGNORED == 0 {
+					_, _ = unix.InotifyRmWatch(e.fd, uint32(wd))
+				}
+				delete(e.by, dir)
+				delete(e.at, wd)
+			}
+		} else if mask&unix.IN_IGNORED == 0 {
+			all = true
+		}
+		raw = raw[size:]
+	}
+
+	dirs := make([]string, 0, len(dirty))
+	for dir := range dirty {
+		dirs = append(dirs, dir)
+	}
+	return dirs, all
 }
 
 // say passes a nudge on, after letting the rest of one save arrive.
 //
-// The channel holds one, and a nudge that finds it already full is dropped: whoever is told is going
-// to go and look at everything anyway, so two nudges and one nudge ask for the same work.
-func (e *Ear) say() {
+// The channel holds one. Changed directories accumulate until the receiver takes them with Dirty.
+func (e *Ear) say(dirs []string, all bool) {
 	time.Sleep(Settle)
+	e.mu.Lock()
+	for _, dir := range dirs {
+		e.dirty[dir] = struct{}{}
+	}
+	e.all = e.all || all
+	e.mu.Unlock()
 	select {
 	case e.heard <- struct{}{}:
 	default:

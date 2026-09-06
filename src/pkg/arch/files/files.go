@@ -188,7 +188,27 @@ func (f *Files) Watch(ctx context.Context, mounts *ns.Table) <-chan struct{} {
 
 type changeEar interface {
 	Heard() <-chan struct{}
+	Dirty() ([]string, bool)
 	Mind([]string)
+}
+
+type watchedFolder struct {
+	dir  string
+	dirs []string
+}
+
+type watchedFolders map[string]watchedFolder
+
+func (w watchedFolders) all() []string {
+	total := 0
+	for _, folder := range w {
+		total += len(folder.dirs)
+	}
+	dirs := make([]string, 0, total)
+	for _, folder := range w {
+		dirs = append(dirs, folder.dirs...)
+	}
+	return dirs
 }
 
 func (f *Files) watch(ctx context.Context, mounts *ns.Table, ear changeEar, every time.Duration) <-chan struct{} {
@@ -202,18 +222,26 @@ func (f *Files) watch(ctx context.Context, mounts *ns.Table, ear changeEar, ever
 		if ear != nil {
 			heard = ear.Heard()
 		}
+		watched := watchedFolders{}
+		full := true
+		var dirty []string
 		for {
-			dirs := f.round(ctx, mounts)
+			f.round(ctx, mounts, watched, dirty, full)
 			if ear != nil {
-				ear.Mind(dirs)
+				ear.Mind(watched.all())
 			}
+			full, dirty = false, nil
 			select {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
+				full = true
 			case _, open := <-heard:
 				if !open {
 					heard, ear = nil, nil
+					full = true
+				} else {
+					dirty, full = ear.Dirty()
 				}
 			}
 		}
@@ -221,18 +249,17 @@ func (f *Files) watch(ctx context.Context, mounts *ns.Table, ear changeEar, ever
 	return done
 }
 
-// round brings every shared folder level with its history once, and says which directories are
-// worth listening to until the next one.
-func (f *Files) round(ctx context.Context, mounts *ns.Table) []string {
+// round brings selected shared folders level with their histories and updates their watched paths.
+func (f *Files) round(ctx context.Context, mounts *ns.Table, watched watchedFolders, dirty []string, full bool) {
 	if mounts == nil || ctx.Err() != nil {
-		return nil
+		return
 	}
 
-	var dirs []string
+	present := map[string]struct{}{}
 
 	for _, mount := range mounts.All() {
 		if ctx.Err() != nil {
-			return dirs
+			return
 		}
 		if mount.Archetype != f.Name() || !mount.Shared.Declared() {
 			continue
@@ -241,15 +268,20 @@ func (f *Files) round(ctx context.Context, mounts *ns.Table) []string {
 		if !ok || cfg.Dir == "" {
 			continue
 		}
-		dirs = append(dirs, under(ctx, cfg.Dir)...)
+		present[mount.Path] = struct{}{}
+		previous, known := watched[mount.Path]
+		if !needsReconciliation(full, cfg.Dir, previous, known, dirty) {
+			continue
+		}
+		watched[mount.Path] = watchedFolder{dir: cfg.Dir, dirs: under(ctx, cfg.Dir)}
 		if ctx.Err() != nil {
-			return dirs
+			return
 		}
 
 		made, err := f.keep(ctx, mount, cfg)
 		if err != nil {
 			if ctx.Err() != nil {
-				return dirs
+				return
 			}
 			f.say(mount.Path, fmt.Sprintf("%s: %v", mount.Path, err))
 			continue
@@ -259,7 +291,25 @@ func (f *Files) round(ctx context.Context, mounts *ns.Table) []string {
 			f.into.Changed(mount.Path)
 		}
 	}
-	return dirs
+	for path := range watched {
+		if _, ok := present[path]; !ok {
+			delete(watched, path)
+		}
+	}
+}
+
+func needsReconciliation(full bool, root string, previous watchedFolder, known bool, dirty []string) bool {
+	return full || !known || previous.dir != root || dirtied(root, dirty)
+}
+
+func dirtied(root string, dirs []string) bool {
+	for _, dir := range dirs {
+		rel, err := filepath.Rel(root, dir)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // keep runs one folder's turn, and says whether a change of this machine's own was recorded.

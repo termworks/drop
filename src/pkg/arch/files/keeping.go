@@ -36,9 +36,8 @@ import (
 // being written while it is read. An empty directory is not carried either — a folder is the files
 // in it, and a directory is made when a file needs one.
 
-// Every is how often each folder is held up against its history. A watcher on the directory would
-// notice a save sooner and is worth having later; this is soon enough for somebody saving a file.
-const Every = 2 * time.Second
+// Every is how often every folder is reconciled when no filesystem event selected it sooner.
+const Every = 30 * time.Second
 
 // Wanted is one file a folder is missing, and where its bytes should end up.
 type Wanted struct {
