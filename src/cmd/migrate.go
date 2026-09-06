@@ -163,7 +163,7 @@ func carryHandover() {
 	if err != nil {
 		return
 	}
-	raw, err := os.ReadFile(at)
+	raw, err := keep.ReadFile(at, keep.MaxState)
 	if err != nil {
 		return
 	}

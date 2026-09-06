@@ -9,6 +9,7 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/convo"
+	"github.com/bresilla/drop/src/pkg/keep"
 )
 
 // Beside is the directory a config keeps its own archetypes in, next to init.lua.
@@ -64,7 +65,7 @@ func Load(dir string, into *arch.Registry) error {
 // Once, and here: a chunk loads into a runtime in less time than it takes to read this sentence,
 // but compiling it is where a syntax error still has a file and a line attached to it.
 func compile(file, keeps string) ([]*Plugin, error) {
-	source, err := os.ReadFile(file)
+	source, err := keep.ReadFile(file, keep.MaxState)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", file, err)
 	}

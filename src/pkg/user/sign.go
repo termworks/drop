@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/bresilla/drop/src/pkg/keep"
 )
 
 // How a badge gets signed, when drop cannot do it itself.
@@ -59,7 +61,7 @@ func signCommand(where string) string {
 
 // heldElsewhere reports whether the file names a key drop cannot sign with itself.
 func heldElsewhere(where string) bool {
-	raw, err := os.ReadFile(where)
+	raw, err := keep.ReadFile(where, keep.MaxState)
 	if err != nil {
 		return false
 	}

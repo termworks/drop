@@ -83,7 +83,7 @@ func Open(to []string) (*Vault, error) {
 		return nil, err
 	}
 
-	wrapped, err := os.ReadFile(file)
+	wrapped, err := keep.ReadFile(file, keep.MaxState)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return mint(file, to)
@@ -104,13 +104,17 @@ func mint(file string, to []string) (*Vault, error) {
 	var made *Vault
 
 	err := keep.While(file, func() error {
-		if wrapped, err := os.ReadFile(file); err == nil {
-			got, err := unwrap(wrapped, to)
+		existing, err := keep.ReadFile(file, keep.MaxState)
+		switch {
+		case err == nil:
+			got, err := unwrap(existing, to)
 			if err != nil {
 				return err
 			}
 			made = got
 			return nil
+		case !errors.Is(err, os.ErrNotExist):
+			return fmt.Errorf("reading %s: %w", file, err)
 		}
 
 		key := [KeyBytes]byte{}
@@ -234,7 +238,7 @@ func identitiesOf(to []string) ([]age.Identity, error) {
 func keyFile(at string, create bool) (*age.X25519Identity, error) {
 	at = expand(at)
 
-	raw, err := os.ReadFile(at)
+	raw, err := keep.ReadFile(at, keep.MaxState)
 	switch {
 	case errors.Is(err, os.ErrNotExist) && create:
 		return newKeyFile(at)
@@ -265,7 +269,7 @@ func identityIn(raw []byte, at string) (*age.X25519Identity, error) {
 func newKeyFile(at string) (*age.X25519Identity, error) {
 	var identity *age.X25519Identity
 	err := keep.While(at, func() error {
-		raw, err := os.ReadFile(at)
+		raw, err := keep.ReadFile(at, keep.MaxState)
 		switch {
 		case err == nil:
 			identity, err = identityIn(raw, at)
@@ -328,7 +332,7 @@ func Peek(to []string) (State, error) {
 	if err != nil {
 		return Off, err
 	}
-	wrapped, err := os.ReadFile(file)
+	wrapped, err := keep.ReadFile(file, keep.MaxState)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return Fresh, nil

@@ -71,7 +71,7 @@ func identity() (key.SecretKey, metal.Mark, error) {
 		return empty, metal.Mark{}, err
 	}
 
-	stored, err := os.ReadFile(path)
+	stored, err := keep.ReadFile(path, key.SeedSize)
 	switch {
 	case err == nil:
 		if len(stored) != key.SeedSize {
@@ -109,11 +109,17 @@ func identity() (key.SecretKey, metal.Mark, error) {
 	var made key.SecretKey
 	err = keep.While(path, func() error {
 		// Somebody may have made one while this was waiting for the file.
-		if raw, err := os.ReadFile(path); err == nil && len(raw) == key.SeedSize {
+		raw, err := keep.ReadFile(path, key.SeedSize)
+		switch {
+		case err == nil && len(raw) == key.SeedSize:
 			var seed [key.SeedSize]byte
 			copy(seed[:], raw)
 			made = key.NewSecretKey(seed)
 			return nil
+		case err == nil:
+			return fmt.Errorf("%s is %d bytes, not a %d-byte key", path, len(raw), key.SeedSize)
+		case !errors.Is(err, os.ErrNotExist):
+			return fmt.Errorf("reading %s: %w", path, err)
 		}
 
 		fresh, err := key.GenerateSecretKey()

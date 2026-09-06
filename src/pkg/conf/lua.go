@@ -9,6 +9,7 @@ import (
 	rt "github.com/arnodel/golua/runtime"
 
 	"github.com/bresilla/drop/src/pkg/arch"
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/passwd"
 	"github.com/bresilla/drop/src/pkg/user"
@@ -146,7 +147,7 @@ func (c *Config) Close() {
 // it can branch on the machine it is running on rather than describing one shape and hoping it
 // fits everywhere.
 func run(cfg *Config, path string) error {
-	source, err := os.ReadFile(path)
+	source, err := keep.ReadFile(path, keep.MaxState)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}

@@ -1,11 +1,14 @@
 package vault
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/bresilla/drop/src/pkg/keep"
 )
 
 func TestNothingConfiguredIsNotAFailure(t *testing.T) {
@@ -160,6 +163,55 @@ func TestOneDataKeyHoweverManyDropsStartAtOnce(t *testing.T) {
 	}
 	if string(again.Key()) != keys[0] {
 		t.Fatal("the key on the disk is not the one that was handed out")
+	}
+}
+
+func TestMintDoesNotReplaceStateThatAppearedWhileWaiting(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	recipient := filepath.Join(dir, "recipient")
+	if _, err := newKeyFile(recipient); err != nil {
+		t.Fatal(err)
+	}
+	file, err := where()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	locked := make(chan error, 1)
+	go func() {
+		locked <- keep.While(file, func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mint(file, []string{recipient})
+		done <- err
+	}()
+	interloper := []byte("state that appeared while waiting")
+	if err := os.WriteFile(file, interloper, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-locked; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err == nil {
+		t.Fatal("Open() replaced unreadable state that appeared while it waited")
+	}
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw, interloper) {
+		t.Fatalf("the state that appeared was replaced with %q", raw)
 	}
 }
 

@@ -160,7 +160,7 @@ func (l *Log) Fold(body []byte) (ID, error) {
 // remembered is every peer still counted, oldest word first. One nobody has heard from in a long
 // time is dropped here rather than waited for.
 func (l *Log) remembered() ([]far, error) {
-	raw, err := os.ReadFile(l.seen)
+	raw, err := keep.ReadFile(l.seen, keep.MaxState)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

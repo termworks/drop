@@ -102,7 +102,7 @@ func Signer() (ssh.Signer, error) {
 		return nil, err
 	}
 
-	raw, err := os.ReadFile(where)
+	raw, err := keep.ReadFile(where, keep.MaxState)
 	if errors.Is(err, os.ErrNotExist) {
 		// A key that was pointed at and is not there is a mistake worth reporting. Generating one
 		// at that path would answer a typo by inventing a second identity.
@@ -139,7 +139,7 @@ func Public() (ssh.PublicKey, error) {
 		return nil, err
 	}
 
-	raw, err := os.ReadFile(where)
+	raw, err := keep.ReadFile(where, keep.MaxState)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) && !Named() {
 			signer, err := makeKey(where)
@@ -159,7 +159,7 @@ func Public() (ssh.PublicKey, error) {
 	}
 
 	// A public half kept beside the private one, which is what ssh-keygen writes.
-	if beside, err := os.ReadFile(where + ".pub"); err == nil {
+	if beside, err := keep.ReadFile(where+".pub", keep.MaxState); err == nil {
 		if pub, _, _, _, err := ssh.ParseAuthorizedKey(beside); err == nil {
 			return pub, nil
 		}
@@ -171,7 +171,7 @@ func Public() (ssh.PublicKey, error) {
 func makeKey(where string) (ssh.Signer, error) {
 	var signer ssh.Signer
 	err := keep.While(where, func() error {
-		raw, err := os.ReadFile(where)
+		raw, err := keep.ReadFile(where, keep.MaxState)
 		switch {
 		case err == nil:
 			signer, err = ssh.ParsePrivateKey(raw)

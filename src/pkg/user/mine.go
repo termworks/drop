@@ -75,7 +75,7 @@ func renew(where string, now time.Time) (Badge, []byte, error) {
 var signatureMarker = []byte("-----BEGIN SSH SIGNATURE-----")
 
 func readStored(where string) ([]byte, []byte, error) {
-	raw, err := os.ReadFile(where)
+	raw, err := keep.ReadFile(where, keep.MaxState)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -83,7 +83,7 @@ func readStored(where string) ([]byte, []byte, error) {
 		return raw[:at], raw[at:], nil
 	}
 
-	sig, err := os.ReadFile(where + ".sig")
+	sig, err := keep.ReadFile(where+".sig", keep.MaxState)
 	if err != nil {
 		return nil, nil, err
 	}
