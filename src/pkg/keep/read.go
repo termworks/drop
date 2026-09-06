@@ -2,16 +2,25 @@ package keep
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
 
 // MaxState is the largest small state file drop will hold in memory.
 const MaxState int64 = 16 << 20
+
+const stableReadAttempts = 8
+
+var (
+	errChanged  = errors.New("it changed while it was read")
+	errReplaced = errors.New("it was replaced while it was read")
+)
 
 // ReadFile reads one bounded regular file without waiting on a special file under its name.
 func ReadFile(file string, most int64) ([]byte, error) {
@@ -22,11 +31,22 @@ func ReadFile(file string, most int64) ([]byte, error) {
 // ReadFileInfo reads one bounded regular file and identifies the revision that was read.
 func ReadFileInfo(file string, most int64) ([]byte, os.FileInfo, error) {
 	var raw bytes.Buffer
-	info, err := ReadFileWith(file, most, func(from io.Reader) error {
-		_, err := io.Copy(&raw, from)
-		return err
-	})
-	return raw.Bytes(), info, err
+	var lastErr error
+	for attempt := range stableReadAttempts {
+		raw.Reset()
+		info, err := ReadFileWith(file, most, func(from io.Reader) error {
+			_, err := io.Copy(&raw, from)
+			return err
+		})
+		if !errors.Is(err, errChanged) && !errors.Is(err, errReplaced) {
+			return raw.Bytes(), info, err
+		}
+		lastErr = err
+		if attempt+1 < stableReadAttempts {
+			time.Sleep(time.Duration(1<<attempt) * time.Millisecond)
+		}
+	}
+	return nil, nil, lastErr
 }
 
 // ReadFileWith hands one bounded regular file to read without holding its whole body in memory.
@@ -67,7 +87,7 @@ func ReadFileWith(file string, most int64, read func(io.Reader) error) (os.FileI
 		return nil, fmt.Errorf("stating %s after reading it: %w", file, err)
 	}
 	if stat.Size() != after.Size() || !stat.ModTime().Equal(after.ModTime()) {
-		return nil, fmt.Errorf("reading %s: it changed while it was read", file)
+		return nil, fmt.Errorf("reading %s: %w", file, errChanged)
 	}
 	current, err := os.Stat(file)
 	if err != nil {
@@ -75,7 +95,7 @@ func ReadFileWith(file string, most int64, read func(io.Reader) error) (os.FileI
 	}
 	if !os.SameFile(after, current) || after.Size() != current.Size() ||
 		!after.ModTime().Equal(current.ModTime()) {
-		return nil, fmt.Errorf("reading %s: it was replaced while it was read", file)
+		return nil, fmt.Errorf("reading %s: %w", file, errReplaced)
 	}
 	return after, nil
 }
