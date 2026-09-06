@@ -147,6 +147,10 @@ func FilePath() (string, error) {
 // A file that exists and does not parse is fatal rather than ignored: a typo that silently drops
 // half the namespaces is worse than not starting.
 func Load(known *arch.Registry) (*Config, error) {
+	return loadConfig(known, true)
+}
+
+func loadConfig(known *arch.Registry, requireNamespaces bool) (*Config, error) {
 	path, err := FilePath()
 	if err != nil {
 		return nil, err
@@ -174,7 +178,8 @@ func Load(known *arch.Registry) (*Config, error) {
 		cfg.Close()
 		return nil, fmt.Errorf("%s sets drop.bootstrap, which this transport does not support", path)
 	}
-	if cfg.Mounts.Len() == 0 {
+	if requireNamespaces && cfg.Mounts.Len() == 0 {
+		cfg.Close()
 		return nil, fmt.Errorf("%s declares no namespaces, so this node would serve nothing", path)
 	}
 	return cfg, nil
@@ -225,7 +230,7 @@ func (c *Config) Apply() {
 // Every command needs the settings — a command that dials has to know whether a rendezvous is
 // allowed — while only the ones that serve need the namespaces and handlers.
 func ApplySettings(known *arch.Registry) error {
-	cfg, err := Load(known)
+	cfg, err := loadConfig(known, false)
 	if err != nil {
 		return err
 	}

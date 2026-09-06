@@ -95,6 +95,17 @@ func TestInvalidConfigCannotBeIgnoredByDiallingCommands(t *testing.T) {
 	}
 }
 
+func TestSettingsCanBeAppliedWithoutServingNamespaces(t *testing.T) {
+	write(t, `
+		local drop = require("drop")
+		drop.name = "workstation"
+	`)
+
+	if err := ApplySettings(known()); err != nil {
+		t.Fatalf("ApplySettings(): %v", err)
+	}
+}
+
 func TestBooleanSettingsMustBeBoolean(t *testing.T) {
 	for _, setting := range []string{"open_links", "rendezvous", "direct"} {
 		path := write(t, `
