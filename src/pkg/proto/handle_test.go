@@ -276,7 +276,8 @@ func TestAStrangerCannotGuessWithoutLimit(t *testing.T) {
 	}
 	table := served(t, ns.Mount{Path: "/handoff", Archetype: "echo", Access: ns.Access{Password: hash}})
 
-	stranger := who(7)
+	stranger, another := who(7), who(8)
+	isolateGuesses(t, stranger, another)
 	for i := range mostGuesses {
 		caller := handling(t, stranger, table, Policy{})
 		if _, err := Open(caller, "/handoff", "", 0, fmt.Sprintf("guess %d", i), "tester"); err == nil {
@@ -291,7 +292,7 @@ func TestAStrangerCannotGuessWithoutLimit(t *testing.T) {
 	}
 
 	// One peer's guessing must not be another's problem.
-	other := handling(t, who(8), table, Policy{})
+	other := handling(t, another, table, Policy{})
 	if _, err := Open(other, "/handoff", "", 0, "wrong as well", "tester"); err == nil {
 		t.Fatal("a wrong password opened the path")
 	} else if strings.Contains(err.Error(), "too many") {
@@ -312,7 +313,9 @@ func TestARefusedOpenCostsOneGuess(t *testing.T) {
 		Archetype: "echo",
 		Access:    ns.Access{Password: hash, AnyVisible: true},
 	})
-	caller := handling(t, who(9), table, Policy{
+	peer := who(9)
+	isolateGuesses(t, peer)
+	caller := handling(t, peer, table, Policy{
 		Who: func(from node.ID, _ Badged, _ Stood) ns.Caller { return ns.Caller{ID: from.String(), Paired: true} },
 	})
 
@@ -330,4 +333,16 @@ func TestARefusedOpenCostsOneGuess(t *testing.T) {
 	if paid := passwd.Spent() - before; paid != 1 {
 		t.Errorf("one refused open paid for %d guesses, want 1", paid)
 	}
+}
+
+func isolateGuesses(t *testing.T, peers ...node.ID) {
+	t.Helper()
+	for _, peer := range peers {
+		guessing.forget(peer)
+	}
+	t.Cleanup(func() {
+		for _, peer := range peers {
+			guessing.forget(peer)
+		}
+	})
 }
