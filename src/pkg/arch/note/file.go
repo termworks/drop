@@ -215,7 +215,7 @@ func (k *keeper) seen() []history.ID {
 // over it. It cannot be signed and it cannot stay, and losing it as well would be gratuitous.
 func (k *keeper) spare(raw []byte) error {
 	beside := k.file + ".unrecorded"
-	if held, err := os.ReadFile(beside); err == nil && bytes.Equal(held, raw) {
+	if held, err := keep.ReadFile(beside, MaxSize); err == nil && bytes.Equal(held, raw) {
 		return nil
 	}
 	if err := keep.Replace(beside, raw); err != nil {
@@ -235,7 +235,7 @@ func (k *keeper) write(body []byte, aside []weave.Aside, raw []byte, there bool,
 	}
 	for _, a := range aside {
 		beside := k.file + "." + weave.Safe(a.Who)
-		if held, err := os.ReadFile(beside); err == nil && bytes.Equal(held, a.Body) {
+		if held, err := keep.ReadFile(beside, MaxSize); err == nil && bytes.Equal(held, a.Body) {
 			continue
 		}
 		if err := keep.Replace(beside, a.Body); err != nil {
@@ -288,7 +288,7 @@ func (k *keeper) recall() error {
 	}
 
 	at := k.mark()
-	raw, err := os.ReadFile(at)
+	raw, err := keep.ReadFile(at, maxMarkSize)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -318,6 +318,8 @@ func (k *keeper) recall() error {
 	k.said = stamp(k.wrote, heads, true)
 	return nil
 }
+
+const maxMarkSize int64 = 64 + history.MaxHeads*65
 
 // stamp is a mark as it is written down: what the file holds, and the changes it was written from,
 // one to a line.

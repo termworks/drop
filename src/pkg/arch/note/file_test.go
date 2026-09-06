@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/sys/unix"
 
 	"github.com/bresilla/drop/src/pkg/history"
 )
@@ -388,6 +389,43 @@ func TestAnOversizedNoteIsReadOnlyToItsLimit(t *testing.T) {
 	}
 	if len(raw) != MaxSize+1 {
 		t.Fatalf("steady() read %d bytes, want the %d-byte detection limit", len(raw), MaxSize+1)
+	}
+}
+
+func TestAnUnrecordedCopyAtAFifoDoesNotBlock(t *testing.T) {
+	k := aKeeper(t)
+	beside := k.file + ".unrecorded"
+	if err := unix.Mkfifo(beside, 0o600); err != nil {
+		t.Skipf("this disk will not make a fifo: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- k.spare([]byte("the complete save")) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("saving beside a fifo blocked")
+	}
+	if got := held(t, beside); got != "the complete save" {
+		t.Fatalf("unrecorded copy = %q", got)
+	}
+}
+
+func TestAnOversizedNoteMarkIsRefused(t *testing.T) {
+	k := aKeeper(t)
+	if err := os.WriteFile(k.mark(), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(k.mark(), maxMarkSize+1); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := k.recall(); err == nil {
+		t.Fatal("an oversized note mark was read")
 	}
 }
 
