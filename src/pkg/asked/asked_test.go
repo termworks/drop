@@ -3,7 +3,9 @@ package asked
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
 )
 
@@ -50,5 +52,46 @@ func TestWhyAStrangerAsksIsBounded(t *testing.T) {
 	}
 	if n := len([]rune(all[0].Why)); n > MaxWhy {
 		t.Fatalf("a 10,000 character reason was kept as %d characters, over the %d bound", n, MaxWhy)
+	}
+}
+
+func TestRingWaitsForTheCrossProcessLock(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	file, err := where()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lockErr := make(chan error, 1)
+	go func() {
+		lockErr <- keep.While(file, func() error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+
+	finished := make(chan error, 1)
+	go func() { finished <- Ring(Request{Path: "/notes", From: node.ID{}}) }()
+	select {
+	case err := <-finished:
+		t.Fatalf("Ring() crossed the held file lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-lockErr; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ring() did not continue after the file lock was released")
 	}
 }

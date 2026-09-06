@@ -94,18 +94,24 @@ func Ring(r Request) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	all, err := read()
+	file, err := where()
 	if err != nil {
 		return err
 	}
-	all[key(r.From, path)] = stored{
-		Name:   r.Name,
-		Person: r.Person,
-		Path:   path,
-		Why:    r.Why,
-		At:     r.At.UTC(),
-	}
-	return write(trim(all))
+	return keep.While(file, func() error {
+		all, err := read()
+		if err != nil {
+			return err
+		}
+		all[key(r.From, path)] = stored{
+			Name:   r.Name,
+			Person: r.Person,
+			Path:   path,
+			Why:    r.Why,
+			At:     r.At.UTC(),
+		}
+		return write(trim(all))
+	})
 }
 
 // All is what has been asked for, most recent first.
@@ -152,13 +158,18 @@ func Answered(from node.ID, path string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	all, err := read()
+	file, err := where()
 	if err != nil {
 		return err
 	}
-	delete(all, key(from, clean))
-
-	return write(all)
+	return keep.While(file, func() error {
+		all, err := read()
+		if err != nil {
+			return err
+		}
+		delete(all, key(from, clean))
+		return write(all)
+	})
 }
 
 // cut splits a key back into the device and the path.

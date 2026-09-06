@@ -6,6 +6,7 @@ import (
 
 	"github.com/tmc/go-iroh/key"
 
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
 )
 
@@ -107,5 +108,46 @@ func TestAKnockCanBeForgotten(t *testing.T) {
 	}
 	if len(all) != 0 {
 		t.Errorf("still remembered: %+v", all)
+	}
+}
+
+func TestKnockedWaitsForTheCrossProcessLock(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	file, err := path()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lockErr := make(chan error, 1)
+	go func() {
+		lockErr <- keep.While(file, func() error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+
+	finished := make(chan error, 1)
+	go func() { finished <- Knocked(idFor(1), "/notes", "refused", time.Now()) }()
+	select {
+	case err := <-finished:
+		t.Fatalf("Knocked() crossed the held file lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-lockErr; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Knocked() did not continue after the file lock was released")
 	}
 }
