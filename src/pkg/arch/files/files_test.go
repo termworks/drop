@@ -1284,8 +1284,8 @@ func TestAListingTooBigForOneReplyIsRefused(t *testing.T) {
 	}
 }
 
-// A part that cannot be moved onto its name leaves neither itself nor the name behind.
-func TestAPartThatCannotBeMovedIsNotLeftBehind(t *testing.T) {
+// A part that cannot be linked onto its name leaves neither itself nor the name behind.
+func TestAFailedFreeLandingLeavesNothingBehind(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, ".x.abcdef012345.part"), 0o700); err != nil {
 		t.Fatalf("making the part: %v", err)
@@ -1307,5 +1307,44 @@ func TestAPartThatCannotBeMovedIsNotLeftBehind(t *testing.T) {
 	}
 	for _, at := range left {
 		t.Errorf("%s was left behind", at.Name())
+	}
+}
+
+func TestAFreeLandingHasCompleteBytesAtItsCommit(t *testing.T) {
+	dir := t.TempDir()
+	part := ".report.abcdef012345.part"
+	body := []byte("complete")
+	if err := os.WriteFile(filepath.Join(dir, part), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	final, err := linkFree(root, part, "report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, filepath.Join(dir, final)); !bytes.Equal(got, body) {
+		t.Fatalf("committed %q, want %q", got, body)
+	}
+	partInfo, err := os.Stat(filepath.Join(dir, part))
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalInfo, err := os.Stat(filepath.Join(dir, final))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(partInfo, finalInfo) {
+		t.Fatal("the commit copied through an intermediate destination")
+	}
+	if err := root.Remove(part); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, filepath.Join(dir, final)); !bytes.Equal(got, body) {
+		t.Fatalf("removing the part changed the destination to %q", got)
 	}
 }

@@ -232,18 +232,23 @@ func takeOver(conn *wire.Conn, dir *os.Root, name string, q request, progress fu
 	return got, true, nil
 }
 
-// place moves a finished part onto a free name beside it, which is what it returns. Nothing that
-// fails here leaves the part or the name it reached for lying about.
+// place links a finished part onto a free name beside it, which is what it returns.
 func place(dir *os.Root, part, name string) (string, error) {
-	final, err := claim(dir, name)
+	final, err := linkFree(dir, part, name)
 	if err != nil {
 		_ = dir.Remove(part)
 		return "", fmt.Errorf("making room for %s: %w", name, err)
 	}
-	if err := dir.Rename(part, final); err != nil {
+	if err := syncDirectory(dir, path.Dir(final)); err != nil {
 		_ = dir.Remove(final)
 		_ = dir.Remove(part)
-		return "", fmt.Errorf("renaming %s: %w", part, err)
+		_ = syncDirectory(dir, path.Dir(final))
+		return "", fmt.Errorf("committing %s: %w", final, err)
+	}
+	if err := dir.Remove(part); err != nil {
+		_ = dir.Remove(final)
+		_ = syncDirectory(dir, path.Dir(final))
+		return "", fmt.Errorf("removing %s: %w", part, err)
 	}
 	return final, nil
 }
@@ -556,16 +561,12 @@ func landing(mode uint32) os.FileMode {
 	return 0o600
 }
 
-// claim takes a free name for a finished item, numbering it when something is already there.
-func claim(dir *os.Root, name string) (string, error) {
+// linkFree links a complete part to a free destination, numbering it when a name is already there.
+func linkFree(dir *os.Root, part, name string) (string, error) {
 	for n := range 1000 {
 		at := numbered(name, n)
-		f, err := dir.OpenFile(at, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		err := dir.Link(part, at)
 		if err == nil {
-			if err := f.Close(); err != nil {
-				_ = dir.Remove(at)
-				return "", err
-			}
 			return at, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {
