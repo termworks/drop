@@ -3,6 +3,7 @@ package convo
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -110,6 +111,113 @@ func TestConversationDirectoryLimitIsConcurrent(t *testing.T) {
 	}
 	if directories != limit {
 		t.Fatalf("found %d conversation directories, want %d", directories, limit)
+	}
+}
+
+func TestConversationStorageIsBoundedAcrossPeers(t *testing.T) {
+	root := t.TempDir()
+	for _, peer := range []string{"one", "two"} {
+		if err := os.Mkdir(filepath.Join(root, peer), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	body := []byte("one record")
+	var head [binary.MaxVarintLen64]byte
+	frameBytes := int64(binary.PutUvarint(head[:], uint64(len(body))) + len(body))
+	if err := appendToLimit(filepath.Join(root, "one", "history"), body, frameBytes); err != nil {
+		t.Fatalf("writing within the account limit: %v", err)
+	}
+	if err := appendToLimit(filepath.Join(root, "two", "history"), body, frameBytes); err == nil {
+		t.Fatal("conversation storage grew past the account limit")
+	}
+	if _, err := os.Stat(filepath.Join(root, "two", "history")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused log was created: %v", err)
+	}
+}
+
+func TestConversationStorageLimitIsConcurrent(t *testing.T) {
+	root := t.TempDir()
+	for _, peer := range []string{"one", "two"} {
+		if err := os.Mkdir(filepath.Join(root, peer), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	body := []byte("one record")
+	var head [binary.MaxVarintLen64]byte
+	frameBytes := int64(binary.PutUvarint(head[:], uint64(len(body))) + len(body))
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, peer := range []string{"one", "two"} {
+		go func() {
+			<-start
+			results <- appendToLimit(filepath.Join(root, peer, "history"), body, frameBytes)
+		}()
+	}
+	close(start)
+
+	written := 0
+	for range 2 {
+		if err := <-results; err == nil {
+			written++
+		}
+	}
+	if written != 1 {
+		t.Fatalf("%d concurrent logs were written, want 1", written)
+	}
+	used, err := conversationBytes(root, MaxConversations+2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used != frameBytes {
+		t.Fatalf("conversation storage is %d bytes, want %d", used, frameBytes)
+	}
+}
+
+func TestConversationStorageRejectsSymlinkedLogs(t *testing.T) {
+	root := t.TempDir()
+	peer := filepath.Join(root, "peer")
+	if err := os.Mkdir(peer, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(peer, "history")); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+
+	if err := appendToLimit(filepath.Join(peer, "outbox"), []byte("message"), 1024); err == nil {
+		t.Fatal("conversation storage accepted a symlinked log")
+	}
+	if raw, err := os.ReadFile(target); err != nil || string(raw) != "untouched" {
+		t.Fatalf("symlink target = %q, %v", raw, err)
+	}
+}
+
+func TestConversationRewriteCannotExceedAccountLimit(t *testing.T) {
+	root := t.TempDir()
+	peer := filepath.Join(root, "peer")
+	if err := os.Mkdir(peer, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	history := filepath.Join(peer, "history")
+	before := []byte("old")
+	if err := os.WriteFile(history, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := replaceConversationLog(history, []byte("larger"), int64(len(before))); err == nil {
+		t.Fatal("a rewrite grew conversation storage past the account limit")
+	}
+	after, err := os.ReadFile(history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("a refused account rewrite changed the original log")
 	}
 }
 

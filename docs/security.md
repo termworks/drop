@@ -182,6 +182,9 @@ senders cannot race past it. A peer history path that is a symlink or another no
 is refused rather than followed.
 Rewriting an existing history to turn vault encryption on or off keeps the same 64 MiB per-log
 limit and leaves the original untouched if the encoded replacement would exceed it.
+All histories and pending queues together are capped at 4 GiB per account. The total is checked
+under a cross-process lock before an append or a rewrite grows a log, so parallel senders cannot
+race past it.
 
 The record beside a shared folder is different: it can legitimately describe 131,072 paths, each
 up to 1024 bytes. It is decoded and written as a stream instead of being held as a second complete

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -44,6 +45,9 @@ const MaxLog int64 = 64 << 20
 
 // MaxConversations is how many peer histories may be kept on one account.
 const MaxConversations = 1 << 12
+
+// MaxConversationBytes is how much history and queued conversation data one account may keep.
+const MaxConversationBytes int64 = 4 << 30
 
 // DataDir is $XDG_DATA_HOME/drop, or ~/.local/share/drop. Conversations are data, not settings, so
 // they do not live beside the config.
@@ -228,6 +232,31 @@ func plain(body []byte) (Message, error) {
 // append writes one length-prefixed record and flushes it, so a message that was reported stored
 // is on the disk rather than in a buffer.
 func appendTo(path string, body []byte) error {
+	return appendToLimit(path, body, MaxConversationBytes)
+}
+
+func appendToLimit(path string, body []byte, most int64) error {
+	var head [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(head[:], uint64(len(body)))
+	raw := make([]byte, 0, n+len(body))
+	raw = append(raw, head[:n]...)
+	raw = append(raw, body...)
+
+	root := filepath.Dir(filepath.Dir(path))
+	return keep.While(filepath.Join(root, ".conversation-bytes"), func() error {
+		used, err := conversationBytes(root, MaxConversations+2)
+		if err != nil {
+			return fmt.Errorf("measuring conversation storage: %w", err)
+		}
+		needed := int64(len(raw))
+		if most < needed || used > most-needed {
+			return fmt.Errorf("writing %s: conversations would exceed the %d-byte limit", path, most)
+		}
+		return appendRaw(path, raw)
+	})
+}
+
+func appendRaw(path string, raw []byte) error {
 	flags := os.O_WRONLY | os.O_APPEND | unix.O_NONBLOCK | unix.O_NOFOLLOW
 	file, err := os.OpenFile(path, flags|os.O_CREATE|os.O_EXCL, 0o600)
 	created := err == nil
@@ -238,18 +267,12 @@ func appendTo(path string, body []byte) error {
 		return fmt.Errorf("opening %s: %w", path, err)
 	}
 
-	var head [binary.MaxVarintLen64]byte
-	n := binary.PutUvarint(head[:], uint64(len(body)))
-	raw := make([]byte, 0, n+len(body))
-	raw = append(raw, head[:n]...)
-	raw = append(raw, body...)
 	stat, err := file.Stat()
 	if err != nil {
 		_ = file.Close()
 		return fmt.Errorf("stating %s: %w", path, err)
 	}
-	rawStat, _ := stat.Sys().(*syscall.Stat_t)
-	if !stat.Mode().IsRegular() || (rawStat != nil && rawStat.Nlink > 1) {
+	if !oneRegularFile(stat) {
 		_ = file.Close()
 		return fmt.Errorf("writing %s: it is not one regular file", path)
 	}
@@ -276,6 +299,43 @@ func appendTo(path string, body []byte) error {
 		return keep.SyncDir(filepath.Dir(path))
 	}
 	return nil
+}
+
+func conversationBytes(root string, most int) (int64, error) {
+	entries, err := readConversationEntries(root, most)
+	if err != nil {
+		return 0, err
+	}
+
+	var used int64
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		for _, name := range []string{"history", "outbox"} {
+			at := filepath.Join(root, entry.Name(), name)
+			stat, err := os.Lstat(at)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return 0, err
+			}
+			if !oneRegularFile(stat) {
+				return 0, fmt.Errorf("measuring %s: it is not one regular file", at)
+			}
+			if stat.Size() > math.MaxInt64-used {
+				return 0, fmt.Errorf("conversation storage size overflows int64")
+			}
+			used += stat.Size()
+		}
+	}
+	return used, nil
+}
+
+func oneRegularFile(stat os.FileInfo) bool {
+	raw, _ := stat.Sys().(*syscall.Stat_t)
+	return stat.Mode().IsRegular() && (raw == nil || raw.Nlink == 1)
 }
 
 // readAll walks a log. A truncated tail — a crash mid-write — ends the walk rather than failing
@@ -587,6 +647,28 @@ func rewriteLog(at, peer string, to []byte, most int64) error {
 			out = append(out, body...)
 		}
 
+		return replaceConversationLog(at, out, MaxConversationBytes)
+	})
+}
+
+func replaceConversationLog(at string, out []byte, most int64) error {
+	root := filepath.Dir(filepath.Dir(at))
+	return keep.While(filepath.Join(root, ".conversation-bytes"), func() error {
+		used, err := conversationBytes(root, MaxConversations+2)
+		if err != nil {
+			return fmt.Errorf("measuring conversation storage: %w", err)
+		}
+		stat, err := os.Lstat(at)
+		if err != nil {
+			return fmt.Errorf("stating %s: %w", at, err)
+		}
+		if !oneRegularFile(stat) {
+			return fmt.Errorf("rewriting %s: it is not one regular file", at)
+		}
+		growth := int64(len(out)) - stat.Size()
+		if growth > 0 && (most < growth || used > most-growth) {
+			return fmt.Errorf("rewriting %s: conversations would exceed the %d-byte limit", at, most)
+		}
 		if err := keep.Replace(at, out); err != nil {
 			return fmt.Errorf("rewriting %s: %w", at, err)
 		}
