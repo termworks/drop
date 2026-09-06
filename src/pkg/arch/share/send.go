@@ -20,6 +20,7 @@ type Source struct {
 	Size   int64
 	Mode   uint32
 	Reader io.Reader
+	stat   os.FileInfo
 }
 
 // Known reports whether this source's length was settled before sending.
@@ -39,6 +40,7 @@ func FileFromPath(path string) (Source, error) {
 		Path: path,
 		Size: stat.Size(),
 		Mode: uint32(stat.Mode().Perm()),
+		stat: stat,
 	}, nil
 }
 
@@ -106,14 +108,20 @@ func Send(conn *wire.Conn, sources []Source, progress func(name string, done, to
 
 func sendOne(conn *wire.Conn, src Source, at int64, progress func(string, int64, int64)) error {
 	body := src.Reader
+	var opened *os.File
+	var before os.FileInfo
 	if body == nil {
-		file, err := openSource(src.Path)
+		file, stat, err := openSource(src.Path)
 		if err != nil {
 			return fmt.Errorf("opening %s: %w", src.Path, err)
 		}
 		defer func() { _ = file.Close() }()
-		body = file
+		if src.stat != nil && !sameSource(src.stat, stat) {
+			return fmt.Errorf("opening %s: it changed before being sent", src.Path)
+		}
+		body, opened, before = file, file, stat
 	}
+	body = &progressReader{Reader: body}
 
 	digest := blake3.New(32, nil)
 
@@ -156,6 +164,15 @@ func sendOne(conn *wire.Conn, src Source, at int64, progress func(string, int64,
 	if localErr == nil && src.Known() && sent != src.Size {
 		localErr = fmt.Errorf("%s changed size while being sent: %d bytes, expected %d", src.Name, sent, src.Size)
 	}
+	if localErr == nil && opened != nil {
+		after, err := opened.Stat()
+		switch {
+		case err != nil:
+			localErr = fmt.Errorf("checking %s after it was sent: %w", src.Name, err)
+		case !sameSource(before, after):
+			localErr = fmt.Errorf("%s changed while being sent", src.Name)
+		}
+	}
 
 	endDigest := digest.Sum(nil)
 	if localErr != nil {
@@ -188,19 +205,46 @@ func sendOne(conn *wire.Conn, src Source, at int64, progress func(string, int64,
 	return nil
 }
 
-func openSource(path string) (*os.File, error) {
+func openSource(path string) (*os.File, os.FileInfo, error) {
 	file, err := os.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	stat, err := file.Stat()
 	if err != nil {
 		_ = file.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	if !stat.Mode().IsRegular() {
 		_ = file.Close()
-		return nil, fmt.Errorf("not a regular file")
+		return nil, nil, fmt.Errorf("not a regular file")
 	}
-	return file, nil
+	return file, stat, nil
 }
+
+func sameSource(a, b os.FileInfo) bool {
+	return os.SameFile(a, b) && a.Size() == b.Size() && a.ModTime().Equal(b.ModTime()) &&
+		a.Mode().Perm() == b.Mode().Perm()
+}
+
+type progressReader struct {
+	io.Reader
+	emptyReads int
+}
+
+func (r *progressReader) Read(buf []byte) (int, error) {
+	n, err := r.Reader.Read(buf)
+	if n > 0 {
+		r.emptyReads = 0
+		return n, err
+	}
+	if err == nil {
+		r.emptyReads++
+		if r.emptyReads >= maxConsecutiveEmptyReads {
+			return 0, io.ErrNoProgress
+		}
+	}
+	return n, err
+}
+
+const maxConsecutiveEmptyReads = 100
