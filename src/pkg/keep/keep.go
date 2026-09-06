@@ -33,6 +33,10 @@ func Replace(file string, raw []byte) error {
 	name := scratch.Name()
 	defer func() { _ = os.Remove(name) }()
 
+	if err := Room(scratch, int64(len(raw))); err != nil {
+		_ = scratch.Close()
+		return fmt.Errorf("reserving room for %s: %w", file, err)
+	}
 	if _, err := scratch.Write(raw); err != nil {
 		_ = scratch.Close()
 		return fmt.Errorf("writing %s: %w", name, err)

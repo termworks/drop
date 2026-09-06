@@ -533,6 +533,10 @@ func (l *Log) append(raw []byte) error {
 		return fmt.Errorf("opening %s: %w", l.file, err)
 	}
 
+	if err := keep.Room(file, int64(len(raw))); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("reserving room in %s: %w", l.file, err)
+	}
 	if _, err := file.Write(raw); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("writing %s: %w", l.file, err)

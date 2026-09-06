@@ -175,7 +175,14 @@ func appendTo(path string, body []byte) error {
 
 	var head [binary.MaxVarintLen64]byte
 	n := binary.PutUvarint(head[:], uint64(len(body)))
-	if _, err := file.Write(append(head[:n], body...)); err != nil {
+	raw := make([]byte, 0, n+len(body))
+	raw = append(raw, head[:n]...)
+	raw = append(raw, body...)
+	if err := keep.Room(file, int64(len(raw))); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("reserving room in %s: %w", path, err)
+	}
+	if _, err := file.Write(raw); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
