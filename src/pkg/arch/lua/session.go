@@ -34,6 +34,21 @@ const MaxSaid = 1 << 20
 // no store, no config. Sixty-four is more than a plugin has a reason to hold.
 const MaxOpen = 64
 
+// MaxName bounds one file name supplied by a plugin.
+const MaxName = 255
+
+// MaxArgs and MaxArgBytes bound one command supplied by a plugin.
+const (
+	MaxArgs     = 256
+	MaxArgBytes = 64 << 10
+)
+
+const (
+	markBytes  = 6
+	markLength = markBytes * 2
+	sweepBatch = 256
+)
+
 // Waiting is how long a process a plugin starts may take before it is killed.
 const Waiting = 30 * time.Second
 
@@ -79,12 +94,17 @@ func (s *session) sweep() {
 	if err != nil {
 		return
 	}
-	names, _ := dir.Readdirnames(-1)
-	_ = dir.Close()
+	defer func() { _ = dir.Close() }()
 
-	for _, name := range names {
-		if strings.HasSuffix(name, "."+s.mark) {
-			_ = s.dir.Remove(name)
+	for {
+		names, err := dir.Readdirnames(sweepBatch)
+		for _, name := range names {
+			if strings.HasSuffix(name, "."+s.mark) {
+				_ = s.dir.Remove(name)
+			}
+		}
+		if err != nil {
+			return
 		}
 	}
 }
@@ -243,9 +263,12 @@ func (s *session) mine(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := fileName(name, MaxName-markLength-1); err != nil {
+		return nil, err
+	}
 
 	if s.mark == "" {
-		var seed [6]byte
+		var seed [markBytes]byte
 		if _, err := rand.Read(seed[:]); err != nil {
 			return nil, fmt.Errorf("naming a file only %s uses: %w", s.at.Path, err)
 		}
@@ -268,7 +291,10 @@ func (s *session) runs(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if err != nil {
 		return nil, err
 	}
-	argv := words(list)
+	argv, err := words(list)
+	if err != nil {
+		return nil, err
+	}
 	if len(argv) == 0 {
 		return nil, fmt.Errorf("a command is a program and its arguments, and this one names no program")
 	}
@@ -359,6 +385,10 @@ func (s *session) under() (*os.Root, error) {
 // other end waits in the kernel, where the session's budget, the timeout and the cancellation all
 // reach a host function that is no longer running lua and cannot be told anything.
 func opening(dir *os.Root, name, how string) (*os.File, error) {
+	if err := fileName(name, MaxName); err != nil {
+		return nil, err
+	}
+
 	var flag int
 	switch how {
 	case "r":
@@ -385,6 +415,13 @@ func opening(dir *os.Root, name, how string) (*os.File, error) {
 		return nil, errors.New("not a plain file")
 	}
 	return file, nil
+}
+
+func fileName(name string, max int) error {
+	if name == "" || name == "." || name == ".." || len(name) > max || strings.ContainsAny(name, "/\x00") {
+		return fmt.Errorf("a file name must be 1 to %d bytes with no slash or zero byte", max)
+	}
+	return nil
 }
 
 // holding is an open file as the plugin holds it.
@@ -485,15 +522,23 @@ func (c *capped) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// words reads a Lua list of strings, stopping at the first hole.
-func words(list *rt.Table) []string {
+// words reads a bounded Lua list of strings, stopping at the first hole.
+func words(list *rt.Table) ([]string, error) {
 	var out []string
+	used := 0
 	for i := int64(1); ; i++ {
 		word, ok := list.Get(rt.IntValue(i)).TryString()
 		if !ok {
-			return out
+			return out, nil
+		}
+		if len(out) >= MaxArgs {
+			return nil, fmt.Errorf("a command may have at most %d words", MaxArgs)
+		}
+		if len(word)+1 > MaxArgBytes-used {
+			return nil, fmt.Errorf("a command may use at most %d bytes", MaxArgBytes)
 		}
 		out = append(out, word)
+		used += len(word) + 1
 	}
 }
 

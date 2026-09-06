@@ -387,6 +387,9 @@ func TestAPluginCannotOpenOutsideItsOwnDirectory(t *testing.T) {
 	if err := os.MkdirAll(own, 0o700); err != nil {
 		t.Fatalf("making the namespace's directory: %v", err)
 	}
+	if err := os.Mkdir(filepath.Join(own, "deeper"), 0o700); err != nil {
+		t.Fatalf("making a directory inside the namespace: %v", err)
+	}
 	outside := filepath.Join(t.TempDir(), "secret")
 	if err := os.WriteFile(outside, []byte("not yours"), 0o600); err != nil {
 		t.Fatalf("writing something outside: %v", err)
@@ -398,7 +401,10 @@ func TestAPluginCannotOpenOutsideItsOwnDirectory(t *testing.T) {
 	conn, client, done := opened(t, p, nil)
 	defer func() { _ = client.Close() }()
 
-	for _, name := range []string{"../secret", "away", "/etc/passwd", "deeper/../../secret"} {
+	for _, name := range []string{
+		"../secret", "away", "/etc/passwd", "deeper/../../secret", "deeper/file",
+		strings.Repeat("x", MaxName+1),
+	} {
 		if err := conn.WriteFrame(wire.KindItem, []byte(name)); err != nil {
 			t.Fatalf("naming %s: %v", name, err)
 		}

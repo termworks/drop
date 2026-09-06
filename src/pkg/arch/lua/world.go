@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/arnodel/golua/code"
@@ -208,27 +209,28 @@ func (w *world) archetype(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 
 // log is `drop.log(text)`: one line in the daemon's output, said by the plugin and marked as such.
 func (w *world) log(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
-	text := ""
+	var text strings.Builder
+	written := 0
 	for i := range c.NArgs() {
 		s, _ := c.Arg(i).TryString()
 		if i > 0 {
-			text += " "
+			t.RequireCPU(costWrite)
+			if written < MaxSaid {
+				text.WriteByte(' ')
+				written++
+			}
 		}
-		text += s
+		t.RequireCPU(costWrite * uint64(len(s)))
+		if written < MaxSaid {
+			take := min(MaxSaid-written, len(s))
+			text.WriteString(s[:take])
+			written += take
+		}
 	}
 
-	// Charged like any other writing, and cut like any other message.
-	//
-	// A plugin runs under a quota it cannot exceed, and this was the one way out: writing cost it
-	// nothing, so a loop that only logged could turn a bounded plugin into as much of somebody's
-	// terminal, and somebody's disk if the log is kept, as it cared to produce.
-	if len(text) > MaxSaid {
-		text = text[:MaxSaid]
-	}
-	t.RequireCPU(costWrite * uint64(len(text)))
-	t.RequireBytes(len(text))
+	t.RequireBytes(text.Len())
 
-	fmt.Fprintf(os.Stderr, "drop: %s: %s\n", w.who, shown.Text(text, MaxSaid))
+	fmt.Fprintf(os.Stderr, "drop: %s: %s\n", w.who, shown.Text(text.String(), MaxSaid))
 	return c.Next(), nil
 }
 
