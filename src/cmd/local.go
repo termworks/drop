@@ -387,8 +387,9 @@ func castSocket() (string, error) {
 }
 
 const (
-	localHelloWithin = 10 * time.Second
-	maxLocalLine     = 1 << 20
+	localHelloWithin    = 10 * time.Second
+	maxLocalLine        = 1 << 20
+	maxLocalConnections = 64
 )
 
 func localGuard(path string) (*os.File, error) {
@@ -436,6 +437,7 @@ func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 	}()
 
 	var waiting time.Duration
+	connections := make(chan struct{}, maxLocalConnections)
 
 	for {
 		conn, err := listening.Accept()
@@ -459,12 +461,15 @@ func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 			waiting = 0
 		}
 
-		go func() {
-			defer func() { _ = conn.Close() }()
-			if err := takeLocal(ctx, casts, shares, put, offers, held, conn); err != nil {
+		accepted := conn
+		if !startBounded(connections, func() {
+			defer func() { _ = accepted.Close() }()
+			if err := takeLocal(ctx, casts, shares, put, offers, held, accepted); err != nil {
 				fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 			}
-		}()
+		}) {
+			_ = accepted.Close()
+		}
 	}
 }
 
