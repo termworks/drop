@@ -112,6 +112,10 @@ A conversation history and its pending queue are each capped at 64 MiB per peer.
 refuses another message instead of letting a damaged or runaway log consume memory and disk without
 limit. Conversation history is not discarded automatically.
 
+Each shared history is capped at 32 MiB. Vault maintenance reads at most 4,097 entries from the
+shared-history root and refuses more than 4,096, so resealing cannot become an unbounded directory
+walk.
+
 ## Where it lives
 
 `src/pkg/keep/` writes files atomically and holds the lock. `src/pkg/book/`, `src/pkg/grant/`,
