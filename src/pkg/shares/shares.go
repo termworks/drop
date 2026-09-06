@@ -44,6 +44,9 @@ func at(peer node.ID) (string, error) {
 
 // Remember writes down what a device answered.
 func Remember(peer node.ID, what []proto.Served) error {
+	if len(what) > proto.MaxServed {
+		return fmt.Errorf("remembering %d namespaces, over the %d limit", len(what), proto.MaxServed)
+	}
 	file, err := at(peer)
 	if err != nil {
 		return err
@@ -89,6 +92,9 @@ func Recall(peer node.ID) ([]proto.Served, error) {
 	var onDisk []stored
 	if err := json.Unmarshal(raw, &onDisk); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", file, err)
+	}
+	if len(onDisk) > proto.MaxServed {
+		return nil, fmt.Errorf("reading %s: %d namespaces, over the %d limit", file, len(onDisk), proto.MaxServed)
 	}
 
 	// A kind of path this build has never heard of is kept, not skipped: what a device serves is
