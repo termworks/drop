@@ -75,6 +75,19 @@ func TestASealedRecordCannotBeMovedToAnotherThingsLog(t *testing.T) {
 	}
 }
 
+func TestASealedChangeCannotCarryUnauthenticatedBytes(t *testing.T) {
+	asSomebody(t)
+	key := aKey(t)
+	c := about(t, "one", "what alice wrote")
+	kept, err := seal(key, record(c), "one", c.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unseal(key, append(kept, 0), "one"); err == nil {
+		t.Fatal("unseal() accepted trailing bytes outside the authenticated body")
+	}
+}
+
 // A whole log carried into another thing's history is nothing there, rather than that thing's
 // history rewritten with somebody else's words.
 func TestALogCarriedIntoAnotherThingReadsAsNothing(t *testing.T) {

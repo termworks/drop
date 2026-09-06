@@ -113,6 +113,9 @@ func showing(from node.ID, body []byte) (Badged, node.ID, bool) {
 	if err != nil {
 		return who, node.ID{}, false
 	}
+	if !r.Done() {
+		return Badged{}, node.ID{}, false
+	}
 	was, ok := handedRaw(from, moved, handed)
 	return who, was, ok
 }

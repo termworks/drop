@@ -104,6 +104,17 @@ func TestABadgeRidesInTheHelloAsk(t *testing.T) {
 	}
 }
 
+func TestAHelloBadgeRefusesTrailingBytes(t *testing.T) {
+	device := idFrom(1)
+	_, badge, sig := badgeFor(t, device, "laptop")
+	Carry(badge, sig)
+	defer Carry(nil, nil)
+
+	if shown, _, _ := showing(device, append(showable(), 0)); shown.Shown() {
+		t.Fatal("showing() accepted a badge in a body with trailing bytes")
+	}
+}
+
 // Pairing carries the badge too.
 func TestPairingCarriesABadge(t *testing.T) {
 	_, badge, sig := badgeFor(t, idFrom(1), "laptop")

@@ -114,6 +114,9 @@ func unseal(key, stored []byte, peer string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !r.Done() {
+		return nil, fmt.Errorf("a sealed record has trailing bytes")
+	}
 
 	box, err := chacha20poly1305.NewX(key)
 	if err != nil {

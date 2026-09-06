@@ -150,6 +150,9 @@ func plain(body []byte) (Message, error) {
 	if err != nil {
 		return Message{}, err
 	}
+	if !r.Done() {
+		return Message{}, fmt.Errorf("a conversation record has trailing bytes")
+	}
 	m, err := Decode(packed)
 	if err != nil {
 		return Message{}, err

@@ -1,6 +1,7 @@
 package history
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -181,5 +182,23 @@ func TestAPeerNobodyHasHeardFromIsForgotten(t *testing.T) {
 	}
 	if !l.Folding() {
 		t.Fatal("a history was kept for a peer nobody has heard from")
+	}
+}
+
+func TestRememberedPeersRefuseTrailingBytes(t *testing.T) {
+	asSomebody(t)
+	l := aLog(t, thing)
+	if err := l.remember([]far{{who: "bob", at: time.Now().UnixMilli()}}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(l.seen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(l.seen, append(raw, 0), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := l.remembered(); err != nil || len(got) != 0 {
+		t.Fatalf("remembered() = %v, %v; want a refused cache", got, err)
 	}
 }

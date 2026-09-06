@@ -10,6 +10,7 @@ import (
 	"github.com/tmc/go-iroh/key"
 
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/wire"
 )
 
 func peerFor(seed byte) node.ID {
@@ -163,6 +164,27 @@ func TestASealedRecordCannotBeMoved(t *testing.T) {
 	}
 	if _, err := unseal(key, sealedUp, "peer-two"); err == nil {
 		t.Error("a record opened in somebody else's conversation")
+	}
+}
+
+func TestASealedRecordCannotCarryUnauthenticatedBytes(t *testing.T) {
+	key := aKey()
+	sealedUp, err := seal(key, []byte("the body"), "peer-one", "message-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unseal(key, append(sealedUp, 0), "peer-one"); err == nil {
+		t.Fatal("unseal() accepted trailing bytes outside the authenticated body")
+	}
+}
+
+func TestAConversationRecordRefusesTrailingBytes(t *testing.T) {
+	m := Message{ID: "message-one", Kind: KindText, Body: "hello"}
+	w := wire.NewWriter()
+	w.Byte(Out)
+	w.Bytes(m.Encode())
+	if _, err := plain(append(w.Body(), 0)); err == nil {
+		t.Fatal("plain() accepted trailing bytes")
 	}
 }
 

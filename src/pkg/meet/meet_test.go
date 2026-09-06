@@ -293,6 +293,22 @@ func TestTooManyHeadsAreRefused(t *testing.T) {
 	}
 }
 
+func TestHeadsWithTrailingBytesAreRefused(t *testing.T) {
+	here, there := net.Pipe()
+	defer func() { _ = here.Close() }()
+	defer func() { _ = there.Close() }()
+
+	go func() {
+		w := wire.NewWriter()
+		w.Uint(0)
+		_ = wire.NewConn(there).WriteFrame(wire.KindItem, append(w.Body(), 0))
+	}()
+
+	if _, err := readHeads(wire.NewConn(here)); err == nil {
+		t.Fatal("readHeads() accepted trailing bytes")
+	}
+}
+
 // One change the history will not take costs itself, not the meeting. A machine that has such a
 // record re-offers it at every meeting it ever has, so ending the meeting on it would stop that
 // namespace converging with everybody, for good.

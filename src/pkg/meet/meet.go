@@ -266,5 +266,8 @@ func readHeads(conn *wire.Conn) ([]history.ID, error) {
 		}
 		out = append(out, history.ID(head))
 	}
+	if !r.Done() {
+		return nil, fmt.Errorf("what the far end holds has trailing bytes")
+	}
 	return out, nil
 }

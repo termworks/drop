@@ -208,6 +208,9 @@ func (l *Log) remembered() ([]far, error) {
 			out = append(out, far{who: who, at: at, heads: heads})
 		}
 	}
+	if !r.Done() {
+		return nil, nil
+	}
 	return out, nil
 }
 
