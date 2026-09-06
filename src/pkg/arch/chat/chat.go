@@ -59,7 +59,7 @@ func (c *Chat) Serve(ctx context.Context, at arch.Session) error {
 // Exported because a link travels the way a message travels: what differs between the two is what
 // the far end does with what arrives, not how it gets there.
 func Take(conn *wire.Conn, from node.ID, store func(node.ID, convo.Message) error) error {
-	return conn.WithReadIdle(wire.FiniteReadIdle, func() error {
+	return conn.WithIdle(wire.FiniteIdle, func() error {
 		return take(conn, from, store)
 	})
 }

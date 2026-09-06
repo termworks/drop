@@ -131,6 +131,8 @@ func (q *quiet) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
+func (q *quiet) SetWriteDeadline(time.Time) error { return nil }
+
 // A command that leaves something behind must not leave the session behind with it.
 //
 // The shell is what gets cancelled, and a command that puts something in the background, or pipes,

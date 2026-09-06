@@ -18,7 +18,7 @@ const (
 // in that list stays in the outbox, so a partial delivery is retried rather than lost.
 func Send(conn *wire.Conn, batch []convo.Message) ([]string, error) {
 	var stored []string
-	err := conn.WithReadIdle(wire.FiniteReadIdle, func() error {
+	err := conn.WithIdle(wire.FiniteIdle, func() error {
 		var err error
 		stored, err = send(conn, batch)
 		return err

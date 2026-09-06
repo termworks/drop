@@ -13,11 +13,12 @@ import (
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
-// Stream is what a session runs over: a bidirectional byte stream whose read side can be given a
-// deadline, and whose write side can be closed on its own.
+// Stream is what a session runs over: a bidirectional byte stream whose sides can be given
+// deadlines, and whose write side can be closed on its own.
 type Stream interface {
 	io.ReadWriteCloser
 	SetReadDeadline(t time.Time) error
+	SetWriteDeadline(t time.Time) error
 }
 
 // Policy decides what a receiving node does with an incoming session.

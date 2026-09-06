@@ -36,11 +36,18 @@ const MaxFrame = 1 << 22
 // against this, so the overhead is not worth measuring.
 const DataChunk = 256 << 10
 
-// FiniteReadIdle bounds a stalled finite protocol operation.
-const FiniteReadIdle = 2 * time.Minute
+// FiniteIdle bounds a stalled finite protocol operation.
+const FiniteIdle = 2 * time.Minute
+
+// FiniteReadIdle is the read-only form of the finite operation limit.
+const FiniteReadIdle = FiniteIdle
 
 type readDeadliner interface {
 	SetReadDeadline(time.Time) error
+}
+
+type writeDeadliner interface {
+	SetWriteDeadline(time.Time) error
 }
 
 // Conn frames a bidirectional byte stream.
@@ -49,16 +56,19 @@ type readDeadliner interface {
 // messages with bulk data on the same stream: nothing else reads from the underlying stream, so
 // nothing can consume bytes that belong to the next frame.
 type Conn struct {
-	r        *bufio.Reader
-	w        io.Writer
-	deadline readDeadliner
-	readIdle time.Duration
-	hdr      [1 + binary.MaxVarintLen64]byte
+	r             *bufio.Reader
+	w             io.Writer
+	readDeadline  readDeadliner
+	writeDeadline writeDeadliner
+	readIdle      time.Duration
+	writeIdle     time.Duration
+	hdr           [1 + binary.MaxVarintLen64]byte
 }
 
 func NewConn(rw io.ReadWriter) *Conn {
 	c := &Conn{r: bufio.NewReaderSize(rw, 64<<10), w: rw}
-	c.deadline, _ = rw.(readDeadliner)
+	c.readDeadline, _ = rw.(readDeadliner)
+	c.writeDeadline, _ = rw.(writeDeadliner)
 	return c
 }
 
@@ -72,24 +82,70 @@ func (c *Conn) WithReadIdle(idle time.Duration, read func() error) (err error) {
 	}
 	c.readIdle = idle
 	if err := c.refreshReadDeadline(); err != nil {
-		c.readIdle = 0
-		return err
+		return c.endReadIdle(err)
 	}
 	defer func() {
-		c.readIdle = 0
-		if c.deadline != nil {
-			err = errors.Join(err, c.deadline.SetReadDeadline(time.Time{}))
-		}
+		err = c.endReadIdle(err)
 	}()
 	return read()
 }
 
+// WithIdle runs one finite operation, refreshing read and write deadlines at every frame part.
+func (c *Conn) WithIdle(idle time.Duration, operation func() error) (err error) {
+	if idle <= 0 {
+		return fmt.Errorf("wire: invalid idle limit %s", idle)
+	}
+	if c.readIdle != 0 || c.writeIdle != 0 {
+		return fmt.Errorf("wire: an idle guard is already active")
+	}
+	c.readIdle, c.writeIdle = idle, idle
+	if err := c.refreshReadDeadline(); err != nil {
+		return c.endIdle(err)
+	}
+	if err := c.refreshWriteDeadline(); err != nil {
+		return c.endIdle(err)
+	}
+	defer func() {
+		err = c.endIdle(err)
+	}()
+	return operation()
+}
+
+func (c *Conn) endReadIdle(err error) error {
+	c.readIdle = 0
+	if c.readDeadline != nil {
+		err = errors.Join(err, c.readDeadline.SetReadDeadline(time.Time{}))
+	}
+	return err
+}
+
+func (c *Conn) endIdle(err error) error {
+	c.readIdle, c.writeIdle = 0, 0
+	if c.readDeadline != nil {
+		err = errors.Join(err, c.readDeadline.SetReadDeadline(time.Time{}))
+	}
+	if c.writeDeadline != nil {
+		err = errors.Join(err, c.writeDeadline.SetWriteDeadline(time.Time{}))
+	}
+	return err
+}
+
 func (c *Conn) refreshReadDeadline() error {
-	if c.deadline == nil || c.readIdle == 0 {
+	if c.readDeadline == nil || c.readIdle == 0 {
 		return nil
 	}
-	if err := c.deadline.SetReadDeadline(time.Now().Add(c.readIdle)); err != nil {
+	if err := c.readDeadline.SetReadDeadline(time.Now().Add(c.readIdle)); err != nil {
 		return fmt.Errorf("wire: setting a read deadline: %w", err)
+	}
+	return nil
+}
+
+func (c *Conn) refreshWriteDeadline() error {
+	if c.writeDeadline == nil || c.writeIdle == 0 {
+		return nil
+	}
+	if err := c.writeDeadline.SetWriteDeadline(time.Now().Add(c.writeIdle)); err != nil {
+		return fmt.Errorf("wire: setting a write deadline: %w", err)
 	}
 	return nil
 }
@@ -109,7 +165,7 @@ func (c *Conn) WriteFrame(kind byte, body []byte) error {
 	if len(body) == 0 {
 		return nil
 	}
-	if err := writeAll(c.w, body); err != nil {
+	if err := c.writeAll(body); err != nil {
 		return fmt.Errorf("wire: writing a frame body: %w", err)
 	}
 	return nil
@@ -118,15 +174,18 @@ func (c *Conn) WriteFrame(kind byte, body []byte) error {
 func (c *Conn) writeHeader(kind byte, size int) error {
 	c.hdr[0] = kind
 	n := binary.PutUvarint(c.hdr[1:], uint64(size))
-	if err := writeAll(c.w, c.hdr[:1+n]); err != nil {
+	if err := c.writeAll(c.hdr[:1+n]); err != nil {
 		return fmt.Errorf("wire: writing a frame header: %w", err)
 	}
 	return nil
 }
 
-func writeAll(w io.Writer, p []byte) error {
+func (c *Conn) writeAll(p []byte) error {
 	for len(p) > 0 {
-		n, err := w.Write(p)
+		if err := c.refreshWriteDeadline(); err != nil {
+			return err
+		}
+		n, err := c.w.Write(p)
 		if n < 0 || n > len(p) {
 			return fmt.Errorf("invalid write count %d for %d bytes", n, len(p))
 		}

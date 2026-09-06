@@ -54,7 +54,7 @@ type Caught struct {
 // admits nobody, because a namespace that cannot say who may change it is one nobody may.
 func Ask(conn *wire.Conn, l *history.Log, who string, admits func(author string) bool) (Caught, error) {
 	var out Caught
-	err := conn.WithReadIdle(wire.FiniteReadIdle, func() error {
+	err := conn.WithIdle(wire.FiniteIdle, func() error {
 		var err error
 		out, err = ask(conn, l, who, admits)
 		return err
@@ -89,7 +89,7 @@ func ask(conn *wire.Conn, l *history.Log, who string, admits func(author string)
 // keeps the two sides in step: whoever speaks first here listens first there.
 func Answer(conn *wire.Conn, l *history.Log, who string, admits func(author string) bool) (Caught, error) {
 	var out Caught
-	err := conn.WithReadIdle(wire.FiniteReadIdle, func() error {
+	err := conn.WithIdle(wire.FiniteIdle, func() error {
 		var err error
 		out, err = answer(conn, l, who, admits)
 		return err

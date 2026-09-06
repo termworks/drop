@@ -269,16 +269,72 @@ func TestReadIdleRefreshesEveryFramePart(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(stream.set) != 4 {
-		t.Fatalf("read deadlines were set %d times, want initial, header, body and clear", len(stream.set))
+	if len(stream.readSet) != 4 {
+		t.Fatalf("read deadlines were set %d times, want initial, header, body and clear", len(stream.readSet))
 	}
-	for i, at := range stream.set[:len(stream.set)-1] {
+	for i, at := range stream.readSet[:len(stream.readSet)-1] {
 		if at.IsZero() {
 			t.Fatalf("read deadline %d was cleared early", i)
 		}
 	}
-	if !stream.set[len(stream.set)-1].IsZero() {
+	if !stream.readSet[len(stream.readSet)-1].IsZero() {
 		t.Fatal("the final read deadline was not cleared")
+	}
+}
+
+func TestIdleStopsAStalledWriteAndClearsTheDeadline(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+
+	conn := NewConn(client)
+	started := time.Now()
+	err := conn.WithIdle(20*time.Millisecond, func() error {
+		return conn.WriteFrame(KindPing, nil)
+	})
+	if err == nil {
+		t.Fatal("a stalled write outlived its idle limit")
+	}
+	if time.Since(started) > time.Second {
+		t.Fatalf("a stalled write took %s to stop", time.Since(started))
+	}
+
+	read := make(chan error, 1)
+	go func() {
+		kind, _, err := NewConn(server).ReadFrame()
+		if err == nil && kind != KindPing {
+			err = fmt.Errorf("frame kind %d, want %d", kind, KindPing)
+		}
+		read <- err
+	}()
+	time.Sleep(40 * time.Millisecond)
+	if err := conn.WriteFrame(KindPing, nil); err != nil {
+		t.Fatalf("write after the guard = %v", err)
+	}
+	if err := <-read; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIdleRefreshesEveryWrittenFramePart(t *testing.T) {
+	var framed bytes.Buffer
+	stream := &deadlineStream{Reader: &bytes.Buffer{}, Writer: &framed}
+	conn := NewConn(stream)
+	if err := conn.WithIdle(time.Second, func() error {
+		return conn.WriteFrame(KindItem, []byte("body"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(stream.readSet) != 2 {
+		t.Fatalf("read deadlines were set %d times, want initial and clear", len(stream.readSet))
+	}
+	if len(stream.writeSet) != 4 {
+		t.Fatalf("write deadlines were set %d times, want initial, header, body and clear", len(stream.writeSet))
+	}
+	if !stream.readSet[len(stream.readSet)-1].IsZero() || !stream.writeSet[len(stream.writeSet)-1].IsZero() {
+		t.Fatal("the final idle deadlines were not cleared")
 	}
 }
 
@@ -291,11 +347,17 @@ type both struct {
 type deadlineStream struct {
 	io.Reader
 	io.Writer
-	set []time.Time
+	readSet  []time.Time
+	writeSet []time.Time
 }
 
 func (s *deadlineStream) SetReadDeadline(at time.Time) error {
-	s.set = append(s.set, at)
+	s.readSet = append(s.readSet, at)
+	return nil
+}
+
+func (s *deadlineStream) SetWriteDeadline(at time.Time) error {
+	s.writeSet = append(s.writeSet, at)
 	return nil
 }
 

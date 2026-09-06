@@ -36,7 +36,7 @@ func sendBodyChecked(
 	progress func(string, int64, int64),
 	check func() error,
 ) error {
-	return conn.WithReadIdle(wire.FiniteReadIdle, func() error {
+	return conn.WithIdle(wire.FiniteIdle, func() error {
 		return sendBodyWithin(conn, body, name, size, from, progress, check)
 	})
 }
@@ -290,7 +290,7 @@ func already(where, name string, sum []byte) int64 {
 // recognise is a name nothing will ever finish.
 func land(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mode uint32, progress func(string, int64, int64)) (int64, error) {
 	var got int64
-	err := conn.WithReadIdle(wire.FiniteReadIdle, func() error {
+	err := conn.WithIdle(wire.FiniteIdle, func() error {
 		var err error
 		got, err = landWithin(conn, dir, a, name, size, mode, progress)
 		return err

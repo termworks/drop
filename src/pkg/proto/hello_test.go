@@ -105,8 +105,9 @@ type pipeEnd struct {
 	io.Writer
 }
 
-func (pipeEnd) Close() error                    { return nil }
-func (pipeEnd) SetReadDeadline(time.Time) error { return nil }
+func (pipeEnd) Close() error                     { return nil }
+func (pipeEnd) SetReadDeadline(time.Time) error  { return nil }
+func (pipeEnd) SetWriteDeadline(time.Time) error { return nil }
 
 // deadlined is a stream that will never say anything, and unblocks only when a read deadline is set
 // on it — which is what a real one does to a peer that sent nothing.
@@ -125,6 +126,8 @@ func (d *deadlined) SetReadDeadline(at time.Time) error {
 	}
 	return nil
 }
+
+func (d *deadlined) SetWriteDeadline(time.Time) error { return nil }
 
 // A hello is answered to anybody who dials, so a stranger who opens a stream, writes nothing and
 // stays connected must not hold a goroutine and its buffers for the life of the daemon.

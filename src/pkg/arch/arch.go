@@ -75,11 +75,12 @@ type Note struct {
 // archetype that could reach for one would be an archetype that decides who hears about a change.
 type Changed func(path string)
 
-// Stream is what a session runs over: a bidirectional byte stream whose read side can be given a
-// deadline, and whose write side can be closed on its own.
+// Stream is what a session runs over: a bidirectional byte stream whose sides can be given
+// deadlines, and whose write side can be closed on its own.
 type Stream interface {
 	io.ReadWriteCloser
 	SetReadDeadline(t time.Time) error
+	SetWriteDeadline(t time.Time) error
 }
 
 // Session is one namespace being opened, as it reaches the archetype that serves it.
