@@ -613,23 +613,22 @@ func readLocalReply(conn net.Conn, reading *bufio.Reader) (string, error) {
 // Read out of what is already open rather than dialled, so a command asking which of somebody's
 // machines to use spends nothing finding out.
 func takeHeld(held *dial.Kept, conn net.Conn) error {
-	if held == nil {
-		return nil
-	}
-
-	pinned, err := book.Load()
-	if err != nil {
-		return err
-	}
-	for _, entry := range pinned.All() {
-		if !held.Reaching(entry.ID) {
-			continue
-		}
-		if _, err := fmt.Fprintln(conn, entry.ID); err != nil {
+	if held != nil {
+		pinned, err := book.Load()
+		if err != nil {
 			return err
 		}
+		for _, entry := range pinned.All() {
+			if !held.Reaching(entry.ID) {
+				continue
+			}
+			if _, err := fmt.Fprintln(conn, entry.ID); err != nil {
+				return err
+			}
+		}
 	}
-	return nil
+	_, err := fmt.Fprintln(conn, heldReplyEnd)
+	return err
 }
 
 // takeShare holds a handoff open for as long as whoever asked for it stays connected, and takes it

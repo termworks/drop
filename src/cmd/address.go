@@ -110,14 +110,33 @@ func heldHere(ctx context.Context) map[node.ID]bool {
 		return nil
 	}
 
-	out := map[node.ID]bool{}
-	scan := bufio.NewScanner(conn)
-	for scan.Scan() {
-		if id, err := node.ParseID(strings.TrimSpace(scan.Text())); err == nil {
-			out[id] = true
-		}
+	out, err := readHeldReply(conn)
+	if err != nil {
+		return nil
 	}
 	return out
+}
+
+const heldReplyEnd = "."
+
+func readHeldReply(from io.Reader) (map[node.ID]bool, error) {
+	out := map[node.ID]bool{}
+	scan := bufio.NewScanner(from)
+	for scan.Scan() {
+		line := strings.TrimSpace(scan.Text())
+		if line == heldReplyEnd {
+			return out, nil
+		}
+		id, err := node.ParseID(line)
+		if err != nil {
+			return nil, fmt.Errorf("reading the held-device reply: %w", err)
+		}
+		out[id] = true
+	}
+	if err := scan.Err(); err != nil {
+		return nil, fmt.Errorf("reading the held-device reply: %w", err)
+	}
+	return nil, io.ErrUnexpectedEOF
 }
 
 // answerWait bounds asking the node on this machine a question it answers out of memory.

@@ -3,6 +3,8 @@ package cmd
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,3 +144,36 @@ func TestAFilenameUnderAnAddressIsLeftAlone(t *testing.T) {
 		}
 	}
 }
+
+func TestHeldReplyMustFinishBeforeItNarrowsAnAddress(t *testing.T) {
+	alice, bob := idFor(21), idFor(22)
+	complete := fmt.Sprintf("%s\n%s\n%s\n", alice, bob, heldReplyEnd)
+
+	held, err := readHeldReply(strings.NewReader(complete))
+	if err != nil || !held[alice] || !held[bob] || len(held) != 2 {
+		t.Fatalf("complete reply = %v, %v", held, err)
+	}
+
+	partial := fmt.Sprintf("%s\n", alice)
+	if held, err := readHeldReply(strings.NewReader(partial)); err == nil || held != nil {
+		t.Fatalf("partial reply = %v, %v", held, err)
+	}
+}
+
+func TestHeldReplyRefusesMalformedDevices(t *testing.T) {
+	held, err := readHeldReply(strings.NewReader("not-a-device\n" + heldReplyEnd + "\n"))
+	if err == nil || held != nil {
+		t.Fatalf("malformed reply = %v, %v", held, err)
+	}
+}
+
+func TestHeldReplyReportsReaderFailure(t *testing.T) {
+	held, err := readHeldReply(io.MultiReader(strings.NewReader(idFor(23).String()+"\n"), brokenReader{}))
+	if err == nil || held != nil {
+		t.Fatalf("broken reply = %v, %v", held, err)
+	}
+}
+
+type brokenReader struct{}
+
+func (brokenReader) Read([]byte) (int, error) { return 0, io.ErrClosedPipe }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -179,13 +180,25 @@ func TestLocalRequestSurvivesDeadlineResetFailure(t *testing.T) {
 	server, client := net.Pipe()
 	defer func() { _ = client.Close() }()
 
+	answered := make(chan error, 1)
 	go func() {
 		defer func() { _ = server.Close() }()
-		_, _ = server.Write([]byte("held\n"))
+		if _, err := server.Write([]byte("held\n")); err != nil {
+			answered <- err
+			return
+		}
+		line, err := bufio.NewReader(server).ReadString('\n')
+		if err == nil && line != heldReplyEnd+"\n" {
+			err = fmt.Errorf("held reply = %q", line)
+		}
+		answered <- err
 	}()
 
 	if err := takeLocal(t.Context(), nil, nil, nil, nil, nil, resetFailConn{client}); err != nil {
 		t.Fatalf("a complete local request was discarded: %v", err)
+	}
+	if err := <-answered; err != nil {
+		t.Fatal(err)
 	}
 }
 
