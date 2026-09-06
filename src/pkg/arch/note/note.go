@@ -99,6 +99,12 @@ func (n *Note) Note(c arch.Config) arch.Note {
 // answered before any archetype is looked at. What is left for this is somebody who does not hold
 // it and wants to read it, and reading it is all they may do — changing it means holding it.
 func (n *Note) Serve(ctx context.Context, at arch.Session) error {
+	return at.Conn.WithIdle(wire.FiniteIdle, func() error {
+		return n.serve(at)
+	})
+}
+
+func (n *Note) serve(at arch.Session) error {
 	cfg, ok := at.Config.(Config)
 	if !ok || cfg.File == "" {
 		reject := wire.Reject{Reason: "this namespace has no file"}
@@ -123,7 +129,17 @@ func (n *Note) Serve(ctx context.Context, at arch.Session) error {
 
 // Text reads a note off an opened namespace.
 func Text(conn *wire.Conn) ([]byte, error) {
-	kind, body, err := conn.ReadFrame()
+	var out []byte
+	err := conn.WithIdle(wire.FiniteIdle, func() error {
+		var err error
+		out, err = text(conn)
+		return err
+	})
+	return out, err
+}
+
+func text(conn *wire.Conn) ([]byte, error) {
+	kind, body, err := conn.ReadFrameUpTo(MaxSize)
 	if err != nil {
 		return nil, fmt.Errorf("reading the note: %w", err)
 	}
