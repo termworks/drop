@@ -151,6 +151,36 @@ func TestAConfiguredPortMustBeValid(t *testing.T) {
 	}
 }
 
+func TestCustomRelaysAreValidated(t *testing.T) {
+	t.Setenv("DROP_RELAYS", "")
+	SetRelays([]string{"/ip4/192.0.2.1/tcp/443"})
+	t.Cleanup(func() { SetRelays(nil) })
+
+	if _, err := relayMode(); err == nil {
+		t.Fatal("a relay without a URL host was accepted")
+	}
+
+	SetRelays([]string{"https://relay.example./"})
+	mode, err := relayMode()
+	if err != nil {
+		t.Fatalf("a valid relay was refused: %v", err)
+	}
+	if mode.Map().Len() != 1 {
+		t.Fatalf("custom relay map holds %d entries", mode.Map().Len())
+	}
+}
+
+func TestRelayEnvironmentOverridesConfig(t *testing.T) {
+	SetRelays([]string{"https://configured.example./"})
+	t.Cleanup(func() { SetRelays(nil) })
+	t.Setenv("DROP_RELAYS", "https://one.example./ https://two.example./")
+
+	got := configuredRelays()
+	if len(got) != 2 || got[0] != "https://one.example./" || got[1] != "https://two.example./" {
+		t.Fatalf("configured relays = %v", got)
+	}
+}
+
 // A node that took the port it wanted has nothing to complain about, or every dial would carry an
 // explanation for a problem that is not there.
 func TestANodeThatGotItsPortSaysNothing(t *testing.T) {

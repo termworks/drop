@@ -1,6 +1,10 @@
 package node
 
-import "sync"
+import (
+	"os"
+	"strings"
+	"sync"
+)
 
 // Settings a config may override.
 //
@@ -32,7 +36,7 @@ func SetRelays(addrs []string) {
 	settingsMu.Lock()
 	defer settingsMu.Unlock()
 
-	relaysSet = addrs
+	relaysSet = append([]string(nil), addrs...)
 }
 
 func configuredName() string {
@@ -43,10 +47,14 @@ func configuredName() string {
 }
 
 func configuredRelays() []string {
+	if fromEnv := strings.Fields(os.Getenv("DROP_RELAYS")); len(fromEnv) > 0 {
+		return fromEnv
+	}
+
 	settingsMu.RLock()
 	defer settingsMu.RUnlock()
 
-	return relaysSet
+	return append([]string(nil), relaysSet...)
 }
 
 // SetRendezvous turns publishing this device's address on or off.

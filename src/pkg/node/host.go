@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -66,6 +67,14 @@ func Start(ctx context.Context) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	rendezvous := Rendezvous()
+	mode := relay.ModeDisabled()
+	if rendezvous {
+		mode, err = relayMode()
+		if err != nil {
+			return nil, err
+		}
+	}
 	sk, err := Identity()
 	if err != nil {
 		return nil, err
@@ -83,8 +92,8 @@ func Start(ctx context.Context) (*Node, error) {
 	// Relays are what carry a connection when neither side can be dialled directly, and the
 	// address published for a rendezvous is a relay address. Off otherwise: a relay is a
 	// third party, and traffic should not start crossing one because a default said so.
-	if Rendezvous() {
-		opts = append(opts, iroh.WithRelayMode(relayMode()), iroh.WithNetReport())
+	if rendezvous {
+		opts = append(opts, iroh.WithRelayMode(mode), iroh.WithNetReport())
 
 		// Being able to turn somebody else's id into an address. Costs them nothing and is what
 		// lets a ticket be pasted between two machines that are not on the same wire.
@@ -189,23 +198,28 @@ func requestedPort() (uint16, error) {
 }
 
 // relayMode is the configured relays, or the defaults when the config named none.
-func relayMode() relay.Mode {
+func relayMode() (relay.Mode, error) {
 	configured := configuredRelays()
 	if len(configured) == 0 {
-		return relay.ModeDefault()
+		return relay.ModeDefault(), nil
 	}
 
 	urls := make([]netaddr.RelayURL, 0, len(configured))
 	for _, raw := range configured {
 		u, err := netaddr.ParseRelayURL(raw)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "drop: ignoring relay %q: %v\n", raw, err)
-			continue
+			return relay.Mode{}, fmt.Errorf("invalid relay %q: %w", raw, err)
+		}
+		parsed := u.URL()
+		if parsed == nil || parsed.Host == "" {
+			return relay.Mode{}, fmt.Errorf("invalid relay %q: it has no host", raw)
+		}
+		switch strings.ToLower(parsed.Scheme) {
+		case "http", "https", "ws", "wss":
+		default:
+			return relay.Mode{}, fmt.Errorf("invalid relay %q: scheme %q is not supported", raw, parsed.Scheme)
 		}
 		urls = append(urls, u)
 	}
-	if len(urls) == 0 {
-		return relay.ModeDefault()
-	}
-	return relay.ModeCustom(relay.MapFromURLs(urls...))
+	return relay.ModeCustom(relay.MapFromURLs(urls...)), nil
 }

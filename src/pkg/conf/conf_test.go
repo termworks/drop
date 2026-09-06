@@ -60,7 +60,7 @@ func TestSettingsAreAssigned(t *testing.T) {
 		local drop = require("drop")
 		drop.name = "workstation"
 		drop.open_links = true
-		drop.relays = { "/ip4/1.2.3.4/tcp/1/p2p/x", "/ip4/5.6.7.8/tcp/2/p2p/y" }
+		drop.relays = { "https://one.example./", "https://two.example./" }
 		drop.mount("/chat", { type = "chat" })
 	`)
 
