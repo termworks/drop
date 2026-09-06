@@ -69,5 +69,13 @@ func ReadFileWith(file string, most int64, read func(io.Reader) error) (os.FileI
 	if stat.Size() != after.Size() || !stat.ModTime().Equal(after.ModTime()) {
 		return nil, fmt.Errorf("reading %s: it changed while it was read", file)
 	}
+	current, err := os.Stat(file)
+	if err != nil {
+		return nil, fmt.Errorf("stating %s after reading it: %w", file, err)
+	}
+	if !os.SameFile(after, current) || after.Size() != current.Size() ||
+		!after.ModTime().Equal(current.ModTime()) {
+		return nil, fmt.Errorf("reading %s: it was replaced while it was read", file)
+	}
 	return after, nil
 }

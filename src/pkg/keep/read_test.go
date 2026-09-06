@@ -84,6 +84,28 @@ func TestReadFileWithRefusesGrowthAfterTheCallbackReads(t *testing.T) {
 	}
 }
 
+func TestReadFileWithRefusesReplacementDuringTheRead(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "state")
+	replacement := filepath.Join(dir, "replacement")
+	if err := os.WriteFile(file, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(replacement, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ReadFileWith(file, 3, func(from io.Reader) error {
+		if _, err := io.Copy(io.Discard, from); err != nil {
+			return err
+		}
+		return os.Rename(replacement, file)
+	})
+	if err == nil || !strings.Contains(err.Error(), "replaced while it was read") {
+		t.Fatalf("ReadFileWith() = %v, want concurrent replacement refused", err)
+	}
+}
+
 func TestReadFileRefusesAnOversizedSparseFile(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "state")
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
