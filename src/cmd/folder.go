@@ -57,6 +57,7 @@ func fetchFrom(ctx context.Context, over reaches, entry book.Entry, at string, w
 	}
 	defer func() { _ = done.Close() }()
 	defer func() { _ = s.Close() }()
+	defer stopStreamOnDone(ctx, s)()
 
 	conn, err := proto.Open(s, at, "files", 0, "", node.DisplayName())
 	if err != nil {

@@ -26,6 +26,8 @@ holds an admitted stream.
 **How long a read may wait.** Every read in the handshake has a deadline, on both sides. A far end
 that takes what you sent and then says nothing would otherwise hold a goroutine, a stream and a
 buffer for as long as it liked.
+After the handshake, canceling a bounded command or interface operation sets both stream deadlines
+and closes the stream. Its context therefore ends protocol reads and writes as well as dialing.
 
 **How much a guess may cost.** A password-guarded path costs 64 MiB and three passes of argon2 to
 try, which is the point of it. A caller gets six tries a minute. Two things make that number mean

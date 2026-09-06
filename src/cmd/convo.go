@@ -54,6 +54,7 @@ func deliverOver(ctx context.Context, over reaches, entry book.Entry, path, arch
 	}
 	defer func() { _ = done.Close() }()
 	defer func() { _ = s.Close() }()
+	defer stopStreamOnDone(ctx, s)()
 
 	conn, err := proto.Open(s, path, archetype, 0, "", node.DisplayName())
 	if err == nil {

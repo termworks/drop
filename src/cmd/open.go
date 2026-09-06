@@ -73,6 +73,7 @@ func openNote(ctx context.Context, o opening) error {
 	}
 	defer func() { _ = done.Close() }()
 	defer func() { _ = s.Close() }()
+	defer stopStreamOnDone(ctx, s)()
 
 	conn, err := proto.Open(s, o.served.Path, "note", 0, "", node.DisplayName())
 	if err != nil {
@@ -121,6 +122,7 @@ func sendFiles(parent context.Context, o opening, sources []share.Source) error 
 	}
 	defer func() { _ = done.Close() }()
 	defer func() { _ = s.Close() }()
+	defer stopStreamOnDone(parent, s)()
 
 	bar := &progress{}
 	defer bar.clear()

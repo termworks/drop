@@ -72,6 +72,7 @@ func askFor(parent context.Context, target, why string) error {
 	}
 	defer func() { _ = done.Close() }()
 	defer func() { _ = s.Close() }()
+	defer stopStreamOnDone(ctx, s)()
 
 	if err := proto.Ask(ctx, s, at.Path, why, node.DisplayName()); err != nil {
 		return err

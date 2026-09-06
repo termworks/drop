@@ -171,6 +171,7 @@ func catchUp(ctx context.Context, over reaches, entry book.Entry, mount ns.Mount
 	}
 	defer func() { _ = done.Close() }()
 	defer func() { _ = s.Close() }()
+	defer stopStreamOnDone(ctx, s)()
 
 	conn, err := proto.Meet(s, mount.Shared, node.DisplayName())
 	if err != nil {

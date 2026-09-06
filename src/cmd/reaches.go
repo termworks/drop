@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/dial"
@@ -22,6 +23,21 @@ import (
 // point of holding it; a dialled one is finished with when the stream is.
 type reaches interface {
 	To(ctx context.Context, entry book.Entry, alpn string) (io.Closer, proto.Stream, error)
+}
+
+func stopStreamOnDone(ctx context.Context, s proto.Stream) func() {
+	if ctx == nil || s == nil {
+		return func() {}
+	}
+	stop := context.AfterFunc(ctx, func() {
+		now := time.Now()
+		_ = s.SetReadDeadline(now)
+		if write, ok := s.(interface{ SetWriteDeadline(time.Time) error }); ok {
+			_ = write.SetWriteDeadline(now)
+		}
+		_ = s.Close()
+	})
+	return func() { stop() }
 }
 
 // best is how a command should reach a device: through the node already running when there is one,

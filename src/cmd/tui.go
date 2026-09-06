@@ -242,6 +242,7 @@ func (l *running) askShares(ctx context.Context, with book.Entry) ([]proto.Serve
 		return nil, err
 	}
 	defer func() { _ = s.Close() }()
+	defer stopStreamOnDone(ctx, s)()
 
 	hello, err := proto.AskHello(s)
 	if err != nil {
@@ -322,6 +323,7 @@ func (l *running) Send(ctx context.Context, to book.Entry, path string, files []
 		return err
 	}
 	defer func() { _ = s.Close() }()
+	defer stopStreamOnDone(ctx, s)()
 
 	conn, err := proto.Open(s, path, "share", 0, "", node.DisplayName())
 	if err != nil {
@@ -348,6 +350,7 @@ func (l *running) Post(ctx context.Context, to book.Entry, path, archetype strin
 		return err
 	}
 	defer func() { _ = s.Close() }()
+	defer stopStreamOnDone(ctx, s)()
 
 	conn, err := proto.Open(s, path, archetype, 0, "", node.DisplayName())
 	if err != nil {
@@ -594,22 +597,28 @@ func (l *running) browsing(ctx context.Context, on book.Entry, path string) (*fi
 	if err != nil {
 		return nil, nil, err
 	}
+	stop := stopStreamOnDone(ctx, s)
 
 	conn, err := proto.Open(s, path, "files", 0, "", node.DisplayName())
 	if err != nil {
+		stop()
 		_ = s.Close()
 		return nil, nil, err
 	}
 
 	walk, err := files.Browse(conn)
 	if err != nil {
+		stop()
 		_ = s.Close()
 		return nil, nil, err
 	}
 
 	// The stream goes when the caller is done; the connection stays, because everything else this
 	// device is doing is on it.
-	return walk, func() { _ = s.Close() }, nil
+	return walk, func() {
+		stop()
+		_ = s.Close()
+	}, nil
 }
 
 // Listing is what is in a files namespace on another device, at one directory inside it.

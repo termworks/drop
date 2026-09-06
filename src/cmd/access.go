@@ -197,6 +197,7 @@ func (l *running) AskFor(ctx context.Context, on book.Entry, path, why string) e
 		return err
 	}
 	defer func() { _ = stream.Close() }()
+	defer stopStreamOnDone(ctx, stream)()
 
 	return proto.Ask(ctx, stream, path, why, node.DisplayName())
 }

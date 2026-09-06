@@ -122,6 +122,7 @@ func serving(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.E
 	}
 	defer func() { _ = done.Close() }()
 	defer func() { _ = s.Close() }()
+	defer stopStreamOnDone(ctx, s)()
 
 	return proto.AskHello(s)
 }
