@@ -75,6 +75,18 @@ func TestSettingsAreAssigned(t *testing.T) {
 	}
 }
 
+func TestUnsupportedBootstrapNodesAreRefused(t *testing.T) {
+	path := write(t, `
+		local drop = require("drop")
+		drop.bootstrap = { "old-dht-node" }
+		drop.mount("/chat", { type = "chat" })
+	`)
+
+	if _, err := Load(known()); err == nil || !strings.Contains(err.Error(), "drop.bootstrap") {
+		t.Fatalf("Load(%s) = %v", path, err)
+	}
+}
+
 func TestMountsAreRegistered(t *testing.T) {
 	cfg := load(t, `
 		local drop = require("drop")

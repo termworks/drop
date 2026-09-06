@@ -30,7 +30,7 @@ type Config struct {
 	// Vault is who the data key is wrapped to: age recipients, or a path to a key file. Empty is a
 	// node that keeps its history in the clear, which is the default and a decision.
 	Vault []string
-	// Bootstrap and Relays override the defaults when set.
+	// Bootstrap records an unsupported legacy setting. Relays overrides the defaults when set.
 	Bootstrap []string
 	Relays    []string
 	// HasName and HasOpenLinks say whether the config mentioned the setting at all, so one it never
@@ -170,6 +170,10 @@ func Load(known *arch.Registry) (*Config, error) {
 	if err := run(cfg, path); err != nil {
 		return nil, err
 	}
+	if len(cfg.Bootstrap) > 0 {
+		cfg.Close()
+		return nil, fmt.Errorf("%s sets drop.bootstrap, which this transport does not support", path)
+	}
 	if cfg.Mounts.Len() == 0 {
 		return nil, fmt.Errorf("%s declares no namespaces, so this node would serve nothing", path)
 	}
@@ -198,9 +202,6 @@ func expand(path string) string {
 func (c *Config) Apply() {
 	if c.HasName && c.Name != "" {
 		node.SetName(c.Name)
-	}
-	if len(c.Bootstrap) > 0 {
-		node.SetBootstrap(c.Bootstrap)
 	}
 	if c.HasRendezvous {
 		node.SetRendezvous(c.Rendezvous)
