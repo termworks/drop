@@ -760,12 +760,8 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	}
 }
 
-// A second drop on one machine cannot have the identity's port, and has to say so.
-//
-// Silence here is expensive: the second process starts, answers nothing anybody dials, and the
-// first one keeps replying with whatever version it happens to be running. From the outside that
-// looks like the device answering strangely rather than like two processes.
-func TestASecondDaemonSaysItCannotBeReached(t *testing.T) {
+// A second daemon exits before ready when the first owns the identity's port.
+func TestASecondDaemonFailsBeforeReady(t *testing.T) {
 	one := newNode(t, "one", "45131")
 	one.serves(`
 local drop = require("drop")
@@ -782,14 +778,15 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 	}
 
 	// The same machine, the same identity, the same port.
-	_, second, stopSecond := one.background("serve")
-	defer stopSecond()
-
-	waitFor(t, "the second daemon to say so", 30*time.Second, func() bool {
-		return strings.Contains(second.String(), "holds this identity")
-	})
-	if !strings.Contains(second.String(), "pkill") {
-		t.Errorf("it did not say what to do about it:\n%s", second.String())
+	second, err := one.run("serve")
+	if err == nil {
+		t.Fatalf("the second daemon stayed running:\n%s", second)
+	}
+	if strings.Contains(second, "ready") {
+		t.Fatalf("the second daemon reported ready:\n%s", second)
+	}
+	if !strings.Contains(second, "cannot serve") || !strings.Contains(second, "DROP_PORT") {
+		t.Errorf("the startup failure was not actionable:\n%s", second)
 	}
 }
 

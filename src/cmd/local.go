@@ -422,51 +422,75 @@ func localGuard(path string) (*os.File, error) {
 	return guard, nil
 }
 
-// hostLocal listens for whatever on this machine wants to act as this node.
-func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mountHost, offers *pairHost, held *dial.Kept) error {
+type localServer struct {
+	path      string
+	guard     *os.File
+	listening net.Listener
+	once      sync.Once
+	err       error
+}
+
+func openLocalServer(ctx context.Context) (*localServer, error) {
 	path, err := castSocket()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	guard, err := localGuard(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer func() { _ = guard.Close() }()
 
-	// A socket left behind by a process that was killed would otherwise make this address
-	// permanently unusable.
 	_ = os.Remove(path)
-
 	var listen net.ListenConfig
 	listening, err := listen.Listen(ctx, "unix", path)
 	if err != nil {
-		return err
+		_ = guard.Close()
+		return nil, err
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		_ = listening.Close()
 		_ = os.Remove(path)
-		return fmt.Errorf("protecting %s: %w", path, err)
+		_ = guard.Close()
+		return nil, fmt.Errorf("protecting %s: %w", path, err)
 	}
 
+	server := &localServer{path: path, guard: guard, listening: listening}
 	go func() {
 		<-ctx.Done()
-		_ = listening.Close()
-		_ = os.Remove(path)
+		_ = server.Close()
 	}()
+	return server, nil
+}
 
+func (s *localServer) Close() error {
+	s.once.Do(func() {
+		closeErr := s.listening.Close()
+		if errors.Is(closeErr, net.ErrClosed) {
+			closeErr = nil
+		}
+		removeErr := os.Remove(s.path)
+		if errors.Is(removeErr, os.ErrNotExist) {
+			removeErr = nil
+		}
+		s.err = errors.Join(closeErr, removeErr, s.guard.Close())
+	})
+	return s.err
+}
+
+// hostLocal listens for whatever on this machine wants to act as this node.
+func hostLocal(ctx context.Context, server *localServer, casts *castHost, shares *shareHost, put *mountHost, offers *pairHost, held *dial.Kept) error {
 	var waiting time.Duration
 	connections := make(chan struct{}, maxLocalConnections)
 
 	for {
-		conn, err := listening.Accept()
+		conn, err := server.listening.Accept()
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
 
 			if waiting == 0 {
-				fmt.Fprintf(os.Stderr, "drop: cannot accept on %s: %v\n", path, err)
+				fmt.Fprintf(os.Stderr, "drop: cannot accept on %s: %v\n", server.path, err)
 			}
 			waiting = nextAcceptWait(waiting)
 			if !waitForAcceptRetry(ctx, waiting) {
@@ -476,7 +500,7 @@ func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 		}
 
 		if waiting != 0 {
-			fmt.Fprintf(os.Stderr, "drop: accepting on %s again\n", path)
+			fmt.Fprintf(os.Stderr, "drop: accepting on %s again\n", server.path)
 			waiting = 0
 		}
 

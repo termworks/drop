@@ -94,6 +94,19 @@ func runServe(parent context.Context, quiet bool) error {
 		return err
 	}
 	defer func() { _ = n.Close() }()
+	if !n.Own() {
+		return fmt.Errorf("cannot serve: %s", n.Trouble())
+	}
+
+	local, err := openLocalServer(ctx)
+	if err != nil {
+		return fmt.Errorf("starting the local control socket: %w", err)
+	}
+	defer func() {
+		if err := local.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "drop: closing the local control socket: %v\n", err)
+		}
+	}()
 
 	startRendezvous(ctx, n)
 
@@ -140,8 +153,8 @@ func runServe(parent context.Context, quiet bool) error {
 	put := newMountHost(cfg.Mounts, known)
 	offers := newPairHost(n)
 	go func() {
-		if err := hostLocal(ctx, casts, shares, put, offers, held); err != nil {
-			fmt.Fprintf(os.Stderr, "drop: casts unavailable: %v\n", err)
+		if err := hostLocal(ctx, local, casts, shares, put, offers, held); err != nil {
+			fmt.Fprintf(os.Stderr, "drop: local control unavailable: %v\n", err)
 		}
 	}()
 
@@ -282,16 +295,6 @@ func describe(cfg *conf.Config, known *arch.Registry, n *node.Node, skipped []ma
 		fmt.Println("  findable from other networks")
 	} else {
 		fmt.Println("  local networks only  (drop.rendezvous = true to be findable elsewhere)")
-	}
-
-	// A second drop on this machine already has the port this identity is reached at. This one can
-	// still ask questions, but nothing dialling the identity arrives here — it arrives there, which
-	// looks from the outside like this node answering with whatever that one happens to be running.
-	if !n.Own() {
-		fmt.Println()
-		fmt.Println("  ✗ another drop on this machine holds this identity's port")
-		fmt.Println("    nothing that dials this device will reach this process.")
-		fmt.Println("    stop the other one first:  pkill drop")
 	}
 
 	fmt.Println("\nready; ctrl-c to stop")

@@ -286,6 +286,98 @@ func TestOnlyOneLocalServerOwnsTheSocket(t *testing.T) {
 	}
 }
 
+func TestLocalServerOwnsAndCleansUpItsSocket(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	runtime, err := os.MkdirTemp("/tmp", "drop-local-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtime) })
+	t.Setenv("XDG_RUNTIME_DIR", runtime)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	server, err := openLocalServer(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, err := os.Stat(server.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat.Mode().Perm() != 0o600 || stat.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("local socket mode = %v", stat.Mode())
+	}
+	if second, err := openLocalServer(ctx); err == nil {
+		_ = second.Close()
+		t.Fatal("a second local server opened the same socket")
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatalf("closing twice: %v", err)
+	}
+	if _, err := os.Stat(server.path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("closed server left its socket: %v", err)
+	}
+
+	again, err := openLocalServer(ctx)
+	if err != nil {
+		t.Fatalf("reopening after close: %v", err)
+	}
+	cancel()
+	deadline := time.Now().Add(time.Second)
+	for {
+		_, statErr := os.Stat(again.path)
+		if errors.Is(statErr, os.ErrNotExist) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("canceled server left its socket: %v", statErr)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := again.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServeRefusesAnUnavailableLocalSocket(t *testing.T) {
+	config := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", config)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	runtime, err := os.MkdirTemp("/tmp", "drop-local-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtime) })
+	t.Setenv("XDG_RUNTIME_DIR", runtime)
+	t.Setenv("DROP_PORT", "0")
+	if err := os.MkdirAll(filepath.Join(config, "drop"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := "local drop = require(\"drop\")\ndrop.mount(\"/chat\", { type = \"chat\" })\n"
+	if err := os.WriteFile(filepath.Join(config, "drop", "init.lua"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := castSocket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard, err := localGuard(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = guard.Close() }()
+
+	err = runServe(t.Context(), true)
+	if err == nil || !strings.Contains(err.Error(), "starting the local control socket") {
+		t.Fatalf("runServe() = %v", err)
+	}
+}
+
 func TestAcceptFailuresBackOffToTheLimit(t *testing.T) {
 	waiting := time.Duration(0)
 	want := []time.Duration{
