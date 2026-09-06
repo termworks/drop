@@ -65,6 +65,7 @@ func Take(conn *wire.Conn, from node.ID, store func(node.ID, convo.Message) erro
 
 	var stored []string
 	seen := 0
+	weight := 0
 	seenIDs := make(map[string]bool)
 
 	for {
@@ -78,6 +79,10 @@ func Take(conn *wire.Conn, from node.ID, store func(node.ID, convo.Message) erro
 			seen++
 			if seen > MaxBatch {
 				return fmt.Errorf("%s sent more than %d messages in one session", from, MaxBatch)
+			}
+			weight += len(body)
+			if weight > MaxBatchBytes {
+				return fmt.Errorf("%s sent more than %d bytes of messages in one session", from, MaxBatchBytes)
 			}
 			m, err := convo.Decode(body)
 			if err != nil {

@@ -36,7 +36,7 @@ type Caught struct {
 	Sent  int
 	Taken int
 	// Refused is how many arrived and were not written down: from somebody the access rule does not
-	// admit, made after one of those, past what a meeting carries, or refused by the history itself.
+	// admit, made after one of those, or refused by the history itself.
 	Refused int
 	// More says one side had more than a meeting carries, so there is another one worth having.
 	More bool
@@ -145,7 +145,7 @@ func send(conn *wire.Conn, l *history.Log, theirs []history.ID) (int, bool, erro
 // take reads what the far end sends and writes down what may be written down.
 //
 // A change that cannot be taken is passed over rather than ending the meeting: somebody the rule
-// does not admit, one the history refuses, one past what a meeting carries. The rest of what
+// does not admit, or one the history refuses. The rest of what
 // arrived is nobody else's fault, and the sender is very often a peer honestly relaying what a
 // third machine gave it. Anything made after one that was passed over is passed over too, because
 // a change cannot be placed in an order without what it names.
@@ -168,6 +168,9 @@ func take(conn *wire.Conn, l *history.Log, admits func(author string) bool, out 
 				return taken, fmt.Errorf("more than %d changes in one meeting", MaxChanges)
 			}
 			weight += len(body)
+			if weight > MaxBytes {
+				return taken, fmt.Errorf("more than %d bytes of changes in one meeting", MaxBytes)
+			}
 
 			c, err := history.Decode(body)
 			if err != nil {
@@ -179,10 +182,7 @@ func take(conn *wire.Conn, l *history.Log, admits func(author string) bool, out 
 			if l.Has(c.ID()) {
 				continue
 			}
-			if weight > MaxBytes {
-				out.More = true
-			}
-			if admits == nil || !admits(c.Author) || behind(over, c.Heads) || weight > MaxBytes {
+			if admits == nil || !admits(c.Author) || behind(over, c.Heads) {
 				over[c.ID()] = true
 				out.Refused++
 				continue

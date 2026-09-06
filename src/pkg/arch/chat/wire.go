@@ -7,9 +7,12 @@ import (
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
-// MaxBatch caps how many messages one session may carry, so a peer cannot make the receiver hold an
-// unbounded queue in memory.
-const MaxBatch = 4096
+const (
+	// MaxBatch caps how many messages one session may carry.
+	MaxBatch = 4096
+	// MaxBatchBytes caps their encoded size.
+	MaxBatchBytes = 16 << 20
+)
 
 // Send delivers a batch on an opened namespace and returns the ids the far end stored. Anything not
 // in that list stays in the outbox, so a partial delivery is retried rather than lost.
@@ -18,6 +21,8 @@ func Send(conn *wire.Conn, batch []convo.Message) ([]string, error) {
 		return nil, fmt.Errorf("sending %d messages, over the %d limit", len(batch), MaxBatch)
 	}
 	waiting := make(map[string]bool, len(batch))
+	encoded := make([][]byte, 0, len(batch))
+	weight := 0
 	for _, m := range batch {
 		if m.ID == "" {
 			return nil, fmt.Errorf("sending a message with no id")
@@ -26,9 +31,18 @@ func Send(conn *wire.Conn, batch []convo.Message) ([]string, error) {
 			return nil, fmt.Errorf("sending message %s twice in one batch", m.ID)
 		}
 		waiting[m.ID] = true
+		body := m.Encode()
+		if len(body) > convo.MaxPacked {
+			return nil, fmt.Errorf("message %s is %d bytes, over the %d limit", m.ID, len(body), convo.MaxPacked)
+		}
+		weight += len(body)
+		if weight > MaxBatchBytes {
+			return nil, fmt.Errorf("sending %d bytes of messages, over the %d limit", weight, MaxBatchBytes)
+		}
+		encoded = append(encoded, body)
 	}
-	for _, m := range batch {
-		if err := conn.WriteFrame(wire.KindItem, m.Encode()); err != nil {
+	for _, body := range encoded {
+		if err := conn.WriteFrame(wire.KindItem, body); err != nil {
 			return nil, err
 		}
 	}

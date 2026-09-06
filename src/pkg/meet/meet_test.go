@@ -1,6 +1,7 @@
 package meet
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
@@ -306,6 +307,25 @@ func TestHeadsWithTrailingBytesAreRefused(t *testing.T) {
 
 	if _, err := readHeads(wire.NewConn(here)); err == nil {
 		t.Fatal("readHeads() accepted trailing bytes")
+	}
+}
+
+func TestMeetingChangeBytesAreBounded(t *testing.T) {
+	asSomebody(t)
+	change := signed(t, strings.Repeat("x", history.MaxBody-1024))
+	raw := change.Encode()
+
+	var sent bytes.Buffer
+	writing := wire.NewConn(&sent)
+	for total := 0; total <= MaxBytes; total += len(raw) {
+		if err := writing.WriteFrame(wire.KindItem, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var caught Caught
+	if _, err := take(wire.NewConn(&sent), aLog(t), anybody, &caught); err == nil || !strings.Contains(err.Error(), "bytes of changes") {
+		t.Fatalf("oversized meeting ended as %v", err)
 	}
 }
 

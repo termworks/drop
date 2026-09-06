@@ -74,6 +74,28 @@ func TestSendRefusesAnOversizedBatchBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestMessageBatchBytesAreBounded(t *testing.T) {
+	body := strings.Repeat("x", convo.MaxBody)
+	count := MaxBatchBytes/convo.MaxBody + 1
+	batch := make([]convo.Message, count)
+	for i := range batch {
+		batch[i] = convo.Message{ID: fmt.Sprintf("message-%d", i), Body: body}
+	}
+
+	var stream bytes.Buffer
+	if _, err := Send(wire.NewConn(readWriter{&stream, &stream}), batch); err == nil {
+		t.Fatal("Send() accepted an oversized message payload")
+	}
+	if stream.Len() != 0 {
+		t.Fatalf("Send() wrote %d bytes before rejecting the payload", stream.Len())
+	}
+
+	in := messageFrames(t, batch, int64(len(batch)))
+	if err := Take(wire.NewConn(readWriter{in, &bytes.Buffer{}}), node.ID{}, func(node.ID, convo.Message) error { return nil }); err == nil {
+		t.Fatal("Take() accepted an oversized message payload")
+	}
+}
+
 func TestReceiptRefusesTrailingBytes(t *testing.T) {
 	body := append(encodeStored([]string{"one"}), 0)
 	if _, err := decodeStored(body); err == nil {
