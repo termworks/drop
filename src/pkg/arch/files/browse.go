@@ -93,6 +93,7 @@ type Given struct {
 	At int64
 	// Progress, when set, is called as the bytes move.
 	Progress func(name string, done, total int64)
+	check    func() error
 }
 
 // Get reads one file out of the namespace and writes it to a local path, carrying on from whatever
@@ -133,7 +134,7 @@ func (b *Browsing) Put(name string, body io.Reader, g Given) error {
 	if len(got.Entries) != 0 {
 		return fmt.Errorf("writing %s: the answer carries unexpected file entries", shown(name))
 	}
-	return sendBody(b.conn, body, path.Base(name), g.Size, 0, g.Progress)
+	return sendBodyChecked(b.conn, body, path.Base(name), g.Size, 0, g.Progress, g.check)
 }
 
 // Replace writes one file over the version already at that name.
@@ -152,7 +153,7 @@ func (b *Browsing) Replace(name string, body io.Reader, was []byte, g Given) err
 	if len(got.Entries) != 0 {
 		return fmt.Errorf("replacing %s: the answer carries unexpected file entries", shown(name))
 	}
-	return sendBody(b.conn, body, path.Base(name), g.Size, 0, g.Progress)
+	return sendBodyChecked(b.conn, body, path.Base(name), g.Size, 0, g.Progress, g.check)
 }
 
 // PutFile writes one file from this disk into the namespace.
@@ -163,7 +164,7 @@ func (b *Browsing) PutFile(name, from string, progress func(name string, done, t
 	}
 	defer func() { _ = file.Close() }()
 
-	return b.Put(name, file, given(stat, progress))
+	return b.Put(name, file, given(file, stat, from, progress))
 }
 
 // ReplaceFile writes one file from this disk over the version already at a name.
@@ -174,7 +175,7 @@ func (b *Browsing) ReplaceFile(name, from string, was []byte, progress func(name
 	}
 	defer func() { _ = file.Close() }()
 
-	return b.Replace(name, file, was, given(stat, progress))
+	return b.Replace(name, file, was, given(file, stat, from, progress))
 }
 
 // lifted opens a file on this disk and weighs it.
@@ -197,12 +198,13 @@ func lifted(from string) (*os.File, os.FileInfo, error) {
 }
 
 // given is what to say about a file on this disk that is about to be written elsewhere.
-func given(stat os.FileInfo, progress func(name string, done, total int64)) Given {
+func given(file *os.File, stat os.FileInfo, from string, progress func(name string, done, total int64)) Given {
 	return Given{
 		Size:     stat.Size(),
 		Mode:     uint32(stat.Mode().Perm()),
 		At:       stat.ModTime().UnixNano(),
 		Progress: progress,
+		check:    func() error { return steadyFile(file, stat, from) },
 	}
 }
 

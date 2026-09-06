@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +18,88 @@ import (
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
+
+type emptyReader struct{}
+
+func (emptyReader) Read([]byte) (int, error) { return 0, nil }
+
+func TestASourceThatMakesNoProgressIsStopped(t *testing.T) {
+	var sent bytes.Buffer
+	err := sendBody(wire.NewConn(readWriter{Reader: &bytes.Buffer{}, Writer: &sent}), emptyReader{}, "stuck", wire.SizeUnknown, 0, nil)
+	if !errors.Is(err, io.ErrNoProgress) {
+		t.Fatalf("a stuck source returned %v", err)
+	}
+	if sent.Len() != 0 {
+		t.Fatalf("a stuck source sent %d bytes", sent.Len())
+	}
+}
+
+func changing(path string) (func(string, int64, int64), <-chan error) {
+	var once sync.Once
+	changed := make(chan error, 1)
+	progress := func(string, int64, int64) {
+		once.Do(func() {
+			file, err := os.OpenFile(path, os.O_WRONLY, 0)
+			if err == nil {
+				_, err = file.WriteAt([]byte("x"), 0)
+			}
+			if file != nil {
+				if closeErr := file.Close(); err == nil {
+					err = closeErr
+				}
+			}
+			if err == nil {
+				when := time.Now().Add(time.Hour)
+				err = os.Chtimes(path, when, when)
+			}
+			changed <- err
+		})
+	}
+	return progress, changed
+}
+
+func TestAChangingPutFileIsNotAccepted(t *testing.T) {
+	from := filepath.Join(t.TempDir(), "source")
+	if err := os.WriteFile(from, bytes.Repeat([]byte("a"), wire.DataChunk*2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	progress, changed := changing(from)
+	dir := t.TempDir()
+	b := opened(t, dir, true, Into{})
+
+	err := b.PutFile("copy", from, progress)
+	if changeErr := <-changed; changeErr != nil {
+		t.Fatal(changeErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "changed while being sent") {
+		t.Fatalf("PutFile() returned %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "copy")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the changing file landed: %v", statErr)
+	}
+}
+
+func TestAChangingGetSourceIsNotAccepted(t *testing.T) {
+	dir := t.TempDir()
+	from := filepath.Join(dir, "source")
+	if err := os.WriteFile(from, bytes.Repeat([]byte("a"), wire.DataChunk*2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	progress, changed := changing(from)
+	b := opened(t, dir, false, Into{Progress: progress})
+	into := filepath.Join(t.TempDir(), "copy")
+
+	err := b.Get("source", into, Want{})
+	if changeErr := <-changed; changeErr != nil {
+		t.Fatal(changeErr)
+	}
+	if err == nil {
+		t.Fatal("Get() accepted a changing source")
+	}
+	if _, statErr := os.Stat(into); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the changing file landed: %v", statErr)
+	}
+}
 
 // What a folder kept level on two machines needs of a directory, and what it did not have.
 //

@@ -139,7 +139,9 @@ func (f *Files) handGet(conn *wire.Conn, dir *os.Root, name string, q request) e
 	if err := conn.WriteFrame(wire.KindReply, said.encode()); err != nil {
 		return err
 	}
-	return sendBody(conn, file, path.Base(name), open.Size(), q.From, f.into.Progress)
+	return sendBodyChecked(conn, file, path.Base(name), open.Size(), q.From, f.into.Progress, func() error {
+		return steadyFile(file, open, name)
+	})
 }
 
 // handPut answers a put and then takes the file in.

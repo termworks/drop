@@ -25,6 +25,18 @@ import (
 // from is how much of the item the far end already holds. Everything is read and weighed, so the
 // size and the digest are the whole item's, and only what the far end is missing goes on the wire.
 func sendBody(conn *wire.Conn, body io.Reader, name string, size, from int64, progress func(string, int64, int64)) error {
+	return sendBodyChecked(conn, body, name, size, from, progress, nil)
+}
+
+func sendBodyChecked(
+	conn *wire.Conn,
+	body io.Reader,
+	name string,
+	size, from int64,
+	progress func(string, int64, int64),
+	check func() error,
+) error {
+	body = &progressReader{Reader: body}
 	digest := blake3.New(32, nil)
 	buf := make([]byte, wire.DataChunk)
 	read := int64(0)
@@ -63,6 +75,9 @@ func sendBody(conn *wire.Conn, body io.Reader, name string, size, from int64, pr
 	if localErr == nil && size != wire.SizeUnknown && read != size {
 		localErr = fmt.Errorf("%s has %d bytes, while %d were announced", name, read, size)
 	}
+	if localErr == nil && check != nil {
+		localErr = check()
+	}
 
 	endDigest := digest.Sum(nil)
 	if localErr != nil {
@@ -92,6 +107,40 @@ func sendBody(conn *wire.Conn, body io.Reader, name string, size, from int64, pr
 	}
 	return nil
 }
+
+type progressReader struct {
+	io.Reader
+	emptyReads int
+}
+
+func (r *progressReader) Read(buf []byte) (int, error) {
+	n, err := r.Reader.Read(buf)
+	if n > 0 {
+		r.emptyReads = 0
+		return n, err
+	}
+	if err == nil {
+		r.emptyReads++
+		if r.emptyReads >= maxConsecutiveEmptyReads {
+			return 0, io.ErrNoProgress
+		}
+	}
+	return n, err
+}
+
+func steadyFile(file *os.File, before os.FileInfo, name string) error {
+	after, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("checking %s after it was sent: %w", name, err)
+	}
+	if !os.SameFile(before, after) || before.Size() != after.Size() ||
+		!before.ModTime().Equal(after.ModTime()) || before.Mode().Perm() != after.Mode().Perm() {
+		return fmt.Errorf("%s changed while being sent", name)
+	}
+	return nil
+}
+
+const maxConsecutiveEmptyReads = 100
 
 // arriving is a part file being filled: where it waits, how much of the item is already in it, and
 // whether it is worth keeping when something goes wrong.
