@@ -35,7 +35,7 @@ func TestNoSequenceCostsMoreThanItsLength(t *testing.T) {
 		_, _ = s.Write([]byte(out))
 		took := time.Since(start)
 
-		if took > 250*time.Millisecond {
+		if took > 250*time.Millisecond*raceSlowdown {
 			t.Errorf("%s: %d bytes took %v", what, len(out), took)
 		} else {
 			t.Logf("%-24s %7d bytes  %v", what, len(out), took)
