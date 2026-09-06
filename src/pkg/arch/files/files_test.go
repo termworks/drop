@@ -991,6 +991,58 @@ func TestScanNoticesAReplacementWithMatchingMetadata(t *testing.T) {
 	}
 }
 
+func TestScanRefusesHardLinks(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(outside, filepath.Join(dir, "linked")); err != nil {
+		t.Skipf("hard links are unavailable: %v", err)
+	}
+
+	got, err := scan(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["linked"]; ok {
+		t.Fatal("a hard link was included in a shared folder")
+	}
+}
+
+func TestScanRefusesSparseFiles(t *testing.T) {
+	dir := t.TempDir()
+	at := filepath.Join(dir, "sparse")
+	if err := os.WriteFile(at, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(at, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasHole, err := sparse(file, 1<<20)
+	if closeErr := file.Close(); err == nil && closeErr != nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasHole {
+		t.Skip("filesystem does not expose sparse extents")
+	}
+
+	got, err := scan(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["sparse"]; ok {
+		t.Fatal("a sparse file was included in a shared folder")
+	}
+}
+
 // A pipe under a name is answered, not waited on: an open that waits for a writer has no deadline
 // and nothing to end it.
 func TestAPipeUnderANameIsNotWaitedOn(t *testing.T) {

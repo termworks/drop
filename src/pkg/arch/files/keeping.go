@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -415,6 +416,9 @@ func scan(dir string, was map[string]mark) (map[string]mark, error) {
 		if err != nil {
 			return nil
 		}
+		if !singleLinked(stat) {
+			return nil
+		}
 		m := mark{Size: stat.Size(), At: stat.ModTime().UnixNano(), Exec: stat.Mode().Perm()&0o111 != 0, File: stat}
 		if held, knew := was[rel]; knew && held.File != nil && os.SameFile(held.File, stat) && held.Size == m.Size && held.At == m.At {
 			m.Sum = held.Sum
@@ -598,7 +602,43 @@ func openRegular(at string) (*os.File, os.FileInfo, error) {
 		_ = file.Close()
 		return nil, nil, errors.New("it is not a regular file")
 	}
+	if !singleLinked(stat) {
+		_ = file.Close()
+		return nil, nil, errors.New("it has more than one hard link")
+	}
+	hasHole, err := sparse(file, stat.Size())
+	if err != nil {
+		_ = file.Close()
+		return nil, nil, err
+	}
+	if hasHole {
+		_ = file.Close()
+		return nil, nil, errors.New("it is sparse")
+	}
 	return file, stat, nil
+}
+
+func singleLinked(stat os.FileInfo) bool {
+	raw, ok := stat.Sys().(*syscall.Stat_t)
+	return !ok || raw.Nlink <= 1
+}
+
+func sparse(file *os.File, size int64) (bool, error) {
+	if size <= 0 {
+		return false, nil
+	}
+	hole, err := unix.Seek(int(file.Fd()), 0, unix.SEEK_HOLE)
+	switch {
+	case err == nil:
+		if _, err := unix.Seek(int(file.Fd()), 0, unix.SEEK_SET); err != nil {
+			return false, err
+		}
+		return hole < size, nil
+	case errors.Is(err, unix.EINVAL), errors.Is(err, unix.ENOTSUP), errors.Is(err, unix.ENXIO):
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 func stillCurrent(at string, file *os.File, before os.FileInfo) error {
