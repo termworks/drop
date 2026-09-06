@@ -15,6 +15,7 @@ import (
 	"lukechampine.com/blake3"
 
 	"github.com/bresilla/drop/src/pkg/arch"
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -137,6 +138,11 @@ func (f *Files) handPut(conn *wire.Conn, at arch.Session, dir *os.Root, name str
 	if reason := roomFor(dir, name); reason != "" {
 		return refuse(reason)
 	}
+	if q.Size != wire.SizeUnknown {
+		if err := keep.RoomIn(dir, q.Size); err != nil {
+			return refuse("not enough free space")
+		}
+	}
 	if err := conn.WriteFrame(wire.KindReply, reply{OK: true}.encode()); err != nil {
 		return err
 	}
@@ -163,6 +169,11 @@ func (f *Files) handReplace(conn *wire.Conn, at arch.Session, dir *os.Root, name
 
 	if reason := roomFor(dir, name); reason != "" {
 		return refuse(reason)
+	}
+	if q.Size != wire.SizeUnknown {
+		if err := keep.RoomIn(dir, q.Size); err != nil {
+			return refuse("not enough free space")
+		}
 	}
 	if reason := standing(dir, name, q.Sum); reason != "" {
 		return refuse(reason)

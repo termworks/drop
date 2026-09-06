@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"github.com/tmc/go-iroh/key"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"lukechampine.com/blake3"
@@ -241,6 +243,29 @@ func TestAnOfferCannotUseAnInvalidUnknownSize(t *testing.T) {
 	}
 	if len(left) != 0 {
 		t.Fatalf("the refused offer left %d files", len(left))
+	}
+}
+
+func TestAnOfferLargerThanFreeSpaceIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	item := Item{Name: "too-large", Size: math.MaxInt64}
+
+	out, err := taking(t, dir, []Item{item}, spoken(t), nil)
+	if err == nil || !strings.Contains(err.Error(), "stay free") {
+		t.Fatalf("the oversized offer was answered with %v", err)
+	}
+
+	conn := wire.NewConn(readWriter{out, &bytes.Buffer{}})
+	kind, body, err := conn.ReadFrame()
+	if err != nil {
+		t.Fatalf("reading the refusal: %v", err)
+	}
+	if kind != wire.KindReject {
+		t.Fatalf("answered with frame kind %d, expected a reject", kind)
+	}
+	reject, err := wire.DecodeReject(body)
+	if err != nil || !strings.Contains(reject.Reason, "free space") {
+		t.Fatalf("the refusal says %q (%v)", reject.Reason, err)
 	}
 }
 

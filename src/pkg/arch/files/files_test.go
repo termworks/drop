@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -231,6 +232,19 @@ func TestBrowseRefusesEveryWriteOnAReadOnlyMount(t *testing.T) {
 	}
 	if _, err := b.List(""); err != nil {
 		t.Fatalf("List() after four refusals: %v", err)
+	}
+}
+
+func TestBrowseRefusesAnUploadLargerThanFreeSpace(t *testing.T) {
+	dir := t.TempDir()
+	b := opened(t, dir, true, Into{})
+
+	err := b.Put("too-large", strings.NewReader(""), Given{Size: math.MaxInt64, Mode: 0o600})
+	if err == nil || !strings.Contains(err.Error(), "free space") {
+		t.Fatalf("the oversized upload was answered with %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "too-large")); !os.IsNotExist(err) {
+		t.Fatalf("the refused upload left a file: %v", err)
 	}
 }
 

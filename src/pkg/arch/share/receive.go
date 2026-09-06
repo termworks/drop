@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"lukechampine.com/blake3"
 
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
@@ -115,6 +117,22 @@ func receive(conn *wire.Conn, into string, from node.ID, hooks Into) error {
 			picked.At[i] = stat.Size()
 		}
 	}
+	want := int64(0)
+	for i, item := range out.Items {
+		if !item.Known() {
+			continue
+		}
+		left := item.Size - picked.At[i]
+		if left > math.MaxInt64-want {
+			want = math.MaxInt64
+			break
+		}
+		want += left
+	}
+	if err := keep.RoomIn(dir, want); err != nil {
+		_ = refuse("not enough free space")
+		return fmt.Errorf("receiving from %s: %w", node.Brief(from), err)
+	}
 	if err := conn.WriteFrame(wire.KindAccept, picked.encode()); err != nil {
 		return err
 	}
@@ -183,6 +201,7 @@ func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64
 	// knew when it started.
 	got := at
 	overrun := false
+	noRoom := false
 	buf := make([]byte, wire.DataChunk)
 
 	for {
@@ -200,6 +219,11 @@ func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64
 			if err != nil {
 				return err
 			}
+			if noRoom {
+				_ = dir.Remove(part)
+				_ = conn.WriteFrame(wire.KindAck, wire.Ack{Reason: "not enough free space"}.Encode())
+				return fmt.Errorf("%s: not enough free space", name)
+			}
 			return finishOne(conn, dir, from, item, name, part, out, digest, got, end, hooks)
 		}
 		if kind != wire.KindData {
@@ -211,6 +235,15 @@ func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64
 		}
 		if overrun || item.Known() && int64(size) > item.Size-got {
 			overrun = true
+			got += int64(size)
+			continue
+		}
+		if noRoom {
+			got += int64(size)
+			continue
+		}
+		if err := keep.Room(out, int64(size)); err != nil {
+			noRoom = true
 			got += int64(size)
 			continue
 		}

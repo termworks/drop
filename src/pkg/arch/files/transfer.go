@@ -15,6 +15,7 @@ import (
 
 	"lukechampine.com/blake3"
 
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -262,6 +263,7 @@ func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, nam
 	buf := make([]byte, wire.DataChunk)
 	got := a.have
 	overrun := false
+	noRoom := false
 
 	for {
 		kind, length, err := conn.ReadHeader()
@@ -280,6 +282,9 @@ func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, nam
 			}
 			if overrun {
 				return 0, fmt.Sprintf("sent more than the announced %d bytes", size), nil
+			}
+			if noRoom {
+				return 0, "not enough free space", nil
 			}
 			if got != end.Size {
 				return 0, fmt.Sprintf("arrived as %d bytes, sender counted %d", got, end.Size), nil
@@ -301,6 +306,15 @@ func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, nam
 		}
 		if overrun || size != wire.SizeUnknown && int64(length) > size-got {
 			overrun = true
+			got += int64(length)
+			continue
+		}
+		if noRoom {
+			got += int64(length)
+			continue
+		}
+		if err := keep.Room(out, int64(length)); err != nil {
+			noRoom = true
 			got += int64(length)
 			continue
 		}
