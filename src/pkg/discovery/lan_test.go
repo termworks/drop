@@ -82,6 +82,21 @@ func TestAnnounceRefusesAnAbsurdCount(t *testing.T) {
 	}
 }
 
+func TestAnnounceWritesOnlyWhatItsReaderAccepts(t *testing.T) {
+	all := make([]netip.AddrPort, maxAddrs+10)
+	for i := range all {
+		all[i] = netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, byte(i / 256), byte(i + 1)}), 47777)
+	}
+
+	_, got, ok := decodeAnnounce(encodeAnnounce("an-id", all))
+	if !ok {
+		t.Fatal("encodeAnnounce() wrote a packet its reader refused")
+	}
+	if len(got) != maxAddrs {
+		t.Fatalf("announcement has %d addresses, want %d", len(got), maxAddrs)
+	}
+}
+
 func TestAnnounceRefusesTrailingBytes(t *testing.T) {
 	body := append(encodeAnnounce("an-id", addrs(t, "192.168.1.10:47901")), 0)
 	if _, _, ok := decodeAnnounce(body); ok {

@@ -260,6 +260,9 @@ func encodeAnnounce(id string, addrs []netip.AddrPort) []byte {
 	if len(addrs) == 0 {
 		return nil
 	}
+	if len(addrs) > maxAddrs {
+		addrs = addrs[:maxAddrs]
+	}
 
 	w := wire.NewWriter()
 	w.String(Magic)

@@ -70,6 +70,22 @@ func TestPairMsgRoundTripsWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestPairMsgWritesOnlyWhatItsReaderAccepts(t *testing.T) {
+	addrs := make([]string, maxPairAddrs+10)
+	for i := range addrs {
+		addrs[i] = "192.168.1.1:47777"
+	}
+	want := pairMsg{From: "who", Name: "n", Addrs: addrs, Nonce: bytes.Repeat([]byte{1}, nonceBytes)}
+
+	got, err := decodePairMsg(want.encode())
+	if err != nil {
+		t.Fatalf("decodePairMsg(): %v", err)
+	}
+	if len(got.Addrs) != maxPairAddrs {
+		t.Fatalf("pairing message has %d addresses, want %d", len(got.Addrs), maxPairAddrs)
+	}
+}
+
 // Both sides must derive the same secret whichever direction they see the exchange from.
 func TestDeriveSecretIsSymmetric(t *testing.T) {
 	a, b := testEndpointID(t, 1), testEndpointID(t, 2)

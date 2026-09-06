@@ -22,6 +22,9 @@ const SecretBytes = 32
 // nonceBytes is each side's contribution to the derivation.
 const nonceBytes = 32
 
+// maxPairAddrs is how many direct addresses one pairing message carries.
+const maxPairAddrs = 32
+
 // mostName is as long a name as a far end may suggest for itself. It becomes a key in the address
 // book and something a person types, not somewhere to put a paragraph.
 const mostName = 64
@@ -45,8 +48,12 @@ func (m pairMsg) encode() []byte {
 	w.String(m.From)
 	w.String(m.Name)
 	w.Bytes(m.Proof)
-	w.Uint(uint64(len(m.Addrs)))
-	for _, a := range m.Addrs {
+	addrs := m.Addrs
+	if len(addrs) > maxPairAddrs {
+		addrs = addrs[:maxPairAddrs]
+	}
+	w.Uint(uint64(len(addrs)))
+	for _, a := range addrs {
 		w.String(a)
 	}
 	w.Bytes(m.Nonce)
@@ -79,7 +86,7 @@ func decodePairMsg(body []byte) (pairMsg, error) {
 	if err != nil {
 		return out, err
 	}
-	if count > 32 {
+	if count > maxPairAddrs {
 		return out, fmt.Errorf("a pairing message claims %d addresses", count)
 	}
 	for i := uint64(0); i < count; i++ {
