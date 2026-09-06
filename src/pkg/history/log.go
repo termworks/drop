@@ -11,6 +11,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/keep"
@@ -533,15 +536,30 @@ func sameRevision(left, right os.FileInfo) bool {
 // append writes one record and flushes it, so a change reported taken is on the disk rather than in
 // a buffer.
 func (l *Log) append(raw []byte) error {
-	file, err := os.OpenFile(l.file, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o600)
+	flags := os.O_WRONLY | os.O_APPEND | unix.O_NONBLOCK | unix.O_NOFOLLOW
+	file, err := os.OpenFile(l.file, flags|os.O_CREATE|os.O_EXCL, 0o600)
 	created := err == nil
 	if errors.Is(err, os.ErrExist) {
-		file, err = os.OpenFile(l.file, os.O_WRONLY|os.O_APPEND, 0o600)
+		file, err = os.OpenFile(l.file, flags, 0o600)
 	}
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", l.file, err)
 	}
 
+	stat, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return fmt.Errorf("stating %s: %w", l.file, err)
+	}
+	rawStat, _ := stat.Sys().(*syscall.Stat_t)
+	if !stat.Mode().IsRegular() || (rawStat != nil && rawStat.Nlink > 1) {
+		_ = file.Close()
+		return fmt.Errorf("writing %s: it is not one regular file", l.file)
+	}
+	if stat.Size() > MaxLog-int64(len(raw)) {
+		_ = file.Close()
+		return fmt.Errorf("writing %s: it would exceed the %d-byte limit", l.file, MaxLog)
+	}
 	if err := keep.Room(file, int64(len(raw))); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("reserving room in %s: %w", l.file, err)

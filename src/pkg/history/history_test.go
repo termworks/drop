@@ -641,6 +641,29 @@ func TestAnOversizedHistoryIsRejectedBeforeLoading(t *testing.T) {
 	}
 }
 
+func TestHistoryLogsRefuseHardLinks(t *testing.T) {
+	asSomebody(t)
+	l := aLog(t, thing)
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(outside, l.file); err != nil {
+		t.Skipf("hard links are unavailable: %v", err)
+	}
+
+	if _, err := l.Add(signed(t, "private")); err == nil {
+		t.Fatal("Add() wrote through a hard link")
+	}
+	stat, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat.Size() != 0 {
+		t.Fatalf("hard-link target changed to %d bytes", stat.Size())
+	}
+}
+
 // A thing is changed only so many ways at once. Past that another way is refused, because a log
 // with more heads than a meeting may name stops meeting anybody at all, in both directions and for
 // good — and its own machine stops being able to save, since a change names them all.
