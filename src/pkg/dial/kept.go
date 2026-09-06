@@ -266,16 +266,17 @@ func (k *Kept) Adopt(id node.ID, alpn string, conn *iroh.Conn) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
-	// Only when nothing is held. Two devices that can both dial will each open one, and replacing
-	// a working connection with the other side's would have them closing each other's every time
-	// round — which is a conversation that stops mid-sentence every few seconds.
-	//
-	// A connection that has stopped working is dropped when it is next used, so keeping the older
-	// one costs nothing but one failed stream.
-	if _, ok := k.open[key(id, alpn)]; ok {
-		return
+	at := key(id, alpn)
+	if was, ok := k.open[at]; ok {
+		select {
+		case <-was.Context().Done():
+			_ = was.Close()
+			delete(k.open, at)
+		default:
+			return
+		}
 	}
-	k.open[key(id, alpn)] = conn
+	k.open[at] = conn
 }
 
 // knows reports whether the address book has this device.

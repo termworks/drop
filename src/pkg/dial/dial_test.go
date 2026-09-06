@@ -30,6 +30,11 @@ type rendezvous struct {
 	asked chan struct{}
 }
 
+type acceptedConnection struct {
+	conn *iroh.Conn
+	err  error
+}
+
 func (r *rendezvous) Find(ctx context.Context, entry book.Entry) (netaddr.EndpointAddr, bool) {
 	select {
 	case r.asked <- struct{}{}:
@@ -118,4 +123,91 @@ func TestOnlyADeviceTheBookHasIsKept(t *testing.T) {
 	if len(held.open) != 1 {
 		t.Fatalf("a paired device's connection was not kept: %v", held.open)
 	}
+}
+
+func TestADeadHeldConnectionIsReplacedByAnArrival(t *testing.T) {
+	t.Setenv("DROP_PORT", "0")
+	wasRendezvous := node.Rendezvous()
+	node.SetRendezvous(false)
+	t.Cleanup(func() { node.SetRendezvous(wasRendezvous) })
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	remote, err := node.Start(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := remote.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	local, err := node.Start(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := local.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	pinned, err := book.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned.Pair("remote", remote.ID(), testSharedSecret())
+	if err := pinned.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	held := Hold(nil, nil, nil)
+	firstDial, firstArrival := connectNodes(t, remote, local)
+	held.Adopt(remote.ID(), node.ALPNSession, firstArrival)
+	if err := firstDial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-firstArrival.Context().Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("closed connection remained live")
+	}
+
+	secondDial, secondArrival := connectNodes(t, remote, local)
+	t.Cleanup(func() {
+		_ = secondDial.Close()
+		_ = secondArrival.Close()
+	})
+	held.Adopt(remote.ID(), node.ALPNSession, secondArrival)
+	if held.open[key(remote.ID(), node.ALPNSession)] != secondArrival {
+		t.Fatal("a fresh arrival did not replace the dead held connection")
+	}
+}
+
+func connectNodes(t *testing.T, from, to *node.Node) (*iroh.Conn, *iroh.Conn) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	accepted := make(chan acceptedConnection, 1)
+	go func() {
+		conn, err := to.Accept(ctx)
+		accepted <- acceptedConnection{conn: conn, err: err}
+	}()
+
+	dialed, err := from.Dial(ctx, to.Addr(), node.ALPNSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrival := <-accepted
+	if arrival.err != nil {
+		_ = dialed.Close()
+		t.Fatal(arrival.err)
+	}
+	return dialed, arrival.conn
+}
+
+func testSharedSecret() []byte {
+	return []byte("0123456789abcdef0123456789abcdef")
 }
