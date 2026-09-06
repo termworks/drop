@@ -170,6 +170,11 @@ the reader on a corrupt file.
 Small JSON state files are refused above 16 MiB, and an address book is capped at 256 peers. A
 corrupt file cannot turn a short local record into an unbounded map during startup.
 
+Conversation histories are capped at 4,096 peers, and their directory is read with a bounded
+iterator. New histories take a cross-process lock before checking the limit, so simultaneous
+senders cannot race past it. A peer history path that is a symlink or another non-directory object
+is refused rather than followed.
+
 The record beside a shared folder is different: it can legitimately describe 131,072 paths, each
 up to 1024 bytes. It is decoded and written as a stream instead of being held as a second complete
 copy in memory. The file size, path count, string tokens and numeric tokens are all capped before

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -41,6 +42,9 @@ type Store struct {
 // MaxLog is the largest conversation history or pending queue kept for one peer.
 const MaxLog int64 = 64 << 20
 
+// MaxConversations is how many peer histories may be kept on one account.
+const MaxConversations = 1 << 12
+
 // DataDir is $XDG_DATA_HOME/drop, or ~/.local/share/drop. Conversations are data, not settings, so
 // they do not live beside the config.
 func DataDir() (string, error) {
@@ -67,16 +71,20 @@ func Open(id node.ID) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(base, "convo", id.String())
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("creating %s: %w", dir, err)
+	root := filepath.Join(base, "convo")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, fmt.Errorf("creating %s: %w", root, err)
 	}
+	dir := filepath.Join(root, id.String())
 
 	open.Lock()
 	defer open.Unlock()
 
 	if s, ok := open.stores[dir]; ok {
 		return s, nil
+	}
+	if err := prepareConversation(root, dir, MaxConversations); err != nil {
+		return nil, err
 	}
 	s := &Store{
 		peer:    id,
@@ -89,6 +97,55 @@ func Open(id node.ID) (*Store, error) {
 	}
 	open.stores[dir] = s
 	return s, nil
+}
+
+func prepareConversation(root, dir string, most int) error {
+	return keep.While(filepath.Join(root, ".conversations"), func() error {
+		if stat, err := os.Lstat(dir); err == nil {
+			if !stat.IsDir() {
+				return fmt.Errorf("opening %s: it is not a directory", dir)
+			}
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("opening %s: %w", dir, err)
+		}
+
+		entries, err := readConversationEntries(root, most+2)
+		if err != nil {
+			return err
+		}
+		count := 0
+		for _, entry := range entries {
+			if entry.IsDir() {
+				count++
+			}
+		}
+		if count >= most {
+			return fmt.Errorf("there are already %d peer conversations", most)
+		}
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			return fmt.Errorf("creating %s: %w", dir, err)
+		}
+		return keep.SyncDir(root)
+	})
+}
+
+func readConversationEntries(root string, most int) ([]os.DirEntry, error) {
+	opened, err := os.Open(root)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = opened.Close() }()
+
+	entries, err := opened.ReadDir(most + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if len(entries) > most {
+		return nil, fmt.Errorf("conversation directory has more than %d entries", most)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	return entries, nil
 }
 
 // Peer is who this conversation is with.
@@ -459,7 +516,7 @@ func Peers() ([]node.ID, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(filepath.Join(base, "convo"))
+	entries, err := readConversationEntries(filepath.Join(base, "convo"), MaxConversations+2)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

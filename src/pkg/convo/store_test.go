@@ -2,9 +2,11 @@ package convo
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +36,80 @@ func openStore(t *testing.T) *Store {
 		t.Fatalf("Open(): %v", err)
 	}
 	return s
+}
+
+func TestConversationDirectoriesAreBounded(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"one", "two"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := prepareConversation(root, filepath.Join(root, "three"), 2); err == nil {
+		t.Fatal("a conversation was created past the directory limit")
+	}
+	if err := prepareConversation(root, filepath.Join(root, "one"), 2); err != nil {
+		t.Fatalf("an existing conversation was refused: %v", err)
+	}
+}
+
+func TestConversationDirectoryCannotBeASymlink(t *testing.T) {
+	root := t.TempDir()
+	target := t.TempDir()
+	link := filepath.Join(root, "peer")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := prepareConversation(root, link, 2); err == nil {
+		t.Fatal("a symlink was accepted as a conversation directory")
+	}
+}
+
+func TestConversationDirectoryLimitIsConcurrent(t *testing.T) {
+	root := t.TempDir()
+	const (
+		limit      = 8
+		contenders = 32
+	)
+
+	start := make(chan struct{})
+	results := make(chan error, contenders)
+	var waiting sync.WaitGroup
+	waiting.Add(contenders)
+	for i := range contenders {
+		go func() {
+			waiting.Done()
+			<-start
+			results <- prepareConversation(root, filepath.Join(root, fmt.Sprintf("peer-%d", i)), limit)
+		}()
+	}
+	waiting.Wait()
+	close(start)
+
+	created := 0
+	for range contenders {
+		if err := <-results; err == nil {
+			created++
+		}
+	}
+	if created != limit {
+		t.Fatalf("created %d conversation directories, want %d", created, limit)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directories := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			directories++
+		}
+	}
+	if directories != limit {
+		t.Fatalf("found %d conversation directories, want %d", directories, limit)
+	}
 }
 
 func queue(t *testing.T, s *Store, body string) Message {
