@@ -112,6 +112,7 @@ the session that started them.
 session ends. Before that, a command that left anything behind — a pipeline, a backgrounded job —
 left it holding the output pipe, and the copy waited on a read that never finished. Not when the
 peer hung up, not when the session ended, not at daemon shutdown.
+At most 16 stream commands run across the process; another stream is refused until one ends.
 
 `tty` is subtler and the fix is different. A shell with a terminal turns job control **on**, so
 anything a person backgrounds gets a process group of its own — a group kill cannot reach it. So
