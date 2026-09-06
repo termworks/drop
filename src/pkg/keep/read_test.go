@@ -1,8 +1,10 @@
 package keep
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,6 +45,25 @@ func TestReadFileInfoIdentifiesTheOpenedFile(t *testing.T) {
 	}
 	if string(raw) != "state" || !os.SameFile(info, current) {
 		t.Fatalf("ReadFileInfo() = %q, %v", raw, info)
+	}
+}
+
+func TestReadFileWithStreamsAndChecksTheWholeFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "state")
+	if err := os.WriteFile(file, []byte("streamed state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var head strings.Builder
+	info, err := ReadFileWith(file, 14, func(from io.Reader) error {
+		_, err := io.CopyN(&head, from, 8)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("ReadFileWith(): %v", err)
+	}
+	if head.String() != "streamed" || info.Size() != 14 {
+		t.Fatalf("ReadFileWith() read %q and reported %d bytes", head.String(), info.Size())
 	}
 }
 

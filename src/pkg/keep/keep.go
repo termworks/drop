@@ -15,6 +15,7 @@ package keep
 import (
 	"fmt"
 	"golang.org/x/sys/unix"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -24,6 +25,28 @@ import (
 // The scratch file is made by CreateTemp, which is 0600, so what is written is never briefly
 // readable by anybody else on the way in.
 func Replace(file string, raw []byte) error {
+	return replace(file, func(scratch *os.File) error {
+		if err := Room(scratch, int64(len(raw))); err != nil {
+			return fmt.Errorf("reserving room for %s: %w", file, err)
+		}
+		if _, err := scratch.Write(raw); err != nil {
+			return fmt.Errorf("writing %s: %w", scratch.Name(), err)
+		}
+		return nil
+	})
+}
+
+// ReplaceWith atomically replaces file with bytes written without first holding them all in memory.
+func ReplaceWith(file string, write func(io.Writer) error) error {
+	return replace(file, func(scratch *os.File) error {
+		if err := write(scratch); err != nil {
+			return fmt.Errorf("writing %s: %w", scratch.Name(), err)
+		}
+		return nil
+	})
+}
+
+func replace(file string, write func(*os.File) error) error {
 	dir := filepath.Dir(file)
 
 	scratch, err := os.CreateTemp(dir, filepath.Base(file)+".*")
@@ -33,13 +56,9 @@ func Replace(file string, raw []byte) error {
 	name := scratch.Name()
 	defer func() { _ = os.Remove(name) }()
 
-	if err := Room(scratch, int64(len(raw))); err != nil {
+	if err := write(scratch); err != nil {
 		_ = scratch.Close()
-		return fmt.Errorf("reserving room for %s: %w", file, err)
-	}
-	if _, err := scratch.Write(raw); err != nil {
-		_ = scratch.Close()
-		return fmt.Errorf("writing %s: %w", name, err)
+		return err
 	}
 	if err := scratch.Sync(); err != nil {
 		_ = scratch.Close()

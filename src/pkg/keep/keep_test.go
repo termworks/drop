@@ -2,6 +2,8 @@ package keep
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,6 +37,49 @@ func TestReplaceAtomicallyChangesAFile(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != "state.json" {
 		t.Fatalf("replacement left files %+v", entries)
+	}
+}
+
+func TestReplaceWithAtomicallyStreamsAFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "state")
+	if err := os.WriteFile(file, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceWith(file, func(to io.Writer) error {
+		_, err := io.WriteString(to, "new state")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(file); err != nil || string(raw) != "new state" {
+		t.Fatalf("stored %q, %v", raw, err)
+	}
+}
+
+func TestReplaceWithLeavesTheOldFileOnWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "state")
+	if err := os.WriteFile(file, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := errors.New("stopped")
+	err := ReplaceWith(file, func(to io.Writer) error {
+		_, _ = io.WriteString(to, "partial")
+		return want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("ReplaceWith() = %v, want %v", err, want)
+	}
+	if raw, err := os.ReadFile(file); err != nil || string(raw) != "old" {
+		t.Fatalf("stored %q, %v", raw, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "state" {
+		t.Fatalf("failed replacement left files %+v", entries)
 	}
 }
 

@@ -72,7 +72,8 @@ type keeper struct {
 	held  map[string]mark
 	known bool
 	// wrote is what was last written down, so an unchanged record is not rewritten every round.
-	wrote string
+	wrote      [32]byte
+	wroteKnown bool
 }
 
 // once brings the folder and the history level with each other, and says whether a change of this
@@ -696,51 +697,219 @@ func (k *keeper) recall() error {
 	if k.known {
 		return nil
 	}
-	k.held, k.known = map[string]mark{}, true
 
-	raw, err := os.ReadFile(k.mark())
+	hash := blake3.New(32, nil)
+	var held map[string]mark
+	_, err := keep.ReadFileWith(k.mark(), maxHeldSize, func(from io.Reader) error {
+		var err error
+		held, err = readHeld(io.TeeReader(from, hash), MaxPaths)
+		return err
+	})
 	if errors.Is(err, os.ErrNotExist) {
+		k.held, k.known = map[string]mark{}, true
+		return nil
+	}
+	if malformedHeld(err) {
+		k.held, k.known = map[string]mark{}, true
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", k.mark(), err)
 	}
 
-	var was map[string]stood
-	if err := json.Unmarshal(raw, &was); err != nil {
-		return nil
+	k.held, k.known = held, true
+	copy(k.wrote[:], hash.Sum(nil))
+	k.wroteKnown = true
+	return nil
+}
+
+func readHeld(from io.Reader, maxPaths int) (map[string]mark, error) {
+	decoder := json.NewDecoder(&heldJSONReader{from: from})
+	start, err := decoder.Token()
+	if err != nil {
+		return nil, err
 	}
-	for path, one := range was {
-		sum, err := hex.DecodeString(one.Sum)
-		if err != nil || len(sum) != len(mark{}.Sum) {
+	if start != json.Delim('{') {
+		return nil, fmt.Errorf("%w: it is not an object", errHeldShape)
+	}
+
+	held := make(map[string]mark)
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		path, ok := token.(string)
+		if !ok {
+			return nil, fmt.Errorf("%w: a path is not a string", errHeldShape)
+		}
+		var one stood
+		if err := decoder.Decode(&one); err != nil {
+			return nil, err
+		}
+
+		cleaned, err := clean(path)
+		if err != nil || cleaned != path || path == "." || one.Size < 0 {
+			delete(held, path)
 			continue
 		}
-		k.held[path] = mark{Sum: [32]byte(sum), Size: one.Size, At: one.At, Exec: one.Exec}
+		sum, err := hex.DecodeString(one.Sum)
+		if err != nil || len(sum) != len(mark{}.Sum) {
+			delete(held, path)
+			continue
+		}
+		if _, exists := held[path]; !exists && len(held) >= maxPaths {
+			return nil, fmt.Errorf("a held record names more than the %d-path limit", maxPaths)
+		}
+		held[path] = mark{Sum: [32]byte(sum), Size: one.Size, At: one.At, Exec: one.Exec}
 	}
-	k.wrote = string(raw)
-	return nil
+	end, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if end != json.Delim('}') {
+		return nil, fmt.Errorf("%w: it does not end as an object", errHeldShape)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, fmt.Errorf("%w: another value follows it", errHeldShape)
+		}
+		return nil, err
+	}
+	return held, nil
+}
+
+var errHeldShape = errors.New("invalid held record")
+var errHeldToken = errors.New("a held record contains an oversized token")
+
+type heldJSONReader struct {
+	from      io.Reader
+	inString  bool
+	escaped   bool
+	tokenSize int
+	failed    error
+}
+
+func (r *heldJSONReader) Read(into []byte) (int, error) {
+	if r.failed != nil {
+		return 0, r.failed
+	}
+	n, readErr := r.from.Read(into)
+	for i, b := range into[:n] {
+		if r.inString {
+			if b == '"' && !r.escaped {
+				r.inString, r.tokenSize = false, 0
+				continue
+			}
+			r.tokenSize++
+			if r.tokenSize > maxHeldString {
+				return r.fail(i)
+			}
+			if r.escaped {
+				r.escaped = false
+			} else if b == '\\' {
+				r.escaped = true
+			}
+			continue
+		}
+
+		switch b {
+		case '"':
+			r.inString, r.tokenSize = true, 0
+		case ' ', '\t', '\r', '\n', '{', '}', '[', ']', ',', ':':
+			r.tokenSize = 0
+		default:
+			r.tokenSize++
+			if r.tokenSize > maxHeldAtom {
+				return r.fail(i)
+			}
+		}
+	}
+	return n, readErr
+}
+
+func (r *heldJSONReader) fail(read int) (int, error) {
+	r.failed = errHeldToken
+	if read == 0 {
+		return 0, r.failed
+	}
+	return read, nil
+}
+
+func malformedHeld(err error) bool {
+	if err == nil {
+		return false
+	}
+	var syntax *json.SyntaxError
+	var typed *json.UnmarshalTypeError
+	return errors.Is(err, errHeldShape) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.As(err, &syntax) || errors.As(err, &typed)
 }
 
 // remember writes down what the folder now is by this machine's own doing.
 func (k *keeper) remember() error {
-	out := make(map[string]stood, len(k.held))
-	for path, m := range k.held {
-		out[path] = stood{Sum: hex.EncodeToString(m.Sum[:]), Size: m.Size, At: m.At, Exec: m.Exec}
-	}
-
-	raw, err := json.Marshal(out)
-	if err != nil {
+	hash := blake3.New(32, nil)
+	if err := writeHeld(io.Discard, hash, k.held); err != nil {
 		return fmt.Errorf("writing %s: %w", k.mark(), err)
 	}
-	if string(raw) == k.wrote {
+	var sum [32]byte
+	copy(sum[:], hash.Sum(nil))
+	if k.wroteKnown && sum == k.wrote {
 		return nil
 	}
-	if err := keep.Replace(k.mark(), raw); err != nil {
+
+	hash.Reset()
+	if err := keep.ReplaceWith(k.mark(), func(to io.Writer) error {
+		return writeHeld(to, hash, k.held)
+	}); err != nil {
 		return fmt.Errorf("writing %s: %w", k.mark(), err)
 	}
-	k.wrote = string(raw)
+	copy(k.wrote[:], hash.Sum(nil))
+	k.wroteKnown = true
 	return nil
 }
+
+func writeHeld(to io.Writer, hash io.Writer, held map[string]mark) error {
+	out := io.MultiWriter(to, hash)
+	if _, err := io.WriteString(out, "{"); err != nil {
+		return err
+	}
+	for i, path := range named(held) {
+		if i > 0 {
+			if _, err := io.WriteString(out, ","); err != nil {
+				return err
+			}
+		}
+		key, err := json.Marshal(path)
+		if err != nil {
+			return err
+		}
+		m := held[path]
+		value, err := json.Marshal(stood{
+			Sum: hex.EncodeToString(m.Sum[:]), Size: m.Size, At: m.At, Exec: m.Exec,
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := out.Write(key); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(out, ":"); err != nil {
+			return err
+		}
+		if _, err := out.Write(value); err != nil {
+			return err
+		}
+	}
+	_, err := io.WriteString(out, "}")
+	return err
+}
+
+const (
+	maxHeldString = MaxRel * 6
+	maxHeldAtom   = 32
+	maxHeldSize   = int64(MaxPaths)*(maxHeldString+256) + 2
+)
 
 // mark is where what this machine agreed is kept: beside the history, because it is about the thing
 // rather than about the directory, and a folder moved elsewhere is the same folder.

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -127,6 +129,157 @@ func TestAChangeCannotRecordAnUnsendablePath(t *testing.T) {
 	}
 	if len(changes) != 0 {
 		t.Fatalf("the refused path left %d changes", len(changes))
+	}
+}
+
+func TestHeldStateKeepsItsExistingJSONFormat(t *testing.T) {
+	one := blake3.Sum256([]byte("one"))
+	two := blake3.Sum256([]byte("two"))
+	held := map[string]mark{
+		"z/two.txt": {Sum: two, Size: 3, At: 22, Exec: true},
+		"a/one.txt": {Sum: one, Size: 3, At: 11},
+	}
+	was := map[string]stood{
+		"z/two.txt": {Sum: fmt.Sprintf("%x", two), Size: 3, At: 22, Exec: true},
+		"a/one.txt": {Sum: fmt.Sprintf("%x", one), Size: 3, At: 11},
+	}
+	want, err := json.Marshal(was)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got, hashed bytes.Buffer
+	if err := writeHeld(&got, &hashed, held); err != nil {
+		t.Fatalf("writeHeld(): %v", err)
+	}
+	if !bytes.Equal(got.Bytes(), want) {
+		t.Fatalf("writeHeld() = %s, want %s", got.Bytes(), want)
+	}
+	if got.String() != hashed.String() {
+		t.Fatal("writeHeld() hashed bytes other than the ones it wrote")
+	}
+}
+
+func TestMalformedHeldStateIsRebuilt(t *testing.T) {
+	p := joins(t, "alice")
+	if err := os.WriteFile(p.k.mark(), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.k.recall(); err != nil {
+		t.Fatalf("recall(): %v", err)
+	}
+	if len(p.k.held) != 0 {
+		t.Fatalf("malformed state left %+v", p.k.held)
+	}
+	if err := p.k.remember(); err != nil {
+		t.Fatalf("remember(): %v", err)
+	}
+	if raw, err := os.ReadFile(p.k.mark()); err != nil || string(raw) != "{}" {
+		t.Fatalf("rebuilt state = %q, %v", raw, err)
+	}
+}
+
+func TestOversizedHeldStateIsRefusedEveryTime(t *testing.T) {
+	p := joins(t, "alice")
+	if err := os.WriteFile(p.k.mark(), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(p.k.mark(), maxHeldSize+1); err != nil {
+		t.Fatal(err)
+	}
+
+	for attempt := range 2 {
+		if err := p.k.recall(); err == nil {
+			t.Fatalf("recall attempt %d accepted oversized state", attempt+1)
+		}
+	}
+}
+
+func TestHeldStateIgnoresEntriesItCouldNotHaveWritten(t *testing.T) {
+	p := joins(t, "alice")
+	sum := blake3.Sum256([]byte("valid"))
+	state := map[string]stood{
+		"valid.txt": {Sum: fmt.Sprintf("%x", sum), Size: 5, At: 1},
+		"../away":   {Sum: fmt.Sprintf("%x", sum), Size: 5, At: 1},
+		"negative":  {Sum: fmt.Sprintf("%x", sum), Size: -1, At: 1},
+		"bad-sum":   {Sum: "no", Size: 1, At: 1},
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.k.mark(), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.k.recall(); err != nil {
+		t.Fatalf("recall(): %v", err)
+	}
+	if len(p.k.held) != 1 || p.k.held["valid.txt"].Sum != sum {
+		t.Fatalf("recall held %+v", p.k.held)
+	}
+}
+
+func TestHeldStateStopsAtItsPathLimit(t *testing.T) {
+	sum := fmt.Sprintf("%x", blake3.Sum256([]byte("one")))
+	raw, err := json.Marshal(map[string]stood{
+		"one": {Sum: sum, Size: 1},
+		"two": {Sum: sum, Size: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readHeld(bytes.NewReader(raw), 1); err == nil {
+		t.Fatal("readHeld() accepted more paths than its limit")
+	}
+}
+
+func TestHeldStateStopsBeforeAllocatingAnOversizedToken(t *testing.T) {
+	raw := `{"` + strings.Repeat("x", maxHeldString+1) + `":{}}`
+	if _, err := readHeld(strings.NewReader(raw), MaxPaths); !errors.Is(err, errHeldToken) {
+		t.Fatalf("readHeld() = %v, want an oversized token", err)
+	}
+}
+
+func TestHeldStateCarriesAMaximumEscapedPath(t *testing.T) {
+	component := strings.Repeat("&", 204)
+	path := strings.Repeat(component+"/", 4) + component
+	sum := blake3.Sum256([]byte("one"))
+	raw, err := json.Marshal(map[string]stood{
+		path: {Sum: fmt.Sprintf("%x", sum), Size: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := readHeld(bytes.NewReader(raw), MaxPaths)
+	if err != nil {
+		t.Fatalf("readHeld(): %v", err)
+	}
+	if len(path) != MaxRel || held[path].Sum != sum {
+		t.Fatalf("readHeld() lost a %d-byte escaped path", len(path))
+	}
+}
+
+func TestUnchangedHeldStateIsNotReplaced(t *testing.T) {
+	p := joins(t, "alice")
+	p.k.held = map[string]mark{"one.txt": {Sum: blake3.Sum256([]byte("one")), Size: 3, At: 1}}
+	if err := p.k.remember(); err != nil {
+		t.Fatalf("first remember(): %v", err)
+	}
+	before, err := os.Stat(p.k.mark())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.k.remember(); err != nil {
+		t.Fatalf("second remember(): %v", err)
+	}
+	after, err := os.Stat(p.k.mark())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("unchanged held state was replaced")
 	}
 }
 
