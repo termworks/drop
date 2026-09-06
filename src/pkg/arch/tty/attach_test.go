@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"sync"
@@ -220,6 +221,7 @@ func TestAFastShellDrainsItsOutput(t *testing.T) {
 
 func TestTerminalShellsHaveAProcessWideLimit(t *testing.T) {
 	tty := New(Into{})
+	tty.terminals = make(chan struct{}, MaxTerminals)
 	defer tty.Stop()
 
 	terminals := make([]*terminal, 0, MaxTerminals)
@@ -260,4 +262,53 @@ func TestTerminalShellsHaveAProcessWideLimit(t *testing.T) {
 	if _, err := tty.at("/shell/after", Config{Shell: "/bin/sh"}); err != nil {
 		t.Fatalf("a terminal stayed refused after capacity returned: %v", err)
 	}
+}
+
+func TestStoppingTerminalShellsHappensTogether(t *testing.T) {
+	tty := New(Into{})
+	tty.terminals = make(chan struct{}, MaxTerminals)
+
+	dir := t.TempDir()
+	var terminals []*terminal
+	for i := range 3 {
+		ready := filepath.Join(dir, "ready-"+strconv.Itoa(i))
+		script := filepath.Join(dir, "shell-"+strconv.Itoa(i))
+		body := "#!/bin/sh\ntrap '' HUP\n: > \"$DROP_TTY_READY\"\nwhile :; do sleep 1; done\n"
+		if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+			t.Fatalf("writing shell %d: %v", i, err)
+		}
+		t.Setenv("DROP_TTY_READY", ready)
+		term, err := tty.at("/shell/"+strconv.Itoa(i), Config{Shell: script})
+		if err != nil {
+			t.Fatalf("starting shell %d: %v", i, err)
+		}
+		terminals = append(terminals, term)
+		untilFile(t, ready)
+	}
+
+	began := time.Now()
+	tty.Stop()
+	if took := time.Since(began); took >= 2*hangUpWithin {
+		t.Fatalf("stopping three terminal shells took %s", took)
+	}
+	for i, term := range terminals {
+		select {
+		case <-term.reaped:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("terminal shell %d was not reaped", i)
+		}
+	}
+}
+
+func untilFile(t *testing.T, path string) {
+	t.Helper()
+
+	until := time.Now().Add(2 * time.Second)
+	for time.Now().Before(until) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("%s did not appear", path)
 }

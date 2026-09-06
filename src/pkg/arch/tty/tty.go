@@ -41,6 +41,8 @@ const (
 	MaxTerminals = 16
 )
 
+var terminalSlots = make(chan struct{}, MaxTerminals)
+
 // Config is what a tty namespace was told: what to start, and whether the far end may type.
 type Config struct {
 	// Shell is what this namespace starts; empty means $SHELL.
@@ -64,13 +66,14 @@ type Into struct {
 // One live shell per namespace, held here: the map outlives any one session, which is what makes
 // the second watcher of a path join the terminal the first one started.
 type TTY struct {
-	into Into
-	mu   sync.Mutex
-	open map[string]*terminal
+	into      Into
+	terminals chan struct{}
+	mu        sync.Mutex
+	open      map[string]*terminal
 }
 
 func New(into Into) *TTY {
-	return &TTY{into: into, open: map[string]*terminal{}}
+	return &TTY{into: into, terminals: terminalSlots, open: map[string]*terminal{}}
 }
 
 func (t *TTY) Name() string { return "tty" }
@@ -146,6 +149,7 @@ type terminal struct {
 	stage *cast.Caster
 	ptmx  *os.File
 	shell *exec.Cmd
+	slot  chan struct{}
 	// reaped is closed once the shell has ended and been waited for.
 	reaped chan struct{}
 	// drained is closed once everything readable from the pty reached the screen.
@@ -160,9 +164,21 @@ func (t *TTY) at(path string, cfg Config) (*terminal, error) {
 	if live, ok := t.open[path]; ok {
 		return live, nil
 	}
-	if len(t.open) >= MaxTerminals {
-		return nil, fmt.Errorf("%d terminal shells are running already", MaxTerminals)
+	terminals := t.terminals
+	if terminals == nil {
+		terminals = terminalSlots
 	}
+	select {
+	case terminals <- struct{}{}:
+	default:
+		return nil, fmt.Errorf("%d terminal shells are running already", cap(terminals))
+	}
+	started := false
+	defer func() {
+		if !started {
+			<-terminals
+		}
+	}()
 
 	shell := cfg.Shell
 	if shell == "" {
@@ -184,10 +200,12 @@ func (t *TTY) at(path string, cfg Config) (*terminal, error) {
 		stage:   cast.New(80, 24),
 		ptmx:    ptmx,
 		shell:   cmd,
+		slot:    terminals,
 		reaped:  make(chan struct{}),
 		drained: make(chan struct{}),
 	}
 	t.open[path] = term
+	started = true
 
 	go func() {
 		_, _ = io.Copy(term.stage, ptmx)
@@ -208,6 +226,7 @@ func (t *TTY) at(path string, cfg Config) (*terminal, error) {
 	// closed file for as long as somebody's own background job lives, and costs nobody the path.
 	go func() {
 		_ = cmd.Wait()
+		<-term.slot
 		close(term.reaped)
 
 		// Out of the table before it is taken apart, so the next watcher starts a fresh shell
@@ -252,9 +271,15 @@ func (t *TTY) Stop() {
 
 	// Outside the lock: ending a terminal waits for the goroutine reading it, and that goroutine
 	// takes this lock on its way out.
+	var stopped sync.WaitGroup
+	stopped.Add(len(open))
 	for _, at := range open {
-		at.end()
+		go func() {
+			defer stopped.Done()
+			at.end()
+		}()
 	}
+	stopped.Wait()
 }
 
 // end takes a shell down: the whole process group is hung up, killed if it will not go, and the pty
