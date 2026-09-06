@@ -29,8 +29,9 @@ type Store struct {
 	// ids is every message id in the history, and size is how long the file was when that set was
 	// built. Deciding whether an arriving message is a resend by rereading the log costs a read and
 	// a decrypt pass of everything said so far, per message.
-	ids  map[string]bool
-	size int64
+	ids   map[string]bool
+	size  int64
+	reads int
 }
 
 // DataDir is $XDG_DATA_HOME/drop, or ~/.local/share/drop. Conversations are data, not settings, so
@@ -230,6 +231,7 @@ func (s *Store) known() error {
 		return nil
 	}
 
+	s.reads++
 	all, err := readAll(s.history, s.peer.String())
 	if err != nil {
 		return err

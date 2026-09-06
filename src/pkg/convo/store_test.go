@@ -392,33 +392,24 @@ func TestStoringDoesNotRereadTheWholeLog(t *testing.T) {
 	peer := testPeer(t)
 	body := strings.Repeat("x", 4096)
 
-	const block = 400
-	store := func() time.Duration {
-		start := time.Now()
-		for i := 0; i < block; i++ {
-			s, err := Open(peer)
-			if err != nil {
-				t.Fatalf("Open(): %v", err)
-			}
-			m, err := New(KindText, body, "")
-			if err != nil {
-				t.Fatalf("New(): %v", err)
-			}
-			m.Dir = In
-			if _, err := s.Add(m); err != nil {
-				t.Fatalf("Add(): %v", err)
-			}
+	var s *Store
+	for range 1600 {
+		var err error
+		s, err = Open(peer)
+		if err != nil {
+			t.Fatalf("Open(): %v", err)
 		}
-		return time.Since(start)
+		m, err := New(KindText, body, "")
+		if err != nil {
+			t.Fatalf("New(): %v", err)
+		}
+		m.Dir = In
+		if _, err := s.Add(m); err != nil {
+			t.Fatalf("Add(): %v", err)
+		}
 	}
 
-	first := store()
-	store()
-	store()
-	last := store()
-
-	if last > 4*first && last > 200*time.Millisecond {
-		t.Fatalf("messages %d-%d took %s against %s for the first %d: the cost grows with the log",
-			3*block, 4*block, last, first, block)
+	if s.reads != 1 {
+		t.Fatalf("storing 1600 messages read the whole log %d times", s.reads)
 	}
 }
