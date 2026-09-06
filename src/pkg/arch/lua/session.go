@@ -41,19 +41,7 @@ const Waiting = 30 * time.Second
 // at all only when it left something behind holding the other end.
 const Lingering = 2 * time.Second
 
-// wants is what a plugin has stopped for. Everything else it asks for is answered where it stands.
-type wants byte
-
-const (
-	wantNothing wants = iota
-	wantRead
-	wantWrite
-)
-
 // session is one namespace open, as the plugin holds it.
-//
-// The fields either side of the yield are read on two goroutines and never at once: a yield hands
-// control to the driver and a resume hands it back, and neither runs while the other does.
 type session struct {
 	ctx context.Context
 	at  arch.Session
@@ -65,71 +53,6 @@ type session struct {
 	open []*os.File
 	// mark is what makes a name this session's own, and what is swept up after it.
 	mark string
-
-	// want is what the plugin stopped for, with body and kind for a frame going out.
-	want wants
-	body []byte
-	kind byte
-	// gave, was and more are the answer: a frame, what kind it was, and whether there was one.
-	gave []byte
-	was  byte
-	more bool
-}
-
-// drive runs the plugin's serve as a coroutine and answers whatever it stops for.
-//
-// The plugin writes straight-line code and this decides when it runs. Every wait happens out here,
-// on the far side of a yield, where the session's budget is not being charged for standing still.
-func (s *session) drive(w *world, serve rt.Callable) error {
-	main := w.lua.MainThread()
-
-	th := rt.NewThread(w.lua)
-	// A coroutine left suspended holds its goroutine for ever. Closing it is what ends that one.
-	defer th.Close(main)
-
-	th.Start(serve)
-	args := []rt.Value{s.value(w.lua), value(s.at.Config)}
-
-	for {
-		if _, err := th.Resume(main, args); err != nil {
-			return err
-		}
-		if th.Status() == rt.ThreadDead {
-			return nil
-		}
-		if err := s.answer(); err != nil {
-			return err
-		}
-		args = nil
-	}
-}
-
-// answer does the one thing the plugin stopped for.
-func (s *session) answer() error {
-	if err := s.ctx.Err(); err != nil {
-		return err
-	}
-
-	switch s.want {
-	case wantRead:
-		kind, body, err := s.at.Conn.ReadFrame()
-		switch {
-		case wire.Closed(err), err == nil && kind == wire.KindEnd:
-			s.gave, s.was, s.more = nil, 0, false
-		case err != nil:
-			return fmt.Errorf("reading a frame on %s: %w", s.at.Path, err)
-		default:
-			s.gave, s.was, s.more = body, kind, true
-		}
-
-	case wantWrite:
-		if err := s.at.Conn.WriteFrame(s.kind, s.body); err != nil {
-			return fmt.Errorf("writing a frame on %s: %w", s.at.Path, err)
-		}
-	}
-
-	s.want, s.body = wantNothing, nil
-	return nil
 }
 
 // shut closes what the session left open and takes away what it named its own.
@@ -181,21 +104,25 @@ func (s *session) value(machine *rt.Runtime) rt.Value {
 // read is `s:read()`: the next frame and what kind it was, and nothing at all once the far end has
 // finished.
 func (s *session) read(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
-	s.want = wantRead
-	if _, err := t.Yield(nil); err != nil {
+	if err := s.ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !s.more {
+
+	kind, body, err := s.at.Conn.ReadFrame()
+	switch {
+	case wire.Closed(err), err == nil && kind == wire.KindEnd:
 		return c.Next(), nil
+	case err != nil:
+		return nil, fmt.Errorf("reading a frame on %s: %w", s.at.Path, err)
 	}
 
 	// What arrived is charged to the session, so a plugin that hoovers up everything sent to it
 	// runs out the way one that makes it up runs out.
-	t.RequireBytes(len(s.gave))
+	t.RequireBytes(len(body))
 
 	next := c.Next()
-	t.Push1(next, rt.StringValue(string(s.gave)))
-	t.Push1(next, rt.StringValue(wordOf[s.was]))
+	t.Push1(next, rt.StringValue(string(body)))
+	t.Push1(next, rt.StringValue(wordOf[kind]))
 	return next, nil
 }
 
@@ -222,9 +149,11 @@ func (s *session) write(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		}
 	}
 
-	s.want, s.body, s.kind = wantWrite, []byte(body), kind
-	if _, err := t.Yield(nil); err != nil {
+	if err := s.ctx.Err(); err != nil {
 		return nil, err
+	}
+	if err := s.at.Conn.WriteFrame(kind, []byte(body)); err != nil {
+		return nil, fmt.Errorf("writing a frame on %s: %w", s.at.Path, err)
 	}
 	return c.Next(), nil
 }

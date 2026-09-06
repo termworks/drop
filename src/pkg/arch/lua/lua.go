@@ -116,7 +116,7 @@ func (p *Plugin) Note(c arch.Config) arch.Note {
 	return said
 }
 
-// Serve answers one session, with the plugin's serve running as a coroutine this drives.
+// Serve answers one session in its own Lua runtime.
 func (p *Plugin) Serve(ctx context.Context, at arch.Session) error {
 	w := newWorld(p.file, p.name)
 	defer w.close()
@@ -129,8 +129,8 @@ func (p *Plugin) Serve(ctx context.Context, at arch.Session) error {
 		if err != nil {
 			return err
 		}
-		fn, _ := serve.TryCallable()
-		return s.drive(w, fn)
+		_, err = rt.Call1(w.lua.MainThread(), serve, s.value(w.lua), value(at.Config))
+		return err
 	})
 }
 
