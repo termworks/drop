@@ -106,12 +106,22 @@ func TestLocalDialPreservesHalfClose(t *testing.T) {
 
 type deadlineTrackingConn struct {
 	net.Conn
-	deadlines []time.Time
+	deadlines      []time.Time
+	writeDeadlines []time.Time
+	shortWrites    bool
 }
 
 func (c *deadlineTrackingConn) SetReadDeadline(deadline time.Time) error {
 	c.deadlines = append(c.deadlines, deadline)
 	return c.Conn.SetReadDeadline(deadline)
+}
+
+func (c *deadlineTrackingConn) SetWriteDeadline(deadline time.Time) error {
+	c.writeDeadlines = append(c.writeDeadlines, deadline)
+	if c.shortWrites && !deadline.IsZero() {
+		deadline = time.Now().Add(20 * time.Millisecond)
+	}
+	return c.Conn.SetWriteDeadline(deadline)
 }
 
 // The pairing line between a local `drop pair` and the daemon is exactly three fields. Both ends
@@ -173,6 +183,54 @@ func TestLocalRepliesHaveAHandshakeDeadline(t *testing.T) {
 	}
 	if len(tracked.deadlines) != 2 || tracked.deadlines[0].IsZero() || !tracked.deadlines[1].IsZero() {
 		t.Fatalf("read deadlines = %v, want one bounded deadline followed by a reset", tracked.deadlines)
+	}
+}
+
+func TestLocalWritesHaveAHandshakeDeadline(t *testing.T) {
+	client, server := net.Pipe()
+	tracked := &deadlineTrackingConn{Conn: client}
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+
+	read := make(chan error, 1)
+	go func() {
+		line, err := bufio.NewReader(server).ReadString('\n')
+		if err == nil && line != "ok\n" {
+			err = fmt.Errorf("local write = %q", line)
+		}
+		read <- err
+	}()
+
+	if err := writeLocal(tracked, "ok\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-read; err != nil {
+		t.Fatal(err)
+	}
+	if len(tracked.writeDeadlines) != 2 || tracked.writeDeadlines[0].IsZero() || !tracked.writeDeadlines[1].IsZero() {
+		t.Fatalf("write deadlines = %v, want one bounded deadline followed by a reset", tracked.writeDeadlines)
+	}
+}
+
+func TestLocalWriteStopsWhenThePeerDoesNotRead(t *testing.T) {
+	client, server := net.Pipe()
+	tracked := &deadlineTrackingConn{Conn: client, shortWrites: true}
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+
+	started := time.Now()
+	if err := writeLocal(tracked, "blocked\n"); err == nil {
+		t.Fatal("a local write waited forever for a peer that reads nothing")
+	}
+	if time.Since(started) > time.Second {
+		t.Fatalf("a stalled local write took %s to stop", time.Since(started))
+	}
+	if len(tracked.writeDeadlines) != 2 || !tracked.writeDeadlines[1].IsZero() {
+		t.Fatalf("write deadlines = %v, want a bound followed by a reset", tracked.writeDeadlines)
 	}
 }
 

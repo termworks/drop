@@ -512,17 +512,17 @@ func takeCast(ctx context.Context, host *castHost, from io.Reader, conn net.Conn
 	reader, head, err := asciicast.NewReader(from)
 	_ = conn.SetReadDeadline(time.Time{})
 	if err != nil {
-		_, _ = fmt.Fprintf(conn, "no %v\n", err)
+		_ = writeLocal(conn, "no %v\n", err)
 		return err
 	}
 
 	stage, err := host.begin(head.Width, head.Height)
 	if err != nil {
-		_, _ = fmt.Fprintf(conn, "no %v\n", err)
+		_ = writeLocal(conn, "no %v\n", err)
 		return err
 	}
 	defer host.end(stage)
-	if _, err := fmt.Fprintln(conn, "ok"); err != nil {
+	if err := writeLocal(conn, "ok\n"); err != nil {
 		return err
 	}
 
@@ -533,8 +533,7 @@ func takeCast(ctx context.Context, host *castHost, from io.Reader, conn net.Conn
 		return err
 	}
 	host.end(stage)
-	_, err = fmt.Fprintln(conn, "done")
-	return err
+	return writeLocal(conn, "done\n")
 }
 
 // takeLocal reads what this connection is for and does it.
@@ -608,6 +607,21 @@ func readLocalReply(conn net.Conn, reading *bufio.Reader) (string, error) {
 	return line, err
 }
 
+func writeLocal(conn net.Conn, format string, args ...any) (err error) {
+	if err := conn.SetWriteDeadline(time.Now().Add(localHelloWithin)); err != nil {
+		return err
+	}
+	defer func() {
+		reset := conn.SetWriteDeadline(time.Time{})
+		if errors.Is(reset, net.ErrClosed) || errors.Is(reset, io.ErrClosedPipe) {
+			reset = nil
+		}
+		err = errors.Join(err, reset)
+	}()
+	_, err = fmt.Fprintf(conn, format, args...)
+	return err
+}
+
 // takeHeld answers with the devices this node has a connection to, one id a line.
 //
 // Read out of what is already open rather than dialled, so a command asking which of somebody's
@@ -622,13 +636,12 @@ func takeHeld(held *dial.Kept, conn net.Conn) error {
 			if !held.Reaching(entry.ID) {
 				continue
 			}
-			if _, err := fmt.Fprintln(conn, entry.ID); err != nil {
+			if err := writeLocal(conn, "%s\n", entry.ID); err != nil {
 				return err
 			}
 		}
 	}
-	_, err := fmt.Fprintln(conn, heldReplyEnd)
-	return err
+	return writeLocal(conn, "%s\n", heldReplyEnd)
 }
 
 // takeShare holds a handoff open for as long as whoever asked for it stays connected, and takes it
@@ -644,12 +657,11 @@ func takeShare(ctx context.Context, host *shareHost, conn net.Conn, rest string)
 
 	box, err := host.begin(dir, sendersNamed(who))
 	if err != nil {
-		_, writeErr := fmt.Fprintf(conn, "no %v\n", err)
-		return writeErr
+		return writeLocal(conn, "no %v\n", err)
 	}
 	defer host.end(box)
 
-	if _, err := fmt.Fprintln(conn, "ok"); err != nil {
+	if err := writeLocal(conn, "ok\n"); err != nil {
 		return err
 	}
 
@@ -668,7 +680,7 @@ func takeShare(ctx context.Context, host *shareHost, conn net.Conn, rest string)
 	case <-ctx.Done():
 	case <-gone:
 	case <-box.done:
-		if _, err := fmt.Fprintln(conn, "done"); err != nil {
+		if err := writeLocal(conn, "done\n"); err != nil {
 			return err
 		}
 	}
@@ -687,10 +699,9 @@ func takeMount(ctx context.Context, host *mountHost, conn net.Conn, rest string)
 	}
 
 	if err := host.begin(line); err != nil {
-		_, writeErr := fmt.Fprintf(conn, "no %v\n", err)
-		return writeErr
+		return writeLocal(conn, "no %v\n", err)
 	}
-	if _, err := fmt.Fprintln(conn, "ok"); err != nil {
+	if err := writeLocal(conn, "ok\n"); err != nil {
 		host.end(line.Path)
 		return err
 	}
@@ -726,25 +737,21 @@ func takeMount(ctx context.Context, host *mountHost, conn net.Conn, rest string)
 func takeUnmount(host *mountHost, conn net.Conn, rest string) error {
 	at, err := ns.Clean(strings.TrimSpace(rest))
 	if err != nil {
-		_, writeErr := fmt.Fprintf(conn, "no %v\n", err)
-		return writeErr
+		return writeLocal(conn, "no %v\n", err)
 	}
 
 	if !host.mine(at) {
-		_, err := fmt.Fprintln(conn, "no this node did not put that up")
-		return err
+		return writeLocal(conn, "no this node did not put that up\n")
 	}
 	// Only one that was written down: a held namespace goes when the command holding it goes, and
 	// taking it out from under that command would leave it waiting on a path that is not there.
 	if m, _, ok := host.mounts.Lookup(at); ok && m.Path == at && m.Source != ns.Written {
-		_, err := fmt.Fprintln(conn, "no something is holding that open")
-		return err
+		return writeLocal(conn, "no something is holding that open\n")
 	}
 	host.end(at)
 
 	fmt.Printf("  %s is gone\n", at)
-	_, err = fmt.Fprintln(conn, "ok")
-	return err
+	return writeLocal(conn, "ok\n")
 }
 
 // offerAsked reads what a local `drop pair` asked for: a code, a name to file the far end under,
@@ -773,8 +780,7 @@ func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as st
 
 	waiting, err := offers.open(code, as)
 	if err != nil {
-		_, writeErr := fmt.Fprintf(conn, "busy %v\n", err)
-		return writeErr
+		return writeLocal(conn, "busy %v\n", err)
 	}
 	defer offers.close()
 
@@ -809,11 +815,10 @@ func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as st
 		return nil
 	case p := <-waiting:
 		if err := record(p, as, machine); err != nil {
-			_, _ = fmt.Fprintf(conn, "failed %v\n", err)
+			_ = writeLocal(conn, "failed %v\n", err)
 			return err
 		}
-		_, err := fmt.Fprintf(conn, "paired %s %s\n", nameOf(p, as), p.Peer)
-		return err
+		return writeLocal(conn, "paired %s %s\n", nameOf(p, as), p.Peer)
 	}
 }
 
@@ -836,30 +841,26 @@ func nameOf(p proto.Pairing, as string) string {
 // with every protocol drop grows.
 func takeVia(ctx context.Context, held *dial.Kept, conn net.Conn, name, alpn string) error {
 	if held == nil {
-		_, err := fmt.Fprintln(conn, "no connections are being held")
-		return err
+		return writeLocal(conn, "no connections are being held\n")
 	}
 
 	pinned, err := book.Load()
 	if err != nil {
-		_, writeErr := fmt.Fprintf(conn, "no %v\n", err)
-		return writeErr
+		return writeLocal(conn, "no %v\n", err)
 	}
 
 	entry, ok := lookUp(pinned, name)
 	if !ok {
-		_, err := fmt.Fprintf(conn, "no %q is neither a known name nor a peer id\n", name)
-		return err
+		return writeLocal(conn, "no %q is neither a known name nor a peer id\n", name)
 	}
 
 	s, err := held.To(ctx, entry, alpn)
 	if err != nil {
-		_, writeErr := fmt.Fprintf(conn, "no %v\n", err)
-		return writeErr
+		return writeLocal(conn, "no %v\n", err)
 	}
 	defer func() { _ = s.Close() }()
 
-	if _, err := fmt.Fprintln(conn, "ok"); err != nil {
+	if err := writeLocal(conn, "ok\n"); err != nil {
 		return err
 	}
 	return splice(conn, s)

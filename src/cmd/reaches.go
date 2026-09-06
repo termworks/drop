@@ -137,7 +137,7 @@ func viaDaemon(ctx context.Context, entry book.Entry, alpn string) (*lent, error
 		return nil, errNoDaemon
 	}
 
-	if _, err := fmt.Fprintf(conn, "via %s %s\n", entry.Name, alpn); err != nil {
+	if err := writeLocal(conn, "via %s %s\n", entry.Name, alpn); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("asking this node to reach %s: %w", entry.Name, err)
 	}

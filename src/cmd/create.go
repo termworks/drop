@@ -427,7 +427,7 @@ func unmounted(ctx context.Context, at string) error {
 	}
 	defer func() { _ = conn.Close() }()
 
-	if _, err := fmt.Fprintf(conn, "unmount %s\n", at); err != nil {
+	if err := writeLocal(conn, "unmount %s\n", at); err != nil {
 		return err
 	}
 
@@ -469,7 +469,7 @@ func tell(conn net.Conn, line made.Line) (*bufio.Reader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("writing the declaration for %s: %w", line.Path, err)
 	}
-	if _, err := fmt.Fprintf(conn, "mount %s\n", raw); err != nil {
+	if err := writeLocal(conn, "mount %s\n", raw); err != nil {
 		return nil, err
 	}
 

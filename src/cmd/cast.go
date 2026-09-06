@@ -303,10 +303,10 @@ func castThroughDaemon(ctx context.Context, addressFile string) error {
 		return fmt.Errorf("reading the cast header: %w", err)
 	}
 
-	if _, err := io.WriteString(conn, "cast\n"); err != nil {
+	if err := writeLocal(conn, "cast\n"); err != nil {
 		return err
 	}
-	if _, err := io.WriteString(conn, header); err != nil {
+	if err := writeLocal(conn, "%s", header); err != nil {
 		return err
 	}
 

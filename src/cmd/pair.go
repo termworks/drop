@@ -380,7 +380,7 @@ func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration
 	if machine {
 		kind = "machine"
 	}
-	if _, err := fmt.Fprintf(conn, "pair %s %s %s\n", code, name, kind); err != nil {
+	if err := writeLocal(conn, "pair %s %s %s\n", code, name, kind); err != nil {
 		return err
 	}
 

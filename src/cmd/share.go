@@ -73,7 +73,7 @@ func runShare(parent context.Context, dir string, to []string) error {
 	}
 	defer func() { _ = conn.Close() }()
 
-	if _, err := fmt.Fprintf(conn, "share %s %s\n", whoLine(to), dir); err != nil {
+	if err := writeLocal(conn, "share %s %s\n", whoLine(to), dir); err != nil {
 		return err
 	}
 
