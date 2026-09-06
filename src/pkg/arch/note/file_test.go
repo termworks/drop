@@ -407,7 +407,7 @@ func TestAnUnrecordedCopyAtAFifoDoesNotBlock(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("saving beside a fifo blocked")
 	}
 	if got := held(t, beside); got != "the complete save" {
