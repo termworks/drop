@@ -2,8 +2,11 @@ name: Release
 
 on:
   push:
+    branches:
+      - '**'
     tags:
       - '*'
+  pull_request:
   workflow_dispatch:
     inputs:
       tag:
@@ -11,13 +14,45 @@ on:
         required: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Format
+        run: test -z "$(gofmt -l -s src)"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Race test
+        env:
+          CGO_ENABLED: '1'
+        run: go test -race ./...
+
+      - name: End-to-end test
+        env:
+          CGO_ENABLED: '0'
+        run: go test -tags=e2e -count=1 -timeout=15m ./src/e2e/
+
   # The binary is pure Go with cgo off, so both targets cross-compile from one runner and the
   # result is static. No musl, no container, no QEMU — which is the whole reason the build
   # stayed cgo-free in the first place.
   binaries:
+    needs: [quality]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -51,8 +86,14 @@ jobs:
             -ldflags "-s -w -X main.version=${version} -X main.commit=${commit} -X main.date=${stamp} -X main.builtBy=ci" \
             -o "${name}" ./src
 
-          sudo apt-get update -qq && sudo apt-get install -y -qq upx-ucl
-          upx -9 -q "${name}"
+          if readelf -l "${name}" | grep -q 'INTERP'; then
+            echo "${name} has a program interpreter" >&2
+            exit 1
+          fi
+          if readelf -d "${name}" 2>&1 | grep -q '(NEEDED)'; then
+            echo "${name} has dynamic dependencies" >&2
+            exit 1
+          fi
           sha256sum "${name}" > "${name}.sha256"
 
       - uses: actions/upload-artifact@v4
@@ -65,6 +106,8 @@ jobs:
   release:
     needs: [binaries]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     # Only a tag makes a release. A manual run builds everything and leaves the artifacts, which is
     # how you check a change without publishing it.
     if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.tag != ''
