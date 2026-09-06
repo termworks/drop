@@ -184,7 +184,7 @@ func (f *Files) watch(ctx context.Context, mounts *ns.Table, ear changeEar, ever
 			heard = ear.Heard()
 		}
 		for {
-			dirs := f.round(mounts)
+			dirs := f.round(ctx, mounts)
 			if ear != nil {
 				ear.Mind(dirs)
 			}
@@ -204,14 +204,17 @@ func (f *Files) watch(ctx context.Context, mounts *ns.Table, ear changeEar, ever
 
 // round brings every shared folder level with its history once, and says which directories are
 // worth listening to until the next one.
-func (f *Files) round(mounts *ns.Table) []string {
-	if mounts == nil {
+func (f *Files) round(ctx context.Context, mounts *ns.Table) []string {
+	if mounts == nil || ctx.Err() != nil {
 		return nil
 	}
 
 	var dirs []string
 
 	for _, mount := range mounts.All() {
+		if ctx.Err() != nil {
+			return dirs
+		}
 		if mount.Archetype != f.Name() || !mount.Shared.Declared() {
 			continue
 		}
@@ -219,10 +222,16 @@ func (f *Files) round(mounts *ns.Table) []string {
 		if !ok || cfg.Dir == "" {
 			continue
 		}
-		dirs = append(dirs, under(cfg.Dir)...)
+		dirs = append(dirs, under(ctx, cfg.Dir)...)
+		if ctx.Err() != nil {
+			return dirs
+		}
 
-		made, err := f.keep(mount, cfg)
+		made, err := f.keep(ctx, mount, cfg)
 		if err != nil {
+			if ctx.Err() != nil {
+				return dirs
+			}
 			f.say(mount.Path, fmt.Sprintf("%s: %v", mount.Path, err))
 			continue
 		}
@@ -235,12 +244,12 @@ func (f *Files) round(mounts *ns.Table) []string {
 }
 
 // keep runs one folder's turn, and says whether a change of this machine's own was recorded.
-func (f *Files) keep(mount ns.Mount, cfg Config) (bool, error) {
+func (f *Files) keep(ctx context.Context, mount ns.Mount, cfg Config) (bool, error) {
 	k, err := f.keeper(mount, cfg)
 	if err != nil {
 		return false, err
 	}
-	return k.once(f.into.Fetch)
+	return k.once(ctx, f.into.Fetch)
 }
 
 // keeper is the one keeper for a namespace, made the first time it is wanted and thrown away when
@@ -343,9 +352,12 @@ const Enough = 64
 // Bounded, because a watch is a kernel resource with a per-user limit and a deep tree would spend
 // the lot, leaving every other namespace on this machine with none. A folder too deep to watch is
 // watched as far down as the bound goes and noticed the rest of the way by the timer.
-func under(dir string) []string {
+func under(ctx context.Context, dir string) []string {
 	out := []string{dir}
 	walk := func(at string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		switch {
 		case err != nil, !d.IsDir(), at == dir:
 			return nil

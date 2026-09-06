@@ -2,6 +2,7 @@ package files
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -224,7 +225,7 @@ func TestFolderCopyDoesNotFollowAPartLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = root.Close() }()
-	if err := copyOut(root, "source", part); err != nil {
+	if err := copyOut(t.Context(), root, "source", part); err != nil {
 		t.Fatal(err)
 	}
 
@@ -233,6 +234,117 @@ func TestFolderCopyDoesNotFollowAPartLink(t *testing.T) {
 	}
 	if got := read(t, filepath.Join(dir, part)); string(got) != "copied" {
 		t.Fatalf("copied part = %q", got)
+	}
+}
+
+func TestFolderCopyStopsWithItsContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	from := &cancelingReader{cancel: cancel}
+
+	n, err := copyContext(ctx, io.Discard, from)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("copyContext() = %v, want context cancellation", err)
+	}
+	if n <= 0 || n > 64<<10 {
+		t.Fatalf("copyContext() moved %d bytes after cancellation", n)
+	}
+}
+
+type cancelingReader struct {
+	cancel context.CancelFunc
+	read   bool
+}
+
+func (r *cancelingReader) Read(into []byte) (int, error) {
+	if r.read {
+		return len(into), nil
+	}
+	r.read = true
+	r.cancel()
+	return len(into), nil
+}
+
+func TestCancelledFolderCopyRemovesItsPart(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "source"), []byte("copied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	part := parting("report")
+	if err := copyOut(ctx, root, "source", part); !errors.Is(err, context.Canceled) {
+		t.Fatalf("copyOut() = %v, want context cancellation", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, part)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled part still exists: %v", err)
+	}
+}
+
+func TestCancelledFetchDoesNotLeaveUnverifiedBytes(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	body := []byte("expected")
+	ctx, cancel := context.WithCancel(t.Context())
+	k := &keeper{path: "/work", dir: dir, held: map[string]mark{}}
+	err = k.put(ctx, root, "report", Held{Size: int64(len(body)), Sum: blake3.Sum256(body)}, func(w Wanted) error {
+		if err := os.WriteFile(w.Into, body, 0o600); err != nil {
+			return err
+		}
+		cancel()
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("put() = %v, want context cancellation", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "report")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unverified bytes still exist: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, parting("report"))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unverified part still exists: %v", err)
+	}
+}
+
+func TestFetchedBytesLandOnlyAfterVerification(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	body := []byte("expected")
+	final := filepath.Join(dir, "report")
+	k := &keeper{path: "/work", dir: dir, held: map[string]mark{}}
+	err = k.put(t.Context(), root, "report", Held{Size: int64(len(body)), Sum: blake3.Sum256(body)}, func(w Wanted) error {
+		if w.Into == final {
+			return errors.New("fetch wrote directly to the final path")
+		}
+		if _, err := os.Stat(final); err == nil {
+			return errors.New("final path exists before verification")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return os.WriteFile(w.Into, body, 0o600)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, final); !bytes.Equal(got, body) {
+		t.Fatalf("landed %q, want %q", got, body)
+	}
+	if _, err := os.Stat(filepath.Join(dir, parting("report"))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("verified part still exists: %v", err)
 	}
 }
 

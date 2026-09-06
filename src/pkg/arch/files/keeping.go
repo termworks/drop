@@ -1,6 +1,7 @@
 package files
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -78,13 +79,19 @@ type keeper struct {
 
 // once brings the folder and the history level with each other, and says whether a change of this
 // machine's own was recorded.
-func (k *keeper) once(fetch func(Wanted) error) (bool, error) {
-	if err := k.recall(); err != nil {
+func (k *keeper) once(ctx context.Context, fetch func(Wanted) error) (bool, error) {
+	if err := k.recall(ctx); err != nil {
+		return false, err
+	}
+	if err := ctx.Err(); err != nil {
 		return false, err
 	}
 
-	now, err := scan(k.dir, k.held)
+	now, err := scan(ctx, k.dir, k.held)
 	if err != nil {
+		return false, err
+	}
+	if err := ctx.Err(); err != nil {
 		return false, err
 	}
 	want, err := k.folder()
@@ -93,8 +100,12 @@ func (k *keeper) once(fetch func(Wanted) error) (bool, error) {
 	}
 
 	made := false
-	if mine := k.mine(now, want); len(mine) > 0 {
-		if err := k.record(mine); err != nil {
+	mine, err := k.mine(ctx, now, want)
+	if err != nil {
+		return false, err
+	}
+	if len(mine) > 0 {
+		if err := k.record(ctx, mine); err != nil {
 			return false, err
 		}
 		if want, err = k.folder(); err != nil {
@@ -103,7 +114,13 @@ func (k *keeper) once(fetch func(Wanted) error) (bool, error) {
 		made = true
 	}
 
-	trouble := k.apply(want, now, fetch)
+	if err := ctx.Err(); err != nil {
+		return made, err
+	}
+	trouble := k.apply(ctx, want, now, fetch)
+	if err := ctx.Err(); err != nil {
+		return made, errors.Join(trouble, err)
+	}
 
 	// Once everybody holding this folder has caught up, what it came to stands in place of every
 	// change that made it. The history decides the moment; the folder only says what it holds.
@@ -114,7 +131,7 @@ func (k *keeper) once(fetch func(Wanted) error) (bool, error) {
 			}
 		}
 	}
-	if err := k.remember(); err != nil {
+	if err := k.remember(ctx); err != nil {
 		return made, err
 	}
 	return made, trouble
@@ -134,10 +151,16 @@ func (k *keeper) folder() (Folder, error) {
 // A path that is not what the record says is a path somebody edited here. A path the record knew
 // and the disk no longer has is one somebody deleted. A path the record never knew is neither: it
 // is a file that has not arrived, and calling it a deletion would delete it everywhere.
-func (k *keeper) mine(now map[string]mark, want Folder) []Edit {
+func (k *keeper) mine(ctx context.Context, now map[string]mark, want Folder) ([]Edit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var out []Edit
 
 	for _, path := range named(now) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		m := now[path]
 		if was, knew := k.held[path]; knew && was.Sum == m.Sum && was.Exec == m.Exec {
 			continue
@@ -151,6 +174,9 @@ func (k *keeper) mine(now map[string]mark, want Folder) []Edit {
 
 	when := time.Now().UnixNano()
 	for _, path := range named(k.held) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if _, still := now[path]; still {
 			continue
 		}
@@ -159,7 +185,7 @@ func (k *keeper) mine(now map[string]mark, want Folder) []Edit {
 		}
 		out = append(out, Edit{Path: path, Held: Held{Gone: true, At: when}})
 	}
-	return out
+	return out, nil
 }
 
 // told is what to say about one path: what it weighs and what it hashes to, and its bytes as well
@@ -180,8 +206,14 @@ func (k *keeper) told(path string, m mark) Held {
 
 // record signs what happened here and hands it to the history, in as many changes as it takes to
 // stay inside what one change may carry.
-func (k *keeper) record(list []Edit) error {
+func (k *keeper) record(ctx context.Context, list []Edit) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	for _, edit := range list {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if len(edit.Path) > MaxRel {
 			return fmt.Errorf("recording %s: %s is %d bytes, and a path may be %d",
 				k.dir, edit.Path, len(edit.Path), MaxRel)
@@ -189,6 +221,9 @@ func (k *keeper) record(list []Edit) error {
 	}
 
 	for len(list) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		n := len(list)
 		for n > 1 && len(encodeEdits(list[:n])) > history.MaxBody {
 			n /= 2
@@ -217,16 +252,25 @@ func (k *keeper) record(list []Edit) error {
 // last, so that a file which moved is still lying under its old name when the new name looks for
 // its bytes. One path that cannot be made right does not stop the rest: what is wrong with it is
 // answered at the end, and the round after this one tries again.
-func (k *keeper) apply(want Folder, now map[string]mark, fetch func(Wanted) error) error {
+func (k *keeper) apply(ctx context.Context, want Folder, now map[string]mark, fetch func(Wanted) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	root, err := os.OpenRoot(k.dir)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", k.dir, err)
 	}
 	defer func() { _ = root.Close() }()
 
-	done, trouble := k.recover(root, want, now)
+	done, trouble := k.recover(ctx, root, want, now)
+	if err := ctx.Err(); err != nil {
+		return errors.Join(append(trouble, err)...)
+	}
 
 	for _, path := range Paths(want) {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(trouble, err)...)
+		}
 		h := want[path]
 		if h.Gone || done[path] {
 			continue
@@ -235,12 +279,15 @@ func (k *keeper) apply(want Folder, now map[string]mark, fetch func(Wanted) erro
 			k.held[path] = now[path]
 			continue
 		}
-		if err := k.put(root, path, h, fetch); err != nil {
+		if err := k.put(ctx, root, path, h, fetch); err != nil {
 			trouble = append(trouble, err)
 		}
 	}
 
 	for _, path := range Paths(want) {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(trouble, err)...)
+		}
 		if !want[path].Gone {
 			continue
 		}
@@ -275,11 +322,24 @@ func (k *keeper) apply(want Folder, now map[string]mark, fetch func(Wanted) erro
 // Every copy is made out of the files as they stand and only put into place once all of them are
 // made. Two files that swapped names, or a version kept beside the one that took its place, would
 // otherwise be read after they had already been written over.
-func (k *keeper) recover(root *os.Root, want Folder, now map[string]mark) (map[string]bool, []error) {
+func (k *keeper) recover(ctx context.Context, root *os.Root, want Folder, now map[string]mark) (map[string]bool, []error) {
 	var trouble []error
-	by, made, done := digests(now), map[string]string{}, map[string]bool{}
+	done := map[string]bool{}
+	if ctx.Err() != nil {
+		return done, trouble
+	}
+	by, made := digests(now), map[string]string{}
+	removeParts := func() {
+		for _, part := range made {
+			_ = root.Remove(part)
+		}
+	}
 
 	for _, path := range Paths(want) {
+		if ctx.Err() != nil {
+			removeParts()
+			return done, trouble
+		}
 		h := want[path]
 		if h.Gone || h.Body != nil || settled(now, path, h) {
 			continue
@@ -294,7 +354,7 @@ func (k *keeper) recover(root *os.Root, want Folder, now map[string]mark) (map[s
 			trouble = append(trouble, err)
 			continue
 		}
-		if err := copyOut(root, from, part); err != nil {
+		if err := copyOut(ctx, root, from, part); err != nil {
 			trouble = append(trouble, err)
 			continue
 		}
@@ -302,6 +362,10 @@ func (k *keeper) recover(root *os.Root, want Folder, now map[string]mark) (map[s
 	}
 
 	for _, path := range named(made) {
+		if ctx.Err() != nil {
+			removeParts()
+			return done, trouble
+		}
 		if err := root.Rename(made[path], path); err != nil {
 			_ = root.Remove(made[path])
 			trouble = append(trouble, fmt.Errorf("renaming %s: %w", made[path], err))
@@ -321,7 +385,10 @@ func (k *keeper) recover(root *os.Root, want Folder, now map[string]mark) (map[s
 
 // put makes one path what the changes say it is: the bytes out of the change when it carries them,
 // and otherwise the bytes from whoever has them.
-func (k *keeper) put(root *os.Root, path string, h Held, fetch func(Wanted) error) error {
+func (k *keeper) put(ctx context.Context, root *os.Root, path string, h Held, fetch func(Wanted) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := branches(root, path); err != nil {
 		return err
 	}
@@ -335,9 +402,11 @@ func (k *keeper) put(root *os.Root, path string, h Held, fetch func(Wanted) erro
 	case fetch == nil:
 		return nil
 	default:
-		at := filepath.Join(k.dir, filepath.FromSlash(path))
+		part := parting(path)
+		at := filepath.Join(k.dir, filepath.FromSlash(part))
 		w := Wanted{Path: k.path, Name: path, Size: h.Size, Sum: h.Sum[:], Into: at}
 		if err := fetch(w); err != nil {
+			_ = root.Remove(part)
 			return fmt.Errorf("fetching %s: %w", path, err)
 		}
 		// What the change asks for is what has to arrive. The digest is inside something somebody
@@ -347,14 +416,26 @@ func (k *keeper) put(root *os.Root, path string, h Held, fetch func(Wanted) erro
 		// Bytes that do not match are not a version of this file: they are whatever the sender
 		// felt like, on a path the folder is missing, with the mode the change asks for put on
 		// them afterwards. So they go, and the round tries again, which reaches a different holder.
-		landed, _, err := sumOf(at)
+		landed, _, err := sumOf(ctx, at)
 		if err != nil {
+			_ = root.Remove(part)
 			return err
 		}
 		if landed != h.Sum {
-			_ = root.Remove(path)
+			_ = root.Remove(part)
 			return fmt.Errorf("fetching %s: it arrived as %x and the change asks for %x",
 				path, landed[:6], h.Sum[:6])
+		}
+		if err := ctx.Err(); err != nil {
+			_ = root.Remove(part)
+			return err
+		}
+		if err := root.Rename(part, path); err != nil {
+			_ = root.Remove(part)
+			return fmt.Errorf("renaming %s: %w", part, err)
+		}
+		if err := syncLanding(root, path); err != nil {
+			return fmt.Errorf("syncing %s: %w", path, err)
 		}
 		sum = landed
 	}
@@ -397,10 +478,13 @@ func settled(now map[string]mark, path string, h Held) bool {
 // because they are transfers in flight rather than files. A file whose length and time are what the
 // record says they were is not read again, and a file that moves while it is being read is left for
 // the next round.
-func scan(dir string, was map[string]mark) (map[string]mark, error) {
+func scan(ctx context.Context, dir string, was map[string]mark) (map[string]mark, error) {
 	out := map[string]mark{}
 
 	err := filepath.WalkDir(dir, func(at string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil {
 			return err
 		}
@@ -455,8 +539,11 @@ func scan(dir string, was map[string]mark) (map[string]mark, error) {
 			return nil
 		}
 
-		sum, readAt, err := sumOf(at)
+		sum, readAt, err := sumOf(ctx, at)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			retain()
 			return nil
 		}
@@ -544,7 +631,7 @@ func written(root *os.Root, path string, body []byte) error {
 }
 
 // copyOut puts the bytes already at one path into a part file, ready to be put into place.
-func copyOut(root *os.Root, from, part string) error {
+func copyOut(ctx context.Context, root *os.Root, from, part string) error {
 	held, err := root.Open(from)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", from, err)
@@ -555,7 +642,7 @@ func copyOut(root *os.Root, from, part string) error {
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", part, err)
 	}
-	if _, err := io.Copy(out, held); err != nil {
+	if _, err := copyContext(ctx, out, held); err != nil {
 		_ = out.Close()
 		_ = root.Remove(part)
 		return fmt.Errorf("writing %s: %w", part, err)
@@ -580,7 +667,7 @@ func freshPart(root *os.Root, part string) (*os.File, error) {
 }
 
 // sumOf is what a stable regular file holds, as one number.
-func sumOf(at string) ([32]byte, os.FileInfo, error) {
+func sumOf(ctx context.Context, at string) ([32]byte, os.FileInfo, error) {
 	file, before, err := openRegular(at)
 	if err != nil {
 		return [32]byte{}, nil, fmt.Errorf("reading %s: %w", at, err)
@@ -588,13 +675,31 @@ func sumOf(at string) ([32]byte, os.FileInfo, error) {
 	defer func() { _ = file.Close() }()
 
 	sum := blake3.New(32, nil)
-	if _, err := io.Copy(sum, file); err != nil {
+	if _, err := copyContext(ctx, sum, file); err != nil {
 		return [32]byte{}, nil, fmt.Errorf("reading %s: %w", at, err)
 	}
 	if err := stillCurrent(at, file, before); err != nil {
 		return [32]byte{}, nil, fmt.Errorf("reading %s: %w", at, err)
 	}
 	return [32]byte(sum.Sum(nil)), before, nil
+}
+
+func copyContext(ctx context.Context, to io.Writer, from io.Reader) (int64, error) {
+	return io.CopyBuffer(writerOnly{to}, contextReader{ctx: ctx, from: from}, make([]byte, 64<<10))
+}
+
+type writerOnly struct{ io.Writer }
+
+type contextReader struct {
+	ctx  context.Context
+	from io.Reader
+}
+
+func (r contextReader) Read(into []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.from.Read(into)
 }
 
 func readInline(at string) ([]byte, error) {
@@ -713,7 +818,10 @@ type stood struct {
 }
 
 // recall reads back what this machine last agreed the folder was, once.
-func (k *keeper) recall() error {
+func (k *keeper) recall(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if k.known {
 		return nil
 	}
@@ -722,7 +830,7 @@ func (k *keeper) recall() error {
 	var held map[string]mark
 	_, err := keep.ReadFileWith(k.mark(), maxHeldSize, func(from io.Reader) error {
 		var err error
-		held, err = readHeld(io.TeeReader(from, hash), MaxPaths)
+		held, err = readHeld(ctx, io.TeeReader(from, hash), MaxPaths)
 		return err
 	})
 	if errors.Is(err, os.ErrNotExist) {
@@ -743,7 +851,10 @@ func (k *keeper) recall() error {
 	return nil
 }
 
-func readHeld(from io.Reader, maxPaths int) (map[string]mark, error) {
+func readHeld(ctx context.Context, from io.Reader, maxPaths int) (map[string]mark, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	decoder := json.NewDecoder(&heldJSONReader{from: from})
 	start, err := decoder.Token()
 	if err != nil {
@@ -755,6 +866,9 @@ func readHeld(from io.Reader, maxPaths int) (map[string]mark, error) {
 
 	held := make(map[string]mark)
 	for decoder.More() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		token, err := decoder.Token()
 		if err != nil {
 			return nil, err
@@ -867,9 +981,12 @@ func malformedHeld(err error) bool {
 }
 
 // remember writes down what the folder now is by this machine's own doing.
-func (k *keeper) remember() error {
+func (k *keeper) remember(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	hash := blake3.New(32, nil)
-	if err := writeHeld(io.Discard, hash, k.held); err != nil {
+	if err := writeHeld(ctx, io.Discard, hash, k.held); err != nil {
 		return fmt.Errorf("writing %s: %w", k.mark(), err)
 	}
 	var sum [32]byte
@@ -880,7 +997,7 @@ func (k *keeper) remember() error {
 
 	hash.Reset()
 	if err := keep.ReplaceWith(k.mark(), func(to io.Writer) error {
-		return writeHeld(to, hash, k.held)
+		return writeHeld(ctx, to, hash, k.held)
 	}); err != nil {
 		return fmt.Errorf("writing %s: %w", k.mark(), err)
 	}
@@ -889,12 +1006,18 @@ func (k *keeper) remember() error {
 	return nil
 }
 
-func writeHeld(to io.Writer, hash io.Writer, held map[string]mark) error {
+func writeHeld(ctx context.Context, to io.Writer, hash io.Writer, held map[string]mark) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	out := io.MultiWriter(to, hash)
 	if _, err := io.WriteString(out, "{"); err != nil {
 		return err
 	}
 	for i, path := range named(held) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if i > 0 {
 			if _, err := io.WriteString(out, ","); err != nil {
 				return err

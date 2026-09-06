@@ -3,6 +3,7 @@ package files
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -35,6 +36,19 @@ func TestAStoppedFilesWatcherSaysItIsFinished(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("the watcher did not finish after its context stopped")
+	}
+}
+
+func TestACancelledFolderScanDoesNotStart(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "large"), make([]byte, 1<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, err := scan(ctx, dir, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("scan() = %v, want context cancellation", err)
 	}
 }
 
@@ -997,7 +1011,7 @@ func TestScanNoticesAReplacementWithMatchingMetadata(t *testing.T) {
 	if err := os.Chtimes(at, when, when); err != nil {
 		t.Fatal(err)
 	}
-	first, err := scan(dir, nil)
+	first, err := scan(t.Context(), dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1021,7 +1035,7 @@ func TestScanNoticesAReplacementWithMatchingMetadata(t *testing.T) {
 	if err := os.Rename(replacement, at); err != nil {
 		t.Fatal(err)
 	}
-	second, err := scan(dir, first)
+	second, err := scan(t.Context(), dir, first)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1040,7 +1054,7 @@ func TestScanRefusesHardLinks(t *testing.T) {
 		t.Skipf("hard links are unavailable: %v", err)
 	}
 
-	got, err := scan(dir, nil)
+	got, err := scan(t.Context(), dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1096,7 +1110,7 @@ func TestScanDoesNotReportUnsupportedReplacementsAsDeleted(t *testing.T) {
 			if err := os.WriteFile(at, []byte("held"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			first, err := scan(dir, nil)
+			first, err := scan(t.Context(), dir, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1105,14 +1119,18 @@ func TestScanDoesNotReportUnsupportedReplacementsAsDeleted(t *testing.T) {
 			}
 			test.replace(t, at)
 
-			second, err := scan(dir, first)
+			second, err := scan(t.Context(), dir, first)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if second["tracked"].Sum != first["tracked"].Sum {
 				t.Fatal("the last readable version was not retained")
 			}
-			if edits := (&keeper{held: first}).mine(second, nil); len(edits) != 0 {
+			edits, err := (&keeper{held: first}).mine(t.Context(), second, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(edits) != 0 {
 				t.Fatalf("an unsupported replacement became edits: %+v", edits)
 			}
 			if _, tracked := second["tracked/child"]; tracked {
@@ -1146,7 +1164,7 @@ func TestScanRefusesSparseFiles(t *testing.T) {
 		t.Skip("filesystem does not expose sparse extents")
 	}
 
-	got, err := scan(dir, nil)
+	got, err := scan(t.Context(), dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1172,7 +1190,7 @@ func TestScanLeavesOutPathsTheProtocolCannotCarry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := scan(dir, nil)
+	got, err := scan(t.Context(), dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1202,7 +1220,7 @@ func TestAPipeUnderANameIsNotWaitedOn(t *testing.T) {
 	}
 	summed := make(chan error, 1)
 	go func() {
-		_, _, err := sumOf(pipe)
+		_, _, err := sumOf(t.Context(), pipe)
 		summed <- err
 	}()
 	select {
