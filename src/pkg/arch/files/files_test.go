@@ -871,8 +871,13 @@ func TestALinkSwappedInUnderASessionIsNotFollowed(t *testing.T) {
 // and nothing to end it.
 func TestAPipeUnderANameIsNotWaitedOn(t *testing.T) {
 	dir := t.TempDir()
-	if err := exec.Command("mkfifo", filepath.Join(dir, "pipe")).Run(); err != nil {
+	pipe := filepath.Join(dir, "pipe")
+	if err := exec.Command("mkfifo", pipe).Run(); err != nil {
 		t.Skipf("no fifos here: %v", err)
+	}
+	if file, _, err := lifted(pipe); err == nil {
+		_ = file.Close()
+		t.Fatal("lifted() accepted a pipe for upload")
 	}
 
 	root, err := os.OpenRoot(dir)

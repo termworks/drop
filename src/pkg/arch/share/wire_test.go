@@ -2,7 +2,11 @@ package share
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/bresilla/drop/src/pkg/wire"
 )
@@ -71,5 +75,34 @@ func TestSendRefusesAnInvalidSourceBeforeWriting(t *testing.T) {
 	}
 	if sent.Len() != 0 {
 		t.Fatalf("Send() wrote %d bytes before rejecting its source", sent.Len())
+	}
+}
+
+func TestSourcesMustRemainRegularFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "source")
+	if err := os.WriteFile(path, []byte("body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src, err := FileFromPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := FileFromPath(path); err == nil {
+		t.Fatal("FileFromPath() accepted a pipe")
+	}
+	var sent bytes.Buffer
+	conn := wire.NewConn(readWriter{&bytes.Buffer{}, &sent})
+	if err := sendOne(conn, src, 0, nil); err == nil {
+		t.Fatal("sendOne() opened a path that became a pipe")
+	}
+	if sent.Len() != 0 {
+		t.Fatalf("sendOne() wrote %d bytes from a pipe", sent.Len())
 	}
 }

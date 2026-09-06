@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"golang.org/x/sys/unix"
 	"lukechampine.com/blake3"
 
 	"github.com/bresilla/drop/src/pkg/wire"
@@ -30,8 +31,8 @@ func FileFromPath(path string) (Source, error) {
 	if err != nil {
 		return Source{}, fmt.Errorf("cannot send %s: %w", path, err)
 	}
-	if stat.IsDir() {
-		return Source{}, fmt.Errorf("cannot send %s: directories are not supported yet", path)
+	if !stat.Mode().IsRegular() {
+		return Source{}, fmt.Errorf("cannot send %s: not a regular file", path)
 	}
 	return Source{
 		Name: filepath.Base(path),
@@ -106,7 +107,7 @@ func Send(conn *wire.Conn, sources []Source, progress func(name string, done, to
 func sendOne(conn *wire.Conn, src Source, at int64, progress func(string, int64, int64)) error {
 	body := src.Reader
 	if body == nil {
-		file, err := os.Open(src.Path)
+		file, err := openSource(src.Path)
 		if err != nil {
 			return fmt.Errorf("opening %s: %w", src.Path, err)
 		}
@@ -173,4 +174,21 @@ func sendOne(conn *wire.Conn, src Source, at int64, progress func(string, int64,
 		return fmt.Errorf("%s was rejected: %s", src.Name, ack.Reason)
 	}
 	return nil
+}
+
+func openSource(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	stat, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !stat.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("not a regular file")
+	}
+	return file, nil
 }

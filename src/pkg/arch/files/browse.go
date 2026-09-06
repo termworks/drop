@@ -7,6 +7,8 @@ import (
 	"path"
 	"path/filepath"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -177,7 +179,7 @@ func (b *Browsing) ReplaceFile(name, from string, was []byte, progress func(name
 
 // lifted opens a file on this disk and weighs it.
 func lifted(from string) (*os.File, os.FileInfo, error) {
-	file, err := os.Open(from)
+	file, err := os.OpenFile(from, os.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening %s: %w", from, err)
 	}
@@ -186,6 +188,10 @@ func lifted(from string) (*os.File, os.FileInfo, error) {
 	if err != nil {
 		_ = file.Close()
 		return nil, nil, fmt.Errorf("looking at %s: %w", from, err)
+	}
+	if !stat.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, nil, fmt.Errorf("cannot send %s: not a regular file", from)
 	}
 	return file, stat, nil
 }
