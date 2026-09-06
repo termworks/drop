@@ -44,12 +44,14 @@ func (v *Viewer) Frames() <-chan []byte {
 	return v.out
 }
 
-func New(cols, rows uint16) *Caster {
+func New(cols, rows int) *Caster {
+	stage := term.New(cols, rows)
+	cols, rows = stage.Size()
 	return &Caster{
 		viewers: map[int]*Viewer{},
-		stage:   term.New(int(cols), int(rows)),
-		cols:    cols,
-		rows:    rows,
+		stage:   stage,
+		cols:    uint16(cols),
+		rows:    uint16(rows),
 	}
 }
 
@@ -135,9 +137,10 @@ func (c *Caster) Resize(cols, rows uint16) {
 		return
 	}
 
-	c.cols, c.rows = cols, rows
 	if c.stage != nil {
 		c.stage.Resize(int(cols), int(rows))
+		boundedCols, boundedRows := c.stage.Size()
+		c.cols, c.rows = uint16(boundedCols), uint16(boundedRows)
 	}
 }
 

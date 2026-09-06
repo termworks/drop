@@ -16,7 +16,7 @@ func attach(d *live.Duplex, stage *cast.Caster, into io.Writer, resize func(cols
 	viewer, replay, cols, rows := stage.Join()
 	defer stage.Leave(viewer)
 
-	if err := d.Resize(cols, rows); err != nil {
+	if err := d.Resize(int(cols), int(rows)); err != nil {
 		return err
 	}
 	if _, err := d.Write([]byte("\x1b[2J\x1b[H")); err != nil {

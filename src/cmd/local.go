@@ -126,7 +126,7 @@ func (h *castHost) live() *cast.Caster {
 
 // begin puts a cast on the air, and declares the path it is served at. It refuses while another
 // cast is running.
-func (h *castHost) begin(cols, rows uint16) (*cast.Caster, error) {
+func (h *castHost) begin(cols, rows int) (*cast.Caster, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -462,7 +462,7 @@ func takeCast(ctx context.Context, host *castHost, from io.Reader) error {
 		return err
 	}
 
-	stage, err := host.begin(uint16(head.Width), uint16(head.Height))
+	stage, err := host.begin(head.Width, head.Height)
 	if err != nil {
 		return err
 	}

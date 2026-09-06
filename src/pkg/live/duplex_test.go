@@ -112,7 +112,7 @@ func TestPumpReportsAStreamThatDiesMidFrame(t *testing.T) {
 // A terminal's shape is somebody else's number, and a grid is kept cell by cell at both ends of
 // this. A screen nobody could be looking at is not passed on as one.
 func TestAnEnormousResizeIsHeldToAScreen(t *testing.T) {
-	cols, rows, told := resized(t, 65535, 65535)
+	cols, rows, told := resized(t, 1<<20, 1<<20)
 
 	if !told {
 		t.Fatal("a resize was dropped entirely")
@@ -147,7 +147,7 @@ func TestResizeDecoderRefusesTrailingBytes(t *testing.T) {
 }
 
 // resized sends one shape and reports what the far end was told.
-func resized(t *testing.T, cols, rows uint16) (uint16, uint16, bool) {
+func resized(t *testing.T, cols, rows int) (uint16, uint16, bool) {
 	t.Helper()
 
 	var buf bytes.Buffer

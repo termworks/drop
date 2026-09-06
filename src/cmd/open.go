@@ -200,7 +200,7 @@ func readLive(parent context.Context, o opening, raw bool) error {
 			defer func() { _ = term.Restore(local, state) }()
 		}
 		if w, h, err := term.GetSize(local); err == nil {
-			_ = d.Resize(uint16(w), uint16(h))
+			_ = d.Resize(w, h)
 		}
 	}
 

@@ -166,6 +166,20 @@ func TestResizeIsRememberedForLaterWatchers(t *testing.T) {
 	}
 }
 
+func TestDimensionsAreBoundedToTheScreen(t *testing.T) {
+	c := New(1<<20, 1<<20)
+
+	if cols, rows := c.Size(); cols != 1000 || rows != 1000 {
+		t.Fatalf("new cast size = %dx%d, want 1000x1000", cols, rows)
+	}
+
+	c.Resize(65535, 65535)
+	_, _, cols, rows := c.Join()
+	if cols != 1000 || rows != 1000 {
+		t.Fatalf("resized cast = %dx%d, want 1000x1000", cols, rows)
+	}
+}
+
 // Joining a cast that has already stopped hands back a feed nothing will ever close, unless the
 // caster says the cast is over — and then whoever is watching reads nothing and finishes.
 func TestJoiningAfterTheCastEndedIsOver(t *testing.T) {

@@ -117,11 +117,17 @@ func (d *Duplex) Write(p []byte) (int, error) {
 }
 
 // Resize tells the far end the terminal changed shape.
-func (d *Duplex) Resize(cols, rows uint16) error {
+func (d *Duplex) Resize(cols, rows int) error {
+	if cols < leastSide || rows < leastSide {
+		return nil
+	}
+	cols = min(cols, mostSide)
+	rows = min(rows, mostSide)
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	return d.conn.WriteFrame(wire.KindResize, Resize{Cols: cols, Rows: rows}.encode())
+	return d.conn.WriteFrame(wire.KindResize, Resize{Cols: uint16(cols), Rows: uint16(rows)}.encode())
 }
 
 // Close signals that this end has nothing more to write, and half-closes the stream so the far end

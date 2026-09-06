@@ -95,7 +95,7 @@ func runCast(parent context.Context, addressFile string) error {
 		return err
 	}
 
-	stage := cast.New(uint16(head.Width), uint16(head.Height))
+	stage := cast.New(head.Width, head.Height)
 	defer stage.Stop()
 
 	doing := &doings{

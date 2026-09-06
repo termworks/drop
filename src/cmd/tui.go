@@ -405,7 +405,7 @@ func (s speaking) Resize(cols, rows int) error {
 	if cols < 1 || rows < 1 {
 		return nil
 	}
-	return s.d.Resize(uint16(cols), uint16(rows))
+	return s.d.Resize(cols, rows)
 }
 
 func (s speaking) Type(p []byte) error {
