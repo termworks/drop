@@ -164,18 +164,32 @@ func plain(body []byte) (Message, error) {
 // append writes one length-prefixed record and flushes it, so a message that was reported stored
 // is on the disk rather than in a buffer.
 func appendTo(path string, body []byte) error {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o600)
+	created := err == nil
+	if errors.Is(err, os.ErrExist) {
+		file, err = os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	}
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", path, err)
 	}
-	defer func() { _ = file.Close() }()
 
 	var head [binary.MaxVarintLen64]byte
 	n := binary.PutUvarint(head[:], uint64(len(body)))
 	if _, err := file.Write(append(head[:n], body...)); err != nil {
+		_ = file.Close()
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
-	return file.Sync()
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("syncing %s: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("closing %s: %w", path, err)
+	}
+	if created {
+		return keep.SyncDir(filepath.Dir(path))
+	}
+	return nil
 }
 
 // readAll walks a log. A truncated tail — a crash mid-write — ends the walk rather than failing

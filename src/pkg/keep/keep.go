@@ -48,7 +48,11 @@ func Replace(file string, raw []byte) error {
 		return fmt.Errorf("replacing %s: %w", file, err)
 	}
 
-	// A rename is atomic to a reader and not yet a fact on the disk. This is what makes it one.
+	return SyncDir(dir)
+}
+
+// SyncDir flushes a directory and its entries to disk.
+func SyncDir(dir string) error {
 	opened, err := os.Open(dir)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", dir, err)

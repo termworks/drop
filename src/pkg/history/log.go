@@ -510,16 +510,30 @@ func (l *Log) length() (int64, error) {
 // append writes one record and flushes it, so a change reported taken is on the disk rather than in
 // a buffer.
 func (l *Log) append(raw []byte) error {
-	file, err := os.OpenFile(l.file, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	file, err := os.OpenFile(l.file, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o600)
+	created := err == nil
+	if errors.Is(err, os.ErrExist) {
+		file, err = os.OpenFile(l.file, os.O_WRONLY|os.O_APPEND, 0o600)
+	}
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", l.file, err)
 	}
-	defer func() { _ = file.Close() }()
 
 	if _, err := file.Write(raw); err != nil {
+		_ = file.Close()
 		return fmt.Errorf("writing %s: %w", l.file, err)
 	}
-	return file.Sync()
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("syncing %s: %w", l.file, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("closing %s: %w", l.file, err)
+	}
+	if created {
+		return keep.SyncDir(filepath.Dir(l.file))
+	}
+	return nil
 }
 
 // rewrite puts the whole log back on disk, which is what folding it away needs.
