@@ -74,7 +74,7 @@ type borrowed struct{ fallback reaches }
 func (b borrowed) To(ctx context.Context, entry book.Entry, alpn string) (io.Closer, proto.Stream, error) {
 	s, err := viaDaemon(entry, alpn)
 	if err == nil {
-		return s, s, nil
+		return lentDone{s}, s, nil
 	}
 	if !errors.Is(err, errNoDaemon) {
 		// The daemon is there and said no. Dialling around it would take seconds to arrive at the
@@ -83,6 +83,10 @@ func (b borrowed) To(ctx context.Context, entry book.Entry, alpn string) (io.Clo
 	}
 	return b.fallback.To(ctx, entry, alpn)
 }
+
+type lentDone struct{ stream *lent }
+
+func (d lentDone) Close() error { return d.stream.Done() }
 
 // onlyHeld reaches a device only over a connection already open to it, and refuses otherwise.
 //
