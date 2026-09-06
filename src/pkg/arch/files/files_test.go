@@ -676,6 +676,13 @@ func TestRequestAndReplyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRequestRefusesAnInvalidUnknownSize(t *testing.T) {
+	q := request{Op: opPut, Name: "report.bin", Size: wire.SizeUnknown - 1}
+	if _, err := decodeRequest(q.encode()); err == nil {
+		t.Fatal("decodeRequest() accepted an invalid negative size")
+	}
+}
+
 // A count is a claim. A small body must not make a large allocation, and must not decode.
 func TestReplyRefusesAnImpossibleCount(t *testing.T) {
 	w := wire.NewWriter()

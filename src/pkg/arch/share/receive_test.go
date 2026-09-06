@@ -228,6 +228,56 @@ func TestAnOfferCannotNameOneFileTwice(t *testing.T) {
 	}
 }
 
+func TestAnOfferCannotUseAnInvalidUnknownSize(t *testing.T) {
+	dir := t.TempDir()
+	item := Item{Name: "a.txt", Size: wire.SizeUnknown - 1}
+
+	if _, err := taking(t, dir, []Item{item}, spoken(t), nil); err == nil {
+		t.Fatal("an offer with an invalid negative size was taken")
+	}
+	left, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("the refused offer left %d files", len(left))
+	}
+}
+
+func TestAKnownSizeCannotBeExceeded(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("too long")
+	item := Item{Name: "a.txt", Size: 3}
+
+	if _, err := taking(t, dir, []Item{item}, spoken(t, spoke{sent: body, whole: body}), nil); err == nil {
+		t.Fatal("an item larger than its offer was taken")
+	}
+	left, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("the oversized item left %d files", len(left))
+	}
+}
+
+func TestAKnownSizeMustBeReached(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("short")
+	item := Item{Name: "a.txt", Size: 8}
+
+	if _, err := taking(t, dir, []Item{item}, spoken(t, spoke{sent: body, whole: body}), nil); err == nil {
+		t.Fatal("an item smaller than its offer was taken")
+	}
+	left, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("the undersized item left %d files", len(left))
+	}
+}
+
 // The sender's permission bits are a stranger's opinion: all that survives is whether it is a
 // program, and the directory is this user's alone.
 func TestWhatLandsIsNotTheSendersMode(t *testing.T) {

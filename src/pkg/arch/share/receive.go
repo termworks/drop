@@ -52,6 +52,9 @@ func offered(items []Item) error {
 		if name == "" {
 			return fmt.Errorf("%q is not a file name", item.Name)
 		}
+		if item.Size < wire.SizeUnknown {
+			return fmt.Errorf("%s has invalid size %d", name, item.Size)
+		}
 		if seen[name] {
 			return fmt.Errorf("%s was offered twice", name)
 		}
@@ -179,6 +182,7 @@ func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64
 	// Data frames run until the item ends, which is what lets an item arrive whose length nobody
 	// knew when it started.
 	got := at
+	overrun := false
 	buf := make([]byte, wire.DataChunk)
 
 	for {
@@ -205,6 +209,11 @@ func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64
 		if err := conn.ReadBody(buf, size); err != nil {
 			return err
 		}
+		if overrun || item.Known() && int64(size) > item.Size-got {
+			overrun = true
+			got += int64(size)
+			continue
+		}
 		if _, err := out.Write(buf[:size]); err != nil {
 			return fmt.Errorf("writing %s: %w", part, err)
 		}
@@ -226,6 +235,9 @@ func finishOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, name, par
 	if got != end.Size {
 		return refuse(fmt.Sprintf("arrived as %d bytes, sender counted %d", got, end.Size))
 	}
+	if item.Known() && got != item.Size {
+		return refuse(fmt.Sprintf("arrived as %d bytes, and %d were announced", got, item.Size))
+	}
 	if !bytes.Equal(digest.Sum(nil), end.Digest) {
 		return refuse("arrived corrupted: digest mismatch")
 	}
@@ -237,6 +249,9 @@ func finishOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, name, par
 	}
 	if err := out.Chmod(landing(item.Mode)); err != nil {
 		return fmt.Errorf("setting the mode of %s: %w", part, err)
+	}
+	if err := out.Sync(); err != nil {
+		return fmt.Errorf("syncing %s: %w", part, err)
 	}
 	if err := out.Close(); err != nil {
 		return fmt.Errorf("closing %s: %w", part, err)
@@ -250,6 +265,9 @@ func finishOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, name, par
 		_ = dir.Remove(final)
 		return fmt.Errorf("renaming %s: %w", part, err)
 	}
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("syncing the receiving directory: %w", err)
+	}
 
 	if err := conn.WriteFrame(wire.KindAck, wire.Ack{OK: true}.Encode()); err != nil {
 		return fmt.Errorf("acknowledging %s: %w", final, err)
@@ -258,6 +276,15 @@ func finishOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, name, par
 		hooks.Landed(from, final, got)
 	}
 	return nil
+}
+
+func syncDir(dir *os.Root) error {
+	opened, err := dir.Open(".")
+	if err != nil {
+		return err
+	}
+	defer opened.Close()
+	return opened.Sync()
 }
 
 // landing is what a received file is allowed to be. The sender's bits are a stranger's opinion, so

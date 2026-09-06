@@ -131,6 +131,9 @@ func decodeRequest(body []byte) (request, error) {
 	if err != nil {
 		return out, err
 	}
+	if size < wire.SizeUnknown {
+		return out, fmt.Errorf("invalid size %d", size)
+	}
 	out.Op, out.Name, out.To, out.Size, out.Mode = op, name, to, size, uint32(mode)
 	out.At, out.Sum, out.From = at, append([]byte(nil), sum...), from
 	return out, nil

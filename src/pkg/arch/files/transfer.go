@@ -106,6 +106,9 @@ func takeInto(conn *wire.Conn, dir *os.Root, name string, q request, progress fu
 		return "", 0, err
 	}
 	dated(dir, final, q.At)
+	if err := syncLanding(dir, final); err != nil {
+		return "", 0, fmt.Errorf("syncing %s: %w", final, err)
+	}
 
 	if err := conn.WriteFrame(wire.KindAck, wire.Ack{OK: true}.Encode()); err != nil {
 		return "", 0, fmt.Errorf("acknowledging %s: %w", final, err)
@@ -132,6 +135,9 @@ func takeOver(conn *wire.Conn, dir *os.Root, name string, q request, progress fu
 		return 0, fmt.Errorf("renaming %s: %w", part, err)
 	}
 	dated(dir, name, q.At)
+	if err := syncLanding(dir, name); err != nil {
+		return 0, fmt.Errorf("syncing %s: %w", name, err)
+	}
 
 	if err := conn.WriteFrame(wire.KindAck, wire.Ack{OK: true}.Encode()); err != nil {
 		return 0, fmt.Errorf("acknowledging %s: %w", name, err)
@@ -181,6 +187,9 @@ func takeOnto(conn *wire.Conn, into, name string, e Entry, sum []byte, progress 
 		return fmt.Errorf("renaming %s: %w", at.part, err)
 	}
 	dated(dir, final, e.At)
+	if err := syncLanding(dir, final); err != nil {
+		return fmt.Errorf("syncing %s: %w", final, err)
+	}
 
 	return conn.WriteFrame(wire.KindAck, wire.Ack{OK: true}.Encode())
 }
@@ -237,6 +246,9 @@ func land(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mo
 	if err := out.Chmod(landing(mode)); err != nil {
 		return lost(fmt.Errorf("setting the mode of %s: %w", a.part, err))
 	}
+	if err := out.Sync(); err != nil {
+		return lost(fmt.Errorf("syncing %s: %w", a.part, err))
+	}
 	if err := out.Close(); err != nil {
 		return lost(fmt.Errorf("closing %s: %w", a.part, err))
 	}
@@ -249,6 +261,7 @@ func land(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mo
 func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, name string, size int64, progress func(string, int64, int64)) (int64, string, error) {
 	buf := make([]byte, wire.DataChunk)
 	got := a.have
+	overrun := false
 
 	for {
 		kind, length, err := conn.ReadHeader()
@@ -264,6 +277,9 @@ func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, nam
 			end, err := wire.DecodeEnd(body)
 			if err != nil {
 				return 0, "", err
+			}
+			if overrun {
+				return 0, fmt.Sprintf("sent more than the announced %d bytes", size), nil
 			}
 			if got != end.Size {
 				return 0, fmt.Sprintf("arrived as %d bytes, sender counted %d", got, end.Size), nil
@@ -283,6 +299,11 @@ func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, nam
 		if err := conn.ReadBody(buf, length); err != nil {
 			return 0, "", err
 		}
+		if overrun || size != wire.SizeUnknown && int64(length) > size-got {
+			overrun = true
+			got += int64(length)
+			continue
+		}
 		if _, err := out.Write(buf[:length]); err != nil {
 			return 0, "", fmt.Errorf("writing %s: %w", a.part, err)
 		}
@@ -292,6 +313,27 @@ func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, nam
 			progress(name, got, size)
 		}
 	}
+}
+
+func syncLanding(dir *os.Root, name string) error {
+	file, err := dir.Open(name)
+	if err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+
+	parent, err := dir.Open(path.Dir(name))
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	return parent.Sync()
 }
 
 // partName is where an item waits while it arrives: beside where it lands, named after it and a tag

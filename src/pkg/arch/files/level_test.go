@@ -360,6 +360,27 @@ func TestWhatArrivesIsWeighedAgainstWhatWasAnnounced(t *testing.T) {
 	}
 }
 
+func TestWhatArrivesCannotExceedWhatWasAnnounced(t *testing.T) {
+	dir := t.TempDir()
+	b := opened(t, dir, true, Into{})
+
+	err := b.Put("report.bin", strings.NewReader("too long"), Given{Size: 3, Mode: 0o644})
+	if err == nil {
+		t.Fatal("a put larger than its announced size was taken")
+	}
+	if !strings.Contains(err.Error(), "more than the announced") {
+		t.Errorf("it was refused as %v", err)
+	}
+
+	left, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading the directory: %v", err)
+	}
+	if len(left) != 0 {
+		t.Errorf("an oversized put left %d files behind", len(left))
+	}
+}
+
 // A directory too big to answer says what to do about it rather than only that it will not.
 func TestADirectoryTooBigToListSaysWhatToDo(t *testing.T) {
 	dir := t.TempDir()
