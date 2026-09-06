@@ -99,6 +99,9 @@ func writeAll(w io.Writer, p []byte) error {
 
 // WriteData writes one data frame without copying the payload.
 func (c *Conn) WriteData(payload []byte) error {
+	if len(payload) == 0 {
+		return fmt.Errorf("wire: empty data frame")
+	}
 	return c.WriteFrame(KindData, payload)
 }
 

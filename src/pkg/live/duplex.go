@@ -192,6 +192,9 @@ func (d *Duplex) Pump(out io.Writer) error {
 
 		switch kind {
 		case wire.KindData:
+			if size == 0 {
+				return fmt.Errorf("empty data frame")
+			}
 			if err := d.conn.ReadBody(buf, size); err != nil {
 				return err
 			}

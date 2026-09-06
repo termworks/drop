@@ -222,6 +222,9 @@ func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64
 		if kind != wire.KindData {
 			return fmt.Errorf("expected data for %s, got frame kind %d", name, kind)
 		}
+		if size == 0 {
+			return fmt.Errorf("empty data frame for %s", name)
+		}
 
 		if err := conn.ReadBody(buf, size); err != nil {
 			return err

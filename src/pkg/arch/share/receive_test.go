@@ -299,6 +299,18 @@ func TestAnOversizedItemNeedsNoEndFrameToStop(t *testing.T) {
 	}
 }
 
+func TestAnEmptyDataFrameStopsAnItem(t *testing.T) {
+	var sent bytes.Buffer
+	if err := wire.NewConn(readWriter{&sent, &sent}).WriteFrame(wire.KindData, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	item := Item{Name: "a.txt", Size: wire.SizeUnknown}
+	if _, err := taking(t, t.TempDir(), []Item{item}, &sent, nil); err == nil || !strings.Contains(err.Error(), "empty data frame") {
+		t.Fatalf("empty data frame ended as %v", err)
+	}
+}
+
 func TestAKnownSizeMustBeReached(t *testing.T) {
 	dir := t.TempDir()
 	body := []byte("short")

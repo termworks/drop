@@ -109,6 +109,18 @@ func TestPumpReportsAStreamThatDiesMidFrame(t *testing.T) {
 	}
 }
 
+func TestPumpRefusesAnEmptyDataFrame(t *testing.T) {
+	var buf bytes.Buffer
+	if err := wireConn(&buf).WriteFrame(wire.KindData, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	d := &Duplex{conn: wire.NewConn(readWriter{&buf, io.Discard})}
+	if err := d.Pump(io.Discard); err == nil {
+		t.Fatal("Pump() accepted an empty data frame")
+	}
+}
+
 // A terminal's shape is somebody else's number, and a grid is kept cell by cell at both ends of
 // this. A screen nobody could be looking at is not passed on as one.
 func TestAnEnormousResizeIsHeldToAScreen(t *testing.T) {

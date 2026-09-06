@@ -64,6 +64,18 @@ func TestEmptyFrameIsFine(t *testing.T) {
 	}
 }
 
+func TestEmptyDataIsNotWritten(t *testing.T) {
+	var out bytes.Buffer
+	conn := NewConn(readWriter{bytes.NewReader(nil), &out})
+
+	if err := conn.WriteData(nil); err == nil {
+		t.Fatal("WriteData() accepted an empty payload")
+	}
+	if out.Len() != 0 {
+		t.Fatalf("WriteData() wrote %d bytes for an empty payload", out.Len())
+	}
+}
+
 // A length past the cap has to be refused before anything is allocated for it.
 func TestReadHeaderRefusesAnAbsurdLength(t *testing.T) {
 	// Kind, then a varint far above MaxFrame.

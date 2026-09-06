@@ -357,6 +357,9 @@ func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, nam
 		if kind != wire.KindData {
 			return 0, "", fmt.Errorf("expected data for %s, got frame kind %d", name, kind)
 		}
+		if length == 0 {
+			return 0, "", fmt.Errorf("empty data frame for %s", name)
+		}
 
 		if err := conn.ReadBody(buf, length); err != nil {
 			return 0, "", err
