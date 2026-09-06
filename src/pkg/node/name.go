@@ -7,10 +7,10 @@ import "os"
 //
 // The config wins when it named one, then $DROP_NAME, then the hostname.
 func DisplayName() string {
-	if name := configuredName(); name != "" {
+	if name := os.Getenv("DROP_NAME"); name != "" {
 		return name
 	}
-	if name := os.Getenv("DROP_NAME"); name != "" {
+	if name := configuredName(); name != "" {
 		return name
 	}
 	name, err := os.Hostname()
