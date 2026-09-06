@@ -81,7 +81,7 @@ func Recall(peer node.ID) ([]proto.Served, error) {
 		return nil, err
 	}
 
-	raw, err := os.ReadFile(file)
+	raw, err := keep.ReadFile(file, keep.MaxState)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

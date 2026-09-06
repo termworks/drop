@@ -148,7 +148,7 @@ func Load() (*Book, error) {
 		return nil, fmt.Errorf("stating %s: %w", file, err)
 	}
 
-	raw, err := os.ReadFile(file)
+	raw, err := keep.ReadFile(file, keep.MaxState)
 	if errors.Is(err, os.ErrNotExist) {
 		return b, nil
 	}
