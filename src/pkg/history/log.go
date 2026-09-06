@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,6 +34,8 @@ const (
 	MaxNamed = 1 << 18
 	// MaxLog is how many bytes the file may reach.
 	MaxLog = 1 << 25
+	// MaxThings is how many shared histories one account may keep.
+	MaxThings = 1 << 12
 )
 
 // mark begins every record on disk, so a walk that loses its place can find the next one rather
@@ -111,6 +114,41 @@ func Open(at string) (*Log, error) {
 	return l, nil
 }
 
+// Things lists the valid shared-history directories in sorted order.
+func Things() ([]string, error) {
+	base, err := convo.DataDir()
+	if err != nil {
+		return nil, err
+	}
+	root := filepath.Join(base, "history")
+	opened, err := os.Open(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading shared histories: %w", err)
+	}
+	defer func() { _ = opened.Close() }()
+
+	entries, err := opened.ReadDir(MaxThings + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("reading shared histories: %w", err)
+	}
+	if len(entries) > MaxThings {
+		return nil, fmt.Errorf("shared-history directory has more than %d entries", MaxThings)
+	}
+
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || nameable(entry.Name()) != nil {
+			continue
+		}
+		out = append(out, entry.Name())
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // At is the thing this record is about. A change bound to anything else does not belong here.
 func (l *Log) At() string { return l.at }
 
@@ -154,6 +192,23 @@ func (l *Log) Add(c Change) (ID, error) {
 		return err
 	})
 	return id, err
+}
+
+// Rewrite writes every held change under the key given. An empty key writes in the clear.
+func (l *Log) Rewrite(to []byte) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return keep.While(l.file, func() error {
+		l.read = false
+		if err := l.load(); err != nil {
+			return err
+		}
+		if l.rev == nil || l.size == 0 {
+			return nil
+		}
+		return l.rewriteWith(to)
+	})
 }
 
 // take is Add with the log already read and locked.
@@ -586,6 +641,14 @@ func (l *Log) append(raw []byte) error {
 // Through a temporary file and a rename, so an interruption leaves the log as it was rather than
 // half of each. It is the one time a record already written is written again.
 func (l *Log) rewrite() error {
+	key, err := keyed()
+	if err != nil {
+		return err
+	}
+	return l.rewriteWith(key)
+}
+
+func (l *Log) rewriteWith(key []byte) error {
 	order, err := l.sorted()
 	if err != nil {
 		return err
@@ -593,11 +656,15 @@ func (l *Log) rewrite() error {
 
 	var raw []byte
 	for _, id := range order {
-		body, err := stored(record(l.changes[id]), l.at, id)
+		body, err := storedWith(record(l.changes[id]), l.at, id, key)
 		if err != nil {
 			return err
 		}
-		raw = append(raw, framed(body)...)
+		kept := framed(body)
+		if len(raw) > MaxLog-len(kept) {
+			return fmt.Errorf("rewriting %s: it would exceed the %d-byte limit", l.file, MaxLog)
+		}
+		raw = append(raw, kept...)
 	}
 
 	if err := keep.Replace(l.file, raw); err != nil {

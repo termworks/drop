@@ -83,6 +83,11 @@ func stored(body []byte, about string, id ID) ([]byte, error) {
 		// log. Refusing to write is the only safe answer.
 		return nil, err
 	}
+	return storedWith(body, about, id, key)
+}
+
+// storedWith keeps one record under the key given. An empty key writes it in the clear.
+func storedWith(body []byte, about string, id ID, key []byte) ([]byte, error) {
 	if len(key) == 0 {
 		return body, nil
 	}

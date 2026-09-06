@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,6 +114,62 @@ func smaller(a, b Change) Change {
 	return b
 }
 
+func TestThingsReturnsNoHistoriesWhenTheRootIsMissing(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	things, err := Things()
+	if err != nil {
+		t.Fatalf("Things(): %v", err)
+	}
+	if len(things) != 0 {
+		t.Fatalf("Things() = %v, want none", things)
+	}
+}
+
+func TestThingsListsOnlyValidDirectoriesInOrder(t *testing.T) {
+	data := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", data)
+	root := filepath.Join(data, "drop", "history")
+	for _, name := range []string{"zebra", "alpha", `bad\name`} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "plain-file"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "alpha"), filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
+
+	things, err := Things()
+	if err != nil {
+		t.Fatalf("Things(): %v", err)
+	}
+	want := []string{"alpha", "zebra"}
+	if !same(things, want) {
+		t.Fatalf("Things() = %v, want %v", things, want)
+	}
+}
+
+func TestThingsRefusesAnUnboundedHistoryDirectory(t *testing.T) {
+	data := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", data)
+	root := filepath.Join(data, "drop", "history")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i <= MaxThings; i++ {
+		if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("thing-%04x", i)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := Things(); err == nil || !strings.Contains(err.Error(), fmt.Sprint(MaxThings)) {
+		t.Fatalf("Things() = %v, want the %d-entry limit", err, MaxThings)
+	}
+}
+
 // The whole reason the package exists: two machines given the same changes in different orders
 // read the same history, including across a fork nobody resolved.
 func TestTwoLogsGivenTheSameChangesInDifferentOrdersReadTheSame(t *testing.T) {
@@ -180,6 +237,39 @@ func TestLogChangesWaitForOtherProcesses(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRewriteWaitsForOtherProcesses(t *testing.T) {
+	asSomebody(t)
+	l := aLog(t, thing)
+	add(t, l, signed(t, "waiting"))
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lockErr := make(chan error, 1)
+	go func() {
+		lockErr <- keep.While(l.file, func() error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+
+	done := make(chan error, 1)
+	go func() { done <- l.Rewrite(nil) }()
+	select {
+	case err := <-done:
+		t.Fatalf("Rewrite() passed a held cross-process lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-lockErr; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("Rewrite(): %v", err)
 	}
 }
 
