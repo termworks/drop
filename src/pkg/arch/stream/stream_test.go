@@ -16,7 +16,7 @@ import (
 // terminal screen at the far end, a bare line feed moves down without moving back, and every line
 // starts further right than the one before it.
 func TestAStreamsNewlinesBecomeTerminalOnes(t *testing.T) {
-	var got strings.Builder
+	var got terminalBuffer
 
 	if _, err := (asTerminal{&got}).Write([]byte("one\ntwo\n")); err != nil {
 		t.Fatalf("Write(): %v", err)
@@ -28,7 +28,7 @@ func TestAStreamsNewlinesBecomeTerminalOnes(t *testing.T) {
 
 // A command that already writes CRLF must not end up with two carriage returns.
 func TestAlreadyTerminalNewlinesAreLeftAlone(t *testing.T) {
-	var got strings.Builder
+	var got terminalBuffer
 
 	if _, err := (asTerminal{&got}).Write([]byte("one\r\ntwo\r\n")); err != nil {
 		t.Fatalf("Write(): %v", err)
@@ -41,7 +41,7 @@ func TestAlreadyTerminalNewlinesAreLeftAlone(t *testing.T) {
 // The count returned is what the caller handed over, not what was written: io.Copy treats a short
 // write as an error, and every translated newline makes the write longer than the read.
 func TestTheTranslatorReportsWhatItWasGiven(t *testing.T) {
-	var got strings.Builder
+	var got terminalBuffer
 
 	n, err := (asTerminal{&got}).Write([]byte("one\ntwo\n"))
 	if err != nil {
@@ -51,6 +51,22 @@ func TestTheTranslatorReportsWhatItWasGiven(t *testing.T) {
 		t.Errorf("reported %d bytes, was given %d", n, len("one\ntwo\n"))
 	}
 }
+
+func TestTheTranslatorForwardsWriteStops(t *testing.T) {
+	var got terminalBuffer
+
+	(asTerminal{&got}).StopWrite()
+	if !got.stopped {
+		t.Fatal("the translated stream did not stop its destination write")
+	}
+}
+
+type terminalBuffer struct {
+	strings.Builder
+	stopped bool
+}
+
+func (b *terminalBuffer) StopWrite() { b.stopped = true }
 
 // A command that has said everything it is going to say ends the session. Waiting on a far end that
 // opened the stream and then went quiet holds this goroutine, and the command it started with it,

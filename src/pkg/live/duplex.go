@@ -23,6 +23,7 @@ const lingerFor = 5 * time.Second
 type Stream interface {
 	io.ReadWriteCloser
 	SetReadDeadline(t time.Time) error
+	SetWriteDeadline(t time.Time) error
 }
 
 // A terminal's shape, as far as one is believed. Zero is not a size anything can be drawn on, and a
@@ -154,6 +155,14 @@ func (d *Duplex) Stop() {
 		return
 	}
 	_ = d.stream.SetReadDeadline(time.Now())
+}
+
+// StopWrite ends a write already in flight by expiring the stream's write deadline.
+func (d *Duplex) StopWrite() {
+	if d.stream == nil {
+		return
+	}
+	_ = d.stream.SetWriteDeadline(time.Now())
 }
 
 // Linger waits for the far end to close, so the last frames written are not lost to a teardown.

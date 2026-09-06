@@ -133,6 +133,8 @@ func (q *quiet) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
+func (q *quiet) SetWriteDeadline(time.Time) error { return nil }
+
 // A shell that leaves something behind must not take the namespace with it.
 //
 // Whatever the shell started keeps the other side of the pty open, so reading it never ends — and

@@ -241,3 +241,5 @@ func (q *quiet) SetReadDeadline(t time.Time) error {
 	}
 	return nil
 }
+
+func (q *quiet) SetWriteDeadline(time.Time) error { return nil }

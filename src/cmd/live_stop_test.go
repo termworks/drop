@@ -46,6 +46,8 @@ func (s *halfClosedStream) SetReadDeadline(at time.Time) error {
 	return nil
 }
 
+func (s *halfClosedStream) SetWriteDeadline(time.Time) error { return nil }
+
 func TestStoppingALiveSessionEndsItsReadPump(t *testing.T) {
 	s := newHalfClosedStream()
 	d := live.New(wire.NewConn(s), s)

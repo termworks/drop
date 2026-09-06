@@ -167,7 +167,12 @@ func (s *Stream) Serve(ctx context.Context, at arch.Session) error {
 // the kernel does that for a pty, and a stream namespace has none. What arrives at the far end is
 // drawn on a terminal screen, where a line feed moves down without moving back, and the result is
 // each line starting further right than the last.
-type asTerminal struct{ to io.Writer }
+type liveWriter interface {
+	io.Writer
+	StopWrite()
+}
+
+type asTerminal struct{ to liveWriter }
 
 func (a asTerminal) Write(p []byte) (int, error) {
 	// Only newlines that are not already part of a pair, so a command that does its own
@@ -185,6 +190,8 @@ func (a asTerminal) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+func (a asTerminal) StopWrite() { a.to.StopWrite() }
 
 // ending sends a command's whole process group away. A group that has already gone is the command
 // having finished of its own accord, which is not a failure to cancel it.
