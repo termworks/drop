@@ -35,6 +35,8 @@ const (
 	// partingWithin bounds the wait for a watcher's feed to finish once the far end has stopped
 	// writing, the way a duplex bounds its own linger.
 	partingWithin = 5 * time.Second
+	// outputDrainWithin bounds reading the last output after a shell exits.
+	outputDrainWithin = 2 * time.Second
 )
 
 // Config is what a tty namespace was told: what to start, and whether the far end may type.
@@ -144,6 +146,8 @@ type terminal struct {
 	shell *exec.Cmd
 	// reaped is closed once the shell has ended and been waited for.
 	reaped chan struct{}
+	// drained is closed once everything readable from the pty reached the screen.
+	drained chan struct{}
 }
 
 // at returns the terminal for a namespace, starting it on the first watcher.
@@ -172,12 +176,18 @@ func (t *TTY) at(path string, cfg Config) (*terminal, error) {
 	_ = pty.Setsize(ptmx, &pty.Winsize{Cols: 80, Rows: 24})
 
 	term := &terminal{
-		stage:  cast.New(80, 24),
-		ptmx:   ptmx,
-		shell:  cmd,
-		reaped: make(chan struct{}),
+		stage:   cast.New(80, 24),
+		ptmx:    ptmx,
+		shell:   cmd,
+		reaped:  make(chan struct{}),
+		drained: make(chan struct{}),
 	}
 	t.open[path] = term
+
+	go func() {
+		_, _ = io.Copy(term.stage, ptmx)
+		close(term.drained)
+	}()
 
 	// What ends the session is the shell ending, and nothing else.
 	//
@@ -193,12 +203,7 @@ func (t *TTY) at(path string, cfg Config) (*terminal, error) {
 	// closed file for as long as somebody's own background job lives, and costs nobody the path.
 	go func() {
 		_ = cmd.Wait()
-
-		// A shell that had no job control keeps whatever it started in its own group, and that
-		// does go with it. One that had job control does not, and that is a person's own doing.
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
+		close(term.reaped)
 
 		// Out of the table before it is taken apart, so the next watcher starts a fresh shell
 		// rather than being handed this one with its feeds ended.
@@ -206,14 +211,15 @@ func (t *TTY) at(path string, cfg Config) (*terminal, error) {
 		delete(t.open, path)
 		t.mu.Unlock()
 
+		select {
+		case <-term.drained:
+		case <-time.After(outputDrainWithin):
+			_ = ptmx.Close()
+			<-term.drained
+		}
 		term.stage.Stop()
 		_ = ptmx.Close()
-		close(term.reaped)
 	}()
-
-	// Everything the shell writes goes to every watcher, and into the scrollback so somebody
-	// arriving later has something to render.
-	go func() { _, _ = io.Copy(term.stage, ptmx) }()
 
 	return term, nil
 }

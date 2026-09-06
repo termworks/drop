@@ -183,3 +183,36 @@ func TestAShellThatLeavesSomethingBehindDoesNotKeepTheNamespace(t *testing.T) {
 		t.Fatal("the next watcher was handed the terminal whose shell had gone")
 	}
 }
+
+func TestAFastShellDrainsItsOutput(t *testing.T) {
+	tty := New(Into{})
+	defer tty.Stop()
+
+	term, err := tty.at("/shell", Config{Shell: "/bin/sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer, _, _, _ := term.stage.Join()
+	defer term.stage.Leave(viewer)
+
+	done := make(chan []byte, 1)
+	go func() {
+		var out bytes.Buffer
+		for chunk := range viewer.Frames() {
+			_, _ = out.Write(chunk)
+		}
+		done <- out.Bytes()
+	}()
+
+	if _, err := term.ptmx.WriteString("printf 'marker-from-shell\\n'\nexit\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case out := <-done:
+		if !bytes.Contains(out, []byte("marker-from-shell")) {
+			t.Fatalf("shell output ended as %q", out)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the shell output did not finish")
+	}
+}
