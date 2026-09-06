@@ -121,7 +121,7 @@ func viaDaemon(entry book.Entry, alpn string) (*lent, error) {
 
 	if _, err := fmt.Fprintf(conn, "via %s %s\n", entry.Name, alpn); err != nil {
 		_ = conn.Close()
-		return nil, errNoDaemon
+		return nil, fmt.Errorf("asking this node to reach %s: %w", entry.Name, err)
 	}
 	return acceptLent(conn, entry.Name)
 }
@@ -139,7 +139,7 @@ func acceptLent(conn net.Conn, name string) (*lent, error) {
 	}
 	if err != nil {
 		_ = conn.Close()
-		return nil, errNoDaemon
+		return nil, fmt.Errorf("asking this node to reach %s: %w", name, err)
 	}
 
 	what, why, _ := strings.Cut(strings.TrimSpace(said), " ")

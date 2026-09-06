@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"io"
 	"net"
 	"sync/atomic"
@@ -26,6 +27,17 @@ func TestViaDaemonKeepsBytesBufferedAfterItsReply(t *testing.T) {
 	}
 	if string(got) != "payload" {
 		t.Fatalf("borrowed stream = %q", got)
+	}
+}
+
+func TestAConnectedDaemonFailureDoesNotBecomeNoDaemon(t *testing.T) {
+	server, client := net.Pipe()
+	_ = server.Close()
+
+	if _, err := acceptLent(client, "alpha"); err == nil {
+		t.Fatal("a daemon that closed without answering was accepted")
+	} else if errors.Is(err, errNoDaemon) {
+		t.Fatalf("a connected daemon failure became %v", errNoDaemon)
 	}
 }
 
