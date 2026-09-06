@@ -171,7 +171,10 @@ func runServe(parent context.Context, quiet bool) error {
 	answer := map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
 			defer func() { _ = s.Close() }()
-			_ = pinned.Refresh()
+			if err := pinned.Refresh(); err != nil {
+				fmt.Fprintf(os.Stderr, "drop: refreshing the address book: %v\n", err)
+				return
+			}
 
 			// Which path this session was for, so an ephemeral mount learns when the transfer it
 			// was put up for is over. Nothing is asked of a caller that was turned away.
@@ -191,7 +194,10 @@ func runServe(parent context.Context, quiet bool) error {
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
 			defer func() { _ = s.Close() }()
-			_ = pinned.Refresh()
+			if err := pinned.Refresh(); err != nil {
+				fmt.Fprintf(os.Stderr, "drop: refreshing the address book: %v\n", err)
+				return
+			}
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
 				return greeting(pinned, cfg.Mounts, known, from, badge)
 			}, moving(pinned, func(said string) { log.Printf("%s", said) }))
@@ -229,7 +235,10 @@ func runServe(parent context.Context, quiet bool) error {
 	pushing := func(from node.ID) {
 		// Somebody just opened a connection to us. Whatever is waiting for them can go now, over
 		// the connection they are holding, rather than waiting for a dial that may never work.
-		_ = pinned.Refresh()
+		if err := pinned.Refresh(); err != nil {
+			trace(fmt.Sprintf("refreshing the address book: %v", err))
+			return
+		}
 
 		entry, known := pinned.ByID(from)
 		if !known || !entry.Paired() {
@@ -336,7 +345,10 @@ func backlog(ctx context.Context, pinned *book.Book, held *dial.Kept, mounts *ns
 		}
 
 		// Re-read first: a device paired since this started has a conversation too.
-		_ = pinned.Refresh()
+		if err := pinned.Refresh(); err != nil {
+			trace(fmt.Sprintf("refreshing the address book: %v", err))
+			continue
+		}
 
 		for _, entry := range pinned.Paired() {
 			select {

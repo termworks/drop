@@ -308,15 +308,15 @@ func holding(ctx context.Context, pinned *book.Book, held *dial.Kept) {
 	defer tick.Stop()
 
 	for {
-		_ = pinned.Refresh()
-
-		for _, entry := range pinned.Paired() {
-			select {
-			case <-ctx.Done():
-				return
-			default:
+		if err := pinned.Refresh(); err == nil {
+			for _, entry := range pinned.Paired() {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				_ = held.Reach(ctx, entry, node.ALPNSession)
 			}
-			_ = held.Reach(ctx, entry, node.ALPNSession)
 		}
 
 		select {

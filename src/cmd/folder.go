@@ -28,7 +28,9 @@ func fetching(ctx context.Context, over reaches, mounts *ns.Table, pinned *book.
 			return fmt.Errorf("%s is not a namespace anybody else holds", w.Path)
 		}
 
-		_ = pinned.Refresh()
+		if err := pinned.Refresh(); err != nil {
+			return fmt.Errorf("refreshing the address book: %w", err)
+		}
 		rule, _ := mounts.AccessFor(mount.Path)
 
 		holders := among.Holders(rule, pinned)

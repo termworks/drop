@@ -34,7 +34,9 @@ func meeting(mounts *ns.Table, pinned *book.Book, told arch.Changed) func(proto.
 			return err
 		}
 
-		_ = pinned.Refresh()
+		if err := pinned.Refresh(); err != nil {
+			return fmt.Errorf("refreshing the address book: %w", err)
+		}
 		rule, _ := mounts.AccessFor(m.Mount.Path)
 
 		caught, err := meet.Answer(m.Conn, l, whoMet(m), among.Admits(rule, pinned, myKey()))
@@ -118,7 +120,10 @@ func reaching(ctx context.Context, over reaches, at string, mounts *ns.Table, pi
 	if !ok || mount.Path != at || !mount.Shared.Declared() {
 		return
 	}
-	_ = pinned.Refresh()
+	if err := pinned.Refresh(); err != nil {
+		trace(fmt.Sprintf("refreshing the address book: %v", err))
+		return
+	}
 
 	rule, _ := mounts.AccessFor(at)
 	for _, entry := range among.Holders(rule, pinned) {

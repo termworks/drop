@@ -91,7 +91,9 @@ func runTUI(parent context.Context) error {
 			// Re-read before answering, the way the daemon does. Pairing happens while this is
 			// open — from this very interface — and without it a device that just paired stays a
 			// stranger until the interface is restarted, which looks exactly like pairing failing.
-			_ = pinned.Refresh()
+			if err := pinned.Refresh(); err != nil {
+				return
+			}
 
 			_ = proto.Handle(ctx, s, from, proto.Policy{
 				Mounts:     cfg.Mounts,
@@ -105,7 +107,9 @@ func runTUI(parent context.Context) error {
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
 			defer func() { _ = s.Close() }()
-			_ = pinned.Refresh()
+			if err := pinned.Refresh(); err != nil {
+				return
+			}
 
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
 				return greeting(pinned, cfg.Mounts, known, from, badge)
@@ -133,7 +137,9 @@ func runTUI(parent context.Context) error {
 	})
 
 	ears := listenKeeping(ctx, n, answer, held, func(from node.ID) {
-		_ = pinned.Refresh()
+		if err := pinned.Refresh(); err != nil {
+			return
+		}
 
 		entry, known := pinned.ByID(from)
 		if !known || !entry.Paired() {

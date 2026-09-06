@@ -62,7 +62,9 @@ func keepConnected(ctx context.Context, held *dial.Kept, pinned *book.Book) {
 // round tries whatever is due.
 func (s *staying) round(ctx context.Context, pinned *book.Book) {
 	// A device paired since this started has a connection worth holding too.
-	_ = pinned.Refresh()
+	if err := pinned.Refresh(); err != nil {
+		return
+	}
 
 	for _, entry := range pinned.Paired() {
 		select {
