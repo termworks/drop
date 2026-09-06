@@ -6,7 +6,17 @@ import (
 	"net"
 	"sync/atomic"
 	"testing"
+	"time"
 )
+
+type resetFailConn struct{ net.Conn }
+
+func (c resetFailConn) SetReadDeadline(at time.Time) error {
+	if at.IsZero() {
+		return net.ErrClosed
+	}
+	return c.Conn.SetReadDeadline(at)
+}
 
 func TestViaDaemonKeepsBytesBufferedAfterItsReply(t *testing.T) {
 	server, client := net.Pipe()
@@ -17,7 +27,7 @@ func TestViaDaemonKeepsBytesBufferedAfterItsReply(t *testing.T) {
 		_, _ = server.Write([]byte("ok\npayload"))
 	}()
 
-	stream, err := acceptLent(client, "alpha")
+	stream, err := acceptLent(resetFailConn{client}, "alpha")
 	if err != nil {
 		t.Fatal(err)
 	}

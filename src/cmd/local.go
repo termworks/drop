@@ -572,9 +572,7 @@ func readLocalReply(conn net.Conn, reading *bufio.Reader) (string, error) {
 		return "", err
 	}
 	line, err := readLocalLine(reading)
-	if resetErr := conn.SetReadDeadline(time.Time{}); err == nil && resetErr != nil {
-		return "", resetErr
-	}
+	_ = conn.SetReadDeadline(time.Time{})
 	return line, err
 }
 
