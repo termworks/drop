@@ -10,8 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/bresilla/drop/src/pkg/keep"
 )
 
 // thing is the one this whole file is about, except where a second one is the point.
@@ -141,6 +144,42 @@ func TestTwoLogsGivenTheSameChangesInDifferentOrdersReadTheSame(t *testing.T) {
 	}
 	if !same(ours, want) {
 		t.Fatalf("Ordered() = %v, want %v", ours, want)
+	}
+}
+
+func TestLogChangesWaitForOtherProcesses(t *testing.T) {
+	asSomebody(t)
+	l := aLog(t, thing)
+	c := signed(t, "waiting")
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lockErr := make(chan error, 1)
+	go func() {
+		lockErr <- keep.While(l.file, func() error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := l.Add(c)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("Add() passed a held cross-process lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-lockErr; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

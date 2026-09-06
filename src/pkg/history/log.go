@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/bresilla/drop/src/pkg/convo"
+	"github.com/bresilla/drop/src/pkg/keep"
 )
 
 // What one thing's whole record may weigh.
@@ -139,10 +140,16 @@ func (l *Log) Add(c Change) (ID, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if err := l.load(); err != nil {
-		return ID{}, err
-	}
-	return l.take(c)
+	var id ID
+	err := keep.While(l.file, func() error {
+		if err := l.load(); err != nil {
+			return err
+		}
+		var err error
+		id, err = l.take(c)
+		return err
+	})
+	return id, err
 }
 
 // take is Add with the log already read and locked.
@@ -534,12 +541,8 @@ func (l *Log) rewrite() error {
 		raw = append(raw, framed(body)...)
 	}
 
-	scratch := l.file + ".new"
-	if err := os.WriteFile(scratch, raw, 0o600); err != nil {
-		return fmt.Errorf("writing %s: %w", scratch, err)
-	}
-	if err := os.Rename(scratch, l.file); err != nil {
-		return fmt.Errorf("replacing %s: %w", l.file, err)
+	if err := keep.Replace(l.file, raw); err != nil {
+		return err
 	}
 
 	l.size, l.read = int64(len(raw)), true
