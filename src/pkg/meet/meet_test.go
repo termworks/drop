@@ -113,8 +113,8 @@ func meeting(t *testing.T, mine, theirs *history.Log, admits func(string) bool) 
 	t.Helper()
 
 	here, there := net.Pipe()
-	defer here.Close()
-	defer there.Close()
+	defer func() { _ = here.Close() }()
+	defer func() { _ = there.Close() }()
 
 	var (
 		wg              sync.WaitGroup
@@ -277,8 +277,8 @@ func TestAChangeAfterARefusedOneIsPassedOver(t *testing.T) {
 // allocated for.
 func TestTooManyHeadsAreRefused(t *testing.T) {
 	here, there := net.Pipe()
-	defer here.Close()
-	defer there.Close()
+	defer func() { _ = here.Close() }()
+	defer func() { _ = there.Close() }()
 
 	go func() {
 		w := wire.NewWriter()
@@ -351,8 +351,8 @@ func answering(t *testing.T, l *history.Log, changes ...history.Change) (Caught,
 	t.Helper()
 
 	here, there := net.Pipe()
-	defer here.Close()
-	defer there.Close()
+	defer func() { _ = here.Close() }()
+	defer func() { _ = there.Close() }()
 
 	go func() {
 		conn := wire.NewConn(there)

@@ -170,7 +170,7 @@ func runConnect(parent context.Context, text string, args []string, stdinName st
 	if err != nil {
 		return err
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	lan, _ := discovery.StartLAN(ctx, n)
 

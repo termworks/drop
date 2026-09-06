@@ -64,7 +64,7 @@ func runTUI(parent context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	lan, _ := discovery.StartLAN(ctx, n)
 	startRendezvous(ctx, n)
@@ -86,7 +86,7 @@ func runTUI(parent context.Context) error {
 	// so what arrives lands in a conversation rather than being refused.
 	answer := map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 
 			// Re-read before answering, the way the daemon does. Pairing happens while this is
 			// open — from this very interface — and without it a device that just paired stays a
@@ -104,7 +104,7 @@ func runTUI(parent context.Context) error {
 			})
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			_ = pinned.Refresh()
 
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
@@ -235,7 +235,7 @@ func (l *running) askShares(ctx context.Context, with book.Entry) ([]proto.Serve
 	if err != nil {
 		return nil, err
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	hello, err := proto.AskHello(s)
 	if err != nil {
@@ -314,7 +314,7 @@ func (l *running) Send(ctx context.Context, to book.Entry, path string, files []
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	conn, err := proto.Open(s, path, "share", 0, "", node.DisplayName())
 	if err != nil {
@@ -340,7 +340,7 @@ func (l *running) Post(ctx context.Context, to book.Entry, path, archetype strin
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	conn, err := proto.Open(s, path, archetype, 0, "", node.DisplayName())
 	if err != nil {
@@ -381,7 +381,7 @@ func (l *running) Watch(ctx context.Context, w tui.Watching) error {
 	case <-ctx.Done():
 		// The stream goes, the connection stays: it is shared with everything else this device is
 		// doing, and closing it here would drop a conversation to end a watch.
-		s.Close()
+		_ = s.Close()
 
 		// And the pump is waited for. It writes into a screen the interface is about to take down,
 		// and returning while it is still writing leaves two goroutines racing over it — which is
@@ -457,7 +457,7 @@ func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
 	// Registered on the interface's own listener rather than starting a second one. Two accept
 	// loops on one endpoint race, and the loser hangs up on a connection it does not know.
 	l.ears.Handle(node.ALPNPair, func(from node.ID, s *iroh.Stream) {
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 
 		p, err := proto.AnswerPairing(s, l.node.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(l.node)))
 		if err != nil {
@@ -592,19 +592,19 @@ func (l *running) browsing(ctx context.Context, on book.Entry, path string) (*fi
 
 	conn, err := proto.Open(s, path, "files", 0, "", node.DisplayName())
 	if err != nil {
-		s.Close()
+		_ = s.Close()
 		return nil, nil, err
 	}
 
 	walk, err := files.Browse(conn)
 	if err != nil {
-		s.Close()
+		_ = s.Close()
 		return nil, nil, err
 	}
 
 	// The stream goes when the caller is done; the connection stays, because everything else this
 	// device is doing is on it.
-	return walk, func() { s.Close() }, nil
+	return walk, func() { _ = s.Close() }, nil
 }
 
 // Listing is what is in a files namespace on another device, at one directory inside it.

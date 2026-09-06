@@ -127,7 +127,7 @@ func (a *answers) To(ctx context.Context, entry book.Entry, alpn string) (io.Clo
 	here, there := net.Pipe()
 
 	go func() {
-		defer there.Close()
+		defer func() { _ = there.Close() }()
 		_ = proto.Handle(ctx, there, idFor(9), proto.Policy{
 			Mounts:     a.table,
 			Archetypes: arch.NewRegistry(),
@@ -293,7 +293,7 @@ func (c *counting) To(ctx context.Context, entry book.Entry, alpn string) (io.Cl
 	<-c.release
 
 	here, there := net.Pipe()
-	there.Close()
+	_ = there.Close()
 	return here, here, nil
 }
 

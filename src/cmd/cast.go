@@ -88,7 +88,7 @@ func runCast(parent context.Context, addressFile string) error {
 	if err != nil {
 		return err
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	pinned, err := book.Load()
 	if err != nil {
@@ -115,7 +115,7 @@ func runCast(parent context.Context, addressFile string) error {
 	mounts := castMounts(known)
 	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			_ = proto.Handle(ctx, s, from, proto.Policy{
 				Mounts:     mounts,
 				Archetypes: known,
@@ -125,7 +125,7 @@ func runCast(parent context.Context, addressFile string) error {
 			})
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
 				return greeting(pinned, mounts, known, from, badge)
 			}, moving(pinned, func(said string) { log.Printf("%s", said) }))
@@ -138,7 +138,7 @@ func runCast(parent context.Context, addressFile string) error {
 	if err := publishAddress(addressFile, address); err != nil {
 		fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 	}
-	defer os.Remove(addressFile)
+	defer func() { _ = os.Remove(addressFile) }()
 
 	fmt.Println(address)
 	fmt.Fprintf(os.Stderr, "drop: casting %dx%d; watch with `drop connect %s:%s`\n",
@@ -268,7 +268,7 @@ func castThroughDaemon(ctx context.Context, addressFile string) error {
 	if err != nil {
 		return errNoDaemon
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	id, err := node.LocalID()
 	if err != nil {
@@ -279,7 +279,7 @@ func castThroughDaemon(ctx context.Context, addressFile string) error {
 	if err := publishAddress(addressFile, address); err != nil {
 		fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 	}
-	defer os.Remove(addressFile)
+	defer func() { _ = os.Remove(addressFile) }()
 
 	// The first line says what this connection is for; the rest is the recording.
 	if _, err := io.WriteString(conn, "cast\n"); err != nil {

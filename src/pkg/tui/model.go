@@ -7,7 +7,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/charmbracelet/bubbles/list"
 
@@ -328,24 +327,12 @@ func (m *Model) stop() {
 	m.screen = nil
 }
 
-func shortID(e book.Entry) string {
-	id := e.ID.String()
-	if len(id) > 12 {
-		return id[:12]
-	}
-	return id
-}
-
 func lines(text string, n int) string {
 	got := strings.Split(text, "\n")
 	if len(got) <= n {
 		return text
 	}
 	return strings.Join(got[len(got)-n:], "\n")
-}
-
-func joinPanes(width int, panes ...string) string {
-	return lipgloss.JoinHorizontal(lipgloss.Top, panes...)
 }
 
 // say puts a message on the wire.

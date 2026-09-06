@@ -38,8 +38,8 @@ func TestAFolderWithAConflictInItSaysSo(t *testing.T) {
 	}
 
 	// Something that is not text is not searched for markers that happen to be in it.
-	os.RemoveAll(filepath.Join(dir, "deep"))
-	os.Remove(filepath.Join(dir, "notes.md"))
+	_ = os.RemoveAll(filepath.Join(dir, "deep"))
+	_ = os.Remove(filepath.Join(dir, "notes.md"))
 	if err := os.WriteFile(filepath.Join(dir, "x.bin"), append([]byte(stuck), 0x00, 0x01), 0o600); err != nil {
 		t.Fatal(err)
 	}

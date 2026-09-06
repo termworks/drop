@@ -31,14 +31,14 @@ func Replace(file string, raw []byte) error {
 		return fmt.Errorf("creating a scratch file in %s: %w", dir, err)
 	}
 	name := scratch.Name()
-	defer os.Remove(name)
+	defer func() { _ = os.Remove(name) }()
 
 	if _, err := scratch.Write(raw); err != nil {
-		scratch.Close()
+		_ = scratch.Close()
 		return fmt.Errorf("writing %s: %w", name, err)
 	}
 	if err := scratch.Sync(); err != nil {
-		scratch.Close()
+		_ = scratch.Close()
 		return fmt.Errorf("syncing %s: %w", name, err)
 	}
 	if err := scratch.Close(); err != nil {
@@ -53,7 +53,7 @@ func Replace(file string, raw []byte) error {
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", dir, err)
 	}
-	defer opened.Close()
+	defer func() { _ = opened.Close() }()
 
 	if err := opened.Sync(); err != nil {
 		return fmt.Errorf("syncing %s: %w", dir, err)
@@ -82,12 +82,12 @@ func While(file string, change func() error) error {
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", at, err)
 	}
-	defer held.Close()
+	defer func() { _ = held.Close() }()
 
 	if err := unix.Flock(int(held.Fd()), unix.LOCK_EX); err != nil {
 		return fmt.Errorf("waiting for %s: %w", at, err)
 	}
-	defer unix.Flock(int(held.Fd()), unix.LOCK_UN)
+	defer func() { _ = unix.Flock(int(held.Fd()), unix.LOCK_UN) }()
 
 	return change()
 }

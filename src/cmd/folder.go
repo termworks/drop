@@ -53,8 +53,8 @@ func fetchFrom(ctx context.Context, over reaches, entry book.Entry, at string, w
 	if err != nil {
 		return fmt.Errorf("reaching %s: %w", entry.Name, err)
 	}
-	defer done.Close()
-	defer s.Close()
+	defer func() { _ = done.Close() }()
+	defer func() { _ = s.Close() }()
 
 	conn, err := proto.Open(s, at, "files", 0, "", node.DisplayName())
 	if err != nil {

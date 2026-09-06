@@ -22,7 +22,7 @@ func FuzzScreen(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, out []byte) {
 		s := New(80, 24)
-		s.Write(out)
+		_, _ = s.Write(out)
 
 		// The grid never changes shape, whatever was drawn on it.
 		for y := 0; y < 24; y++ {
@@ -49,15 +49,15 @@ func FuzzScreenInPieces(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, out []byte, at uint8) {
 		whole := New(40, 10)
-		whole.Write(out)
+		_, _ = whole.Write(out)
 
 		piece := New(40, 10)
 		cut := int(at)
 		if cut > len(out) {
 			cut = len(out)
 		}
-		piece.Write(out[:cut])
-		piece.Write(out[cut:])
+		_, _ = piece.Write(out[:cut])
+		_, _ = piece.Write(out[cut:])
 
 		for y := 0; y < 10; y++ {
 			if len(piece.Row(y)) != 40 {
@@ -73,14 +73,14 @@ func FuzzScreenResize(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, out []byte, cols, rows uint8) {
 		s := New(80, 24)
-		s.Write(out)
+		_, _ = s.Write(out)
 
 		w, h := int(cols), int(rows)
 		if w == 0 || h == 0 {
 			return
 		}
 		s.Resize(w, h)
-		s.Write(out)
+		_, _ = s.Write(out)
 
 		for y := 0; y < h; y++ {
 			if got := len(s.Row(y)); got != w {

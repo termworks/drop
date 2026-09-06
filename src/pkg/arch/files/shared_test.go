@@ -555,7 +555,7 @@ func TestASnapshotTooBigWithBytesDropsThemRatherThanTheFolder(t *testing.T) {
 		t.Fatalf("the snapshot names %d paths, want %d", len(list), len(f))
 	}
 	for _, e := range list {
-		if e.Held.Sum != f[e.Path].Sum || e.Held.Size != f[e.Path].Size {
+		if e.Sum != f[e.Path].Sum || e.Size != f[e.Path].Size {
 			t.Fatalf("%s came back as %v, want %v", e.Path, e.Held, f[e.Path])
 		}
 	}

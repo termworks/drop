@@ -71,8 +71,8 @@ func openNote(ctx context.Context, o opening) error {
 	if err != nil {
 		return err
 	}
-	defer done.Close()
-	defer s.Close()
+	defer func() { _ = done.Close() }()
+	defer func() { _ = s.Close() }()
 
 	conn, err := proto.Open(s, o.served.Path, "note", 0, "", node.DisplayName())
 	if err != nil {
@@ -119,8 +119,8 @@ func sendFiles(parent context.Context, o opening, sources []share.Source) error 
 	if err != nil {
 		return err
 	}
-	defer done.Close()
-	defer s.Close()
+	defer func() { _ = done.Close() }()
+	defer func() { _ = s.Close() }()
 
 	bar := &progress{}
 	defer bar.clear()
@@ -182,7 +182,7 @@ func readLive(parent context.Context, o opening, raw bool) error {
 	if err != nil {
 		return err
 	}
-	defer over.Close()
+	defer func() { _ = over.Close() }()
 
 	conn, err := proto.Open(s, o.served.Path, o.served.Archetype, 0, "", node.DisplayName())
 	if err != nil {
@@ -197,7 +197,7 @@ func readLive(parent context.Context, o opening, raw bool) error {
 	if raw && term.IsTerminal(local) {
 		state, err := term.MakeRaw(local)
 		if err == nil {
-			defer term.Restore(local, state)
+			defer func() { _ = term.Restore(local, state) }()
 		}
 		if w, h, err := term.GetSize(local); err == nil {
 			_ = d.Resize(uint16(w), uint16(h))
@@ -267,11 +267,11 @@ func talkTo(ctx context.Context, o opening) error {
 	}
 	go serveLoop(ctx, o.node, map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			_ = proto.Handle(ctx, s, from, policy)
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
 				return greeting(pinned, mounts, known, from, badge)
 			}, moving(pinned, func(said string) { log.Printf("%s", said) }))

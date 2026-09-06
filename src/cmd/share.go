@@ -66,7 +66,7 @@ func runShare(parent context.Context, dir string, to []string) error {
 	if err != nil {
 		return fmt.Errorf("nothing is serving on this device: start `drop serve` first")
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()

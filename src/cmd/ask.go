@@ -62,7 +62,7 @@ func askFor(parent context.Context, target, why string) error {
 	if err != nil {
 		return err
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	lan, _ := discovery.StartLAN(ctx, n)
 
@@ -70,8 +70,8 @@ func askFor(parent context.Context, target, why string) error {
 	if err != nil {
 		return err
 	}
-	defer done.Close()
-	defer s.Close()
+	defer func() { _ = done.Close() }()
+	defer func() { _ = s.Close() }()
 
 	if err := proto.Ask(ctx, s, at.Path, why, node.DisplayName()); err != nil {
 		return err

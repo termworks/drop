@@ -41,7 +41,7 @@ func TestEveryWatcherGetsEveryChunk(t *testing.T) {
 func TestLateWatcherGetsTheScreen(t *testing.T) {
 	c := New(80, 24)
 
-	c.Write([]byte("printed before anyone was watching\n"))
+	_, _ = c.Write([]byte("printed before anyone was watching\n"))
 
 	v, picture, cols, rows := c.Join()
 	defer c.Leave(v)
@@ -60,7 +60,7 @@ func TestWriteDoesNotAliasTheCallersBuffer(t *testing.T) {
 	v, _, _, _ := c.Join()
 
 	buf := []byte("first")
-	c.Write(buf)
+	_, _ = c.Write(buf)
 	copy(buf, "SECON")
 	c.Stop()
 
@@ -75,7 +75,7 @@ func TestLaggingWatcherIsDropped(t *testing.T) {
 	v, _, _, _ := c.Join()
 
 	for i := 0; i < Backlog*2; i++ {
-		c.Write([]byte("flood"))
+		_, _ = c.Write([]byte("flood"))
 	}
 
 	if c.Watching() != 0 {
@@ -93,7 +93,7 @@ func TestLeaveIsSafeAfterBeingDropped(t *testing.T) {
 	v, _, _, _ := c.Join()
 
 	for i := 0; i < Backlog*2; i++ {
-		c.Write([]byte("flood"))
+		_, _ = c.Write([]byte("flood"))
 	}
 	// Already dropped for lagging; Leave must not close the channel a second time.
 	c.Leave(v)
@@ -107,7 +107,7 @@ func TestWhatAWatcherJoinsWithIsOneScreen(t *testing.T) {
 
 	chunk := bytes.Repeat([]byte{'x'}, 8<<10)
 	for i := 0; i < 40; i++ {
-		c.Write(chunk)
+		_, _ = c.Write(chunk)
 	}
 
 	_, picture, _, _ := c.Join()
@@ -127,11 +127,11 @@ func TestAWatcherJoiningSeesWhatIsOnTheScreen(t *testing.T) {
 	c := New(80, 24)
 
 	// Drawn once, long ago, and never sent again — exactly what a full-screen program does.
-	c.Write([]byte("\x1b[5;10Hlong gone from any tail"))
+	_, _ = c.Write([]byte("\x1b[5;10Hlong gone from any tail"))
 
 	// Then a great deal of unrelated traffic somewhere else on the screen.
 	for i := 0; i < 200; i++ {
-		c.Write([]byte("\x1b[20;1Hbusy"))
+		_, _ = c.Write([]byte("\x1b[20;1Hbusy"))
 	}
 
 	_, picture, _, _ := c.Join()
@@ -146,7 +146,7 @@ func TestAWatcherJoiningSeesWhatIsOnTheScreen(t *testing.T) {
 // A prompt that has been cleared is not handed to whoever joins next.
 func TestClearingLeavesNothingForTheNextWatcher(t *testing.T) {
 	c := New(80, 24)
-	c.Write([]byte("Password:"))
+	_, _ = c.Write([]byte("Password:"))
 
 	c.Clear()
 

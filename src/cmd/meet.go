@@ -164,8 +164,8 @@ func catchUp(ctx context.Context, over reaches, entry book.Entry, mount ns.Mount
 	if err != nil {
 		return meet.Caught{}, err
 	}
-	defer done.Close()
-	defer s.Close()
+	defer func() { _ = done.Close() }()
+	defer func() { _ = s.Close() }()
 
 	conn, err := proto.Meet(s, mount.Shared, node.DisplayName())
 	if err != nil {

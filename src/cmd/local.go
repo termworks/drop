@@ -447,7 +447,7 @@ func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 		}
 
 		go func() {
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 			if err := takeLocal(ctx, casts, shares, put, offers, held, conn); err != nil {
 				fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 			}
@@ -551,8 +551,8 @@ func takeShare(ctx context.Context, host *shareHost, conn net.Conn, rest string)
 
 	box, err := host.begin(dir, sendersNamed(who))
 	if err != nil {
-		fmt.Fprintf(conn, "no %v\n", err)
-		return nil
+		_, writeErr := fmt.Fprintf(conn, "no %v\n", err)
+		return writeErr
 	}
 	defer host.end(box)
 
@@ -575,7 +575,9 @@ func takeShare(ctx context.Context, host *shareHost, conn net.Conn, rest string)
 	case <-ctx.Done():
 	case <-gone:
 	case <-box.done:
-		fmt.Fprintln(conn, "done")
+		if _, err := fmt.Fprintln(conn, "done"); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -592,8 +594,8 @@ func takeMount(ctx context.Context, host *mountHost, conn net.Conn, rest string)
 	}
 
 	if err := host.begin(line); err != nil {
-		fmt.Fprintf(conn, "no %v\n", err)
-		return nil
+		_, writeErr := fmt.Fprintf(conn, "no %v\n", err)
+		return writeErr
 	}
 	if _, err := fmt.Fprintln(conn, "ok"); err != nil {
 		host.end(line.Path)
@@ -631,19 +633,19 @@ func takeMount(ctx context.Context, host *mountHost, conn net.Conn, rest string)
 func takeUnmount(host *mountHost, conn net.Conn, rest string) error {
 	at, err := ns.Clean(strings.TrimSpace(rest))
 	if err != nil {
-		fmt.Fprintf(conn, "no %v\n", err)
-		return nil
+		_, writeErr := fmt.Fprintf(conn, "no %v\n", err)
+		return writeErr
 	}
 
 	if !host.mine(at) {
-		fmt.Fprintln(conn, "no this node did not put that up")
-		return nil
+		_, err := fmt.Fprintln(conn, "no this node did not put that up")
+		return err
 	}
 	// Only one that was written down: a held namespace goes when the command holding it goes, and
 	// taking it out from under that command would leave it waiting on a path that is not there.
 	if m, _, ok := host.mounts.Lookup(at); ok && m.Path == at && m.Source != ns.Written {
-		fmt.Fprintln(conn, "no something is holding that open")
-		return nil
+		_, err := fmt.Fprintln(conn, "no something is holding that open")
+		return err
 	}
 	host.end(at)
 
@@ -678,8 +680,8 @@ func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as st
 
 	waiting, err := offers.open(code, as)
 	if err != nil {
-		fmt.Fprintf(conn, "busy %v\n", err)
-		return nil
+		_, writeErr := fmt.Fprintf(conn, "busy %v\n", err)
+		return writeErr
 	}
 	defer offers.close()
 
@@ -714,11 +716,11 @@ func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as st
 		return nil
 	case p := <-waiting:
 		if err := record(p, as, machine); err != nil {
-			fmt.Fprintf(conn, "failed %v\n", err)
+			_, _ = fmt.Fprintf(conn, "failed %v\n", err)
 			return err
 		}
-		fmt.Fprintf(conn, "paired %s %s\n", nameOf(p, as), p.Peer)
-		return nil
+		_, err := fmt.Fprintf(conn, "paired %s %s\n", nameOf(p, as), p.Peer)
+		return err
 	}
 }
 
@@ -741,28 +743,28 @@ func nameOf(p proto.Pairing, as string) string {
 // with every protocol drop grows.
 func takeVia(ctx context.Context, held *dial.Kept, conn net.Conn, name, alpn string) error {
 	if held == nil {
-		fmt.Fprintln(conn, "no connections are being held")
-		return nil
+		_, err := fmt.Fprintln(conn, "no connections are being held")
+		return err
 	}
 
 	pinned, err := book.Load()
 	if err != nil {
-		fmt.Fprintf(conn, "no %v\n", err)
-		return nil
+		_, writeErr := fmt.Fprintf(conn, "no %v\n", err)
+		return writeErr
 	}
 
 	entry, ok := lookUp(pinned, name)
 	if !ok {
-		fmt.Fprintf(conn, "no %q is neither a known name nor a peer id\n", name)
-		return nil
+		_, err := fmt.Fprintf(conn, "no %q is neither a known name nor a peer id\n", name)
+		return err
 	}
 
 	s, err := held.To(ctx, entry, alpn)
 	if err != nil {
-		fmt.Fprintf(conn, "no %v\n", err)
-		return nil
+		_, writeErr := fmt.Fprintf(conn, "no %v\n", err)
+		return writeErr
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if _, err := fmt.Fprintln(conn, "ok"); err != nil {
 		return err
@@ -779,7 +781,7 @@ func splice(conn net.Conn, s *iroh.Stream) error {
 
 	go func() {
 		_, err := io.Copy(s, conn)
-		s.Close()
+		_ = s.Close()
 		done <- err
 	}()
 	go func() {

@@ -11,7 +11,6 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -77,55 +76,6 @@ func ticketFor(id node.ID, code string) string {
 	return id.String() + "#" + code
 }
 
-// likeliest sorts addresses by how likely they are to reach this machine from another one.
-//
-// An ordinary home or office network first, then anything else. A virtual bridge is put last:
-// libvirt and docker hand out 192.168.122.x and 172.17.x on every machine that runs them, so
-// the address is real here and means nothing there.
-func likeliest(addrs []netip.AddrPort) []netip.AddrPort {
-	out := make([]netip.AddrPort, 0, len(addrs))
-	for _, at := range addrs {
-		// Dropped rather than ranked last: it is the same address on the far machine as on this
-		// one, so offering it sends them to themselves. A slot spent on it is a slot wasted.
-		if virtual(at.Addr()) {
-			continue
-		}
-		out = append(out, at)
-	}
-
-	sort.SliceStable(out, func(i, j int) bool { return rank(out[i]) < rank(out[j]) })
-	return out
-}
-
-func rank(at netip.AddrPort) int {
-	ip := at.Addr()
-
-	switch {
-	case ip.IsPrivate():
-		return 1
-	case ip.IsLoopback() || ip.IsLinkLocalUnicast():
-		return 4
-	default:
-		return 2
-	}
-}
-
-// virtual spots the ranges a hypervisor or a container runtime hands out on every host.
-func virtual(ip netip.Addr) bool {
-	if !ip.Is4() {
-		return false
-	}
-	b := ip.As4()
-
-	switch {
-	case b[0] == 192 && b[1] == 168 && b[2] == 122: // libvirt
-		return true
-	case b[0] == 172 && b[1] >= 17 && b[1] <= 31: // docker
-		return true
-	}
-	return false
-}
-
 func readTicket(text string) (node.ID, string, error) {
 	id, code, found := strings.Cut(strings.TrimSpace(text), "#")
 	if !found {
@@ -170,7 +120,7 @@ func asAddrs(written []string) ([]netip.AddrPort, error) {
 // codeProof binds an attempt to the code, so a device that was not invited cannot complete one.
 func codeProof(code string, initiator, responder node.ID) []byte {
 	mac := hmac.New(sha256.New, []byte(code))
-	fmt.Fprintf(mac, "drop:pair:proof:v1:%s:%s", initiator, responder)
+	_, _ = fmt.Fprintf(mac, "drop:pair:proof:v1:%s:%s", initiator, responder)
 	return mac.Sum(nil)
 }
 
@@ -203,7 +153,7 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, s
 	if err != nil {
 		return err
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	if _, err := discovery.StartLAN(ctx, n); err != nil {
 		fmt.Fprintf(os.Stderr, "drop: mDNS unavailable: %v\n", err)
@@ -222,7 +172,7 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, s
 	paired := make(chan proto.Pairing, 1)
 	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){
 		node.ALPNPair: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 
 			p, err := proto.AnswerPairing(s, n.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(n)))
 			if err != nil {
@@ -259,7 +209,7 @@ func joinPairing(parent context.Context, ticket, as string, wait time.Duration, 
 	if err != nil {
 		return err
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	trace("node started; StartLAN")
 	lan, err := discovery.StartLAN(ctx, n)
@@ -389,8 +339,8 @@ func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as stri
 	if err != nil {
 		return proto.Pairing{}, "", err
 	}
-	defer conn.Close()
-	defer s.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = s.Close() }()
 
 	p, err := proto.Pair(s, n.ID(), id, node.DisplayName(), codeProof(code, n.ID(), id), written(discovery.LocalAddrs(n)))
 	if err != nil {
@@ -412,7 +362,7 @@ func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration
 	if err != nil {
 		return errNoDaemon
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	id, err := node.LocalID()
 	if err != nil {

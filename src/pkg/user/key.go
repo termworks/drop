@@ -220,7 +220,7 @@ func fromAgent(want ssh.PublicKey) (ssh.Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reaching the ssh agent: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	signers, err := agent.NewClient(conn).Signers()
 	if err != nil {
@@ -247,7 +247,7 @@ func (s agentSigner) Sign(_ io.Reader, data []byte) (*ssh.Signature, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reaching the ssh agent: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	return agent.NewClient(conn).Sign(s.key, data)
 }
 

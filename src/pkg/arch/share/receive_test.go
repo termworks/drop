@@ -33,7 +33,7 @@ func spoken(t *testing.T, items ...spoke) *bytes.Buffer {
 			}
 		}
 		digest := blake3.New(32, nil)
-		digest.Write(item.whole)
+		_, _ = digest.Write(item.whole)
 		end := wire.End{Size: int64(len(item.whole)), Digest: digest.Sum(nil)}
 		if err := conn.WriteFrame(wire.KindEnd, end.Encode()); err != nil {
 			t.Fatalf("writing the end: %v", err)
@@ -406,7 +406,7 @@ func TestAPartPlantedInsideIsNotWrittenThrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 
 	item := Item{Name: "report.txt", Size: 4, Mode: 0o644}
 	part := partName(node.ID{}, item)
@@ -418,7 +418,7 @@ func TestAPartPlantedInsideIsNotWrittenThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening: %v", err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	if at != 0 {
 		t.Errorf("carried on at %d in a file it had just made", at)
@@ -441,7 +441,7 @@ func TestResumeOnlyCarriesOnInAPlainFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 
 	item := Item{Name: "report.txt", Size: 40, Mode: 0o644}
 	part := partName(node.ID{}, item)
@@ -457,7 +457,7 @@ func TestResumeOnlyCarriesOnInAPlainFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening: %v", err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	if at != 0 {
 		t.Errorf("carried on at %d through a name it did not make", at)

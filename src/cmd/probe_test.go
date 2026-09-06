@@ -35,7 +35,7 @@ func TestProbeHello(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	lan, _ := discovery.StartLAN(ctx, n)
 
@@ -43,8 +43,8 @@ func TestProbeHello(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not reach it: %v", err)
 	}
-	defer done.Close()
-	defer s.Close()
+	defer func() { _ = done.Close() }()
+	defer func() { _ = s.Close() }()
 
 	conn := wire.NewConn(s)
 	if err := conn.WriteFrame(wire.KindPing, nil); err != nil {

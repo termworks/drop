@@ -204,7 +204,7 @@ func keepCreated(store *made.Store, file, at string, entry made.Entry) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if _, err := tell(conn, made.Line{Path: at, Keep: true, Entry: entry}); err != nil {
 		return err
@@ -223,7 +223,7 @@ func holdCreated(parent context.Context, at string, entry made.Entry) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -425,7 +425,7 @@ func unmounted(at string) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if _, err := fmt.Fprintf(conn, "unmount %s\n", at); err != nil {
 		return err

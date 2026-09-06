@@ -120,7 +120,7 @@ func (f *Files) Serve(ctx context.Context, at arch.Session) error {
 		reject := wire.Reject{Reason: "this namespace's directory cannot be opened"}
 		return at.Conn.WriteFrame(wire.KindReject, reject.Encode())
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 
 	conn := at.Conn
 	if err := conn.WriteFrame(wire.KindReply, ready{Writable: cfg.Writable}.encode()); err != nil {

@@ -51,7 +51,7 @@ func Listen(ctx context.Context) (*Ear, error) {
 
 	e := &Ear{fd: fd, heard: make(chan struct{}, 1), by: map[string]int{}, at: map[int]string{}}
 	if err := unix.Pipe2(e.wake[:], unix.O_CLOEXEC|unix.O_NONBLOCK); err != nil {
-		unix.Close(fd)
+		_ = unix.Close(fd)
 		return nil, fmt.Errorf("listening for changes: %w", err)
 	}
 
@@ -87,7 +87,7 @@ func (e *Ear) Mind(dirs []string) {
 		if want[dir] {
 			continue
 		}
-		unix.InotifyRmWatch(e.fd, uint32(wd))
+		_, _ = unix.InotifyRmWatch(e.fd, uint32(wd))
 		delete(e.by, dir)
 		delete(e.at, wd)
 	}
@@ -119,8 +119,8 @@ func (e *Ear) read() {
 		e.mu.Lock()
 		e.shut = true
 		e.mu.Unlock()
-		unix.Close(e.fd)
-		unix.Close(e.wake[0])
+		_ = unix.Close(e.fd)
+		_ = unix.Close(e.wake[0])
 		close(e.heard)
 	}()
 
@@ -168,6 +168,6 @@ func (e *Ear) say() {
 
 // stop wakes the reader so it can put everything down.
 func (e *Ear) stop() {
-	unix.Write(e.wake[1], []byte{0})
-	unix.Close(e.wake[1])
+	_, _ = unix.Write(e.wake[1], []byte{0})
+	_ = unix.Close(e.wake[1])
 }

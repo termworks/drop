@@ -89,7 +89,7 @@ func serveLoopKeeping(
 }
 
 func serveConn(ctx context.Context, conn *iroh.Conn, handlers map[string]func(node.ID, *iroh.Stream)) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	handle, ok := handlers[conn.ALPN()]
 	if !ok {
@@ -104,19 +104,6 @@ func serveConn(ctx context.Context, conn *iroh.Conn, handlers map[string]func(no
 		}
 		go handle(from, s)
 	}
-}
-
-// parseAddrs reads what the address book wrote down, skipping anything unreadable.
-func parseAddrs(written []string) []netip.AddrPort {
-	out := make([]netip.AddrPort, 0, len(written))
-	for _, text := range written {
-		ap, err := netip.ParseAddrPort(text)
-		if err != nil {
-			continue
-		}
-		out = append(out, ap)
-	}
-	return out
 }
 
 // startRendezvous begins publishing this device's address, when the config asked for it.
@@ -185,10 +172,6 @@ func rendezvousFor(n *node.Node) *rendezvous.Service {
 type listener struct {
 	mu       sync.Mutex
 	handlers map[string]func(node.ID, *iroh.Stream)
-}
-
-func listenOn(ctx context.Context, n *node.Node, handlers map[string]func(node.ID, *iroh.Stream)) *listener {
-	return listenKeeping(ctx, n, handlers, nil, nil)
 }
 
 // listenKeeping is the same, keeping every session connection that arrives.
@@ -271,7 +254,7 @@ func (l *listener) Handle(alpn string, handle func(node.ID, *iroh.Stream)) {
 }
 
 func (l *listener) answer(ctx context.Context, conn *iroh.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	l.mu.Lock()
 	handle, ok := l.handlers[conn.ALPN()]

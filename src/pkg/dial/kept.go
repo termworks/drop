@@ -184,7 +184,7 @@ func (k *Kept) keep(id node.ID, alpn string, conn *iroh.Conn) {
 	k.mu.Lock()
 
 	if was, ok := k.open[key(id, alpn)]; ok && was != conn {
-		was.Close()
+		_ = was.Close()
 	}
 	k.open[key(id, alpn)] = conn
 
@@ -210,7 +210,7 @@ func (k *Kept) drop(id node.ID, alpn string, conn *iroh.Conn) {
 
 	at := key(id, alpn)
 	if held, ok := k.open[at]; ok && held == conn {
-		held.Close()
+		_ = held.Close()
 		delete(k.open, at)
 	}
 }
@@ -221,7 +221,7 @@ func (k *Kept) Close() {
 	defer k.mu.Unlock()
 
 	for at, conn := range k.open {
-		conn.Close()
+		_ = conn.Close()
 		delete(k.open, at)
 	}
 }

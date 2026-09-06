@@ -33,7 +33,7 @@ func answering(t *testing.T, m ns.Mount, known *arch.Registry) net.Conn {
 	t.Helper()
 
 	caller, server := net.Pipe()
-	t.Cleanup(func() { caller.Close() })
+	t.Cleanup(func() { _ = caller.Close() })
 
 	table := ns.NewTable()
 	if err := table.Add(m); err != nil {
@@ -41,7 +41,7 @@ func answering(t *testing.T, m ns.Mount, known *arch.Registry) net.Conn {
 	}
 
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 		_ = Handle(t.Context(), stream{server}, who(3), Policy{
 			Mounts:     table,
 			Archetypes: known,
@@ -142,11 +142,11 @@ func handling(t *testing.T, from node.ID, table *ns.Table, policy Policy) net.Co
 	t.Helper()
 
 	caller, server := net.Pipe()
-	t.Cleanup(func() { caller.Close() })
+	t.Cleanup(func() { _ = caller.Close() })
 
 	policy.Mounts = table
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 		_ = Handle(t.Context(), stream{server}, from, policy)
 	}()
 	return caller

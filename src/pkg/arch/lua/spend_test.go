@@ -60,7 +60,7 @@ func TestAProcessTakesWhatItStartedWithIt(t *testing.T) {
 
 	began := time.Now()
 	conn, client, done := opened(t, p, nil)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, body := said(t, conn)
 	took := time.Since(began)
@@ -97,11 +97,11 @@ func TestCancellingASessionKillsTheWholeGroup(t *testing.T) {
 
 	ctx, stop := context.WithCancel(t.Context())
 	client, server := net.Pipe()
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	done := make(chan error, 1)
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 		done <- p.Serve(ctx, arch.Session{
 			Path:   "/thing",
 			Who:    ns.Caller{ID: "aaaa", Name: "laptop", Paired: true},
@@ -141,7 +141,7 @@ func TestAProcessGetsAChosenEnvironment(t *testing.T) {
 	`)
 
 	conn, client, done := opened(t, p, nil)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, body := said(t, conn)
 	if err := ended(t, done, 10*time.Second); err != nil {
@@ -182,7 +182,7 @@ func TestASessionMayHoldOnlySoManyFilesOpen(t *testing.T) {
 	`)
 
 	conn, client, done := opened(t, p, nil)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, body := said(t, conn)
 	if err := ended(t, done, 30*time.Second); err != nil {
@@ -212,7 +212,7 @@ func TestClosingAFileGivesItsPlaceBack(t *testing.T) {
 	`)
 
 	conn, client, done := opened(t, p, nil)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if _, body := said(t, conn); string(body) != "all of them" {
 		t.Fatalf("opening and closing said %q", body)
@@ -241,7 +241,7 @@ func TestOpeningSomethingThatIsNotAFileIsRefused(t *testing.T) {
 	`)
 
 	conn, client, done := opened(t, p, nil)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	for _, how := range []string{"r", "w", "a"} {
 		back := make(chan []byte, 1)
@@ -276,7 +276,7 @@ func TestStartingProcessesRunsOutOfBudget(t *testing.T) {
 	`)
 
 	_, client, done := opened(t, p, nil)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	err := ended(t, done, 60*time.Second)
 	if err == nil || !strings.Contains(err.Error(), "CPU") {
@@ -300,7 +300,7 @@ func TestWritingRunsOutOfBudget(t *testing.T) {
 	`)
 
 	_, client, done := opened(t, p, nil)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	err := ended(t, done, 60*time.Second)
 	if err == nil || !strings.Contains(err.Error(), "CPU") {
@@ -341,7 +341,7 @@ func TestANameOfItsOwnIsNobodyElses(t *testing.T) {
 		conn, client, done := opened(t, p, nil)
 		_, body := said(t, conn)
 		names = append(names, string(body))
-		client.Close()
+		_ = client.Close()
 		<-done
 	}
 
@@ -375,7 +375,7 @@ func TestNowhereToKeepFilesIsRefused(t *testing.T) {
 	p.keeps = ""
 
 	conn, client, done := opened(t, p, nil)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, body := said(t, conn)
 	if err := ended(t, done, 10*time.Second); err != nil {

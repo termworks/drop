@@ -424,7 +424,7 @@ func TestWritingAMessageSendsIt(t *testing.T) {
 	for _, r := range "hello" {
 		m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	back.mu.Lock()
 	defer back.mu.Unlock()
@@ -578,17 +578,6 @@ func (f *fake) Arrivals() <-chan struct{} {
 		f.arriving = make(chan struct{}, 1)
 	}
 	return f.arriving
-}
-
-// lands is another device saying something while the interface is sitting there.
-func (f *fake) lands() {
-	f.mu.Lock()
-	at := f.arriving
-	f.mu.Unlock()
-
-	if at != nil {
-		at <- struct{}{}
-	}
 }
 
 func (f *fake) Join(ctx context.Context, ticket string) (string, error) {
@@ -761,7 +750,7 @@ func TestALinkIsSentFromTheInterface(t *testing.T) {
 		m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyTab}) // must do nothing here
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	back.mu.Lock()
 	defer back.mu.Unlock()

@@ -58,11 +58,11 @@ type session struct {
 // shut closes what the session left open and takes away what it named its own.
 func (s *session) shut() {
 	for _, file := range s.open {
-		file.Close()
+		_ = file.Close()
 	}
 	if s.dir != nil {
 		s.sweep()
-		s.dir.Close()
+		_ = s.dir.Close()
 	}
 }
 
@@ -76,7 +76,7 @@ func (s *session) sweep() {
 		return
 	}
 	names, _ := dir.Readdirnames(-1)
-	dir.Close()
+	_ = dir.Close()
 
 	for _, name := range names {
 		if strings.HasSuffix(name, "."+s.mark) {
@@ -358,11 +358,11 @@ func opening(dir *os.Root, name, how string) (*os.File, error) {
 	}
 	said, err := file.Stat()
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return nil, err
 	}
 	if !said.Mode().IsRegular() {
-		file.Close()
+		_ = file.Close()
 		return nil, errors.New("not a plain file")
 	}
 	return file, nil

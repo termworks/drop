@@ -39,10 +39,10 @@ func (w *watched) bounded() (time.Time, bool) {
 // opened it until the process stops.
 func TestAnOpeningIsBoundedWhileItWaitsToBeAnswered(t *testing.T) {
 	caller, server := net.Pipe()
-	t.Cleanup(func() { caller.Close() })
+	t.Cleanup(func() { _ = caller.Close() })
 
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 		c := wire.NewConn(server)
 		if _, _, err := c.ReadFrame(); err != nil {
 			return
@@ -68,10 +68,10 @@ func TestAnOpeningIsBoundedWhileItWaitsToBeAnswered(t *testing.T) {
 // opening is lifted once there is an answer.
 func TestAnAcceptedSessionIsNotBounded(t *testing.T) {
 	caller, server := net.Pipe()
-	t.Cleanup(func() { caller.Close() })
+	t.Cleanup(func() { _ = caller.Close() })
 
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 		c := wire.NewConn(server)
 		if _, _, err := c.ReadFrame(); err != nil {
 			return

@@ -148,7 +148,7 @@ func (b *Browsing) PutFile(name, from string, progress func(name string, done, t
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	return b.Put(name, file, given(stat, progress))
 }
@@ -159,7 +159,7 @@ func (b *Browsing) ReplaceFile(name, from string, was []byte, progress func(name
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	return b.Replace(name, file, was, given(stat, progress))
 }
@@ -173,7 +173,7 @@ func lifted(from string) (*os.File, os.FileInfo, error) {
 
 	stat, err := file.Stat()
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return nil, nil, fmt.Errorf("looking at %s: %w", from, err)
 	}
 	return file, stat, nil

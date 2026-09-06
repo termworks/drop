@@ -63,7 +63,7 @@ func lineWise(base, ours, theirs []byte, us, them string) ([]byte, []Aside) {
 		}
 
 		next := bi
-		for next < len(b) && !(om[next] >= oi && tm[next] >= ti) {
+		for next < len(b) && (om[next] < oi || tm[next] < ti) {
 			next++
 		}
 		oNext, tNext := len(o), len(t)

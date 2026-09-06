@@ -86,7 +86,7 @@ func onlyThisMachine(t *testing.T) *node.Node {
 	if err != nil {
 		t.Fatalf("starting a node: %v", err)
 	}
-	t.Cleanup(func() { n.Close() })
+	t.Cleanup(func() { _ = n.Close() })
 
 	return n
 }

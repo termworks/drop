@@ -511,8 +511,8 @@ func (m Model) joiningView() string {
 
 	out.WriteString(dimStyle.Render("Paste what the other device is showing.") + "\n\n")
 
-	switch {
-	case m.typing == "":
+	switch m.typing {
+	case "":
 		out.WriteString(faintStyle.Render("waiting for a ticket…") + "\n")
 	default:
 		for _, at := range fold(m.typing, m.panelWidth()-4) {

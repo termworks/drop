@@ -54,7 +54,7 @@ func TestARemoteFileNameCannotWriteOnTheTerminal(t *testing.T) {
 		{Name: "notes.md\x1b[1A\x1b[2K  passwords.txt"},
 		{Name: "quiet\x1b[2J", Dir: true},
 		{Name: strings.Repeat("n", 5000)},
-		{Name: "a‮gnp.exe"},
+		{Name: "a\u202egnp.exe"},
 	} {
 		got := shownAs(item)
 		for _, bad := range escapes {

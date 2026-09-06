@@ -93,7 +93,7 @@ func runServe(parent context.Context, quiet bool) error {
 	if err != nil {
 		return err
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	startRendezvous(ctx, n)
 
@@ -170,7 +170,7 @@ func runServe(parent context.Context, quiet bool) error {
 	// its queue only ever emptied in one direction.
 	answer := map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			_ = pinned.Refresh()
 
 			// Which path this session was for, so an ephemeral mount learns when the transfer it
@@ -190,7 +190,7 @@ func runServe(parent context.Context, quiet bool) error {
 			shares.finished(asked)
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			_ = pinned.Refresh()
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
 				return greeting(pinned, cfg.Mounts, known, from, badge)
@@ -199,7 +199,7 @@ func runServe(parent context.Context, quiet bool) error {
 		// Pairing is answered by whoever holds the address, which is this. A separate `drop peer pair`
 		// process on this machine asks for a code to be shown; it cannot answer for the node.
 		node.ALPNPair: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 
 			code, _ := offers.asking()
 			if code == "" {

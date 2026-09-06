@@ -100,7 +100,7 @@ func heldHere() map[node.ID]bool {
 	if err != nil {
 		return nil
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	_ = conn.SetDeadline(time.Now().Add(answerWait))
 	if _, err := io.WriteString(conn, "held\n"); err != nil {

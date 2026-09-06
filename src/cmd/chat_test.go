@@ -95,7 +95,7 @@ func (r refusing) To(ctx context.Context, entry book.Entry, alpn string) (io.Clo
 	here, there := net.Pipe()
 
 	go func() {
-		defer there.Close()
+		defer func() { _ = there.Close() }()
 		conn := wire.NewConn(there)
 		if _, _, err := conn.ReadFrame(); err != nil {
 			return

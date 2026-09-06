@@ -115,20 +115,20 @@ func viaDaemon(entry book.Entry, alpn string) (*lent, error) {
 	}
 
 	if _, err := fmt.Fprintf(conn, "via %s %s\n", entry.Name, alpn); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, errNoDaemon
 	}
 
 	// One line: whether there is a stream on the other side of this socket now.
 	said, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, errNoDaemon
 	}
 
 	what, why, _ := strings.Cut(strings.TrimSpace(said), " ")
 	if what != "ok" {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("reaching %s: %s", entry.Name, why)
 	}
 	return &lent{conn}, nil

@@ -5,8 +5,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
-
-	"github.com/bresilla/drop/src/pkg/book"
 )
 
 // Managing somebody, rather than reaching them.
@@ -175,14 +173,6 @@ func (m *Model) showManage() {
 func (m Model) onManaged() (manageItem, bool) {
 	it, ok := m.list.SelectedItem().(manageItem)
 	return it, ok
-}
-
-// whoManaged is the name whatever is being managed is filed under.
-func whoManaged(entry book.Entry) string {
-	if entry.Person != "" {
-		return entry.Person
-	}
-	return entry.Name
 }
 
 // managed says a change was made to somebody, and carries the name to read back.

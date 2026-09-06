@@ -97,7 +97,7 @@ func runJoin(parent context.Context, target, here string, declared made.Settings
 	if err != nil {
 		return err
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	lan, _ := discovery.StartLAN(ctx, n)
 
@@ -293,7 +293,7 @@ func writeJoined(known *arch.Registry, line made.Line) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	_, err = tell(conn, line)
 	return err

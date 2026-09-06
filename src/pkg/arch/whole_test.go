@@ -100,10 +100,10 @@ func TestAnArchetypeWrittenOutsideDropIsDeclaredAndServed(t *testing.T) {
 
 	// And a session on it is answered by the camera, over a stream nothing generic has read.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 		_ = proto.Handle(t.Context(), deadlined{server}, node.ID{}, proto.Policy{
 			Mounts:     cfg.Mounts,
 			Archetypes: known,

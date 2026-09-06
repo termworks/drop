@@ -50,8 +50,8 @@ func deliverOver(ctx context.Context, over reaches, entry book.Entry, path, arch
 	if err != nil {
 		return 0, err
 	}
-	defer done.Close()
-	defer s.Close()
+	defer func() { _ = done.Close() }()
+	defer func() { _ = s.Close() }()
 
 	conn, err := proto.Open(s, path, archetype, 0, "", node.DisplayName())
 	if err == nil {
@@ -130,7 +130,7 @@ func openInBrowser(link string) {
 		fmt.Fprintf(os.Stderr, "drop: could not open %s: %v\n", link, err)
 		return
 	}
-	go cmd.Wait()
+	go func() { _ = cmd.Wait() }()
 }
 
 // nameFor is what to call a peer in a listing.

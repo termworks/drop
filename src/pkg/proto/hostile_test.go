@@ -94,7 +94,7 @@ func TestAStampNamingSomethingUnprintableIsRefused(t *testing.T) {
 	}
 
 	// With an escape in the account it is not a stamp, signature or no signature.
-	for _, bad := range []string{"root\x1b[1A", strings.Repeat("a", 300), "a‮b", ""} {
+	for _, bad := range []string{"root\x1b[1A", strings.Repeat("a", 300), "a\u202eb", ""} {
 		nasty := stamp
 		nasty.Whose = bad
 		if _, err := plate.Read(nasty.Bytes(), sig, now); err == nil {

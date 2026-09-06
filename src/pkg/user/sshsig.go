@@ -23,17 +23,6 @@ const (
 	pemType    = "SSH SIGNATURE"
 )
 
-// wire is the signature blob, armoured into the PEM a person sees.
-type wire struct {
-	Magic     [6]byte `sshtype:"-"`
-	Version   uint32
-	PublicKey string
-	Namespace string
-	Reserved  string
-	Hash      string
-	Signature string
-}
-
 // signed is what is actually put through the key: the message is hashed first, so a key never
 // signs an attacker's bytes directly and a large message costs one hash.
 type signed struct {

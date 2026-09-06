@@ -211,7 +211,7 @@ func (k *keeper) apply(want Folder, now map[string]mark, fetch func(Wanted) erro
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", k.dir, err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	done, trouble := k.recover(root, want, now)
 
@@ -472,7 +472,7 @@ func written(root *os.Root, path string, body []byte) error {
 		return fmt.Errorf("opening %s: %w", part, err)
 	}
 	if _, err := out.Write(body); err != nil {
-		out.Close()
+		_ = out.Close()
 		_ = root.Remove(part)
 		return fmt.Errorf("writing %s: %w", part, err)
 	}
@@ -493,14 +493,14 @@ func copyOut(root *os.Root, from, part string) error {
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", from, err)
 	}
-	defer held.Close()
+	defer func() { _ = held.Close() }()
 
 	out, err := root.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", part, err)
 	}
 	if _, err := io.Copy(out, held); err != nil {
-		out.Close()
+		_ = out.Close()
 		_ = root.Remove(part)
 		return fmt.Errorf("writing %s: %w", part, err)
 	}
@@ -517,7 +517,7 @@ func sumOf(at string) ([32]byte, error) {
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("reading %s: %w", at, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	sum := blake3.New(32, nil)
 	if _, err := io.Copy(sum, file); err != nil {

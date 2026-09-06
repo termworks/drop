@@ -222,7 +222,7 @@ func TestAnnouncingGoesOutEveryInterfaceJoined(t *testing.T) {
 	if err != nil {
 		t.Skipf("no socket to listen on: %v", err)
 	}
-	defer hear.Close()
+	defer func() { _ = hear.Close() }()
 
 	group := &net.UDPAddr{IP: net.ParseIP(Group), Port: hear.LocalAddr().(*net.UDPAddr).Port}
 	joined := ipv4.NewPacketConn(hear.(*net.UDPConn))
@@ -235,7 +235,7 @@ func TestAnnouncingGoesOutEveryInterfaceJoined(t *testing.T) {
 	if err != nil {
 		t.Skipf("no socket to announce from: %v", err)
 	}
-	defer say.Close()
+	defer func() { _ = say.Close() }()
 
 	out := ipv4.NewPacketConn(say.(*net.UDPConn))
 	_ = out.SetMulticastLoopback(true)

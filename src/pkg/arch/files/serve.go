@@ -107,7 +107,7 @@ func (f *Files) handGet(conn *wire.Conn, dir *os.Root, name string, q request) e
 	if err != nil {
 		return refuse(fmt.Sprintf("cannot read %s: %v", name, unpath(err)))
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	if open.IsDir() {
 		return refuse(fmt.Sprintf("%s is a directory", name))
@@ -233,7 +233,7 @@ func digestOf(dir *os.Root, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	sum := blake3.New(32, nil)
 	if _, err := io.Copy(sum, file); err != nil {
@@ -248,7 +248,7 @@ func listed(dir *os.Root, name string) ([]Entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot list it: %v", unpath(err))
 	}
-	defer at.Close()
+	defer func() { _ = at.Close() }()
 
 	if !stat.IsDir() {
 		return nil, fmt.Errorf("%s is not a directory", name)
@@ -288,12 +288,12 @@ func reading(dir *os.Root, name string) (*os.File, fs.FileInfo, error) {
 
 	stat, err := file.Stat()
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return nil, nil, err
 	}
 	if stat.Mode().IsRegular() {
 		if err := waiting(file); err != nil {
-			file.Close()
+			_ = file.Close()
 			return nil, nil, err
 		}
 	}

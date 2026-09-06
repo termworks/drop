@@ -101,7 +101,7 @@ func TestASecondNodeSaysThePortIsTaken(t *testing.T) {
 	if err != nil {
 		t.Skip("no sockets here")
 	}
-	defer daemon.Close()
+	defer func() { _ = daemon.Close() }()
 
 	port := daemon.LocalAddr().(*net.UDPAddr).Port
 	t.Setenv("DROP_PORT", strconv.Itoa(port))
@@ -276,7 +276,7 @@ func started(t *testing.T) *Node {
 	if err != nil {
 		t.Fatalf("starting a node: %v", err)
 	}
-	t.Cleanup(func() { n.Close() })
+	t.Cleanup(func() { _ = n.Close() })
 
 	return n
 }

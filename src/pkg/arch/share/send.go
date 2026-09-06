@@ -96,7 +96,7 @@ func sendOne(conn *wire.Conn, src Source, at int64, progress func(string, int64,
 		if err != nil {
 			return fmt.Errorf("opening %s: %w", src.Path, err)
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		body = file
 	}
 
@@ -119,7 +119,7 @@ func sendOne(conn *wire.Conn, src Source, at int64, progress func(string, int64,
 			if werr := conn.WriteData(buf[:n]); werr != nil {
 				return fmt.Errorf("sending %s: %w", src.Name, werr)
 			}
-			digest.Write(buf[:n])
+			_, _ = digest.Write(buf[:n])
 			sent += int64(n)
 			if progress != nil {
 				progress(src.Name, sent, src.Size)

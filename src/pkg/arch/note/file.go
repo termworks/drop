@@ -31,7 +31,7 @@ import (
 
 // busy is a file somebody is writing while it is being read. Merging half a save is worse than
 // waiting a second, so it waits a second.
-var busy = errors.New("it was being written while it was read")
+var errBusy = errors.New("it was being written while it was read")
 
 // Still is how long a file has to have been left alone before what is in it is taken for a save.
 //
@@ -43,10 +43,7 @@ const Still = Every / 2
 // keeper holds one note: the file, its history, and what has passed between them.
 type keeper struct {
 	file string
-	// at is the thing the history is about, so a namespace made again at the same path with the
-	// same file is not written into the history of the one it replaced.
-	at  string
-	log *history.Log
+	log  *history.Log
 	// wrote is what this machine last put in the file or last took out of it, by digest, and heads
 	// is what the history said when it did. Both outlive the process, because a file edited while
 	// drop was not running has to be told from one drop itself wrote before it stopped, and a save
@@ -67,7 +64,7 @@ func (k *keeper) once() (bool, error) {
 	// A file still being put down is not trouble and not a save. It is looked at again next round,
 	// which is what the settling is for — and the file drop itself has just written is the ordinary
 	// way to meet one.
-	case errors.Is(err, busy):
+	case errors.Is(err, errBusy):
 		return false, nil
 	case err != nil:
 		return false, err
@@ -78,14 +75,14 @@ func (k *keeper) once() (bool, error) {
 
 	made := false
 	var trouble error
-	if there && !(k.known && k.wrote == blake3.Sum256(raw)) {
+	if there && (!k.known || k.wrote != blake3.Sum256(raw)) {
 		level, err := k.fromHistory(raw)
 		switch {
 		case err != nil:
 			return false, err
 		case !level:
-			switch err := k.record(raw); {
-			case err == nil:
+			switch err := k.record(raw); err {
+			case nil:
 				made = true
 			default:
 				if err := k.spare(raw); err != nil {
@@ -358,7 +355,7 @@ func steady(file string) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("reading %s: it is not a file", file)
 	}
 	if time.Since(before.ModTime()) < Still {
-		return nil, false, fmt.Errorf("reading %s: %w", file, busy)
+		return nil, false, fmt.Errorf("reading %s: %w", file, errBusy)
 	}
 
 	raw, err := os.ReadFile(file)
@@ -371,10 +368,10 @@ func steady(file string) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("reading %s: %w", file, err)
 	}
 	if !after.Mode().IsRegular() {
-		return nil, false, fmt.Errorf("reading %s: %w", file, busy)
+		return nil, false, fmt.Errorf("reading %s: %w", file, errBusy)
 	}
 	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
-		return nil, false, fmt.Errorf("reading %s: %w", file, busy)
+		return nil, false, fmt.Errorf("reading %s: %w", file, errBusy)
 	}
 	return raw, true, nil
 }

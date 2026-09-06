@@ -102,8 +102,8 @@ func TestAPeerClaimingSomebodyElsesIdIsRefused(t *testing.T) {
 	host, caller, victim := testEndpointID(t, 1), testEndpointID(t, 2), testEndpointID(t, 3)
 
 	ours, theirs := net.Pipe()
-	defer ours.Close()
-	defer theirs.Close()
+	defer func() { _ = ours.Close() }()
+	defer func() { _ = theirs.Close() }()
 
 	go func() {
 		conn := wire.NewConn(theirs)
@@ -123,8 +123,8 @@ func TestPairingKeepsTheIdTheTransportProved(t *testing.T) {
 	a, b := testEndpointID(t, 1), testEndpointID(t, 2)
 
 	one, two := net.Pipe()
-	defer one.Close()
-	defer two.Close()
+	defer func() { _ = one.Close() }()
+	defer func() { _ = two.Close() }()
 
 	type answer struct {
 		p   Pairing

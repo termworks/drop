@@ -96,7 +96,7 @@ func (s *staying) reach(ctx context.Context, entry book.Entry) {
 		s.backOff(entry)
 		return
 	}
-	stream.Close()
+	_ = stream.Close()
 
 	delete(s.next, entry.Name)
 	delete(s.wait, entry.Name)

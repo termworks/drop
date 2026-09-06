@@ -31,7 +31,7 @@ func sendBody(conn *wire.Conn, body io.Reader, name string, size, from int64, pr
 		n, err := body.Read(buf)
 		if n > 0 {
 			chunk, start := buf[:n], read
-			digest.Write(chunk)
+			_, _ = digest.Write(chunk)
 			read += int64(n)
 
 			if read > from {
@@ -169,7 +169,7 @@ func takeOnto(conn *wire.Conn, into, name string, e Entry, sum []byte, progress 
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", where, err)
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 
 	final := filepath.Base(into)
 	at := arriving{}
@@ -214,7 +214,7 @@ func land(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mo
 	if err != nil {
 		return 0, fmt.Errorf("opening %s: %w", a.part, err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	lost := func(err error) (int64, error) {
 		_ = dir.Remove(a.part)
@@ -307,7 +307,7 @@ func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, nam
 		if _, err := out.Write(buf[:length]); err != nil {
 			return 0, "", fmt.Errorf("writing %s: %w", a.part, err)
 		}
-		digest.Write(buf[:length])
+		_, _ = digest.Write(buf[:length])
 		got += int64(length)
 		if progress != nil {
 			progress(name, got, size)
@@ -321,7 +321,7 @@ func syncLanding(dir *os.Root, name string) error {
 		return err
 	}
 	if err := file.Sync(); err != nil {
-		file.Close()
+		_ = file.Close()
 		return err
 	}
 	if err := file.Close(); err != nil {
@@ -332,7 +332,7 @@ func syncLanding(dir *os.Root, name string) error {
 	if err != nil {
 		return err
 	}
-	defer parent.Close()
+	defer func() { _ = parent.Close() }()
 	return parent.Sync()
 }
 
@@ -386,9 +386,12 @@ func opening(dir *os.Root, a arriving) (*os.File, *blake3.Hasher, error) {
 		return nil, nil, err
 	}
 	n, err := io.Copy(digest, io.LimitReader(held, a.have))
-	held.Close()
+	closeErr := held.Close()
 	if err != nil {
 		return nil, nil, err
+	}
+	if closeErr != nil {
+		return nil, nil, closeErr
 	}
 	if n != a.have {
 		return nil, nil, fmt.Errorf("%s holds %d bytes of the %d it was carrying on from", a.part, n, a.have)
@@ -431,7 +434,10 @@ func claim(dir *os.Root, name string) (string, error) {
 		at := numbered(name, n)
 		f, err := dir.OpenFile(at, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
-			f.Close()
+			if err := f.Close(); err != nil {
+				_ = dir.Remove(at)
+				return "", err
+			}
 			return at, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {

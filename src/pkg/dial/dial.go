@@ -259,13 +259,13 @@ func open(ctx context.Context, n *node.Node, at netaddr.EndpointAddr, alpn strin
 	select {
 	case <-conn.HandshakeComplete():
 	case <-ctx.Done():
-		conn.Close()
+		_ = conn.Close()
 		return nil, nil, ctx.Err()
 	}
 
 	s, err := conn.OpenStreamSync(ctx)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, nil, err
 	}
 	return conn, s, nil
@@ -295,7 +295,7 @@ func usable(f Finder) bool {
 
 	at := reflect.ValueOf(f)
 	switch at.Kind() {
-	case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func:
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func:
 		return !at.IsNil()
 	}
 	return true

@@ -101,7 +101,7 @@ func receive(conn *wire.Conn, into string, from node.ID, hooks Into) error {
 		_ = refuse("cannot write here")
 		return fmt.Errorf("opening %s: %w", into, err)
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 
 	picked := resume{At: make([]int64, len(out.Items))}
 	for i, item := range out.Items {
@@ -145,7 +145,7 @@ func opening(dir *os.Root, part string, at int64) (*os.File, int64, error) {
 				if opened, serr := out.Stat(); serr == nil && os.SameFile(named, opened) {
 					return out, at, nil
 				}
-				out.Close()
+				_ = out.Close()
 			}
 		}
 	}
@@ -166,7 +166,7 @@ func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	digest := blake3.New(32, nil)
 	if at > 0 {
@@ -217,7 +217,7 @@ func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64
 		if _, err := out.Write(buf[:size]); err != nil {
 			return fmt.Errorf("writing %s: %w", part, err)
 		}
-		digest.Write(buf[:size])
+		_, _ = digest.Write(buf[:size])
 		got += int64(size)
 		if hooks.Progress != nil {
 			hooks.Progress(name, got, item.Size)
@@ -283,7 +283,7 @@ func syncDir(dir *os.Root) error {
 	if err != nil {
 		return err
 	}
-	defer opened.Close()
+	defer func() { _ = opened.Close() }()
 	return opened.Sync()
 }
 
@@ -303,7 +303,10 @@ func claim(dir *os.Root, name string) (string, error) {
 		at := numbered(name, n)
 		f, err := dir.OpenFile(at, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
-			f.Close()
+			if err := f.Close(); err != nil {
+				_ = dir.Remove(at)
+				return "", err
+			}
 			return at, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {

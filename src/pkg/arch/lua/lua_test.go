@@ -57,7 +57,7 @@ func opened(t *testing.T, p *Plugin, settings arch.Config) (*wire.Conn, net.Conn
 	done := make(chan error, 1)
 
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 		done <- p.Serve(t.Context(), arch.Session{
 			Path:   "/thing",
 			Config: settings,
@@ -103,7 +103,7 @@ func TestAPluginCannotReachTheHost(t *testing.T) {
 	`)
 
 	conn, client, done := opened(t, p, nil)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, body := said(t, conn)
 	if len(body) != 0 {
@@ -136,14 +136,14 @@ func TestALoopThatNeverEndsIsStopped(t *testing.T) {
 		t.Fatalf("asking it to spin: %v", err)
 	}
 	err := <-done
-	client.Close()
+	_ = client.Close()
 
 	if err == nil || !strings.Contains(err.Error(), "CPU") {
 		t.Fatalf("the loop ended with %v", err)
 	}
 
 	after, client, done := opened(t, p, nil)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if err := after.WriteFrame(wire.KindItem, []byte("behave")); err != nil {
 		t.Fatalf("asking the next one to behave: %v", err)
@@ -175,7 +175,7 @@ func TestAPluginThatEatsMemoryIsStopped(t *testing.T) {
 	`)
 
 	_, client, done := opened(t, p, nil)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	err := <-done
 	if err == nil || !strings.Contains(err.Error(), "memory") {
@@ -202,7 +202,7 @@ func TestARaiseIsOneSessionsError(t *testing.T) {
 		t.Fatalf("asking it to break: %v", err)
 	}
 	err := <-done
-	client.Close()
+	_ = client.Close()
 
 	if err == nil || !strings.Contains(err.Error(), "the camera fell over") {
 		t.Fatalf("the raise came back as %v", err)
@@ -212,7 +212,7 @@ func TestARaiseIsOneSessionsError(t *testing.T) {
 	}
 
 	after, client, done := opened(t, p, nil)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if err := after.WriteFrame(wire.KindItem, []byte("carry on")); err != nil {
 		t.Fatalf("asking the next one: %v", err)
@@ -252,7 +252,7 @@ func TestSessionsOfOnePluginShareNothing(t *testing.T) {
 			defer wg.Done()
 
 			conn, client, done := opened(t, p, nil)
-			defer client.Close()
+			defer func() { _ = client.Close() }()
 
 			for i := 1; i <= 100; i++ {
 				if err := conn.WriteFrame(wire.KindItem, []byte("a")); err != nil {
@@ -304,7 +304,7 @@ func TestAnAbandonedSessionLeavesNoGoroutine(t *testing.T) {
 		if err := conn.WriteFrame(wire.KindItem, []byte("hello")); err != nil {
 			t.Fatalf("saying hello: %v", err)
 		}
-		client.Close()
+		_ = client.Close()
 		<-done
 	}
 
@@ -333,7 +333,7 @@ func TestBinarySurvivesAPlugin(t *testing.T) {
 	`)
 
 	conn, client, done := opened(t, p, nil)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	for _, body := range [][]byte{
 		{0, 1, 2, 0, 255},
@@ -396,7 +396,7 @@ func TestAPluginCannotOpenOutsideItsOwnDirectory(t *testing.T) {
 	}
 
 	conn, client, done := opened(t, p, nil)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	for _, name := range []string{"../secret", "away", "/etc/passwd", "deeper/../../secret"} {
 		if err := conn.WriteFrame(wire.KindItem, []byte(name)); err != nil {
@@ -472,7 +472,7 @@ func TestAPluginReadsItsOwnSettings(t *testing.T) {
 	}
 
 	conn, client, done := opened(t, p, settings)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if _, body := said(t, conn); string(body) != "/dev/video0" {
 		t.Fatalf("the session said %q", body)
@@ -500,7 +500,7 @@ func TestASessionHandsThePluginWhatItNeeds(t *testing.T) {
 	`)
 
 	conn, client, done := opened(t, p, nil)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, body := said(t, conn)
 	if string(body) != "laptop true /thing hello\n" {
@@ -654,7 +654,7 @@ func TestTwoWatchersOfOneCameraGetTheirOwnStill(t *testing.T) {
 			defer wg.Done()
 
 			conn, client, done := opened(t, p, settings)
-			defer client.Close()
+			defer func() { _ = client.Close() }()
 
 			said(t, conn)
 			if err := conn.WriteFrame(wire.KindItem, []byte("still")); err != nil {

@@ -165,7 +165,7 @@ func appendTo(path string, body []byte) error {
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", path, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var head [binary.MaxVarintLen64]byte
 	n := binary.PutUvarint(head[:], uint64(len(body)))

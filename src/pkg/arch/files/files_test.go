@@ -29,10 +29,10 @@ func serving(t *testing.T, dir string, writable bool, hooks Into) *wire.Conn {
 	t.Helper()
 
 	caller, server := net.Pipe()
-	t.Cleanup(func() { caller.Close() })
+	t.Cleanup(func() { _ = caller.Close() })
 
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 
 		at := arch.Session{
 			Path:   "/files",
@@ -241,7 +241,7 @@ func TestAClosedSessionIsNotAnError(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 
 		at := arch.Session{
 			Path:   "/files",
@@ -258,7 +258,7 @@ func TestAClosedSessionIsNotAnError(t *testing.T) {
 	if _, err := b.List(""); err != nil {
 		t.Fatalf("List(): %v", err)
 	}
-	caller.Close()
+	_ = caller.Close()
 
 	if err := <-done; err != nil {
 		t.Fatalf("a session that was closed came back as %v", err)
@@ -424,7 +424,7 @@ func TestOnlyARegularFileIsRead(t *testing.T) {
 	if err != nil {
 		t.Skipf("no unix sockets here: %v", err)
 	}
-	defer listening.Close()
+	defer func() { _ = listening.Close() }()
 
 	b := opened(t, dir, false, Into{})
 	if err := b.Get("socket", filepath.Join(t.TempDir(), "copy"), Want{}); err == nil {
@@ -468,10 +468,10 @@ func TestALinkAtThePartIsNotWrittenThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening the namespace: %v", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	if out, _, err := opening(root, arriving{part: ".planted.abcdef012345.part"}); err == nil {
-		out.Close()
+		_ = out.Close()
 		t.Fatal("opening() opened a part that was already there")
 	}
 	if got := read(t, outside); string(got) != "original" {
@@ -846,7 +846,7 @@ func TestAPipeUnderANameIsNotWaitedOn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening the namespace: %v", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	done := make(chan os.FileMode, 1)
 	go func() {
@@ -855,7 +855,7 @@ func TestAPipeUnderANameIsNotWaitedOn(t *testing.T) {
 			done <- 0
 			return
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		done <- stat.Mode()
 	}()
 
@@ -905,7 +905,7 @@ func TestAPartThatCannotBeMovedIsNotLeftBehind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening the namespace: %v", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	if final, err := place(root, ".x.abcdef012345.part", "x"); err == nil {
 		t.Fatalf("place() landed on %s", final)

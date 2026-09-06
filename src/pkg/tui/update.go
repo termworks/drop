@@ -121,10 +121,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// somebody is reading a conversation moves the ground under them for no reason.
 		next := []tea.Cmd{listenFor(m.back.Arrivals())}
 
-		switch {
-		case m.at == levelUsers:
+		switch m.at {
+		case levelUsers:
 			next = append(next, loadPeers(m.back))
-		case m.at == levelOpen:
+		case levelOpen:
 			if with, ok := m.peer(); ok {
 				next = append(next, loadHistory(m.back, with))
 			}

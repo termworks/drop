@@ -514,7 +514,7 @@ func (l *Log) append(raw []byte) error {
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", l.file, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	if _, err := file.Write(raw); err != nil {
 		return fmt.Errorf("writing %s: %w", l.file, err)

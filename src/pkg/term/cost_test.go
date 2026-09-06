@@ -32,7 +32,7 @@ func TestNoSequenceCostsMoreThanItsLength(t *testing.T) {
 	for what, out := range nasty {
 		s := New(200, 60)
 		start := time.Now()
-		s.Write([]byte(out))
+		_, _ = s.Write([]byte(out))
 		took := time.Since(start)
 
 		if took > 250*time.Millisecond {

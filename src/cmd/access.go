@@ -196,7 +196,7 @@ func (l *running) AskFor(ctx context.Context, on book.Entry, path, why string) e
 	if err != nil {
 		return err
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	return proto.Ask(ctx, stream, path, why, node.DisplayName())
 }

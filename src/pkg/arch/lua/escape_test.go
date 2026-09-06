@@ -36,7 +36,7 @@ func TestAPluginCannotClimbOut(t *testing.T) {
 
 		conn, client, done := opened(t, p, nil)
 		_, said := said(t, conn)
-		client.Close()
+		_ = client.Close()
 		<-done
 
 		got := string(said)

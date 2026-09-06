@@ -46,10 +46,10 @@ func weighed(t *testing.T, dir string, writable bool, limit int64) (*Browsing, *
 	t.Helper()
 
 	caller, server := net.Pipe()
-	t.Cleanup(func() { caller.Close() })
+	t.Cleanup(func() { _ = caller.Close() })
 
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 
 		at := arch.Session{
 			Path:   "/files",
