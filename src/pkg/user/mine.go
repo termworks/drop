@@ -1,12 +1,14 @@
 package user
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
 )
 
@@ -35,22 +37,25 @@ func Mine(now time.Time) (Badge, []byte, error) {
 		return Badge{}, nil, err
 	}
 
-	signed, err := os.ReadFile(where)
-	sig, sigErr := os.ReadFile(where + ".sig")
-
-	if err == nil && sigErr == nil {
-		badge, err := Read(signed, sig, now)
-		if err == nil && badge.Device == deviceID() && sameUser(badge) {
-			return badge, sig, nil
+	var badge Badge
+	var sig []byte
+	err = keep.While(where, func() error {
+		signed, stored, readErr := readStored(where)
+		if readErr == nil {
+			badge, err = Read(signed, stored, now)
+			if err == nil && badge.Device == deviceID() && sameUser(badge) {
+				sig = stored
+				return nil
+			}
 		}
-		// Anything wrong with it — run out, for another machine, signed by a key this user no
-		// longer has — is a reason to make a new one rather than to fail.
-	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return Badge{}, nil, fmt.Errorf("reading %s: %w", where, err)
-	}
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return fmt.Errorf("reading %s: %w", where, readErr)
+		}
 
-	return renew(where, now)
+		badge, sig, err = renew(where, now)
+		return err
+	})
+	return badge, sig, err
 }
 
 // renew signs a fresh badge for this machine and writes it down.
@@ -60,16 +65,29 @@ func renew(where string, now time.Time) (Badge, []byte, error) {
 		return Badge{}, nil, err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(where), 0o700); err != nil {
+	bundle := append(badge.Bytes(), sig...)
+	if err := keep.Replace(where, bundle); err != nil {
 		return Badge{}, nil, err
 	}
-	if err := os.WriteFile(where, badge.Bytes(), 0o644); err != nil {
-		return Badge{}, nil, fmt.Errorf("writing %s: %w", where, err)
-	}
-	if err := os.WriteFile(where+".sig", sig, 0o644); err != nil {
-		return Badge{}, nil, fmt.Errorf("writing %s: %w", where+".sig", err)
-	}
 	return badge, sig, nil
+}
+
+var signatureMarker = []byte("-----BEGIN SSH SIGNATURE-----")
+
+func readStored(where string) ([]byte, []byte, error) {
+	raw, err := os.ReadFile(where)
+	if err != nil {
+		return nil, nil, err
+	}
+	if at := bytes.Index(raw, signatureMarker); at >= 0 {
+		return raw[:at], raw[at:], nil
+	}
+
+	sig, err := os.ReadFile(where + ".sig")
+	if err != nil {
+		return nil, nil, err
+	}
+	return raw, sig, nil
 }
 
 // sameUser reports whether a badge was signed by the key this machine now uses.
