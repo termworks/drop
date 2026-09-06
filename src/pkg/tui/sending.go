@@ -2,7 +2,9 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -51,6 +53,8 @@ type putDone struct {
 // tick asks for a redraw while something is moving, because the progress is written by a goroutine
 // and nothing else would wake the interface to show it.
 type tick struct{}
+
+const maxCompletions = 1 << 12
 
 func ticking() tea.Cmd {
 	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return tick{} })
@@ -112,7 +116,7 @@ func complete(typed string) (string, []string) {
 		dir, prefix = at, ""
 	}
 
-	entries, err := os.ReadDir(dir)
+	entries, err := readDirUpTo(dir, maxCompletions)
 	if err != nil {
 		return typed, nil
 	}
@@ -137,6 +141,23 @@ func complete(typed string) (string, []string) {
 		return typed, nil
 	}
 	return filepath.Join(dir, shared(found)), found
+}
+
+func readDirUpTo(dir string, most int) ([]os.DirEntry, error) {
+	opened, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = opened.Close() }()
+
+	entries, err := opened.ReadDir(most + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if len(entries) > most {
+		return nil, fmt.Errorf("directory has more than %d entries", most)
+	}
+	return entries, nil
 }
 
 // shared is the longest prefix all of these have in common.

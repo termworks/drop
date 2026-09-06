@@ -777,6 +777,19 @@ func TestTabCompletesAPath(t *testing.T) {
 	}
 }
 
+func TestPathCompletionStopsAtItsEntryLimit(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"one", "two", "three"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := readDirUpTo(dir, 2); err == nil {
+		t.Fatal("completion read a directory past its entry limit")
+	}
+}
+
 // openPath walks the interface to a path on the one paired device, the way a person would: into
 // each folder along the way, then into the namespace itself.
 func openPath(t *testing.T, back *fake, want string) Model {

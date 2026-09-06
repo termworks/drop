@@ -21,6 +21,7 @@ Streams arriving over connections held to paired devices have the same 64-handle
 and 16-handler per-connection ceiling.
 Local directory listings use the same 16,384-entry ceiling as remote listings and stop reading at
 the boundary, rather than first loading an arbitrarily large directory into memory.
+Interactive path completion stops after 4,096 entries.
 Lua archetypes have a second process-wide ceiling: 16 active runtimes, 128 files opened through
 plugins and four plugin process groups. Reaching one refuses new work instead of waiting while it
 holds an admitted stream.
