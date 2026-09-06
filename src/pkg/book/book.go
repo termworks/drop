@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
-	"time"
 
 	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
@@ -57,9 +56,8 @@ type Book struct {
 	// writes to it, and because Refresh replaces the whole map under them.
 	mu      sync.RWMutex
 	entries map[string]Entry
-	// read is when the file this was loaded from was last written, so Refresh can tell whether
-	// anything has happened since.
-	read time.Time
+	// seen identifies the file revision loaded into entries.
+	seen os.FileInfo
 }
 
 // Refresh re-reads the address book if the file has changed since it was loaded.
@@ -73,8 +71,14 @@ func (b *Book) Refresh() error {
 		return err
 	}
 
-	at, err := os.Stat(file)
+	current, err := os.Stat(file)
 	if errors.Is(err, os.ErrNotExist) {
+		b.mu.Lock()
+		if b.seen != nil {
+			b.entries = map[string]Entry{}
+			b.seen = nil
+		}
+		b.mu.Unlock()
 		return nil
 	}
 	if err != nil {
@@ -82,10 +86,10 @@ func (b *Book) Refresh() error {
 	}
 
 	b.mu.RLock()
-	known := b.read
+	seen := b.seen
 	b.mu.RUnlock()
 
-	if !at.ModTime().After(known) {
+	if sameRevision(seen, current) {
 		return nil
 	}
 
@@ -95,14 +99,19 @@ func (b *Book) Refresh() error {
 	}
 
 	fresh.mu.RLock()
-	entries := fresh.entries
+	entries, seen := fresh.entries, fresh.seen
 	fresh.mu.RUnlock()
 
 	b.mu.Lock()
-	b.entries, b.read = entries, at.ModTime()
+	b.entries, b.seen = entries, seen
 	b.mu.Unlock()
 
 	return nil
+}
+
+func sameRevision(left, right os.FileInfo) bool {
+	return left != nil && right != nil && os.SameFile(left, right) &&
+		left.Size() == right.Size() && left.ModTime().Equal(right.ModTime())
 }
 
 // stored is the on-disk shape.
@@ -131,6 +140,14 @@ func Load() (*Book, error) {
 	if err != nil {
 		return nil, err
 	}
+	at, err := os.Stat(file)
+	if errors.Is(err, os.ErrNotExist) {
+		return b, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("stating %s: %w", file, err)
+	}
+
 	raw, err := os.ReadFile(file)
 	if errors.Is(err, os.ErrNotExist) {
 		return b, nil
@@ -138,12 +155,7 @@ func Load() (*Book, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", file, err)
 	}
-
-	// Stamped before parsing, so a write that lands while this is being read is noticed next time
-	// rather than being taken for already-read.
-	if at, err := os.Stat(file); err == nil {
-		b.read = at.ModTime()
-	}
+	b.seen = at
 
 	var onDisk map[string]stored
 	if err := json.Unmarshal(raw, &onDisk); err != nil {
@@ -528,11 +540,11 @@ func (b *Book) reload() error {
 	}
 
 	fresh.mu.RLock()
-	entries, read := fresh.entries, fresh.read
+	entries, seen := fresh.entries, fresh.seen
 	fresh.mu.RUnlock()
 
 	b.mu.Lock()
-	b.entries, b.read = entries, read
+	b.entries, b.seen = entries, seen
 	b.mu.Unlock()
 	return nil
 }

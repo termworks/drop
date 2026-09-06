@@ -178,6 +178,107 @@ func TestAPairingByAnotherProcessIsNoticed(t *testing.T) {
 	}
 }
 
+func TestRefreshNoticesAReplacementWithMatchingMetadata(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	initial, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.Pair("alpha", testID(t), testSecret(t))
+	if err := initial.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	serving, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := held.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	original, err := held.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed.Remove("alpha")
+	changed.Pair("bravo", testID(t), testSecret(t))
+	if err := changed.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(file, original.ModTime(), original.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.Size() != original.Size() || !replacement.ModTime().Equal(original.ModTime()) {
+		t.Fatalf("replacement metadata = (%d, %s), want (%d, %s)", replacement.Size(), replacement.ModTime(), original.Size(), original.ModTime())
+	}
+	if os.SameFile(original, replacement) {
+		t.Fatal("replacement reused the original file identity")
+	}
+
+	if err := serving.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := serving.Lookup("alpha"); ok {
+		t.Fatal("replaced entry remains after refresh")
+	}
+	if _, ok := serving.Lookup("bravo"); !ok {
+		t.Fatal("replacement entry is missing after refresh")
+	}
+}
+
+func TestRefreshNoticesAddressBookRemoval(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	written, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	written.Pair("alpha", testID(t), testSecret(t))
+	if err := written.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	serving, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := serving.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := serving.Lookup("alpha"); ok {
+		t.Fatal("removed address book remains loaded after refresh")
+	}
+}
+
 // Finding a device is the expensive part of talking to it. The address that answered is the best
 // guess for next time, and it is only worth anything if it is written down.
 func TestTheAddressThatAnsweredIsRemembered(t *testing.T) {
