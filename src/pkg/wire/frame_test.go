@@ -136,6 +136,38 @@ func TestAFrameOverTheLimitIsNotWritten(t *testing.T) {
 	}
 }
 
+func TestAFrameSurvivesShortWrites(t *testing.T) {
+	var raw bytes.Buffer
+	out := &shortWriter{into: &raw, most: 1}
+	conn := NewConn(readWriter{bytes.NewReader(nil), out})
+	body := []byte("the entire body")
+	if err := conn.WriteFrame(KindItem, body); err != nil {
+		t.Fatalf("WriteFrame(): %v", err)
+	}
+
+	kind, got, err := NewConn(readWriter{&raw, io.Discard}).ReadFrame()
+	if err != nil || kind != KindItem || !bytes.Equal(got, body) {
+		t.Fatalf("ReadFrame() = %d %q, %v", kind, got, err)
+	}
+}
+
+func TestAWriterThatMakesNoProgressIsRefused(t *testing.T) {
+	conn := NewConn(readWriter{bytes.NewReader(nil), shortWriter{}})
+	if err := conn.WriteFrame(KindItem, []byte("body")); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("WriteFrame() = %v, want io.ErrShortWrite", err)
+	}
+}
+
+func TestNegativeBodySizesAreRefused(t *testing.T) {
+	conn := NewConn(readWriter{bytes.NewReader(nil), io.Discard})
+	if err := conn.ReadBody(nil, -1); err == nil {
+		t.Fatal("ReadBody() accepted a negative size")
+	}
+	if err := conn.Discard(-1); err == nil {
+		t.Fatal("Discard() accepted a negative size")
+	}
+}
+
 // both is a stream that reads from one place and writes to another.
 type both struct {
 	r io.Reader
@@ -144,3 +176,15 @@ type both struct {
 
 func (b *both) Read(p []byte) (int, error)  { return b.r.Read(p) }
 func (b *both) Write(p []byte) (int, error) { return b.w.Write(p) }
+
+type shortWriter struct {
+	into *bytes.Buffer
+	most int
+}
+
+func (w shortWriter) Write(p []byte) (int, error) {
+	if w.most == 0 {
+		return 0, nil
+	}
+	return w.into.Write(p[:min(len(p), w.most)])
+}

@@ -65,7 +65,7 @@ func (c *Conn) WriteFrame(kind byte, body []byte) error {
 	if len(body) == 0 {
 		return nil
 	}
-	if _, err := c.w.Write(body); err != nil {
+	if err := writeAll(c.w, body); err != nil {
 		return fmt.Errorf("wire: writing a frame body: %w", err)
 	}
 	return nil
@@ -74,8 +74,25 @@ func (c *Conn) WriteFrame(kind byte, body []byte) error {
 func (c *Conn) writeHeader(kind byte, size int) error {
 	c.hdr[0] = kind
 	n := binary.PutUvarint(c.hdr[1:], uint64(size))
-	if _, err := c.w.Write(c.hdr[:1+n]); err != nil {
+	if err := writeAll(c.w, c.hdr[:1+n]); err != nil {
 		return fmt.Errorf("wire: writing a frame header: %w", err)
+	}
+	return nil
+}
+
+func writeAll(w io.Writer, p []byte) error {
+	for len(p) > 0 {
+		n, err := w.Write(p)
+		if n < 0 || n > len(p) {
+			return fmt.Errorf("invalid write count %d for %d bytes", n, len(p))
+		}
+		p = p[n:]
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
 	}
 	return nil
 }
@@ -107,6 +124,9 @@ func (c *Conn) ReadHeader() (kind byte, size int, err error) {
 
 // ReadBody fills buf with exactly size bytes of frame body.
 func (c *Conn) ReadBody(buf []byte, size int) error {
+	if size < 0 {
+		return fmt.Errorf("wire: negative frame body size %d", size)
+	}
 	if size > len(buf) {
 		return fmt.Errorf("wire: frame body is %d bytes, buffer holds %d", size, len(buf))
 	}
@@ -135,6 +155,9 @@ func (c *Conn) ReadFrame() (kind byte, body []byte, err error) {
 
 // Discard throws away a frame body that is not wanted.
 func (c *Conn) Discard(size int) error {
+	if size < 0 {
+		return fmt.Errorf("wire: negative frame body size %d", size)
+	}
 	if _, err := c.r.Discard(size); err != nil {
 		return fmt.Errorf("wire: skipping a frame body: %w", err)
 	}
