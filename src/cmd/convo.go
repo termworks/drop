@@ -116,9 +116,14 @@ func receiving(pinned *book.Book, openLinks bool, show func(node.ID, convo.Messa
 
 // openInBrowser hands a link to the desktop. Detached, because drop is not the thing that should
 // die if a browser does.
-func openInBrowser(link string) {
-	if !strings.HasPrefix(link, "http://") && !strings.HasPrefix(link, "https://") {
-		return
+func openInBrowser(link string) bool {
+	if len(link) > maxOpenedLink || (!strings.HasPrefix(link, "http://") && !strings.HasPrefix(link, "https://")) {
+		return false
+	}
+	select {
+	case browserProcesses <- struct{}{}:
+	default:
+		return false
 	}
 
 	opener := os.Getenv("DROP_OPENER")
@@ -127,11 +132,20 @@ func openInBrowser(link string) {
 	}
 	cmd := exec.Command(opener, link)
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "drop: could not open %s: %v\n", link, err)
-		return
+		<-browserProcesses
+		fmt.Fprintf(os.Stderr, "drop: could not open %s: %v\n", plain.Text(link, MaxSaid), err)
+		return false
 	}
-	go func() { _ = cmd.Wait() }()
+	go func() {
+		defer func() { <-browserProcesses }()
+		_ = cmd.Wait()
+	}()
+	return true
 }
+
+const maxOpenedLink = 8 << 10
+
+var browserProcesses = make(chan struct{}, 4)
 
 // nameFor is what to call a peer in a listing.
 func nameFor(pinned *book.Book, id node.ID) string {

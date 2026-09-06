@@ -31,7 +31,7 @@ your namespaces is worse than not starting.
 | | |
 |---|---|
 | `drop.name` | what this node calls itself; defaults to the hostname |
-| `drop.open_links` | whether an arriving link may be handed to an opener |
+| `drop.open_links` | whether an arriving link up to 8 KiB may be handed to an opener |
 | `drop.rendezvous` | publish where this device is, so peers can find it after it moves. On by default |
 | `drop.direct` | include this machine's own addresses in what is published. On by default |
 | `drop.relays` | relay URLs to use instead of the defaults |
