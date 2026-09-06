@@ -162,3 +162,36 @@ func TestOneDataKeyHoweverManyDropsStartAtOnce(t *testing.T) {
 		t.Fatal("the key on the disk is not the one that was handed out")
 	}
 }
+
+func TestOneAgeKeyHoweverManyDropsCreateIt(t *testing.T) {
+	at := filepath.Join(t.TempDir(), "keys", "vault.key")
+
+	var wg sync.WaitGroup
+	keys := make([]string, 8)
+	for i := range keys {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			identity, err := newKeyFile(at)
+			if err != nil {
+				t.Errorf("newKeyFile(): %v", err)
+				return
+			}
+			keys[i] = identity.String()
+		}()
+	}
+	wg.Wait()
+
+	for i, key := range keys {
+		if key != keys[0] {
+			t.Fatalf("drop %d got a different age key from drop 0", i)
+		}
+	}
+	onDisk, err := keyFile(at, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onDisk.String() != keys[0] {
+		t.Fatal("the stored age key differs from the one returned")
+	}
+}
