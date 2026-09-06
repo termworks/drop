@@ -157,21 +157,6 @@ func (l *Log) Fold(body []byte) (ID, error) {
 	return id, err
 }
 
-// fold drops what a snapshot stands in place of and writes the log back without it.
-//
-// Everything is dropped, not only what this machine was holding when the snapshot was made: a
-// snapshot taken from a peer replaces the same changes here that it replaced there, so two machines
-// that hold it hold the same shape whichever of them made it.
-func (l *Log) fold(c Change) error {
-	for _, was := range c.Fold {
-		if was != c.ID() {
-			delete(l.changes, was)
-		}
-	}
-	l.index()
-	return l.rewrite()
-}
-
 // remembered is every peer still counted, oldest word first. One nobody has heard from in a long
 // time is dropped here rather than waited for.
 func (l *Log) remembered() ([]far, error) {

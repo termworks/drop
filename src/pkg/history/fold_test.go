@@ -1,6 +1,7 @@
 package history
 
 import (
+	"bytes"
 	"os"
 	"testing"
 	"time"
@@ -43,6 +44,38 @@ func TestAFoldReplacesEverythingItStandsFor(t *testing.T) {
 	l.read = false
 	if held := read(t, l); !same(held, []string{"what it all came to"}) {
 		t.Fatalf("Ordered() from disk = %v", held)
+	}
+}
+
+func TestAFailedFoldLeavesTheLogUnchanged(t *testing.T) {
+	asSomebody(t)
+
+	l := aLog(t, thing)
+	chain(t, l, 4)
+	before, err := os.ReadFile(l.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(l.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	_, foldErr := l.Fold([]byte("what it all came to"))
+	if err := os.Chmod(l.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if foldErr == nil {
+		t.Fatal("Fold() succeeded without room for its replacement file")
+	}
+
+	after, err := os.ReadFile(l.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("a failed fold changed the log")
+	}
+	if held := read(t, l); !same(held, []string{"a", "b", "c", "d"}) {
+		t.Fatalf("Ordered() after failed fold = %v", held)
 	}
 }
 

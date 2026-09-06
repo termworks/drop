@@ -163,6 +163,20 @@ func (l *Log) take(c Change) (ID, error) {
 	if err := l.takeable(c, len(plain)+sealCost); err != nil {
 		return ID{}, fmt.Errorf("taking change %s: %w", id, err)
 	}
+	if c.Whole() {
+		l.changes[id] = c
+		for _, was := range c.Fold {
+			if was != id {
+				delete(l.changes, was)
+			}
+		}
+		l.index()
+		if err := l.rewrite(); err != nil {
+			l.read = false
+			return id, errors.Join(err, l.load())
+		}
+		return id, nil
+	}
 	body, err := stored(plain, l.at, id)
 	if err != nil {
 		return ID{}, err
@@ -172,9 +186,6 @@ func (l *Log) take(c Change) (ID, error) {
 	}
 
 	l.changes[id] = c
-	if c.Whole() {
-		return id, l.fold(c)
-	}
 	for _, was := range l.after(c) {
 		delete(l.tips, was)
 	}
