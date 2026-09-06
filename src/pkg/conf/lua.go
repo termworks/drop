@@ -29,6 +29,9 @@ type runtime struct {
 	handlers *rt.Table
 }
 
+// MaxHandlers is how many callbacks one configuration event may run.
+const MaxHandlers = 64
+
 func (r *runtime) close() {
 	if r == nil {
 		return
@@ -60,7 +63,7 @@ func (r *runtime) fire(event string, arg rt.Value) {
 		return
 	}
 
-	for i := int64(1); ; i++ {
+	for i := int64(1); i <= MaxHandlers; i++ {
 		fn := list.Get(rt.IntValue(i))
 		if fn.IsNil() {
 			return
@@ -69,6 +72,7 @@ func (r *runtime) fire(event string, arg rt.Value) {
 			fmt.Fprintf(os.Stderr, "drop: on.%s handler #%d: %v\n", event, i, err)
 		}
 	}
+	fmt.Fprintf(os.Stderr, "drop: on.%s has more than %d handlers; the rest were not run\n", event, MaxHandlers)
 }
 
 // Message is what a config's on.message handlers are given.
@@ -390,15 +394,19 @@ func register(c *rt.GoCont, handlers *rt.Table, event string) (rt.Cont, error) {
 		list = rt.NewTable()
 		handlers.Set(rt.StringValue(event), rt.TableValue(list))
 	}
-	list.Set(rt.IntValue(int64(listLen(list)+1)), rt.FunctionValue(fn))
+	n := listLen(list, MaxHandlers)
+	if n >= MaxHandlers {
+		return nil, fmt.Errorf("drop.on.%s has more than %d handlers", event, MaxHandlers)
+	}
+	list.Set(rt.IntValue(int64(n+1)), rt.FunctionValue(fn))
 
 	return c.Next(), nil
 }
 
 // listLen counts a Lua list, stopping at the first hole.
-func listLen(t *rt.Table) int {
+func listLen(t *rt.Table, most int) int {
 	n := 0
-	for !t.Get(rt.IntValue(int64(n + 1))).IsNil() {
+	for n < most && !t.Get(rt.IntValue(int64(n+1))).IsNil() {
 		n++
 	}
 	return n

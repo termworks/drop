@@ -1,6 +1,7 @@
 package conf
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -332,6 +333,41 @@ func TestARaisingHandlerDoesNotStopTheRest(t *testing.T) {
 	got := luaStrings(t, cfg, "seen")
 	if len(got) != 1 || got[0] != "still delivered" {
 		t.Fatalf("the second handler did not run: %v", got)
+	}
+}
+
+func TestHandlerRegistrationIsBounded(t *testing.T) {
+	path := write(t, fmt.Sprintf(`
+		local drop = require("drop")
+		drop.mount("/chat", { type = "chat" })
+		for i = 1, %d do
+			drop.on.message(function(m) end)
+		end
+	`, MaxHandlers+1))
+
+	if _, err := Load(known()); err == nil || !strings.Contains(err.Error(), fmt.Sprint(MaxHandlers)) {
+		t.Fatalf("Load(%s) accepted too many handlers: %v", path, err)
+	}
+}
+
+func TestAssignedHandlerListIsBoundedWhenFired(t *testing.T) {
+	cfg := load(t, fmt.Sprintf(`
+		local drop = require("drop")
+		drop.mount("/chat", { type = "chat" })
+		seen = 0
+		local handlers = {}
+		for i = 1, %d do
+			handlers[i] = function(m) seen = seen + 1 end
+		end
+		drop.handlers.message = handlers
+	`, MaxHandlers+1))
+
+	cfg.FireMessage(Message{Body: "bounded"})
+	cfg.rt.mu.Lock()
+	seen, ok := cfg.rt.lua.GlobalEnv().Get(rt.StringValue("seen")).TryInt()
+	cfg.rt.mu.Unlock()
+	if !ok || seen != int64(MaxHandlers) {
+		t.Fatalf("ran %d handlers, want %d", seen, MaxHandlers)
 	}
 }
 

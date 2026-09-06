@@ -27,6 +27,8 @@ plugins and four plugin process groups. Reaching one refuses new work instead of
 holds an admitted stream.
 Archetype discovery also refuses a plugin directory with more than 256 entries instead of loading
 an unbounded directory into memory during startup.
+Configuration events run at most 64 registered handlers; assigning a larger handler table cannot
+turn one incoming message or file into an unbounded callback loop.
 
 **How long a read may wait.** Every read in the handshake has a deadline, on both sides. A far end
 that takes what you sent and then says nothing would otherwise hold a goroutine, a stream and a
