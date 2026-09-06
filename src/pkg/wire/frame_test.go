@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"testing"
+	"time"
 )
 
 // A duplex stream mixes control frames and bulk data. Reading one must not eat the next.
@@ -210,10 +211,92 @@ func TestReadFrameUpToReportsATruncatedBody(t *testing.T) {
 	}
 }
 
+func TestReadIdleStopsAStalledFrame(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+
+	conn := NewConn(client)
+	started := time.Now()
+	err := conn.WithReadIdle(20*time.Millisecond, func() error {
+		_, _, err := conn.ReadFrame()
+		return err
+	})
+	if err == nil {
+		t.Fatal("a stalled frame outlived its read-idle limit")
+	}
+	if time.Since(started) > time.Second {
+		t.Fatalf("a stalled frame took %s to stop", time.Since(started))
+	}
+}
+
+func TestReadIdleIsClearedAfterTheOperation(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+
+	conn := NewConn(client)
+	if err := conn.WithReadIdle(20*time.Millisecond, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	written := make(chan error, 1)
+	go func() { written <- NewConn(server).WriteFrame(KindPing, nil) }()
+	time.Sleep(40 * time.Millisecond)
+	kind, _, err := conn.ReadFrame()
+	if err != nil || kind != KindPing {
+		t.Fatalf("unguarded read = kind %d, %v", kind, err)
+	}
+	if err := <-written; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadIdleRefreshesEveryFramePart(t *testing.T) {
+	var framed bytes.Buffer
+	if err := NewConn(readWriter{&framed, &framed}).WriteFrame(KindItem, []byte("body")); err != nil {
+		t.Fatal(err)
+	}
+	stream := &deadlineStream{Reader: &framed, Writer: io.Discard}
+	conn := NewConn(stream)
+	if err := conn.WithReadIdle(time.Second, func() error {
+		_, _, err := conn.ReadFrame()
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(stream.set) != 4 {
+		t.Fatalf("read deadlines were set %d times, want initial, header, body and clear", len(stream.set))
+	}
+	for i, at := range stream.set[:len(stream.set)-1] {
+		if at.IsZero() {
+			t.Fatalf("read deadline %d was cleared early", i)
+		}
+	}
+	if !stream.set[len(stream.set)-1].IsZero() {
+		t.Fatal("the final read deadline was not cleared")
+	}
+}
+
 // both is a stream that reads from one place and writes to another.
 type both struct {
 	r io.Reader
 	w io.Writer
+}
+
+type deadlineStream struct {
+	io.Reader
+	io.Writer
+	set []time.Time
+}
+
+func (s *deadlineStream) SetReadDeadline(at time.Time) error {
+	s.set = append(s.set, at)
+	return nil
 }
 
 func (b *both) Read(p []byte) (int, error)  { return b.r.Read(p) }

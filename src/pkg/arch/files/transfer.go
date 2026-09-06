@@ -36,6 +36,19 @@ func sendBodyChecked(
 	progress func(string, int64, int64),
 	check func() error,
 ) error {
+	return conn.WithReadIdle(wire.FiniteReadIdle, func() error {
+		return sendBodyWithin(conn, body, name, size, from, progress, check)
+	})
+}
+
+func sendBodyWithin(
+	conn *wire.Conn,
+	body io.Reader,
+	name string,
+	size, from int64,
+	progress func(string, int64, int64),
+	check func() error,
+) error {
 	body = &progressReader{Reader: body}
 	digest := blake3.New(32, nil)
 	buf := make([]byte, wire.DataChunk)
@@ -276,6 +289,16 @@ func already(where, name string, sum []byte) int64 {
 // attempt for the same bytes looks, and thrown away when it is not, because a name nothing can
 // recognise is a name nothing will ever finish.
 func land(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mode uint32, progress func(string, int64, int64)) (int64, error) {
+	var got int64
+	err := conn.WithReadIdle(wire.FiniteReadIdle, func() error {
+		var err error
+		got, err = landWithin(conn, dir, a, name, size, mode, progress)
+		return err
+	})
+	return got, err
+}
+
+func landWithin(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mode uint32, progress func(string, int64, int64)) (int64, error) {
 	out, seed, err := opening(dir, a)
 	if err != nil {
 		return 0, fmt.Errorf("opening %s: %w", a.part, err)

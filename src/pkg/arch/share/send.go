@@ -51,6 +51,12 @@ func FileFromReader(name string, r io.Reader) Source {
 
 // Send offers sources on an opened share namespace and writes the ones it accepts.
 func Send(conn *wire.Conn, sources []Source, progress func(name string, done, total int64)) error {
+	return conn.WithReadIdle(wire.FiniteReadIdle, func() error {
+		return send(conn, sources, progress)
+	})
+}
+
+func send(conn *wire.Conn, sources []Source, progress func(name string, done, total int64)) error {
 	if len(sources) > maxItems {
 		return fmt.Errorf("offering %d items, over the %d limit", len(sources), maxItems)
 	}

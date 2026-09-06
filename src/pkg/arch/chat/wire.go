@@ -17,6 +17,16 @@ const (
 // Send delivers a batch on an opened namespace and returns the ids the far end stored. Anything not
 // in that list stays in the outbox, so a partial delivery is retried rather than lost.
 func Send(conn *wire.Conn, batch []convo.Message) ([]string, error) {
+	var stored []string
+	err := conn.WithReadIdle(wire.FiniteReadIdle, func() error {
+		var err error
+		stored, err = send(conn, batch)
+		return err
+	})
+	return stored, err
+}
+
+func send(conn *wire.Conn, batch []convo.Message) ([]string, error) {
 	if len(batch) > MaxBatch {
 		return nil, fmt.Errorf("sending %d messages, over the %d limit", len(batch), MaxBatch)
 	}
