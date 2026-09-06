@@ -168,6 +168,36 @@ func TestNegativeBodySizesAreRefused(t *testing.T) {
 	}
 }
 
+func TestReadFrameUpToHonoursItsLocalLimit(t *testing.T) {
+	var stream bytes.Buffer
+	written := NewConn(readWriter{&stream, &stream})
+	if err := written.WriteFrame(KindOpen, []byte("opening")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := NewConn(readWriter{&stream, io.Discard}).ReadFrameUpTo(3); err == nil {
+		t.Fatal("ReadFrameUpTo() accepted a body over its local limit")
+	}
+}
+
+func TestReadFrameUpToReadsACompleteFrame(t *testing.T) {
+	var stream bytes.Buffer
+	written := NewConn(readWriter{&stream, &stream})
+	if err := written.WriteFrame(KindOpen, []byte("opening")); err != nil {
+		t.Fatal(err)
+	}
+	kind, body, err := NewConn(readWriter{&stream, io.Discard}).ReadFrameUpTo(16)
+	if err != nil || kind != KindOpen || string(body) != "opening" {
+		t.Fatalf("ReadFrameUpTo() = %d %q, %v", kind, body, err)
+	}
+}
+
+func TestReadFrameUpToReportsATruncatedBody(t *testing.T) {
+	stream := []byte{KindOpen, 4, 'a'}
+	if _, _, err := NewConn(readWriter{bytes.NewReader(stream), io.Discard}).ReadFrameUpTo(16); err == nil {
+		t.Fatal("ReadFrameUpTo() accepted a truncated body")
+	}
+}
+
 // both is a stream that reads from one place and writes to another.
 type both struct {
 	r io.Reader
