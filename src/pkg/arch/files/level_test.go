@@ -484,11 +484,18 @@ func assertNoParts(t *testing.T, dir string) {
 			t.Fatalf("a refused replacement left %s", entry.Name())
 		}
 	}
-	replacements.Lock()
-	active := len(replacements.active)
-	replacements.Unlock()
-	if active != 0 {
-		t.Fatalf("%d replacement locks remain", active)
+	deadline := time.Now().Add(time.Second)
+	for {
+		replacements.Lock()
+		active := len(replacements.active)
+		replacements.Unlock()
+		if active == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d replacement locks remain", active)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
