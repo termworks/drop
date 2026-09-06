@@ -16,6 +16,7 @@ import (
 	"lukechampine.com/blake3"
 
 	"github.com/bresilla/drop/src/pkg/arch"
+	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -327,6 +328,167 @@ func TestAReplaceRefusesAVersionSomebodyElseChanged(t *testing.T) {
 	}
 	if _, err := b.List(""); err != nil {
 		t.Fatalf("the session did not survive two refusals: %v", err)
+	}
+}
+
+func TestAReplaceRechecksTheVersionAfterTheUpload(t *testing.T) {
+	dir := t.TempDir()
+	at := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(at, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	was := blake3.Sum256([]byte("original"))
+
+	halfway := make(chan struct{})
+	rest := make(chan struct{})
+	landed := false
+	b := opened(t, dir, true, Into{
+		Progress: func(_ string, done, _ int64) {
+			if done == 4 {
+				close(halfway)
+			}
+		},
+		Landed: func(node.ID, string, int64) { landed = true },
+	})
+	done := make(chan error, 1)
+	go func() {
+		done <- b.Replace("notes.txt", &held{body: []byte("incoming"), rest: rest}, was[:], Given{Size: 8, Mode: 0o644})
+	}()
+	<-halfway
+
+	if err := os.WriteFile(at, []byte("local edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	close(rest)
+	err := <-done
+	if err == nil || !strings.Contains(err.Error(), "changed since you last read it") {
+		t.Fatalf("Replace() = %v", err)
+	}
+	if got := read(t, at); string(got) != "local edit" {
+		t.Fatalf("the concurrent edit was replaced by %q", got)
+	}
+	if landed {
+		t.Fatal("a refused replacement was reported as landed")
+	}
+	if _, err := b.List(""); err != nil {
+		t.Fatalf("the session did not survive the commit refusal: %v", err)
+	}
+	assertNoParts(t, dir)
+}
+
+func TestTwoReplacementsOfOneVersionCannotBothCommit(t *testing.T) {
+	dir := t.TempDir()
+	at := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(at, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	was := blake3.Sum256([]byte("original"))
+
+	halfway := make(chan struct{})
+	rest := make(chan struct{})
+	slow := opened(t, dir, true, Into{Progress: func(_ string, done, _ int64) {
+		if done == 4 {
+			close(halfway)
+		}
+	}})
+	first := make(chan error, 1)
+	go func() {
+		first <- slow.Replace("notes.txt", &held{body: []byte("firstone"), rest: rest}, was[:], Given{Size: 8, Mode: 0o644})
+	}()
+	<-halfway
+
+	quick := opened(t, dir, true, Into{})
+	second := make(chan error, 1)
+	go func() {
+		second <- quick.Replace("notes.txt", strings.NewReader("second!!"), was[:], Given{Size: 8, Mode: 0o644})
+	}()
+	select {
+	case err := <-second:
+		t.Fatalf("the competing replacement passed the active round: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(rest)
+	if err := <-first; err != nil {
+		t.Fatalf("first Replace(): %v", err)
+	}
+	if err := <-second; err == nil || !strings.Contains(err.Error(), "changed since you last read it") {
+		t.Fatalf("second Replace() = %v", err)
+	}
+	if got := read(t, at); string(got) != "firstone" {
+		t.Fatalf("the committed replacement is %q", got)
+	}
+	if _, err := quick.List(""); err != nil {
+		t.Fatalf("the competing session did not survive its refusal: %v", err)
+	}
+	assertNoParts(t, dir)
+}
+
+func TestReplacementsOfDifferentNamesProceedTogether(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"one.txt", "two.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("original"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	was := blake3.Sum256([]byte("original"))
+
+	halfway := make(chan struct{})
+	rest := make(chan struct{})
+	slow := opened(t, dir, true, Into{Progress: func(_ string, done, _ int64) {
+		if done == 4 {
+			close(halfway)
+		}
+	}})
+	first := make(chan error, 1)
+	go func() {
+		first <- slow.Replace("one.txt", &held{body: []byte("firstone"), rest: rest}, was[:], Given{Size: 8, Mode: 0o644})
+	}()
+	<-halfway
+
+	quick := opened(t, dir, true, Into{})
+	second := make(chan error, 1)
+	go func() {
+		second <- quick.Replace("two.txt", strings.NewReader("second!!"), was[:], Given{Size: 8, Mode: 0o644})
+	}()
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatalf("second Replace(): %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a replacement of another file waited behind the active round")
+	}
+
+	close(rest)
+	if err := <-first; err != nil {
+		t.Fatalf("first Replace(): %v", err)
+	}
+	if got := read(t, filepath.Join(dir, "one.txt")); string(got) != "firstone" {
+		t.Fatalf("one.txt = %q", got)
+	}
+	if got := read(t, filepath.Join(dir, "two.txt")); string(got) != "second!!" {
+		t.Fatalf("two.txt = %q", got)
+	}
+	assertNoParts(t, dir)
+}
+
+func assertNoParts(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".part") {
+			t.Fatalf("a refused replacement left %s", entry.Name())
+		}
+	}
+	replacements.Lock()
+	active := len(replacements.active)
+	replacements.Unlock()
+	if active != 0 {
+		t.Fatalf("%d replacement locks remain", active)
 	}
 }
 

@@ -196,32 +196,40 @@ func takeInto(conn *wire.Conn, dir *os.Root, name string, q request, progress fu
 }
 
 // takeOver reads one item into a namespace and puts it where the caller said, over whatever is
-// there. What was checked before the caller started sending is that the name still holds the
-// version they believe it holds.
-func takeOver(conn *wire.Conn, dir *os.Root, name string, q request, progress func(string, int64, int64)) (int64, error) {
+// there. The destination is checked again after the item arrives and immediately before it is
+// replaced.
+func takeOver(conn *wire.Conn, dir *os.Root, name string, q request, progress func(string, int64, int64)) (int64, bool, error) {
 	part, err := partName(name)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 
 	got, err := land(conn, dir, arriving{part: part}, path.Base(name), q.Size, q.Mode, progress)
 	if err != nil {
-		return 0, err
+		return 0, false, err
+	}
+
+	if reason := standing(dir, name, q.Sum); reason != "" {
+		_ = dir.Remove(part)
+		if err := conn.WriteFrame(wire.KindAck, wire.Ack{Reason: reason}.Encode()); err != nil {
+			return 0, false, fmt.Errorf("refusing replacement of %s: %w", name, err)
+		}
+		return 0, false, nil
 	}
 
 	if err := dir.Rename(part, name); err != nil {
 		_ = dir.Remove(part)
-		return 0, fmt.Errorf("renaming %s: %w", part, err)
+		return 0, false, fmt.Errorf("renaming %s: %w", part, err)
 	}
 	dated(dir, name, q.At)
 	if err := syncLanding(dir, name); err != nil {
-		return 0, fmt.Errorf("syncing %s: %w", name, err)
+		return 0, false, fmt.Errorf("syncing %s: %w", name, err)
 	}
 
 	if err := conn.WriteFrame(wire.KindAck, wire.Ack{OK: true}.Encode()); err != nil {
-		return 0, fmt.Errorf("acknowledging %s: %w", name, err)
+		return 0, false, fmt.Errorf("acknowledging %s: %w", name, err)
 	}
-	return got, nil
+	return got, true, nil
 }
 
 // place moves a finished part onto a free name beside it, which is what it returns. Nothing that

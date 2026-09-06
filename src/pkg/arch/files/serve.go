@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	"lukechampine.com/blake3"
@@ -18,6 +19,52 @@ import (
 	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
+
+type replacementLock struct {
+	sync.Mutex
+	users int
+}
+
+var replacements struct {
+	sync.Mutex
+	active map[string]*replacementLock
+}
+
+// lockReplacement holds one destination name until its replacement round finishes.
+func lockReplacement(dir *os.Root, name string) (func(), error) {
+	stat, err := dir.Stat(".")
+	if err != nil {
+		return nil, err
+	}
+	raw, ok := stat.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil, fmt.Errorf("the directory has no filesystem identity")
+	}
+	key := fmt.Sprintf("%d:%d:%s", raw.Dev, raw.Ino, name)
+
+	replacements.Lock()
+	if replacements.active == nil {
+		replacements.active = make(map[string]*replacementLock)
+	}
+	lock := replacements.active[key]
+	if lock == nil {
+		lock = &replacementLock{}
+		replacements.active[key] = lock
+	}
+	lock.users++
+	replacements.Unlock()
+
+	lock.Lock()
+	return func() {
+		lock.Unlock()
+		replacements.Lock()
+		lock.users--
+		if lock.users == 0 {
+			delete(replacements.active, key)
+		}
+		replacements.Unlock()
+	}, nil
+}
 
 // answer carries out one request. A refusal is a reply, not an error: the session stays open so the
 // caller can ask for something else.
@@ -183,6 +230,11 @@ func (f *Files) handReplace(conn *wire.Conn, at arch.Session, dir *os.Root, name
 	refuse := func(reason string) error {
 		return conn.WriteFrame(wire.KindReply, reply{Reason: reason}.encode())
 	}
+	unlock, err := lockReplacement(dir, name)
+	if err != nil {
+		return refuse(fmt.Sprintf("cannot prepare to replace %s: %v", name, unpath(err)))
+	}
+	defer unlock()
 
 	if reason := roomFor(dir, name); reason != "" {
 		return refuse(reason)
@@ -199,9 +251,12 @@ func (f *Files) handReplace(conn *wire.Conn, at arch.Session, dir *os.Root, name
 		return err
 	}
 
-	size, err := takeOver(conn, dir, name, q, f.into.Progress)
+	size, replaced, err := takeOver(conn, dir, name, q, f.into.Progress)
 	if err != nil {
 		return err
+	}
+	if !replaced {
+		return nil
 	}
 	if f.into.Landed != nil {
 		f.into.Landed(at.From, name, size)
