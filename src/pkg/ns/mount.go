@@ -72,12 +72,19 @@ type Table struct {
 	granted Granting
 }
 
+// MaxMounts is how many namespaces one node may serve.
+const MaxMounts = 1 << 12
+
 func NewTable() *Table {
 	return &Table{mounts: map[string]Mount{}}
 }
 
 // Add registers a namespace, replacing whatever was at that path.
 func (t *Table) Add(m Mount) error {
+	return t.add(m, MaxMounts)
+}
+
+func (t *Table) add(m Mount, most int) error {
 	path, err := Clean(m.Path)
 	if err != nil {
 		return err
@@ -94,6 +101,9 @@ func (t *Table) Add(m Mount) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	if _, exists := t.mounts[path]; !exists && len(t.mounts) >= most {
+		return fmt.Errorf("there are already %d namespaces", most)
+	}
 	t.mounts[path] = m
 	return nil
 }

@@ -30,6 +30,9 @@ import (
 // File is what this is kept in, beside the config and the grants.
 const File = "paths.json"
 
+// MaxEntries is how many command-created namespaces may be kept.
+const MaxEntries = ns.MaxMounts
+
 // Entry is one namespace as a command wrote it down.
 //
 // The declaration, never a Config: what an archetype makes of its settings is opaque to everything
@@ -99,22 +102,35 @@ func Load() (*Store, error) {
 		return s, fmt.Errorf("reading %s: %w", file, err)
 	}
 
-	var onDisk map[string]Entry
-	if err := json.Unmarshal(raw, &onDisk); err != nil {
+	onDisk, err := decodeEntries(raw, MaxEntries)
+	if err != nil {
 		return s, fmt.Errorf("parsing %s: %w", file, err)
 	}
+	s.paths = onDisk
+	return s, nil
+}
 
+func decodeEntries(raw []byte, most int) (map[string]Entry, error) {
+	var onDisk map[string]Entry
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		return nil, err
+	}
+	if len(onDisk) > most {
+		return nil, fmt.Errorf("there are %d namespaces, over the %d limit", len(onDisk), most)
+	}
+
+	settled := make(map[string]Entry, len(onDisk))
 	for at, entry := range onDisk {
 		clean, err := ns.Clean(at)
 		if err != nil {
-			return s, fmt.Errorf("%s: %q is not a path: %w", file, at, err)
+			return nil, fmt.Errorf("%q is not a path: %w", at, err)
 		}
 		if err := entry.Settings.settle(clean); err != nil {
-			return s, fmt.Errorf("%s: %w", file, err)
+			return nil, err
 		}
-		s.paths[clean] = entry
+		settled[clean] = entry
 	}
-	return s, nil
+	return settled, nil
 }
 
 // Save writes the created namespaces back, atomically, the way the address book is written.
@@ -181,10 +197,23 @@ func (s *Store) Add(at string, e Entry) error {
 		return err
 	}
 
-	return s.change(func() bool {
-		s.paths[at] = e
-		return true
+	var limitErr error
+	err = s.change(func() bool {
+		limitErr = addEntry(s.paths, at, e, MaxEntries)
+		return limitErr == nil
 	})
+	if err != nil {
+		return err
+	}
+	return limitErr
+}
+
+func addEntry(paths map[string]Entry, at string, entry Entry, most int) error {
+	if _, exists := paths[at]; !exists && len(paths) >= most {
+		return fmt.Errorf("there are already %d namespaces", most)
+	}
+	paths[at] = entry
+	return nil
 }
 
 // Remove takes a namespace off the list, reporting whether it was on it.

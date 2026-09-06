@@ -169,8 +169,10 @@ the reader on a corrupt file.
 
 ## State files have limits
 
-Small JSON state files are refused above 16 MiB, and an address book is capped at 256 peers. A
-corrupt file cannot turn a short local record into an unbounded map during startup.
+Small JSON state files are refused above 16 MiB, an address book is capped at 256 peers, and a node
+may serve at most 4,096 namespaces. Command-created namespaces are refused at the same limit both
+when their state file is loaded and when a new one is written. A corrupt file cannot turn a short
+local record into an unbounded live lookup table during startup.
 
 Conversation histories are capped at 4,096 peers, and their directory is read with a bounded
 iterator. New histories take a cross-process lock before checking the limit, so simultaneous

@@ -145,6 +145,22 @@ func TestAddIsKeyedByPath(t *testing.T) {
 	}
 }
 
+func TestAddBoundsNamespacesAndAllowsReplacement(t *testing.T) {
+	table := NewTable()
+	for _, path := range []string{"/one", "/two"} {
+		if err := table.add(Mount{Path: path, Archetype: "chat"}, 2); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := table.add(Mount{Path: "/three", Archetype: "chat"}, 2); err == nil {
+		t.Fatal("a namespace was added past the table limit")
+	}
+	if err := table.add(Mount{Path: "/one", Archetype: "files"}, 2); err != nil {
+		t.Fatalf("replacing a namespace at the limit: %v", err)
+	}
+}
+
 func TestAddNormalisesThePath(t *testing.T) {
 	table := NewTable()
 	mustAdd(t, table, Mount{Path: "inbox/", Archetype: "share", Config: "/x"})

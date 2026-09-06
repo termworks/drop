@@ -64,6 +64,21 @@ func TestANamespaceSurvivesBeingWrittenAndReadBack(t *testing.T) {
 	}
 }
 
+func TestCreatedNamespacesAreBounded(t *testing.T) {
+	entries, err := decodeEntries([]byte(`{"/one":{"type":"chat"},"/two":{"type":"chat"}}`), 1)
+	if err == nil || entries != nil {
+		t.Fatalf("an oversized namespace file decoded as %v, %v", entries, err)
+	}
+
+	paths := map[string]Entry{"/one": {Archetype: "chat"}}
+	if err := addEntry(paths, "/two", Entry{Archetype: "chat"}, 1); err == nil {
+		t.Fatal("a namespace was stored past the limit")
+	}
+	if err := addEntry(paths, "/one", Entry{Archetype: "files"}, 1); err != nil {
+		t.Fatalf("replacing a namespace at the limit: %v", err)
+	}
+}
+
 // A number has no accessor to come out of, so it is refused where it is written rather than read as
 // text and quietly meaning something else somewhere.
 func TestANumberInSettingsIsRefusedAndSaysWhere(t *testing.T) {
