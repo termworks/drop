@@ -2,6 +2,7 @@ package dial
 
 import (
 	"context"
+	"time"
 
 	"github.com/tmc/go-iroh/netaddr"
 
@@ -38,6 +39,17 @@ func TestTheAddressOnOurOwnWireComesFirst(t *testing.T) {
 // ZeroTier hands out the range docker is usually blamed for — so it is ranked last rather than
 // thrown away, and this machine's own bridges are left out of what counts as our wire.
 func TestABridgeIsTriedLast(t *testing.T) {
+	ours.Lock()
+	wasNets, wasRead := ours.nets, ours.read
+	ours.nets = []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")}
+	ours.read = time.Now()
+	ours.Unlock()
+	t.Cleanup(func() {
+		ours.Lock()
+		ours.nets, ours.read = wasNets, wasRead
+		ours.Unlock()
+	})
+
 	ranked := Nearest([]netip.AddrPort{
 		netip.MustParseAddrPort("192.168.122.1:47777"),
 		netip.MustParseAddrPort("172.18.0.1:47777"),
