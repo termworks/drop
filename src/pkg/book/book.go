@@ -231,7 +231,7 @@ func (b *Book) Pair(name string, id node.ID, secret []byte, addrs ...string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.entries[name] = Entry{Name: name, ID: id, Secret: secret, Addrs: addrs}
+	b.entries[name] = cloneEntry(Entry{Name: name, ID: id, Secret: secret, Addrs: addrs})
 }
 
 // Belongs records whose machine an entry is. Pairing learns the person from the ticket; this is
@@ -332,7 +332,7 @@ func (b *Book) ByUser(key string) (Entry, bool) {
 	if found {
 		out.Trusted = trusted
 	}
-	return out, found
+	return cloneEntry(out), found
 }
 
 // Remove drops a name, reporting whether it was there.
@@ -351,7 +351,7 @@ func (b *Book) Lookup(name string) (Entry, bool) {
 	defer b.mu.RUnlock()
 
 	entry, ok := b.entries[name]
-	return entry, ok
+	return cloneEntry(entry), ok
 }
 
 // ByID finds the entry for a peer id.
@@ -361,7 +361,7 @@ func (b *Book) ByID(id node.ID) (Entry, bool) {
 
 	for _, entry := range b.entries {
 		if entry.ID == id {
-			return entry, true
+			return cloneEntry(entry), true
 		}
 	}
 	return Entry{}, false
@@ -374,7 +374,7 @@ func (b *Book) All() []Entry {
 
 	out := make([]Entry, 0, len(b.entries))
 	for _, entry := range b.entries {
-		out = append(out, entry)
+		out = append(out, cloneEntry(entry))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -553,11 +553,15 @@ func (b *Book) Change(alter func() (bool, error)) error {
 func cloneEntries(entries map[string]Entry) map[string]Entry {
 	out := make(map[string]Entry, len(entries))
 	for name, entry := range entries {
-		entry.Secret = append([]byte(nil), entry.Secret...)
-		entry.Addrs = append([]string(nil), entry.Addrs...)
-		out[name] = entry
+		out[name] = cloneEntry(entry)
 	}
 	return out
+}
+
+func cloneEntry(entry Entry) Entry {
+	entry.Secret = append([]byte(nil), entry.Secret...)
+	entry.Addrs = append([]string(nil), entry.Addrs...)
+	return entry
 }
 
 func (b *Book) reload() error {

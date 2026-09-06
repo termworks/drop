@@ -92,6 +92,38 @@ func TestPinIsNotPaired(t *testing.T) {
 	}
 }
 
+func TestEntrySlicesAreOwnedByTheBook(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	secret := testSecret(t)
+	wantSecret := append([]byte(nil), secret...)
+	addrs := []string{"192.0.2.1:47777"}
+	b, _ := Load()
+	b.Pair("laptop", testID(t), secret, addrs...)
+
+	secret[0] ^= 0xff
+	addrs[0] = "192.0.2.2:47777"
+	entry, _ := b.Lookup("laptop")
+	if !bytes.Equal(entry.Secret, wantSecret) || entry.Addrs[0] != "192.0.2.1:47777" {
+		t.Fatalf("Pair retained caller-owned slices: %+v", entry)
+	}
+
+	entry.Secret[0] ^= 0xff
+	entry.Addrs[0] = "192.0.2.3:47777"
+	again, _ := b.Lookup("laptop")
+	if !bytes.Equal(again.Secret, wantSecret) || again.Addrs[0] != "192.0.2.1:47777" {
+		t.Fatalf("Lookup exposed book-owned slices: %+v", again)
+	}
+
+	all := b.All()
+	all[0].Secret[0] ^= 0xff
+	all[0].Addrs[0] = "192.0.2.4:47777"
+	again, _ = b.ByID(again.ID)
+	if !bytes.Equal(again.Secret, wantSecret) || again.Addrs[0] != "192.0.2.1:47777" {
+		t.Fatalf("All or ByID exposed book-owned slices: %+v", again)
+	}
+}
+
 func TestResolve(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
