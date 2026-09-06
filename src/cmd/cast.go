@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -10,7 +11,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tmc/go-iroh/iroh"
@@ -20,6 +23,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/cast"
 	"github.com/bresilla/drop/src/pkg/discovery"
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
@@ -135,10 +139,12 @@ func runCast(parent context.Context, addressFile string) error {
 	// The address goes to a file as well as to stdout: hexe starts this detached and reads the
 	// file, having no pipe to read a reply on.
 	address := n.ID().String()
-	if err := publishAddress(addressFile, address); err != nil {
+	unpublish, err := publishAddress(addressFile, address)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "drop: %v\n", err)
+	} else {
+		defer unpublish()
 	}
-	defer func() { _ = os.Remove(addressFile) }()
 
 	fmt.Println(address)
 	fmt.Fprintf(os.Stderr, "drop: casting %dx%d; watch with `drop connect %s:%s`\n",
@@ -240,14 +246,23 @@ func (nothing) Bool(string) (bool, bool)        { return false, false }
 func (nothing) Strings(string) ([]string, bool) { return nil, false }
 
 // publishAddress writes the address where hexe will look for it.
-func publishAddress(path, address string) error {
+func publishAddress(path, address string) (func(), error) {
 	if path == "" {
-		return nil
+		return func() {}, nil
 	}
-	if err := os.WriteFile(path, []byte(address), 0o600); err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
+	if err := keep.Replace(path, []byte(address)); err != nil {
+		return nil, fmt.Errorf("writing %s: %w", path, err)
 	}
-	return nil
+	published, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("looking at %s: %w", path, err)
+	}
+	return func() {
+		current, err := os.Lstat(path)
+		if err == nil && os.SameFile(published, current) {
+			_ = os.Remove(path)
+		}
+	}, nil
 }
 
 // errNoDaemon says there is nothing listening locally, so a cast has to be its own node.
@@ -275,15 +290,40 @@ func castThroughDaemon(ctx context.Context, addressFile string) error {
 		return err
 	}
 
-	address := id.String()
-	if err := publishAddress(addressFile, address); err != nil {
-		fmt.Fprintf(os.Stderr, "drop: %v\n", err)
+	input := bufio.NewReader(os.Stdin)
+	header, err := readLocalLine(input)
+	if err != nil {
+		return fmt.Errorf("reading the cast header: %w", err)
 	}
-	defer func() { _ = os.Remove(addressFile) }()
 
-	// The first line says what this connection is for; the rest is the recording.
 	if _, err := io.WriteString(conn, "cast\n"); err != nil {
 		return err
+	}
+	if _, err := io.WriteString(conn, header); err != nil {
+		return err
+	}
+
+	replies := bufio.NewReader(conn)
+	if err := conn.SetReadDeadline(time.Now().Add(localHelloWithin)); err != nil {
+		return err
+	}
+	answer, err := readLocalLine(replies)
+	if resetErr := conn.SetReadDeadline(time.Time{}); err == nil && resetErr != nil {
+		return resetErr
+	}
+	if err != nil {
+		return fmt.Errorf("asking this node to cast: %w", err)
+	}
+	if what, why, _ := strings.Cut(strings.TrimSpace(answer), " "); what != "ok" {
+		return fmt.Errorf("this node will not cast: %s", why)
+	}
+
+	address := id.String()
+	unpublish, err := publishAddress(addressFile, address)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drop: %v\n", err)
+	} else {
+		defer unpublish()
 	}
 
 	fmt.Println(address)
@@ -293,9 +333,18 @@ func castThroughDaemon(ctx context.Context, addressFile string) error {
 	// Closed when standard input runs out, which is what tells the daemon the cast is over.
 	done := make(chan error, 1)
 	go func() {
-		_, err := io.Copy(conn, os.Stdin)
+		_, err := io.Copy(conn, input)
 		if closer, ok := conn.(interface{ CloseWrite() error }); ok {
 			_ = closer.CloseWrite()
+		}
+		if err == nil {
+			_ = conn.SetReadDeadline(time.Now().Add(localHelloWithin))
+			line, readErr := readLocalLine(replies)
+			if readErr != nil {
+				err = readErr
+			} else if strings.TrimSpace(line) != "done" {
+				err = fmt.Errorf("the node stopped casting without confirming it")
+			}
 		}
 		done <- err
 	}()

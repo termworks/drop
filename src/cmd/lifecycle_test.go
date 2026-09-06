@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"io"
+	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +34,33 @@ func castStarted(t *testing.T) *asciicast.Reader {
 		t.Fatalf("the header came out %dx%d", head.Width, head.Height)
 	}
 	return reader
+}
+
+func TestLocalCastIsAcknowledgedThroughItsLifetime(t *testing.T) {
+	host := newCastHost(ns.NewTable(), reading())
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+
+	done := make(chan error, 1)
+	go func() {
+		defer func() { _ = server.Close() }()
+		done <- takeCast(t.Context(), host, strings.NewReader(
+			`{"version":2,"width":80,"height":24}`+"\n"+`[0.1,"o","hello"]`+"\n"), server)
+	}()
+
+	replies := bufio.NewReader(client)
+	if line, err := replies.ReadString('\n'); err != nil || line != "ok\n" {
+		t.Fatalf("start reply = %q, %v", line, err)
+	}
+	if line, err := replies.ReadString('\n'); err != nil || line != "done\n" {
+		t.Fatalf("end reply = %q, %v", line, err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if host.live() != nil {
+		t.Fatal("an acknowledged cast remained live")
+	}
 }
 
 // A cast waiting on standard input has to be interruptible: the read cannot be cancelled, so what

@@ -482,22 +482,38 @@ func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 }
 
 // takeCast reads one cast from the socket and puts it on the air for as long as it lasts.
-func takeCast(ctx context.Context, host *castHost, from io.Reader) error {
+func takeCast(ctx context.Context, host *castHost, from io.Reader, conn net.Conn) error {
+	if err := conn.SetReadDeadline(time.Now().Add(localHelloWithin)); err != nil {
+		return err
+	}
 	reader, head, err := asciicast.NewReader(from)
+	if resetErr := conn.SetReadDeadline(time.Time{}); err == nil && resetErr != nil {
+		return resetErr
+	}
 	if err != nil {
+		_, _ = fmt.Fprintf(conn, "no %v\n", err)
 		return err
 	}
 
 	stage, err := host.begin(head.Width, head.Height)
 	if err != nil {
+		_, _ = fmt.Fprintf(conn, "no %v\n", err)
 		return err
 	}
 	defer host.end(stage)
+	if _, err := fmt.Fprintln(conn, "ok"); err != nil {
+		return err
+	}
 
 	fmt.Printf("  a terminal is being cast at %s (%dx%d)\n", CastPath, head.Width, head.Height)
 	defer fmt.Printf("  the cast at %s ended\n", CastPath)
 
-	return pump(ctx, reader, stage)
+	if err := pump(ctx, reader, stage); err != nil {
+		return err
+	}
+	host.end(stage)
+	_, err = fmt.Fprintln(conn, "done")
+	return err
 }
 
 // takeLocal reads what this connection is for and does it.
@@ -518,7 +534,7 @@ func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 	what, rest, _ := strings.Cut(strings.TrimSpace(first), " ")
 	switch what {
 	case "cast":
-		return takeCast(ctx, casts, reading)
+		return takeCast(ctx, casts, reading, conn)
 
 	case "share":
 		return takeShare(ctx, shares, conn, rest)
