@@ -77,6 +77,11 @@ is printed**.
 Names *you* wrote — what you called a machine in your own address book — are yours and are printed
 as you typed them. Nothing from the network is ever one of those.
 
+When `drop.open_links` is enabled, only an `http://` or `https://` link of at most 8 KiB is handed
+to the configured opener. The link is one argument, never shell text. At most four opener processes
+run together and at most eight are started per minute; excess links remain in the conversation but
+do not launch another process.
+
 ## What a peer can do to a shared thing
 
 A namespace several machines hold takes signed changes from anybody the rule admits. Three things

@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/arch/chat"
 	"github.com/bresilla/drop/src/pkg/book"
@@ -117,12 +119,14 @@ func receiving(pinned *book.Book, openLinks bool, show func(node.ID, convo.Messa
 // openInBrowser hands a link to the desktop. Detached, because drop is not the thing that should
 // die if a browser does.
 func openInBrowser(link string) bool {
+	return openWithBrowser(link, browserOpeners)
+}
+
+func openWithBrowser(link string, gate *browserGate) bool {
 	if len(link) > maxOpenedLink || (!strings.HasPrefix(link, "http://") && !strings.HasPrefix(link, "https://")) {
 		return false
 	}
-	select {
-	case browserProcesses <- struct{}{}:
-	default:
+	if !gate.take(time.Now()) {
 		return false
 	}
 
@@ -132,20 +136,63 @@ func openInBrowser(link string) bool {
 	}
 	cmd := exec.Command(opener, link)
 	if err := cmd.Start(); err != nil {
-		<-browserProcesses
+		gate.give()
 		fmt.Fprintf(os.Stderr, "drop: could not open %s: %v\n", plain.Text(link, MaxSaid), err)
 		return false
 	}
 	go func() {
-		defer func() { <-browserProcesses }()
+		defer gate.give()
 		_ = cmd.Wait()
 	}()
 	return true
 }
 
-const maxOpenedLink = 8 << 10
+const (
+	maxOpenedLink       = 8 << 10
+	maxBrowserProcesses = 4
+	maxBrowserStarts    = 8
+	browserWindow       = time.Minute
+)
 
-var browserProcesses = make(chan struct{}, 4)
+type browserGate struct {
+	processes chan struct{}
+	mu        sync.Mutex
+	started   []time.Time
+}
+
+func newBrowserGate() *browserGate {
+	return &browserGate{processes: make(chan struct{}, maxBrowserProcesses)}
+}
+
+func (g *browserGate) take(now time.Time) bool {
+	select {
+	case g.processes <- struct{}{}:
+	default:
+		return false
+	}
+
+	g.mu.Lock()
+	cutoff := now.Add(-browserWindow)
+	kept := g.started[:0]
+	for _, at := range g.started {
+		if at.After(cutoff) {
+			kept = append(kept, at)
+		}
+	}
+	g.started = kept
+	if len(g.started) >= maxBrowserStarts {
+		g.mu.Unlock()
+		<-g.processes
+		return false
+	}
+	g.started = append(g.started, now)
+	g.mu.Unlock()
+	return true
+}
+
+func (g *browserGate) give() { <-g.processes }
+
+var browserOpeners = newBrowserGate()
 
 // nameFor is what to call a peer in a listing.
 func nameFor(pinned *book.Book, id node.ID) string {
