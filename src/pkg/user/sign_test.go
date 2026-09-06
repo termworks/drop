@@ -12,7 +12,7 @@ func TestAKeyDropCanReadNeedsNoCommand(t *testing.T) {
 	dir := t.TempDir()
 	at := filepath.Join(dir, "key")
 
-	if _, err := make(at); err != nil {
+	if _, err := makeKey(at); err != nil {
 		t.Fatal(err)
 	}
 	if got := signCommand(at); got != "" {

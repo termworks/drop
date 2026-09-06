@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
 )
 
@@ -107,7 +109,7 @@ func Signer() (ssh.Signer, error) {
 		if Named() {
 			return nil, fmt.Errorf("no key at %s", where)
 		}
-		return make(where)
+		return makeKey(where)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", where, err)
@@ -140,7 +142,7 @@ func Public() (ssh.PublicKey, error) {
 	raw, err := os.ReadFile(where)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) && !Named() {
-			signer, err := make(where)
+			signer, err := makeKey(where)
 			if err != nil {
 				return nil, err
 			}
@@ -165,40 +167,46 @@ func Public() (ssh.PublicKey, error) {
 	return nil, fmt.Errorf("cannot read a public key from %s", where)
 }
 
-// make writes a new user key.
-func make(where string) (ssh.Signer, error) {
-	if err := os.MkdirAll(filepath.Dir(where), 0o700); err != nil {
-		return nil, err
-	}
+// makeKey writes a new user key.
+func makeKey(where string) (ssh.Signer, error) {
+	var signer ssh.Signer
+	err := keep.While(where, func() error {
+		raw, err := os.ReadFile(where)
+		switch {
+		case err == nil:
+			signer, err = ssh.ParsePrivateKey(raw)
+			if err != nil {
+				return fmt.Errorf("%s is not a private key", where)
+			}
+			return nil
+		case !errors.Is(err, os.ErrNotExist):
+			return fmt.Errorf("reading %s: %w", where, err)
+		}
 
-	pub, secret, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, err
-	}
+		pub, secret, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return err
+		}
+		block, err := ssh.MarshalPrivateKey(secret, "drop user key")
+		if err != nil {
+			return err
+		}
+		if err := keep.Replace(where, pem.EncodeToMemory(block)); err != nil {
+			return err
+		}
+		signer, err = ssh.NewSignerFromKey(secret)
+		if err != nil {
+			return err
+		}
 
-	block, err := ssh.MarshalPrivateKey(secret, "drop user key")
-	if err != nil {
-		return nil, err
-	}
-
-	// The same form ssh-keygen writes, so ssh-keygen can read it: somebody who wants to sign a
-	// badge by hand, or move this key onto a YubiKey later, should not need drop to do it.
-	if err := os.WriteFile(where, pem.EncodeToMemory(block), 0o600); err != nil {
-		return nil, fmt.Errorf("writing %s: %w", where, err)
-	}
-
-	signer, err := ssh.NewSignerFromKey(secret)
-	if err != nil {
-		return nil, err
-	}
-
-	beside, err := ssh.NewPublicKey(pub)
-	if err != nil {
-		return nil, err
-	}
-	_ = os.WriteFile(where+".pub", ssh.MarshalAuthorizedKey(beside), 0o644)
-
-	return signer, nil
+		beside, err := ssh.NewPublicKey(pub)
+		if err != nil {
+			return err
+		}
+		_ = keep.Replace(where+".pub", ssh.MarshalAuthorizedKey(beside))
+		return nil
+	})
+	return signer, err
 }
 
 // fromAgent finds a key in the running ssh-agent.
@@ -212,6 +220,7 @@ func fromAgent(want ssh.PublicKey) (ssh.Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reaching the ssh agent: %w", err)
 	}
+	defer conn.Close()
 
 	signers, err := agent.NewClient(conn).Signers()
 	if err != nil {
@@ -220,10 +229,26 @@ func fromAgent(want ssh.PublicKey) (ssh.Signer, error) {
 
 	for _, signer := range signers {
 		if string(signer.PublicKey().Marshal()) == string(want.Marshal()) {
-			return signer, nil
+			return agentSigner{key: want, socket: at}, nil
 		}
 	}
 	return nil, fmt.Errorf("the ssh agent does not hold %s", Fingerprint(want))
+}
+
+type agentSigner struct {
+	key    ssh.PublicKey
+	socket string
+}
+
+func (s agentSigner) PublicKey() ssh.PublicKey { return s.key }
+
+func (s agentSigner) Sign(_ io.Reader, data []byte) (*ssh.Signature, error) {
+	conn, err := net.Dial("unix", s.socket)
+	if err != nil {
+		return nil, fmt.Errorf("reaching the ssh agent: %w", err)
+	}
+	defer conn.Close()
+	return agent.NewClient(conn).Sign(s.key, data)
 }
 
 // Fingerprint is a key as a person recognises it, which is how ssh prints one.
