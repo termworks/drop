@@ -117,7 +117,7 @@ func (b *Browsing) Get(name, into string, want Want) error {
 	if e.Name != path.Base(name) {
 		return fmt.Errorf("reading %s: the answer describes %s", shown(name), e.Name)
 	}
-	return takeOnto(b.conn, into, path.Base(name), e, want.Sum, want.Progress)
+	return takeOnto(b.conn, into, path.Base(name), e, want.Sum, from, want.Progress)
 }
 
 // Put writes one file into the namespace, on a free name beside whatever is already there. It fails

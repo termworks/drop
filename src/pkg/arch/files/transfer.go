@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"lukechampine.com/blake3"
 
 	"github.com/bresilla/drop/src/pkg/keep"
@@ -179,7 +180,7 @@ func place(dir *os.Root, part, name string) (string, error) {
 
 // takeOnto reads one item and lands it on the path this side asked for. The part waits in the
 // directory the item lands in, opened through it, so nothing on the way is followed.
-func takeOnto(conn *wire.Conn, into, name string, e Entry, sum []byte, progress func(string, int64, int64)) error {
+func takeOnto(conn *wire.Conn, into, name string, e Entry, sum []byte, from int64, progress func(string, int64, int64)) error {
 	where := filepath.Dir(into)
 	dir, err := os.OpenRoot(where)
 	if err != nil {
@@ -190,7 +191,7 @@ func takeOnto(conn *wire.Conn, into, name string, e Entry, sum []byte, progress 
 	final := filepath.Base(into)
 	at := arriving{}
 	if len(sum) > 0 {
-		at.part, at.have, at.kept = partFor(final, sum), already(where, final, sum), true
+		at.part, at.have, at.kept = partFor(final, sum), from, true
 	} else if at.part, err = partName(final); err != nil {
 		return err
 	}
@@ -385,33 +386,60 @@ func partFor(name string, sum []byte) string {
 // the item carries on from the end of it.
 func opening(dir *os.Root, a arriving) (*os.File, *blake3.Hasher, error) {
 	digest := blake3.New(32, nil)
-	if a.have <= 0 {
-		flags := os.O_CREATE | os.O_EXCL | os.O_WRONLY
-		if a.kept {
-			flags = os.O_CREATE | os.O_TRUNC | os.O_WRONLY
-		}
-		out, err := dir.OpenFile(a.part, flags, 0o600)
+	if !a.kept {
+		out, err := dir.OpenFile(a.part, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		return out, digest, err
 	}
 
-	held, err := dir.Open(a.part)
+	named, err := dir.Lstat(a.part)
+	if errors.Is(err, fs.ErrNotExist) && a.have == 0 {
+		out, createErr := dir.OpenFile(a.part, os.O_CREATE|os.O_EXCL|os.O_RDWR|os.O_APPEND, 0o600)
+		if createErr != nil {
+			return nil, nil, createErr
+		}
+		if lockErr := unix.Flock(int(out.Fd()), unix.LOCK_EX|unix.LOCK_NB); lockErr != nil {
+			_ = out.Close()
+			_ = dir.Remove(a.part)
+			return nil, nil, fmt.Errorf("locking %s: %w", a.part, lockErr)
+		}
+		return out, digest, nil
+	}
 	if err != nil {
 		return nil, nil, err
 	}
-	n, err := io.Copy(digest, io.LimitReader(held, a.have))
-	closeErr := held.Close()
-	if err != nil {
-		return nil, nil, err
-	}
-	if closeErr != nil {
-		return nil, nil, closeErr
-	}
-	if n != a.have {
-		return nil, nil, fmt.Errorf("%s holds %d bytes of the %d it was carrying on from", a.part, n, a.have)
+	if !named.Mode().IsRegular() || named.Size() != a.have {
+		return nil, nil, fmt.Errorf("%s changed while the transfer was starting", a.part)
 	}
 
-	out, err := dir.OpenFile(a.part, os.O_WRONLY|os.O_APPEND, 0o600)
-	return out, digest, err
+	out, err := dir.OpenFile(a.part, os.O_RDWR|os.O_APPEND|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, nil, err
+	}
+	opened, err := out.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(named, opened) {
+		_ = out.Close()
+		return nil, nil, fmt.Errorf("%s changed while the transfer was starting", a.part)
+	}
+	if err := unix.Flock(int(out.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = out.Close()
+		return nil, nil, fmt.Errorf("another transfer is already filling %s: %w", a.part, err)
+	}
+	opened, err = out.Stat()
+	if err != nil || opened.Size() != a.have {
+		_ = out.Close()
+		return nil, nil, fmt.Errorf("%s changed while the transfer was starting", a.part)
+	}
+
+	n, err := io.Copy(digest, io.LimitReader(out, a.have))
+	if err != nil {
+		_ = out.Close()
+		return nil, nil, err
+	}
+	if n != a.have {
+		_ = out.Close()
+		return nil, nil, fmt.Errorf("%s holds %d bytes of the %d it was carrying on from", a.part, n, a.have)
+	}
+	return out, digest, nil
 }
 
 // dated puts the modification time the item had where it came from on the item where it landed.

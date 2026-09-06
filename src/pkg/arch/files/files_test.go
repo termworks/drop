@@ -512,6 +512,87 @@ func TestALinkAtThePartIsNotWrittenThrough(t *testing.T) {
 	}
 }
 
+func TestALinkAtAResumablePartIsNotWrittenThrough(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sum := bytes.Repeat([]byte{1}, 32)
+	part := partFor("report.bin", sum)
+	if err := os.Symlink("victim", filepath.Join(dir, part)); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	if out, _, err := opening(root, arriving{part: part, kept: true}); err == nil {
+		_ = out.Close()
+		t.Fatal("opening() followed a resumable part link")
+	}
+	if got := read(t, victim); string(got) != "original" {
+		t.Errorf("the file behind the link now says %q", got)
+	}
+}
+
+func TestOnlyOneTransferFillsAResumablePart(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	a := arriving{part: ".report.sum.part", kept: true}
+	first, _, err := opening(root, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Close() }()
+
+	if second, _, err := opening(root, a); err == nil {
+		_ = second.Close()
+		t.Fatal("two transfers locked the same resumable part")
+	} else if !strings.Contains(err.Error(), "already filling") {
+		t.Fatalf("the second transfer failed as %v", err)
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	third, _, err := opening(root, a)
+	if err != nil {
+		t.Fatalf("the part stayed locked after its transfer ended: %v", err)
+	}
+	_ = third.Close()
+}
+
+func TestAResumePartMustStillHaveTheRequestedSize(t *testing.T) {
+	dir := t.TempDir()
+	part := ".report.sum.part"
+	if err := os.WriteFile(filepath.Join(dir, part), []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	if out, _, err := opening(root, arriving{part: part, have: 3, kept: true}); err == nil {
+		_ = out.Close()
+		t.Fatal("opening() resumed from a size the part no longer had")
+	}
+	if got := read(t, filepath.Join(dir, part)); string(got) != "changed" {
+		t.Errorf("the changed part now says %q", got)
+	}
+}
+
 // Two transfers of one name never fill one part file, so the tag on it is drawn afresh every time.
 func TestEachTransferGetsItsOwnPart(t *testing.T) {
 	first, err := partName("sub/notes.txt")
@@ -774,7 +855,7 @@ func TestTakeOntoRefusesACorruptedTransfer(t *testing.T) {
 
 	dir := t.TempDir()
 	into := filepath.Join(dir, "landed")
-	if err := takeOnto(conn, into, "landed", Entry{Size: 5, Mode: 0o644}, nil, nil); err == nil {
+	if err := takeOnto(conn, into, "landed", Entry{Size: 5, Mode: 0o644}, nil, 0, nil); err == nil {
 		t.Fatal("takeOnto() accepted a digest that does not match")
 	}
 	if _, err := os.Stat(into); err == nil {
