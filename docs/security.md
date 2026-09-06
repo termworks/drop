@@ -142,7 +142,7 @@ the reader on a corrupt file.
 
 ## State files have limits
 
-Small JSON state files are refused above 16 MiB, and an address book is capped at 4096 peers. A
+Small JSON state files are refused above 16 MiB, and an address book is capped at 256 peers. A
 corrupt file cannot turn a short local record into an unbounded map during startup.
 
 The record beside a shared folder is different: it can legitimately describe 131,072 paths, each

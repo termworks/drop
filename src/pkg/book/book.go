@@ -21,7 +21,7 @@ import (
 const SecretBytes = 32
 
 // MaxEntries caps how many peers one address book holds.
-const MaxEntries = 1 << 12
+const MaxEntries = 1 << 8
 
 // Entry is one known peer. Secret is empty for a peer that was pinned by id rather than paired;
 // such a peer can be reached on the local network, but not looked up privately.
