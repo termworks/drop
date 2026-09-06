@@ -537,6 +537,34 @@ func TestADeletionTravelsAndAFileThatNeverArrivedDoesNot(t *testing.T) {
 	}
 }
 
+func TestUnsupportedReplacementDoesNotTravelAsDeletion(t *testing.T) {
+	alice, bob := joins(t, "alice"), joins(t, "bob")
+	save(t, alice.dir, "notes.txt", "kept everywhere\n")
+	together(t, alice, bob)
+
+	at := filepath.Join(alice.dir, "notes.txt")
+	if err := os.Remove(at); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("not shared"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, at); err != nil {
+		t.Skipf("symbolic links are unavailable: %v", err)
+	}
+
+	alice.must(t, nil)
+	if got := alice.folder(t)["notes.txt"]; got.Gone {
+		t.Fatal("the symbolic link was recorded as a deletion")
+	}
+	meets(t, alice, bob)
+	bob.must(t, nil)
+	if got := holding(t, bob, "notes.txt"); got != "kept everywhere\n" {
+		t.Fatalf("the other copy became %q", got)
+	}
+}
+
 // A rename is a delete and a create, and the bytes are already here under the old name.
 func TestARenameMovesNoBytes(t *testing.T) {
 	alice, bob := joins(t, "alice"), joins(t, "bob")

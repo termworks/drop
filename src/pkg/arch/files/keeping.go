@@ -404,7 +404,7 @@ func scan(dir string, was map[string]mark) (map[string]mark, error) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !d.Type().IsRegular() {
+		if at == dir {
 			return nil
 		}
 
@@ -413,6 +413,22 @@ func scan(dir string, was map[string]mark) (map[string]mark, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		retain := func() {
+			if held, knew := was[rel]; knew {
+				out[rel] = held
+			}
+		}
+		if d.IsDir() {
+			if _, knew := was[rel]; knew {
+				retain()
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			retain()
+			return nil
+		}
 		if partial(gopath.Base(rel)) {
 			return nil
 		}
@@ -425,9 +441,11 @@ func scan(dir string, was map[string]mark) (map[string]mark, error) {
 
 		stat, err := d.Info()
 		if err != nil {
+			retain()
 			return nil
 		}
 		if !singleLinked(stat) {
+			retain()
 			return nil
 		}
 		m := mark{Size: stat.Size(), At: stat.ModTime().UnixNano(), Exec: stat.Mode().Perm()&0o111 != 0, File: stat}
@@ -439,9 +457,11 @@ func scan(dir string, was map[string]mark) (map[string]mark, error) {
 
 		sum, readAt, err := sumOf(at)
 		if err != nil {
+			retain()
 			return nil
 		}
 		if !os.SameFile(stat, readAt) || readAt.Size() != m.Size || readAt.ModTime().UnixNano() != m.At {
+			retain()
 			return nil
 		}
 		m.Sum = sum

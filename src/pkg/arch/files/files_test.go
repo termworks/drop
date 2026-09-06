@@ -1010,6 +1010,79 @@ func TestScanRefusesHardLinks(t *testing.T) {
 	}
 }
 
+func TestScanDoesNotReportUnsupportedReplacementsAsDeleted(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		replace func(*testing.T, string)
+	}{
+		{
+			name: "directory",
+			replace: func(t *testing.T, at string) {
+				if err := os.Mkdir(at, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(at, "child"), []byte("not tracked"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "symbolic link",
+			replace: func(t *testing.T, at string) {
+				outside := filepath.Join(t.TempDir(), "outside")
+				if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, at); err != nil {
+					t.Skipf("symbolic links are unavailable: %v", err)
+				}
+			},
+		},
+		{
+			name: "hard link",
+			replace: func(t *testing.T, at string) {
+				outside := filepath.Join(t.TempDir(), "outside")
+				if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Link(outside, at); err != nil {
+					t.Skipf("hard links are unavailable: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			at := filepath.Join(dir, "tracked")
+			if err := os.WriteFile(at, []byte("held"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			first, err := scan(dir, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(at); err != nil {
+				t.Fatal(err)
+			}
+			test.replace(t, at)
+
+			second, err := scan(dir, first)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if second["tracked"].Sum != first["tracked"].Sum {
+				t.Fatal("the last readable version was not retained")
+			}
+			if edits := (&keeper{held: first}).mine(second, nil); len(edits) != 0 {
+				t.Fatalf("an unsupported replacement became edits: %+v", edits)
+			}
+			if _, tracked := second["tracked/child"]; tracked {
+				t.Fatal("a directory replacing a tracked file was descended into")
+			}
+		})
+	}
+}
+
 func TestScanRefusesSparseFiles(t *testing.T) {
 	dir := t.TempDir()
 	at := filepath.Join(dir, "sparse")
