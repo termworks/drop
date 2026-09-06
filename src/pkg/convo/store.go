@@ -31,9 +31,9 @@ type Store struct {
 	dir     string
 	history string
 	outbox  string
-	// ids is every message id in the history, and size is how long the file was when that set was
-	// built. Deciding whether an arriving message is a resend by rereading the log costs a read and
-	// a decrypt pass of everything said so far, per message.
+	// ids is every message id in the history, and size is the complete prefix of the revision that
+	// built it. Deciding whether an arriving message is a resend by rereading the log costs a read
+	// and a decrypt pass of everything said so far, per message.
 	ids   map[string]bool
 	size  int64
 	seen  os.FileInfo
@@ -345,21 +345,22 @@ func oneRegularFile(stat os.FileInfo) bool {
 // length prefix says where the next one starts, so one damaged entry costs one entry rather than
 // every message written after it.
 func readAll(path, peer string) ([]Message, error) {
-	out, _, err := readAllInfo(path, peer)
+	out, _, _, err := readAllInfo(path, peer)
 	return out, err
 }
 
-func readAllInfo(path, peer string) ([]Message, os.FileInfo, error) {
+func readAllInfo(path, peer string) ([]Message, os.FileInfo, int64, error) {
 	raw, info, err := keep.ReadFileInfo(path, MaxLog)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil, nil
+		return nil, nil, 0, nil
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, nil, 0, fmt.Errorf("reading %s: %w", path, err)
 	}
 
 	var out []Message
-	for at := 0; at < len(raw); {
+	at := 0
+	for at < len(raw) {
 		size, used := binary.Uvarint(raw[at:])
 		// Weighed as it was written, before it is a length. A record that says it is longer than the
 		// file is a truncated tail; one that says it is longer than a number can hold turns negative
@@ -374,14 +375,14 @@ func readAllInfo(path, peer string) ([]Message, os.FileInfo, error) {
 		if errors.Is(err, ErrLocked) {
 			// Not a truncated tail: the records are whole and the key is not here. Reporting an
 			// empty conversation would be a lie about the disk rather than a report about the key.
-			return nil, nil, err
+			return nil, nil, 0, err
 		}
 		if err != nil {
 			continue
 		}
 		out = append(out, m)
 	}
-	return out, info, nil
+	return out, info, int64(at), nil
 }
 
 // known is the set of ids in the history, walking the log only when it has changed under this
@@ -398,7 +399,7 @@ func (s *Store) known() error {
 	}
 
 	s.reads++
-	all, seen, err := readAllInfo(s.history, s.peer.String())
+	all, seen, complete, err := readAllInfo(s.history, s.peer.String())
 	if err != nil {
 		return err
 	}
@@ -407,11 +408,7 @@ func (s *Store) known() error {
 		ids[m.ID] = true
 	}
 	s.ids, s.seen = ids, seen
-	if seen == nil {
-		s.size = 0
-	} else {
-		s.size = seen.Size()
-	}
+	s.size = complete
 	return nil
 }
 
@@ -433,6 +430,11 @@ func (s *Store) Add(m Message) (bool, error) {
 		}
 		if s.ids[m.ID] {
 			return nil
+		}
+		if s.seen != nil && s.size < s.seen.Size() {
+			if err := trimTail(s.history, s.seen, s.size); err != nil {
+				return err
+			}
 		}
 		body, err := record(m, s.peer.String())
 		if err != nil {
@@ -487,9 +489,14 @@ func (s *Store) Queue(m Message) error {
 		return err
 	}
 	return keep.While(s.outbox, func() error {
-		waiting, err := readAll(s.outbox, s.peer.String())
+		waiting, seen, complete, err := readAllInfo(s.outbox, s.peer.String())
 		if err != nil {
 			return err
+		}
+		if seen != nil && complete < seen.Size() {
+			if err := trimTail(s.outbox, seen, complete); err != nil {
+				return err
+			}
 		}
 		for _, queued := range waiting {
 			if queued.ID == m.ID {
@@ -498,6 +505,34 @@ func (s *Store) Queue(m Message) error {
 		}
 		return appendTo(s.outbox, body)
 	})
+}
+
+func trimTail(path string, seen os.FileInfo, size int64) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("repairing %s: %w", path, err)
+	}
+	stat, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return fmt.Errorf("repairing %s: %w", path, err)
+	}
+	if !oneRegularFile(stat) || !sameRevision(seen, stat) {
+		_ = file.Close()
+		return fmt.Errorf("repairing %s: it changed after being read", path)
+	}
+	if err := file.Truncate(size); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("repairing %s: %w", path, err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("repairing %s: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("repairing %s: %w", path, err)
+	}
+	return nil
 }
 
 // Pending is what has not been delivered, oldest first.

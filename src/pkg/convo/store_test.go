@@ -448,6 +448,61 @@ func TestTruncatedTailDoesNotLoseEarlierMessages(t *testing.T) {
 	}
 }
 
+func TestWritingAfterATruncatedTailKeepsNewMessages(t *testing.T) {
+	s := openStore(t)
+	queue(t, s, "first")
+
+	for _, path := range []string{s.history, s.outbox} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(raw, 0x40, 0x01, 0x02), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	queue(t, s, "second")
+	history, err := s.History()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := s.Pending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, messages := range map[string][]Message{"history": history, "outbox": pending} {
+		if len(messages) != 2 || messages[0].Body != "first" || messages[1].Body != "second" {
+			t.Fatalf("%s after repair = %+v", name, messages)
+		}
+	}
+}
+
+func TestTailRepairDoesNotTruncateAReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history")
+	if err := os.WriteFile(path, []byte("broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seen, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := keep.Replace(path, []byte("replacement")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := trimTail(path, seen, 0); err == nil {
+		t.Fatal("trimTail() accepted a replacement")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "replacement" {
+		t.Fatalf("replacement changed to %q", raw)
+	}
+}
+
 func TestHistoryIsOrderedByTime(t *testing.T) {
 	s := openStore(t)
 
