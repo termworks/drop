@@ -26,6 +26,8 @@ type Kept struct {
 
 	mu   sync.Mutex
 	open map[string]*iroh.Conn
+	// pending are connections made before their stream handler was installed.
+	pending map[*iroh.Conn]struct{}
 	// dialling is the dial in progress for a device and protocol, so that everybody asking for one
 	// at the same moment waits for the same connection instead of opening one each.
 	dialling  map[string]*flight
@@ -50,6 +52,7 @@ func Hold(n *node.Node, wire Wire, find Finder) *Kept {
 		wire:      wire,
 		find:      find,
 		open:      map[string]*iroh.Conn{},
+		pending:   map[*iroh.Conn]struct{}{},
 		dialling:  map[string]*flight{},
 		answering: make(chan struct{}, maxAnsweringTotal),
 	}
@@ -67,9 +70,21 @@ type flight struct {
 // streams are never accepted, and a device we dialled can only ever answer, never ask.
 func (k *Kept) Serving(ctx context.Context, answer func(node.ID, string, *iroh.Stream)) {
 	k.mu.Lock()
-	defer k.mu.Unlock()
-
 	k.serve, k.ctx = answer, ctx
+
+	var pending []*iroh.Conn
+	if answer != nil {
+		pending = make([]*iroh.Conn, 0, len(k.pending))
+		for conn := range k.pending {
+			pending = append(pending, conn)
+			delete(k.pending, conn)
+		}
+	}
+	k.mu.Unlock()
+
+	for _, conn := range pending {
+		go k.answerOn(conn)
+	}
 }
 
 // answerOn accepts whatever the far end opens on a connection we made.
@@ -205,6 +220,7 @@ func (k *Kept) held(id node.ID, alpn string) *iroh.Conn {
 	// A connection whose context is done is closed, however it got that way.
 	select {
 	case <-conn.Context().Done():
+		delete(k.pending, conn)
 		delete(k.open, key(id, alpn))
 		return nil
 	default:
@@ -217,10 +233,14 @@ func (k *Kept) keep(id node.ID, alpn string, conn *iroh.Conn) {
 
 	if was, ok := k.open[key(id, alpn)]; ok && was != conn {
 		_ = was.Close()
+		delete(k.pending, was)
 	}
 	k.open[key(id, alpn)] = conn
 
 	answering := k.serve != nil
+	if !answering {
+		k.pending[conn] = struct{}{}
+	}
 
 	k.mu.Unlock()
 
@@ -243,6 +263,7 @@ func (k *Kept) drop(id node.ID, alpn string, conn *iroh.Conn) {
 	at := key(id, alpn)
 	if held, ok := k.open[at]; ok && held == conn {
 		_ = held.Close()
+		delete(k.pending, held)
 		delete(k.open, at)
 	}
 }
@@ -254,6 +275,7 @@ func (k *Kept) Close() {
 
 	for at, conn := range k.open {
 		_ = conn.Close()
+		delete(k.pending, conn)
 		delete(k.open, at)
 	}
 }
@@ -276,6 +298,7 @@ func (k *Kept) Reaching(id node.ID) bool {
 		select {
 		case <-conn.Context().Done():
 			_ = conn.Close()
+			delete(k.pending, conn)
 			delete(k.open, at)
 		default:
 			return true
@@ -310,6 +333,7 @@ func (k *Kept) Adopt(id node.ID, alpn string, conn *iroh.Conn) {
 		select {
 		case <-was.Context().Done():
 			_ = was.Close()
+			delete(k.pending, was)
 			delete(k.open, at)
 		default:
 			return

@@ -234,6 +234,48 @@ func connectNodes(t *testing.T, from, to *node.Node) (*iroh.Conn, *iroh.Conn) {
 	return dialed, arrival.conn
 }
 
+func TestServingAnswersAConnectionMadeBeforeTheHandler(t *testing.T) {
+	local := onlyThisMachine(t)
+	remote := onlyThisMachine(t)
+
+	dialed, arrival := connectNodes(t, local, remote)
+	defer func() { _ = arrival.Close() }()
+
+	held := Hold(nil, nil, nil)
+	held.keep(remote.ID(), node.ALPNSession, dialed)
+	defer held.Close()
+
+	type answer struct {
+		from node.ID
+		alpn string
+	}
+	answered := make(chan answer, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	held.Serving(ctx, func(from node.ID, alpn string, stream *iroh.Stream) {
+		_ = stream.Close()
+		answered <- answer{from: from, alpn: alpn}
+	})
+
+	stream, err := arrival.OpenStreamSync(ctx)
+	if err != nil {
+		t.Fatalf("opening a stream back over the held connection: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	if _, err := stream.Write([]byte("hello")); err != nil {
+		t.Fatalf("starting the stream back over the held connection: %v", err)
+	}
+
+	select {
+	case got := <-answered:
+		if got.from != remote.ID() || got.alpn != node.ALPNSession {
+			t.Fatalf("the delayed handler answered %s on %q", got.from, got.alpn)
+		}
+	case <-ctx.Done():
+		t.Fatal("the handler never answered the connection that preceded it")
+	}
+}
+
 func testSharedSecret() []byte {
 	return []byte("0123456789abcdef0123456789abcdef")
 }
