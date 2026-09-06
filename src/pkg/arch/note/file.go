@@ -97,7 +97,7 @@ func (k *keeper) once() (bool, error) {
 	}
 
 	heads := k.log.Heads()
-	if k.built && there && same(heads, k.heads) {
+	if !made && k.built && there && same(heads, k.heads) {
 		return made, trouble
 	}
 	if !there && len(heads) == 0 {
@@ -126,7 +126,9 @@ func (k *keeper) once() (bool, error) {
 		if _, err := k.log.Fold(body); err != nil {
 			return made, fmt.Errorf("folding the history of %s: %w", k.file, err)
 		}
-		k.heads = k.log.Heads()
+		if err := k.remember(body, k.log.Heads(), true); err != nil {
+			return made, err
+		}
 	}
 	return made, trouble
 }
