@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"strings"
-	"time"
 
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/dial"
@@ -127,16 +126,8 @@ func viaDaemon(entry book.Entry, alpn string) (*lent, error) {
 }
 
 func acceptLent(conn net.Conn, name string) (*lent, error) {
-	if err := conn.SetReadDeadline(time.Now().Add(localHelloWithin)); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
 	reading := bufio.NewReader(conn)
-	said, err := readLocalLine(reading)
-	if resetErr := conn.SetReadDeadline(time.Time{}); err == nil && resetErr != nil {
-		_ = conn.Close()
-		return nil, resetErr
-	}
+	said, err := readLocalReply(conn, reading)
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("asking this node to reach %s: %w", name, err)

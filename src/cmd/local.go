@@ -566,6 +566,18 @@ func readLocalLine(reading *bufio.Reader) (string, error) {
 	}
 }
 
+// readLocalReply reads one bounded line under the local handshake deadline.
+func readLocalReply(conn net.Conn, reading *bufio.Reader) (string, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(localHelloWithin)); err != nil {
+		return "", err
+	}
+	line, err := readLocalLine(reading)
+	if resetErr := conn.SetReadDeadline(time.Time{}); err == nil && resetErr != nil {
+		return "", resetErr
+	}
+	return line, err
+}
+
 // takeHeld answers with the devices this node has a connection to, one id a line.
 //
 // Read out of what is already open rather than dialled, so a command asking which of somebody's

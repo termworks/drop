@@ -76,7 +76,7 @@ func runShare(parent context.Context, dir string, to []string) error {
 	}
 
 	reading := bufio.NewReader(conn)
-	said, err := reading.ReadString('\n')
+	said, err := readLocalReply(conn, reading)
 	if err != nil {
 		return fmt.Errorf("asking this node for a handoff: %w", err)
 	}
@@ -94,7 +94,7 @@ func runShare(parent context.Context, dir string, to []string) error {
 	// somebody presses ctrl-c: the daemon holds the mount for exactly as long as this connection.
 	over := make(chan string, 1)
 	go func() {
-		line, _ := reading.ReadString('\n')
+		line, _ := readLocalLine(reading)
 		over <- strings.TrimSpace(line)
 	}()
 

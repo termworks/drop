@@ -2,12 +2,23 @@ package cmd
 
 import (
 	"bufio"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+type deadlineTrackingConn struct {
+	net.Conn
+	deadlines []time.Time
+}
+
+func (c *deadlineTrackingConn) SetReadDeadline(deadline time.Time) error {
+	c.deadlines = append(c.deadlines, deadline)
+	return c.Conn.SetReadDeadline(deadline)
+}
 
 // The pairing line between a local `drop pair` and the daemon is exactly three fields. Both ends
 // are the same binary, so anything else is malformed rather than an older spelling to tolerate.
@@ -43,6 +54,31 @@ func TestLocalRequestLinesAreBounded(t *testing.T) {
 	tooLong := strings.Repeat("x", maxLocalLine) + "\n"
 	if _, err := readLocalLine(bufio.NewReader(strings.NewReader(tooLong))); err == nil {
 		t.Fatal("readLocalLine() accepted an oversized request")
+	}
+}
+
+func TestLocalRepliesHaveAHandshakeDeadline(t *testing.T) {
+	client, server := net.Pipe()
+	tracked := &deadlineTrackingConn{Conn: client}
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+	written := make(chan error, 1)
+	go func() {
+		_, err := server.Write([]byte("ok\n"))
+		written <- err
+	}()
+
+	line, err := readLocalReply(tracked, bufio.NewReader(tracked))
+	if err != nil || line != "ok\n" {
+		t.Fatalf("readLocalReply() = %q, %v", line, err)
+	}
+	if err := <-written; err != nil {
+		t.Fatal(err)
+	}
+	if len(tracked.deadlines) != 2 || tracked.deadlines[0].IsZero() || !tracked.deadlines[1].IsZero() {
+		t.Fatalf("read deadlines = %v, want one bounded deadline followed by a reset", tracked.deadlines)
 	}
 }
 

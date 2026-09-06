@@ -309,13 +309,7 @@ func castThroughDaemon(ctx context.Context, addressFile string) error {
 	}
 
 	replies := bufio.NewReader(conn)
-	if err := conn.SetReadDeadline(time.Now().Add(localHelloWithin)); err != nil {
-		return err
-	}
-	answer, err := readLocalLine(replies)
-	if resetErr := conn.SetReadDeadline(time.Time{}); err == nil && resetErr != nil {
-		return resetErr
-	}
+	answer, err := readLocalReply(conn, replies)
 	if err != nil {
 		return fmt.Errorf("asking this node to cast: %w", err)
 	}

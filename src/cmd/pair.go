@@ -388,7 +388,7 @@ func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration
 	// what takes the code back down, so a cancelled command does not leave one live.
 	said := make(chan string, 1)
 	go func() {
-		line, err := bufio.NewReader(conn).ReadString('\n')
+		line, err := readLocalLine(bufio.NewReader(conn))
 		if err != nil {
 			close(said)
 			return

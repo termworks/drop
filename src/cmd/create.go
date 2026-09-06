@@ -431,7 +431,7 @@ func unmounted(at string) error {
 		return err
 	}
 
-	said, err := bufio.NewReader(conn).ReadString('\n')
+	said, err := readLocalReply(conn, bufio.NewReader(conn))
 	if err != nil {
 		return fmt.Errorf("asking this node to drop %s: %w", at, err)
 	}
@@ -471,7 +471,7 @@ func tell(conn net.Conn, line made.Line) (*bufio.Reader, error) {
 	}
 
 	reading := bufio.NewReader(conn)
-	said, err := reading.ReadString('\n')
+	said, err := readLocalReply(conn, reading)
 	if err != nil {
 		return nil, fmt.Errorf("asking this node for %s: %w", line.Path, err)
 	}
