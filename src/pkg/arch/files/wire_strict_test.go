@@ -58,9 +58,14 @@ func TestFilesWireDecodersRefuseModeOverflow(t *testing.T) {
 }
 
 func TestReplyDecoderRefusesNegativeEntrySizes(t *testing.T) {
-	body := reply{OK: true, Entries: []Entry{{Name: "item", Size: wire.SizeUnknown}}}.encode()
-	if _, err := decodeReply(body); err == nil {
-		t.Fatal("decodeReply() accepted a negative entry size")
+	for _, entry := range []Entry{
+		{Name: "item", Size: wire.SizeUnknown},
+		{Name: "dir", Size: wire.SizeUnknown - 1, Dir: true},
+	} {
+		body := reply{OK: true, Entries: []Entry{entry}}.encode()
+		if _, err := decodeReply(body); err == nil {
+			t.Fatalf("decodeReply() accepted size %d for %+v", entry.Size, entry)
+		}
 	}
 }
 

@@ -212,9 +212,6 @@ func decodeReply(body []byte) (reply, error) {
 		if err != nil {
 			return out, err
 		}
-		if size < 0 {
-			return out, fmt.Errorf("invalid entry size %d", size)
-		}
 		mode, err := r.Uint()
 		if err != nil {
 			return out, err
@@ -225,6 +222,9 @@ func decodeReply(body []byte) (reply, error) {
 		dir, err := r.Bool()
 		if err != nil {
 			return out, err
+		}
+		if size < wire.SizeUnknown || size == wire.SizeUnknown && !dir {
+			return out, fmt.Errorf("invalid entry size %d", size)
 		}
 		at, err := r.Int()
 		if err != nil {
