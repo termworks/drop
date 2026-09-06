@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -70,7 +71,9 @@ func deliverOver(ctx context.Context, over reaches, entry book.Entry, path, arch
 	// will serve again a minute later, and that is not settled.
 	if proto.Settled(err) {
 		if done := ids(waiting); len(done) > 0 {
-			_ = store.Delivered(done...)
+			if clearErr := store.Delivered(done...); clearErr != nil {
+				return 0, errors.Join(err, fmt.Errorf("clearing messages after the refusal: %w", clearErr))
+			}
 		}
 	}
 	return 0, err

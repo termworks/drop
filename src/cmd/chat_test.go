@@ -4,6 +4,9 @@ import (
 	"context"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -55,6 +58,34 @@ func TestARefusalAboutTheSenderEmptiesTheQueue(t *testing.T) {
 	}
 	if left := stillQueued(t, entry); len(left) != 0 {
 		t.Fatalf("%d messages are still queued against a decision", len(left))
+	}
+}
+
+func TestFailureToClearASettledRefusalIsReported(t *testing.T) {
+	entry := queued(t, idFor(5), "let me in")
+	outbox := filepath.Join(os.Getenv("XDG_DATA_HOME"), "drop", "convo", entry.ID.String(), "outbox")
+	changed := make(chan error, 1)
+	beforeReply := func() {
+		if err := os.Remove(outbox); err != nil {
+			changed <- err
+			return
+		}
+		changed <- os.Mkdir(outbox, 0o700)
+	}
+
+	_, err := deliverOver(context.Background(), refusing{
+		reason:      "/chat: not shared with you",
+		settled:     true,
+		beforeReply: beforeReply,
+	}, entry, "/chat", "chat")
+	if changedErr := <-changed; changedErr != nil {
+		t.Fatal(changedErr)
+	}
+	if !proto.WasDeclined(err) {
+		t.Fatalf("the joined error lost the settled refusal: %v", err)
+	}
+	if !strings.Contains(err.Error(), "clearing messages") {
+		t.Fatalf("the failed outbox update was hidden: %v", err)
 	}
 }
 
@@ -145,8 +176,9 @@ func stillQueued(t *testing.T, entry book.Entry) []convo.Message {
 // refusing is a far end that reads the open and says no, which is what a device serving something
 // else does.
 type refusing struct {
-	reason  string
-	settled bool
+	reason      string
+	settled     bool
+	beforeReply func()
 }
 
 func (r refusing) To(ctx context.Context, entry book.Entry, alpn string) (io.Closer, proto.Stream, error) {
@@ -157,6 +189,9 @@ func (r refusing) To(ctx context.Context, entry book.Entry, alpn string) (io.Clo
 		conn := wire.NewConn(there)
 		if _, _, err := conn.ReadFrame(); err != nil {
 			return
+		}
+		if r.beforeReply != nil {
+			r.beforeReply()
 		}
 		_ = conn.WriteFrame(wire.KindReject, wire.Reject{Reason: r.reason, Settled: r.settled}.Encode())
 	}()
