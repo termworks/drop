@@ -127,10 +127,15 @@ func sendOne(conn *wire.Conn, src Source, at int64, progress func(string, int64,
 
 	sent := at
 	buf := make([]byte, wire.DataChunk)
+	var localErr error
 
 	for {
 		n, err := body.Read(buf)
 		if n > 0 {
+			if src.Known() && int64(n) > src.Size-sent {
+				localErr = fmt.Errorf("%s changed size while being sent: more than %d bytes", src.Name, src.Size)
+				break
+			}
 			if werr := conn.WriteData(buf[:n]); werr != nil {
 				return fmt.Errorf("sending %s: %w", src.Name, werr)
 			}
@@ -148,11 +153,15 @@ func sendOne(conn *wire.Conn, src Source, at int64, progress func(string, int64,
 		}
 	}
 
-	if src.Known() && sent != src.Size {
-		return fmt.Errorf("%s changed size while being sent: %d bytes, expected %d", src.Name, sent, src.Size)
+	if localErr == nil && src.Known() && sent != src.Size {
+		localErr = fmt.Errorf("%s changed size while being sent: %d bytes, expected %d", src.Name, sent, src.Size)
 	}
 
-	end := wire.End{Size: sent, Digest: digest.Sum(nil)}
+	endDigest := digest.Sum(nil)
+	if localErr != nil {
+		endDigest = nil
+	}
+	end := wire.End{Size: sent, Digest: endDigest}
 	if err := conn.WriteFrame(wire.KindEnd, end.Encode()); err != nil {
 		return err
 	}
@@ -169,6 +178,9 @@ func sendOne(conn *wire.Conn, src Source, at int64, progress func(string, int64,
 	ack, err := wire.DecodeAck(ackBody)
 	if err != nil {
 		return err
+	}
+	if localErr != nil {
+		return localErr
 	}
 	if !ack.OK {
 		return fmt.Errorf("%s was rejected: %s", src.Name, ack.Reason)

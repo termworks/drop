@@ -286,6 +286,19 @@ func TestAKnownSizeCannotBeExceeded(t *testing.T) {
 	}
 }
 
+func TestAnOversizedItemNeedsNoEndFrameToStop(t *testing.T) {
+	dir := t.TempDir()
+	item := Item{Name: "a.txt", Size: 3}
+	var sent bytes.Buffer
+	if err := wire.NewConn(readWriter{&sent, &sent}).WriteData([]byte("too long")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := taking(t, dir, []Item{item}, &sent, nil); err == nil || !strings.Contains(err.Error(), "more than the announced") {
+		t.Fatalf("oversized item ended as %v", err)
+	}
+}
+
 func TestAKnownSizeMustBeReached(t *testing.T) {
 	dir := t.TempDir()
 	body := []byte("short")

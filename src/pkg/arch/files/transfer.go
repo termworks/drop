@@ -27,10 +27,15 @@ func sendBody(conn *wire.Conn, body io.Reader, name string, size, from int64, pr
 	digest := blake3.New(32, nil)
 	buf := make([]byte, wire.DataChunk)
 	read := int64(0)
+	var localErr error
 
 	for {
 		n, err := body.Read(buf)
 		if n > 0 {
+			if size != wire.SizeUnknown && int64(n) > size-read {
+				localErr = fmt.Errorf("%s has more than the announced %d bytes", name, size)
+				break
+			}
 			chunk, start := buf[:n], read
 			_, _ = digest.Write(chunk)
 			read += int64(n)
@@ -54,8 +59,15 @@ func sendBody(conn *wire.Conn, body io.Reader, name string, size, from int64, pr
 			return fmt.Errorf("reading %s: %w", name, err)
 		}
 	}
+	if localErr == nil && size != wire.SizeUnknown && read != size {
+		localErr = fmt.Errorf("%s has %d bytes, while %d were announced", name, read, size)
+	}
 
-	end := wire.End{Size: read, Digest: digest.Sum(nil)}
+	endDigest := digest.Sum(nil)
+	if localErr != nil {
+		endDigest = nil
+	}
+	end := wire.End{Size: read, Digest: endDigest}
 	if err := conn.WriteFrame(wire.KindEnd, end.Encode()); err != nil {
 		return err
 	}
@@ -70,6 +82,9 @@ func sendBody(conn *wire.Conn, body io.Reader, name string, size, from int64, pr
 	ack, err := wire.DecodeAck(ackBody)
 	if err != nil {
 		return err
+	}
+	if localErr != nil {
+		return localErr
 	}
 	if !ack.OK {
 		return fmt.Errorf("%s was rejected: %s", name, ack.Reason)
@@ -262,8 +277,6 @@ func land(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mo
 func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, name string, size int64, progress func(string, int64, int64)) (int64, string, error) {
 	buf := make([]byte, wire.DataChunk)
 	got := a.have
-	overrun := false
-	noRoom := false
 
 	for {
 		kind, length, err := conn.ReadHeader()
@@ -279,12 +292,6 @@ func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, nam
 			end, err := wire.DecodeEnd(body)
 			if err != nil {
 				return 0, "", err
-			}
-			if overrun {
-				return 0, fmt.Sprintf("sent more than the announced %d bytes", size), nil
-			}
-			if noRoom {
-				return 0, "not enough free space", nil
 			}
 			if got != end.Size {
 				return 0, fmt.Sprintf("arrived as %d bytes, sender counted %d", got, end.Size), nil
@@ -304,19 +311,11 @@ func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, nam
 		if err := conn.ReadBody(buf, length); err != nil {
 			return 0, "", err
 		}
-		if overrun || size != wire.SizeUnknown && int64(length) > size-got {
-			overrun = true
-			got += int64(length)
-			continue
-		}
-		if noRoom {
-			got += int64(length)
-			continue
+		if size != wire.SizeUnknown && int64(length) > size-got {
+			return 0, "", fmt.Errorf("%s sent more than the announced %d bytes", name, size)
 		}
 		if err := keep.Room(out, int64(length)); err != nil {
-			noRoom = true
-			got += int64(length)
-			continue
+			return 0, "", fmt.Errorf("%s: not enough free space: %w", name, err)
 		}
 		if _, err := out.Write(buf[:length]); err != nil {
 			return 0, "", fmt.Errorf("writing %s: %w", a.part, err)

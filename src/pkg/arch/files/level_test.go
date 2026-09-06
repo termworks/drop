@@ -381,6 +381,29 @@ func TestWhatArrivesCannotExceedWhatWasAnnounced(t *testing.T) {
 	}
 }
 
+func TestAnOversizedTransferNeedsNoEndFrameToStop(t *testing.T) {
+	var sent bytes.Buffer
+	if err := wire.NewConn(readWriter{&sent, &sent}).WriteData([]byte("too long")); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	out, err := root.OpenFile("part", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Close() }()
+
+	_, _, err = drain(wire.NewConn(readWriter{&sent, &bytes.Buffer{}}), out, arriving{}, blake3.New(32, nil), "report.bin", 3, nil)
+	if err == nil || !strings.Contains(err.Error(), "more than the announced") {
+		t.Fatalf("oversized transfer ended as %v", err)
+	}
+}
+
 // A directory too big to answer says what to do about it rather than only that it will not.
 func TestADirectoryTooBigToListSaysWhatToDo(t *testing.T) {
 	dir := t.TempDir()

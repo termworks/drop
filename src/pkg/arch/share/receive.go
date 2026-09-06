@@ -200,8 +200,6 @@ func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64
 	// Data frames run until the item ends, which is what lets an item arrive whose length nobody
 	// knew when it started.
 	got := at
-	overrun := false
-	noRoom := false
 	buf := make([]byte, wire.DataChunk)
 
 	for {
@@ -219,11 +217,6 @@ func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64
 			if err != nil {
 				return err
 			}
-			if noRoom {
-				_ = dir.Remove(part)
-				_ = conn.WriteFrame(wire.KindAck, wire.Ack{Reason: "not enough free space"}.Encode())
-				return fmt.Errorf("%s: not enough free space", name)
-			}
 			return finishOne(conn, dir, from, item, name, part, out, digest, got, end, hooks)
 		}
 		if kind != wire.KindData {
@@ -233,19 +226,13 @@ func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64
 		if err := conn.ReadBody(buf, size); err != nil {
 			return err
 		}
-		if overrun || item.Known() && int64(size) > item.Size-got {
-			overrun = true
-			got += int64(size)
-			continue
-		}
-		if noRoom {
-			got += int64(size)
-			continue
+		if item.Known() && int64(size) > item.Size-got {
+			_ = dir.Remove(part)
+			return fmt.Errorf("%s sent more than the announced %d bytes", name, item.Size)
 		}
 		if err := keep.Room(out, int64(size)); err != nil {
-			noRoom = true
-			got += int64(size)
-			continue
+			_ = dir.Remove(part)
+			return fmt.Errorf("%s: not enough free space: %w", name, err)
 		}
 		if _, err := out.Write(buf[:size]); err != nil {
 			return fmt.Errorf("writing %s: %w", part, err)
