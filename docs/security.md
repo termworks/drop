@@ -127,6 +127,11 @@ daemon restarted**.
 At most 16 shell-backed terminal namespaces are live at once. Watchers of an existing terminal do
 not consume another shell; a seventeenth namespace is refused until one shell exits.
 
+On the watching side, ending a terminal or stream closes both halves of its QUIC stream and waits
+for the read pump. Closing only the write half leaves a read blocked on a held connection, so an
+interface that repeatedly opened and closed live paths accumulated pumps still writing to old
+screens.
+
 ## One writer at a time
 
 The address book, the grants, the namespaces put up from the command line, the machine key and the

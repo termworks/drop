@@ -363,6 +363,7 @@ func (l *running) Watch(ctx context.Context, w tui.Watching) error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = s.Close() }()
 
 	conn, err := proto.Open(s, w.Path, w.Archetype, 0, "", node.DisplayName())
 	if err != nil {
@@ -386,23 +387,20 @@ func (l *running) Watch(ctx context.Context, w tui.Watching) error {
 		return err
 
 	case <-ctx.Done():
-		// The stream goes, the connection stays: it is shared with everything else this device is
-		// doing, and closing it here would drop a conversation to end a watch.
-		_ = s.Close()
-
-		// And the pump is waited for. It writes into a screen the interface is about to take down,
-		// and returning while it is still writing leaves two goroutines racing over it — which is
-		// a panic on whichever one loses.
-		select {
-		case <-done:
-		case <-time.After(stopWithin):
-		}
+		stopLive(d, done)
 		return ctx.Err()
 	}
 }
 
-// stopWithin bounds the wait for a watch to notice its stream has gone. A read already in flight
-// lands or fails quickly; anything longer is not worth holding the interface for.
+func stopLive(d *live.Duplex, done <-chan error) {
+	d.Stop()
+	select {
+	case <-done:
+	case <-time.After(stopWithin):
+	}
+}
+
+// stopWithin bounds the wait for a live read pump to stop.
 const stopWithin = 2 * time.Second
 
 // speaking is a live path the interface can speak to.

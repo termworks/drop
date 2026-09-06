@@ -183,6 +183,7 @@ func readLive(parent context.Context, o opening, raw bool) error {
 		return err
 	}
 	defer func() { _ = over.Close() }()
+	defer func() { _ = s.Close() }()
 
 	conn, err := proto.Open(s, o.served.Path, o.served.Archetype, 0, "", node.DisplayName())
 	if err != nil {
@@ -218,6 +219,7 @@ func readLive(parent context.Context, o opening, raw bool) error {
 
 	select {
 	case <-parent.Done():
+		stopLive(d, done)
 		return nil
 	case err := <-done:
 		if streamOver(err) {
