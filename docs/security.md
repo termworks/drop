@@ -136,6 +136,16 @@ its output was not valid input to itself.
 A length prefix in a conversation log could also wrap negative past a signed bounds check and panic
 the reader on a corrupt file.
 
+## State files have limits
+
+Small JSON state files are refused above 16 MiB, and an address book is capped at 4096 peers. A
+corrupt file cannot turn a short local record into an unbounded map during startup.
+
+The record beside a shared folder is different: it can legitimately describe 131,072 paths, each
+up to 1024 bytes. It is decoded and written as a stream instead of being held as a second complete
+copy in memory. The file size, path count, string tokens and numeric tokens are all capped before
+they can grow the live map.
+
 ## What is not defended
 
 **A machine that is running.** drop has to read your data to show it to you, so anything with your
