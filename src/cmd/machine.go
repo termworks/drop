@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/metal"
 	"github.com/bresilla/drop/src/pkg/node"
 )
@@ -127,7 +128,7 @@ func newRebindCmd() *cobra.Command {
 			// Kept rather than removed: it is the only copy of who this machine used to be, and
 			// somebody who changes their mind an hour later should not be told it is gone.
 			beside := at + ".was"
-			if err := os.Rename(at, beside); err != nil {
+			if err := keep.Rename(at, beside); err != nil {
 				return fmt.Errorf("moving %s aside: %w", at, err)
 			}
 			fmt.Printf("this machine is now %s, named by %s\n", node.Brief(becomes), mark.Says)

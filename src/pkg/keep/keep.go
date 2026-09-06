@@ -51,6 +51,34 @@ func Replace(file string, raw []byte) error {
 	return SyncDir(dir)
 }
 
+// Rename moves one kept file and flushes every directory whose entries changed.
+func Rename(from, to string) error {
+	if err := os.Rename(from, to); err != nil {
+		return fmt.Errorf("moving %s to %s: %w", from, to, err)
+	}
+
+	toDir := filepath.Dir(to)
+	if err := SyncDir(toDir); err != nil {
+		return err
+	}
+	fromDir := filepath.Dir(from)
+	if fromDir != toDir {
+		return SyncDir(fromDir)
+	}
+	return nil
+}
+
+// Remove unlinks one kept file and flushes its directory. An absent file is already removed.
+func Remove(file string) error {
+	if err := os.Remove(file); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("removing %s: %w", file, err)
+	}
+	return SyncDir(filepath.Dir(file))
+}
+
 // SyncDir flushes a directory and its entries to disk.
 func SyncDir(dir string) error {
 	opened, err := os.Open(dir)

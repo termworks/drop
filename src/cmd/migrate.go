@@ -170,11 +170,11 @@ func carryHandover() {
 
 	signed, sig, err := unpacked(strings.TrimSpace(string(raw)))
 	if err != nil {
-		_ = os.Remove(at)
+		_ = keep.Remove(at)
 		return
 	}
 	if _, err := plate.Took(signed, sig, time.Now()); err != nil {
-		_ = os.Remove(at)
+		_ = keep.Remove(at)
 		return
 	}
 	proto.Moving(signed, sig)

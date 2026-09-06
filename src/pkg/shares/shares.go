@@ -120,8 +120,5 @@ func Forget(peer node.ID) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("removing %s: %w", file, err)
-	}
-	return nil
+	return keep.Remove(file)
 }

@@ -84,6 +84,67 @@ func TestReplaceCleansScratchAfterFailure(t *testing.T) {
 	}
 }
 
+func TestRenameMovesAFile(t *testing.T) {
+	dir := t.TempDir()
+	from := filepath.Join(dir, "from")
+	to := filepath.Join(dir, "to")
+	if err := os.WriteFile(from, []byte("kept"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Rename(from, to); err != nil {
+		t.Fatalf("Rename(): %v", err)
+	}
+	if _, err := os.Stat(from); !os.IsNotExist(err) {
+		t.Fatalf("the old name remains: %v", err)
+	}
+	if raw, err := os.ReadFile(to); err != nil || string(raw) != "kept" {
+		t.Fatalf("the new name holds %q, %v", raw, err)
+	}
+}
+
+func TestRenameMovesBetweenDirectories(t *testing.T) {
+	dir := t.TempDir()
+	left := filepath.Join(dir, "left")
+	right := filepath.Join(dir, "right")
+	if err := os.Mkdir(left, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(right, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	from := filepath.Join(left, "from")
+	to := filepath.Join(right, "to")
+	if err := os.WriteFile(from, []byte("kept"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Rename(from, to); err != nil {
+		t.Fatalf("Rename(): %v", err)
+	}
+	if raw, err := os.ReadFile(to); err != nil || string(raw) != "kept" {
+		t.Fatalf("the new name holds %q, %v", raw, err)
+	}
+}
+
+func TestRemoveForgetsAFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "gone")
+	if err := os.WriteFile(file, []byte("kept"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Remove(file); err != nil {
+		t.Fatalf("Remove(): %v", err)
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("the file remains: %v", err)
+	}
+	if err := Remove(file); err != nil {
+		t.Fatalf("Remove() of an absent file: %v", err)
+	}
+}
+
 func TestWhileSerializesChanges(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "state")
 	entered := make(chan struct{})
