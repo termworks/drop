@@ -212,6 +212,9 @@ func decodeReply(body []byte) (reply, error) {
 		if err != nil {
 			return out, err
 		}
+		if size < 0 {
+			return out, fmt.Errorf("invalid entry size %d", size)
+		}
 		mode, err := r.Uint()
 		if err != nil {
 			return out, err

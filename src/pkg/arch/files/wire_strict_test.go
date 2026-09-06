@@ -1,6 +1,8 @@
 package files
 
 import (
+	"bytes"
+	"path/filepath"
 	"testing"
 
 	"github.com/bresilla/drop/src/pkg/wire"
@@ -53,4 +55,50 @@ func TestFilesWireDecodersRefuseModeOverflow(t *testing.T) {
 	if _, err := decodeReply(replyBody.Body()); err == nil {
 		t.Fatal("decodeReply() accepted a mode wider than uint32")
 	}
+}
+
+func TestReplyDecoderRefusesNegativeEntrySizes(t *testing.T) {
+	body := reply{OK: true, Entries: []Entry{{Name: "item", Size: wire.SizeUnknown}}}.encode()
+	if _, err := decodeReply(body); err == nil {
+		t.Fatal("decodeReply() accepted a negative entry size")
+	}
+}
+
+func TestGetRefusesAmbiguousFileMetadata(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []Entry
+	}{
+		{"missing", nil},
+		{"several", []Entry{{Name: "file", Size: 1}, {Name: "other", Size: 1}}},
+		{"directory", []Entry{{Name: "file", Dir: true}}},
+		{"another name", []Entry{{Name: "other", Size: 1}}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			browser := browserAnsweredWith(t, reply{OK: true, Entries: test.entries})
+			if err := browser.Get("file", filepath.Join(t.TempDir(), "file"), Want{}); err == nil {
+				t.Fatal("Get() accepted ambiguous file metadata")
+			}
+		})
+	}
+}
+
+func TestWritingRefusesUnexpectedReplyEntries(t *testing.T) {
+	browser := browserAnsweredWith(t, reply{OK: true, Entries: []Entry{{Name: "other", Size: 1}}})
+	if err := browser.Put("file", bytes.NewReader(nil), Given{}); err == nil {
+		t.Fatal("Put() accepted unexpected reply entries")
+	}
+}
+
+func browserAnsweredWith(t *testing.T, said reply) *Browsing {
+	t.Helper()
+
+	var answer bytes.Buffer
+	conn := wire.NewConn(readWriter{&answer, &answer})
+	if err := conn.WriteFrame(wire.KindReply, said.encode()); err != nil {
+		t.Fatal(err)
+	}
+	return &Browsing{conn: wire.NewConn(readWriter{&answer, &bytes.Buffer{}}), writable: true}
 }

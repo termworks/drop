@@ -105,10 +105,15 @@ func (b *Browsing) Get(name, into string, want Want) error {
 	if !got.OK {
 		return fmt.Errorf("reading %s: %s", shown(name), got.Reason)
 	}
-
-	e := Entry{Size: wire.SizeUnknown}
-	if len(got.Entries) > 0 {
-		e = got.Entries[0]
+	if len(got.Entries) != 1 {
+		return fmt.Errorf("reading %s: the answer describes %d files", shown(name), len(got.Entries))
+	}
+	e := got.Entries[0]
+	if e.Dir {
+		return fmt.Errorf("reading %s: the answer describes a directory", shown(name))
+	}
+	if e.Name != path.Base(name) {
+		return fmt.Errorf("reading %s: the answer describes %s", shown(name), e.Name)
 	}
 	return takeOnto(b.conn, into, path.Base(name), e, want.Sum, want.Progress)
 }
@@ -122,6 +127,9 @@ func (b *Browsing) Put(name string, body io.Reader, g Given) error {
 	}
 	if !got.OK {
 		return fmt.Errorf("writing %s: %s", shown(name), got.Reason)
+	}
+	if len(got.Entries) != 0 {
+		return fmt.Errorf("writing %s: the answer carries unexpected file entries", shown(name))
 	}
 	return sendBody(b.conn, body, path.Base(name), g.Size, 0, g.Progress)
 }
@@ -138,6 +146,9 @@ func (b *Browsing) Replace(name string, body io.Reader, was []byte, g Given) err
 	}
 	if !got.OK {
 		return fmt.Errorf("replacing %s: %s", shown(name), got.Reason)
+	}
+	if len(got.Entries) != 0 {
+		return fmt.Errorf("replacing %s: the answer carries unexpected file entries", shown(name))
 	}
 	return sendBody(b.conn, body, path.Base(name), g.Size, 0, g.Progress)
 }
@@ -212,6 +223,9 @@ func (b *Browsing) did(q request, doing string) error {
 	}
 	if !got.OK {
 		return fmt.Errorf("%s %s: %s", doing, shown(q.Name), got.Reason)
+	}
+	if len(got.Entries) != 0 {
+		return fmt.Errorf("%s %s: the answer carries unexpected file entries", doing, shown(q.Name))
 	}
 	return nil
 }
