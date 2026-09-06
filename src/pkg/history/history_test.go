@@ -600,6 +600,22 @@ func TestALogThatIsFullRefusesMoreAndStillTakesAFold(t *testing.T) {
 	}
 }
 
+func TestAnOversizedHistoryIsRejectedBeforeLoading(t *testing.T) {
+	l := aLog(t, thing)
+	if err := os.WriteFile(l.file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(l.file, MaxLog+1); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := l.Ordered(); err == nil {
+		t.Fatal("an oversized history was loaded")
+	} else if !strings.Contains(err.Error(), "over the") {
+		t.Fatalf("Ordered() = %v, want a size limit error", err)
+	}
+}
+
 // A thing is changed only so many ways at once. Past that another way is refused, because a log
 // with more heads than a meeting may name stops meeting anybody at all, in both directions and for
 // good — and its own machine stops being able to save, since a change names them all.

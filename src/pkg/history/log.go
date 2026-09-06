@@ -499,6 +499,9 @@ func (l *Log) length() (int64, error) {
 	info, err := os.Stat(l.file)
 	switch {
 	case err == nil:
+		if info.Size() > MaxLog {
+			return 0, fmt.Errorf("reading %s: %d bytes, over the %d-byte limit", l.file, info.Size(), MaxLog)
+		}
 		return info.Size(), nil
 	case errors.Is(err, os.ErrNotExist):
 		return 0, nil
