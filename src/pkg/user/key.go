@@ -1,6 +1,7 @@
 package user
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -215,8 +217,11 @@ func fromAgent(want ssh.PublicKey) (ssh.Signer, error) {
 	if at == "" {
 		return nil, errors.New("that key is held by an agent, and no agent is running")
 	}
+	return findAgent(want, at, agentListWithin)
+}
 
-	conn, err := net.Dial("unix", at)
+func findAgent(want ssh.PublicKey, at string, within time.Duration) (ssh.Signer, error) {
+	conn, err := dialAgent(at, within)
 	if err != nil {
 		return nil, fmt.Errorf("reaching the ssh agent: %w", err)
 	}
@@ -229,7 +234,7 @@ func fromAgent(want ssh.PublicKey) (ssh.Signer, error) {
 
 	for _, signer := range signers {
 		if string(signer.PublicKey().Marshal()) == string(want.Marshal()) {
-			return agentSigner{key: want, socket: at}, nil
+			return agentSigner{key: want, socket: at, within: agentSignWithin}, nil
 		}
 	}
 	return nil, fmt.Errorf("the ssh agent does not hold %s", Fingerprint(want))
@@ -238,18 +243,46 @@ func fromAgent(want ssh.PublicKey) (ssh.Signer, error) {
 type agentSigner struct {
 	key    ssh.PublicKey
 	socket string
+	within time.Duration
 }
 
 func (s agentSigner) PublicKey() ssh.PublicKey { return s.key }
 
 func (s agentSigner) Sign(_ io.Reader, data []byte) (*ssh.Signature, error) {
-	conn, err := net.Dial("unix", s.socket)
+	within := s.within
+	if within <= 0 {
+		within = agentSignWithin
+	}
+	conn, err := dialAgent(s.socket, within)
 	if err != nil {
 		return nil, fmt.Errorf("reaching the ssh agent: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
 	return agent.NewClient(conn).Sign(s.key, data)
 }
+
+func dialAgent(at string, within time.Duration) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), within)
+	defer cancel()
+
+	dialer := net.Dialer{Timeout: agentDialWithin}
+	conn, err := dialer.DialContext(ctx, "unix", at)
+	if err != nil {
+		return nil, err
+	}
+	deadline, _ := ctx.Deadline()
+	if err := conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+const (
+	agentDialWithin = 2 * time.Second
+	agentListWithin = 10 * time.Second
+	agentSignWithin = 2 * time.Minute
+)
 
 // Fingerprint is a key as a person recognises it, which is how ssh prints one.
 func Fingerprint(key ssh.PublicKey) string { return ssh.FingerprintSHA256(key) }

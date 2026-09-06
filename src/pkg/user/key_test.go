@@ -77,7 +77,8 @@ func TestAgentConnectionsCloseAfterUse(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "agent.sock")
-	listener, err := net.Listen("unix", socket)
+	var listen net.ListenConfig
+	listener, err := listen.Listen(t.Context(), "unix", socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,5 +120,62 @@ func TestAgentConnectionsCloseAfterUse(t *testing.T) {
 	}
 	if active.Load() != 0 {
 		t.Fatalf("%d agent connections remain open", active.Load())
+	}
+}
+
+func TestAgentRequestsAreBounded(t *testing.T) {
+	_, secret, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := ssh.NewPublicKey(secret.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir, err := os.MkdirTemp("/tmp", "drop-stuck-agent-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "agent.sock")
+	var listen net.ListenConfig
+	listener, err := listen.Listen(t.Context(), "unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				<-stop
+				_ = conn.Close()
+			}()
+		}
+	}()
+
+	const within = 50 * time.Millisecond
+	started := time.Now()
+	if _, err := findAgent(public, socket, within); err == nil {
+		t.Fatal("an agent that never listed its keys was waited on forever")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("listing keys took %s", elapsed)
+	}
+
+	started = time.Now()
+	signer := agentSigner{key: public, socket: socket, within: within}
+	if _, err := signer.Sign(nil, []byte("message")); err == nil {
+		t.Fatal("an agent that never signed was waited on forever")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("signing took %s", elapsed)
 	}
 }
