@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/sys/unix"
 	"lukechampine.com/blake3"
 
 	"github.com/bresilla/drop/src/pkg/keep"
@@ -110,6 +111,16 @@ func receiveWithin(conn *wire.Conn, into string, from node.ID, hooks Into) error
 		return fmt.Errorf("opening %s: %w", into, err)
 	}
 	defer func() { _ = dir.Close() }()
+	locked, err := lockLanding(dir)
+	if err != nil {
+		reason := "cannot write here"
+		if errors.Is(err, errLandingBusy) {
+			reason = errLandingBusy.Error()
+		}
+		_ = refuse(reason)
+		return fmt.Errorf("locking %s: %w", into, err)
+	}
+	defer func() { _ = locked.Close() }()
 
 	picked := resume{At: make([]int64, len(out.Items))}
 	for i, item := range out.Items {
@@ -149,6 +160,38 @@ func receiveWithin(conn *wire.Conn, into string, from node.ID, hooks Into) error
 		}
 	}
 	return nil
+}
+
+var errLandingBusy = errors.New("another transfer is already landing here")
+
+// lockLanding owns the receiving directory until the session ends.
+func lockLanding(dir *os.Root) (*os.File, error) {
+	locked, err := dir.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	stat, err := locked.Stat()
+	if err != nil || !stat.IsDir() {
+		_ = locked.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("receiving root is not a directory")
+	}
+	for {
+		err = unix.Flock(int(locked.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if !errors.Is(err, unix.EINTR) {
+			break
+		}
+	}
+	if err != nil {
+		_ = locked.Close()
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			return nil, fmt.Errorf("%w: %v", errLandingBusy, err)
+		}
+		return nil, err
+	}
+	return locked, nil
 }
 
 // opening makes the part file this item is written into, and says where in it to carry on.
