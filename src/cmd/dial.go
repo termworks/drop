@@ -66,6 +66,8 @@ func serveLoopKeeping(
 	arrived func(node.ID),
 ) {
 	var waiting time.Duration
+	connections := make(chan struct{}, maxServingConnections)
+	pushes := make(chan struct{}, maxArrivalPushes)
 
 	for {
 		conn, err := n.Accept(ctx)
@@ -87,17 +89,20 @@ func serveLoopKeeping(
 			waiting = 0
 		}
 
-		// Only a session connection is worth keeping. A hello is one question from a command that
-		// exits straight after, and holding it means the next question goes down a pipe whose far
-		// end left — which answers nothing, slowly.
-		if held != nil && conn.ALPN() == node.ALPNSession {
-			held.Adopt(conn.RemoteID(), conn.ALPN(), conn)
+		if !startBounded(connections, func() {
+			// Only a session connection is worth keeping. A hello is one question from a command that
+			// exits straight after, and holding it means the next question goes down a pipe whose far
+			// end left — which answers nothing, slowly.
+			if held != nil && conn.ALPN() == node.ALPNSession {
+				held.Adopt(conn.RemoteID(), conn.ALPN(), conn)
+			}
+			if arrived != nil {
+				_ = startBounded(pushes, func() { arrived(conn.RemoteID()) })
+			}
+			serveConn(ctx, conn, handlers)
+		}) {
+			_ = conn.Close()
 		}
-		if arrived != nil {
-			go arrived(conn.RemoteID())
-		}
-
-		go serveConn(ctx, conn, handlers)
 	}
 }
 
@@ -109,13 +114,35 @@ func serveConn(ctx context.Context, conn *iroh.Conn, handlers map[string]func(no
 		return
 	}
 	from := conn.RemoteID()
+	streams := make(chan struct{}, maxStreamsPerConnection)
 
 	for {
 		s, err := conn.AcceptStream(ctx)
 		if err != nil {
 			return
 		}
-		go handle(from, s)
+		if !startBounded(streams, func() { handle(from, s) }) {
+			_ = s.Close()
+		}
+	}
+}
+
+const (
+	maxServingConnections   = 256
+	maxStreamsPerConnection = 64
+	maxArrivalPushes        = 64
+)
+
+func startBounded(slots chan struct{}, work func()) bool {
+	select {
+	case slots <- struct{}{}:
+		go func() {
+			defer func() { <-slots }()
+			work()
+		}()
+		return true
+	default:
+		return false
 	}
 }
 
@@ -205,6 +232,8 @@ func listenKeeping(
 
 	go func() {
 		var waiting time.Duration
+		connections := make(chan struct{}, maxServingConnections)
+		pushes := make(chan struct{}, maxArrivalPushes)
 
 		for {
 			conn, err := n.Accept(ctx)
@@ -226,14 +255,17 @@ func listenKeeping(
 				waiting = 0
 			}
 
-			if held != nil && conn.ALPN() == node.ALPNSession {
-				held.Adopt(conn.RemoteID(), conn.ALPN(), conn)
+			if !startBounded(connections, func() {
+				if held != nil && conn.ALPN() == node.ALPNSession {
+					held.Adopt(conn.RemoteID(), conn.ALPN(), conn)
+				}
+				if arrived != nil {
+					_ = startBounded(pushes, func() { arrived(conn.RemoteID()) })
+				}
+				l.answer(ctx, conn)
+			}) {
+				_ = conn.Close()
 			}
-			if arrived != nil {
-				go arrived(conn.RemoteID())
-			}
-
-			go l.answer(ctx, conn)
 		}
 	}()
 
@@ -319,12 +351,15 @@ func (l *listener) answer(ctx context.Context, conn *iroh.Conn) {
 		return
 	}
 	from := conn.RemoteID()
+	streams := make(chan struct{}, maxStreamsPerConnection)
 
 	for {
 		s, err := conn.AcceptStream(ctx)
 		if err != nil {
 			return
 		}
-		go handle(from, s)
+		if !startBounded(streams, func() { handle(from, s) }) {
+			_ = s.Close()
+		}
 	}
 }
