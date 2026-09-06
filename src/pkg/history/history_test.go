@@ -183,6 +183,31 @@ func TestLogChangesWaitForOtherProcesses(t *testing.T) {
 	}
 }
 
+func TestLogCacheNoticesAnEqualSizedReplacement(t *testing.T) {
+	asSomebody(t)
+	l := aLog(t, thing)
+	first := signed(t, "first")
+	other := signed(t, "other")
+	add(t, l, first)
+
+	replacement := framed(record(other))
+	if stat, err := os.Stat(l.file); err != nil {
+		t.Fatal(err)
+	} else if int64(len(replacement)) != stat.Size() {
+		t.Fatalf("replacement is %d bytes, want %d", len(replacement), stat.Size())
+	}
+	if err := keep.Replace(l.file, replacement); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := l.Add(first); err != nil {
+		t.Fatalf("Add(first) after replacement: %v", err)
+	}
+	if held := read(t, l); len(held) != 2 {
+		t.Fatalf("Ordered() = %v, want both changes", held)
+	}
+}
+
 // A change says which thing it was made about, and it says so inside what its author signed. A
 // peer admitted to two shared things cannot take what somebody wrote in one and replay it into the
 // other under that person's own signature.
