@@ -244,11 +244,19 @@ func (k *keeper) write(body []byte, aside []weave.Aside, raw []byte, there bool,
 	if there && bytes.Equal(raw, body) {
 		return k.remember(body, heads, true)
 	}
+	if !there {
+		if err := k.remember(body, heads, true); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(k.file), 0o700); err != nil {
 		return fmt.Errorf("writing %s: %w", k.file, err)
 	}
 	if err := keep.Replace(k.file, body); err != nil {
 		return fmt.Errorf("writing %s: %w", k.file, err)
+	}
+	if !there {
+		return nil
 	}
 	return k.remember(body, heads, true)
 }

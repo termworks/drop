@@ -232,6 +232,54 @@ func TestANoteWithNoFileYetIsWrittenFromItsHistory(t *testing.T) {
 	}
 }
 
+func TestANewNoteRemembersItsHistoryBeforeItAppears(t *testing.T) {
+	asSomebody(t, "alice")
+	k := aKeeper(t)
+
+	first, err := history.Sign(k.log.At(), []byte("one\ntwo\n"), nil)
+	if err != nil {
+		t.Fatalf("Sign(): %v", err)
+	}
+	if _, err := k.log.Add(first); err != nil {
+		t.Fatalf("Add(): %v", err)
+	}
+
+	dir := t.TempDir()
+	k.file = filepath.Join(dir, "notes.md")
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.once(); err == nil {
+		t.Fatal("writing into a read-only directory succeeded")
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	mark, err := os.ReadFile(k.mark())
+	if err != nil {
+		t.Fatalf("reading the note mark: %v", err)
+	}
+	if !strings.Contains(string(mark), first.ID().String()) {
+		t.Fatalf("the mark %q does not name the history used for the file", mark)
+	}
+
+	save(t, k.file, "one\nTWO\n")
+	again := &keeper{file: k.file, log: k.log}
+	if !again.turn(t) {
+		t.Fatal("the edit after the interrupted write was not recorded")
+	}
+
+	changes, err := k.log.Ordered()
+	if err != nil {
+		t.Fatalf("Ordered(): %v", err)
+	}
+	last := changes[len(changes)-1]
+	if len(last.Heads) != 1 || last.Heads[0] != first.ID() {
+		t.Fatalf("the edit names %v, want the initial change", last.Heads)
+	}
+}
+
 // Two people, no file in common, and neither loses what they wrote.
 func TestTwoMachinesReplayingOneHistoryWriteTheSameFile(t *testing.T) {
 	asSomebody(t, "alice")
