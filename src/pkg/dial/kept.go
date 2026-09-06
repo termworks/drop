@@ -84,12 +84,30 @@ func (k *Kept) answerOn(conn *iroh.Conn) {
 	}
 
 	from, alpn := conn.RemoteID(), conn.ALPN()
+	streams := make(chan struct{}, maxAnsweringStreams)
 	for {
 		s, err := conn.AcceptStream(ctx)
 		if err != nil {
 			return
 		}
-		go answer(from, alpn, s)
+		if !startAnswering(streams, func() { answer(from, alpn, s) }) {
+			_ = s.Close()
+		}
+	}
+}
+
+const maxAnsweringStreams = 64
+
+func startAnswering(slots chan struct{}, work func()) bool {
+	select {
+	case slots <- struct{}{}:
+		go func() {
+			defer func() { <-slots }()
+			work()
+		}()
+		return true
+	default:
+		return false
 	}
 }
 
