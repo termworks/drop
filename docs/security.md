@@ -19,6 +19,8 @@ At most 64 stream handlers run across all inbound connections, with no more than
 one connection, so one connection cannot consume the process-wide ceiling.
 Streams arriving over connections held to paired devices have the same 64-handler process ceiling
 and 16-handler per-connection ceiling.
+Local directory listings use the same 16,384-entry ceiling as remote listings and stop reading at
+the boundary, rather than first loading an arbitrarily large directory into memory.
 Lua archetypes have a second process-wide ceiling: 16 active runtimes, 128 files opened through
 plugins and four plugin process groups. Reaching one refuses new work instead of waiting while it
 holds an admitted stream.

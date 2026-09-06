@@ -535,7 +535,7 @@ func (l *running) Holding(path, dir string) ([]tui.Held, error) {
 		return nil, err
 	}
 
-	entries, err := os.ReadDir(full)
+	entries, err := readDirUpTo(full, files.MaxEntries)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
