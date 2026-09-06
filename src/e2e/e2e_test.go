@@ -219,6 +219,7 @@ func (n *node) background(args ...string) (*exec.Cmd, *lockedBuffer, func()) {
 			select {
 			case <-waited:
 			case <-time.After(5 * time.Second):
+				n.t.Errorf("%s: drop %s did not stop within 5 seconds", n.name, strings.Join(args, " "))
 				stop()
 				<-waited
 			}
