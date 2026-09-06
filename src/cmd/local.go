@@ -479,9 +479,7 @@ func takeCast(ctx context.Context, host *castHost, from io.Reader, conn net.Conn
 		return err
 	}
 	reader, head, err := asciicast.NewReader(from)
-	if resetErr := conn.SetReadDeadline(time.Time{}); err == nil && resetErr != nil {
-		return resetErr
-	}
+	_ = conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		_, _ = fmt.Fprintf(conn, "no %v\n", err)
 		return err
@@ -516,9 +514,7 @@ func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 		return fmt.Errorf("setting the local request deadline: %w", err)
 	}
 	first, err := readLocalLine(reading)
-	if resetErr := conn.SetReadDeadline(time.Time{}); err == nil && resetErr != nil {
-		return fmt.Errorf("clearing the local request deadline: %w", resetErr)
-	}
+	_ = conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		return err
 	}

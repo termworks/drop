@@ -63,6 +63,29 @@ func TestLocalCastIsAcknowledgedThroughItsLifetime(t *testing.T) {
 	}
 }
 
+func TestCastHeaderSurvivesDeadlineResetFailure(t *testing.T) {
+	host := newCastHost(ns.NewTable(), reading())
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+
+	done := make(chan error, 1)
+	go func() {
+		defer func() { _ = server.Close() }()
+		done <- takeCast(t.Context(), host, strings.NewReader(
+			`{"version":2,"width":80,"height":24}`+"\n"), resetFailConn{server})
+	}()
+
+	replies := bufio.NewReader(client)
+	for _, want := range []string{"ok\n", "done\n"} {
+		if line, err := replies.ReadString('\n'); err != nil || line != want {
+			t.Fatalf("cast reply = %q, %v; want %q", line, err, want)
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("a complete cast header was discarded: %v", err)
+	}
+}
+
 // A cast waiting on standard input has to be interruptible: the read cannot be cancelled, so what
 // waits on it must not be the thing that notices a signal.
 func TestACastStopsBeingAskedThoughInputNeverEnds(t *testing.T) {

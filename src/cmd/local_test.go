@@ -82,6 +82,20 @@ func TestLocalRepliesHaveAHandshakeDeadline(t *testing.T) {
 	}
 }
 
+func TestLocalRequestSurvivesDeadlineResetFailure(t *testing.T) {
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+
+	go func() {
+		defer func() { _ = server.Close() }()
+		_, _ = server.Write([]byte("held\n"))
+	}()
+
+	if err := takeLocal(t.Context(), nil, nil, nil, nil, nil, resetFailConn{client}); err != nil {
+		t.Fatalf("a complete local request was discarded: %v", err)
+	}
+}
+
 func TestOnlyOneLocalServerOwnsTheSocket(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "node.sock")
 	first, err := localGuard(path)
