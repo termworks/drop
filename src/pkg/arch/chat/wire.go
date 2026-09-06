@@ -14,6 +14,9 @@ const MaxBatch = 4096
 // Send delivers a batch on an opened namespace and returns the ids the far end stored. Anything not
 // in that list stays in the outbox, so a partial delivery is retried rather than lost.
 func Send(conn *wire.Conn, batch []convo.Message) ([]string, error) {
+	if len(batch) > MaxBatch {
+		return nil, fmt.Errorf("sending %d messages, over the %d limit", len(batch), MaxBatch)
+	}
 	for _, m := range batch {
 		if err := conn.WriteFrame(wire.KindItem, m.Encode()); err != nil {
 			return nil, err
@@ -67,6 +70,9 @@ func decodeStored(body []byte) ([]string, error) {
 			return nil, err
 		}
 		out = append(out, id)
+	}
+	if !r.Done() {
+		return nil, fmt.Errorf("receipt has bytes after its ids")
 	}
 	return out, nil
 }

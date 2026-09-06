@@ -90,6 +90,13 @@ func Take(conn *wire.Conn, from node.ID, store func(node.ID, convo.Message) erro
 			stored = append(stored, m.ID)
 
 		case wire.KindEnd:
+			end, err := wire.DecodeEnd(body)
+			if err != nil {
+				return fmt.Errorf("reading the end of messages from %s: %w", from, err)
+			}
+			if end.Size != int64(seen) || len(end.Digest) != 0 {
+				return fmt.Errorf("%s ended %d messages after sending %d", from, end.Size, seen)
+			}
 			return conn.WriteFrame(wire.KindAck, encodeStored(stored))
 
 		default:
