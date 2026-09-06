@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/asciicast"
 	"github.com/bresilla/drop/src/pkg/book"
@@ -390,7 +392,21 @@ const (
 	// slowestAcceptWait is where the doubling stops. Whatever is wrong is not going to be fixed by
 	// asking faster, and a machine that recovers waits at most this long to be noticed.
 	slowestAcceptWait = 2 * time.Second
+	localHelloWithin  = 10 * time.Second
+	maxLocalLine      = 1 << 20
 )
+
+func localGuard(path string) (*os.File, error) {
+	guard, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("opening the local socket lock: %w", err)
+	}
+	if err := unix.Flock(int(guard.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = guard.Close()
+		return nil, fmt.Errorf("another node is already serving locally: %w", err)
+	}
+	return guard, nil
+}
 
 // hostLocal listens for whatever on this machine wants to act as this node.
 func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mountHost, offers *pairHost, held *dial.Kept) error {
@@ -398,6 +414,11 @@ func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 	if err != nil {
 		return err
 	}
+	guard, err := localGuard(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = guard.Close() }()
 
 	// A socket left behind by a process that was killed would otherwise make this address
 	// permanently unusable.
@@ -406,6 +427,11 @@ func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 	listening, err := net.Listen("unix", path)
 	if err != nil {
 		return err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = listening.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("protecting %s: %w", path, err)
 	}
 
 	go func() {
@@ -478,7 +504,13 @@ func takeCast(ctx context.Context, host *castHost, from io.Reader) error {
 func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mountHost, offers *pairHost, held *dial.Kept, conn net.Conn) error {
 	reading := bufio.NewReader(conn)
 
-	first, err := reading.ReadString('\n')
+	if err := conn.SetReadDeadline(time.Now().Add(localHelloWithin)); err != nil {
+		return fmt.Errorf("setting the local request deadline: %w", err)
+	}
+	first, err := readLocalLine(reading)
+	if resetErr := conn.SetReadDeadline(time.Time{}); err == nil && resetErr != nil {
+		return fmt.Errorf("clearing the local request deadline: %w", resetErr)
+	}
 	if err != nil {
 		return err
 	}
@@ -512,6 +544,23 @@ func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 		return takeHeld(held, conn)
 	}
 	return fmt.Errorf("a local connection asked for %q, which is nothing", what)
+}
+
+func readLocalLine(reading *bufio.Reader) (string, error) {
+	line := make([]byte, 0, min(reading.Size(), maxLocalLine))
+	for {
+		part, err := reading.ReadSlice('\n')
+		if len(line)+len(part) > maxLocalLine {
+			return "", fmt.Errorf("a local request is longer than %d bytes", maxLocalLine)
+		}
+		line = append(line, part...)
+		if err == nil {
+			return string(line), nil
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return "", err
+		}
+	}
 }
 
 // takeHeld answers with the devices this node has a connection to, one id a line.
