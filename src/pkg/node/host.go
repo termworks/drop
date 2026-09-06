@@ -62,6 +62,10 @@ func (n *Node) Trouble() string {
 
 // Start brings up the endpoint under this node's persisted identity.
 func Start(ctx context.Context) (*Node, error) {
+	port, err := requestedPort()
+	if err != nil {
+		return nil, err
+	}
 	sk, err := Identity()
 	if err != nil {
 		return nil, err
@@ -71,7 +75,7 @@ func Start(ctx context.Context) (*Node, error) {
 	// the next run. With an ephemeral port every restart moves the node and everything that
 	// remembered it is pointing at nothing.
 	opts := []iroh.Option{
-		iroh.WithBindAddr(netip.AddrPortFrom(netip.IPv4Unspecified(), Port())),
+		iroh.WithBindAddr(netip.AddrPortFrom(netip.IPv4Unspecified(), port)),
 		iroh.WithSecretKey(sk),
 		iroh.WithALPNs(ALPNs...),
 	}
@@ -92,7 +96,7 @@ func Start(ctx context.Context) (*Node, error) {
 	borrowed := false
 
 	ep, err := iroh.Bind(ctx, opts...)
-	if err != nil && Port() != 0 && portConflict(err) {
+	if err != nil && port != 0 && portConflict(err) {
 		// The preferred port is taken. An address others wrote down will not reach this node
 		// until it is free again, but refusing to start would be worse: everything that does not
 		// depend on a remembered address still works.
@@ -104,7 +108,7 @@ func Start(ctx context.Context) (*Node, error) {
 		return nil, fmt.Errorf("starting the endpoint: %w", err)
 	}
 
-	n := &Node{Endpoint: ep, borrowed: borrowed, wanted: Port()}
+	n := &Node{Endpoint: ep, borrowed: borrowed, wanted: port}
 
 	// Before anything reads Addr(), so the first record written already carries somewhere a peer
 	// on the same wire can dial. Then again on a tick, because a machine moves between networks
@@ -163,17 +167,25 @@ const DefaultPort = 47777
 // Zero is allowed and means "pick any", which is right for a one-off command that nobody has
 // written an address down for.
 func Port() uint16 {
+	port, err := requestedPort()
+	if err != nil {
+		return profilePort()
+	}
+	return port
+}
+
+func requestedPort() (uint16, error) {
 	written := os.Getenv("DROP_PORT")
 	if written == "" {
 		// A profile listens somewhere of its own, or two of them could not be up at once.
-		return profilePort()
+		return profilePort(), nil
 	}
 
 	chosen, err := strconv.ParseUint(written, 10, 16)
 	if err != nil {
-		return profilePort()
+		return 0, fmt.Errorf("DROP_PORT=%q: expected a port from 0 through 65535: %w", written, err)
 	}
-	return uint16(chosen)
+	return uint16(chosen), nil
 }
 
 // relayMode is the configured relays, or the defaults when the config named none.

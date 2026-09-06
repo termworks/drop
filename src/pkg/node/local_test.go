@@ -131,6 +131,26 @@ func TestOnlyAPortConflictCanBorrow(t *testing.T) {
 	}
 }
 
+func TestAConfiguredPortMustBeValid(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	was := Rendezvous()
+	SetRendezvous(false)
+	t.Cleanup(func() { SetRendezvous(was) })
+
+	for _, invalid := range []string{"not-a-port", "-1", "65536"} {
+		t.Setenv("DROP_PORT", invalid)
+		n, err := Start(t.Context())
+		if n != nil {
+			_ = n.Close()
+			t.Errorf("DROP_PORT=%q started a node", invalid)
+		}
+		if err == nil || !strings.Contains(err.Error(), "DROP_PORT") {
+			t.Errorf("DROP_PORT=%q returned %v", invalid, err)
+		}
+	}
+}
+
 // A node that took the port it wanted has nothing to complain about, or every dial would carry an
 // explanation for a problem that is not there.
 func TestANodeThatGotItsPortSaysNothing(t *testing.T) {
