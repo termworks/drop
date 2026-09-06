@@ -373,6 +373,60 @@ func TestAnOversizedMessageIsRefused(t *testing.T) {
 	}
 }
 
+func TestAnOversizedConversationLogIsRefused(t *testing.T) {
+	s := openStore(t)
+	if err := os.WriteFile(s.history, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(s.history, MaxLog+1); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.History(); err == nil {
+		t.Fatal("History() accepted an oversized log")
+	}
+	m, err := New(KindText, "one more", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Add(m); err == nil {
+		t.Fatal("Add() grew an oversized log")
+	}
+	stat, err := os.Stat(s.history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat.Size() != MaxLog+1 {
+		t.Fatalf("oversized log changed to %d bytes", stat.Size())
+	}
+}
+
+func TestConversationLogsRefuseHardLinks(t *testing.T) {
+	s := openStore(t)
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(outside, s.history); err != nil {
+		t.Skipf("hard links are unavailable: %v", err)
+	}
+
+	m, err := New(KindText, "private", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Add(m); err == nil {
+		t.Fatal("Add() wrote through a hard link")
+	}
+	stat, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat.Size() != 0 {
+		t.Fatalf("hard-link target changed to %d bytes", stat.Size())
+	}
+}
+
 // One record that will not read costs that record and nothing else. Ending the walk there hid
 // every message written after it, and the next Rewrite deleted them.
 func TestARecordThatWillNotReadDoesNotHideTheRest(t *testing.T) {

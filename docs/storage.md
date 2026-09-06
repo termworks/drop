@@ -108,6 +108,10 @@ A shared thing's record would otherwise grow by a copy per save. Once everybody 
 seen all of it, the whole record is replaced by one change carrying what it came to. That is
 [folding](shared.md), and it is what turns a demo into something you can leave running for a month.
 
+A conversation history and its pending queue are each capped at 64 MiB per peer. Reaching the cap
+refuses another message instead of letting a damaged or runaway log consume memory and disk without
+limit. Conversation history is not discarded automatically.
+
 ## Where it lives
 
 `src/pkg/keep/` writes files atomically and holds the lock. `src/pkg/book/`, `src/pkg/grant/`,

@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/wire"
@@ -33,6 +36,9 @@ type Store struct {
 	size  int64
 	reads int
 }
+
+// MaxLog is the largest conversation history or pending queue kept for one peer.
+const MaxLog int64 = 64 << 20
 
 // DataDir is $XDG_DATA_HOME/drop, or ~/.local/share/drop. Conversations are data, not settings, so
 // they do not live beside the config.
@@ -164,10 +170,11 @@ func plain(body []byte) (Message, error) {
 // append writes one length-prefixed record and flushes it, so a message that was reported stored
 // is on the disk rather than in a buffer.
 func appendTo(path string, body []byte) error {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o600)
+	flags := os.O_WRONLY | os.O_APPEND | unix.O_NONBLOCK | unix.O_NOFOLLOW
+	file, err := os.OpenFile(path, flags|os.O_CREATE|os.O_EXCL, 0o600)
 	created := err == nil
 	if errors.Is(err, os.ErrExist) {
-		file, err = os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+		file, err = os.OpenFile(path, flags, 0o600)
 	}
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", path, err)
@@ -178,6 +185,20 @@ func appendTo(path string, body []byte) error {
 	raw := make([]byte, 0, n+len(body))
 	raw = append(raw, head[:n]...)
 	raw = append(raw, body...)
+	stat, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return fmt.Errorf("stating %s: %w", path, err)
+	}
+	rawStat, _ := stat.Sys().(*syscall.Stat_t)
+	if !stat.Mode().IsRegular() || (rawStat != nil && rawStat.Nlink > 1) {
+		_ = file.Close()
+		return fmt.Errorf("writing %s: it is not one regular file", path)
+	}
+	if stat.Size() > MaxLog-int64(len(raw)) {
+		_ = file.Close()
+		return fmt.Errorf("writing %s: it would exceed the %d-byte limit", path, MaxLog)
+	}
 	if err := keep.Room(file, int64(len(raw))); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("reserving room in %s: %w", path, err)
@@ -206,7 +227,7 @@ func appendTo(path string, body []byte) error {
 // length prefix says where the next one starts, so one damaged entry costs one entry rather than
 // every message written after it.
 func readAll(path, peer string) ([]Message, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := keep.ReadFile(path, MaxLog)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
