@@ -237,8 +237,15 @@ func (k *Kept) Reaching(id node.ID) bool {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
-	for at := range k.open {
-		if strings.HasPrefix(at, id.String()+"\x00") {
+	for at, conn := range k.open {
+		if !strings.HasPrefix(at, id.String()+"\x00") {
+			continue
+		}
+		select {
+		case <-conn.Context().Done():
+			_ = conn.Close()
+			delete(k.open, at)
+		default:
 			return true
 		}
 	}

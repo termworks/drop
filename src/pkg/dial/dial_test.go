@@ -183,6 +183,20 @@ func TestADeadHeldConnectionIsReplacedByAnArrival(t *testing.T) {
 	if held.open[key(remote.ID(), node.ALPNSession)] != secondArrival {
 		t.Fatal("a fresh arrival did not replace the dead held connection")
 	}
+	if err := secondDial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-secondArrival.Context().Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement connection remained live after close")
+	}
+	if held.Reaching(remote.ID()) {
+		t.Fatal("a dead held connection was reported as reachable")
+	}
+	if _, ok := held.open[key(remote.ID(), node.ALPNSession)]; ok {
+		t.Fatal("a dead held connection remains stored")
+	}
 }
 
 func connectNodes(t *testing.T, from, to *node.Node) (*iroh.Conn, *iroh.Conn) {
