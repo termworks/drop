@@ -223,17 +223,16 @@ func (c *Config) Apply() {
 // ApplySettings puts the config's settings in effect and nothing else.
 //
 // Every command needs the settings — a command that dials has to know whether a rendezvous is
-// allowed — but only the ones that serve need the namespaces and handlers. An unreadable config is
-// ignored here rather than reported, because the command that actually depends on it loads it
-// again and says so properly.
-func ApplySettings(known *arch.Registry) {
+// allowed — while only the ones that serve need the namespaces and handlers.
+func ApplySettings(known *arch.Registry) error {
 	cfg, err := Load(known)
 	if err != nil {
-		return
+		return err
 	}
 	defer cfg.Close()
 
 	cfg.Apply()
+	return nil
 }
 
 // Vaulted opens the vault this config names, making a data key the first time.

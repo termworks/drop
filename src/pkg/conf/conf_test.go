@@ -87,6 +87,14 @@ func TestUnsupportedBootstrapNodesAreRefused(t *testing.T) {
 	}
 }
 
+func TestInvalidConfigCannotBeIgnoredByDiallingCommands(t *testing.T) {
+	path := write(t, `this is not lua`)
+
+	if err := ApplySettings(known()); err == nil {
+		t.Fatalf("ApplySettings ignored invalid config at %s", path)
+	}
+}
+
 func TestMountsAreRegistered(t *testing.T) {
 	cfg := load(t, `
 		local drop = require("drop")
