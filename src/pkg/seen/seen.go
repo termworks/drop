@@ -130,7 +130,7 @@ func read() (map[string]stored, error) {
 	}
 
 	out := map[string]stored{}
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
 		// A file that will not parse is not worth failing a connection over: it is a note of who
 		// knocked, and starting it again loses nothing that was decided.
 		return map[string]stored{}, nil

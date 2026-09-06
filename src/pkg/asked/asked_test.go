@@ -1,6 +1,8 @@
 package asked
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +10,32 @@ import (
 	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
 )
+
+func TestNullStateDoesNotPanicWhenARingArrives(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	file, err := where()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("null\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	request := Request{Path: "/notes", From: node.ID{}, Why: "please"}
+	if err := Ring(request); err != nil {
+		t.Fatal(err)
+	}
+	all, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].Path != request.Path {
+		t.Fatalf("remembered %+v", all)
+	}
+}
 
 // What a stranger says about why they want in is their text, kept on your disk and then printed on
 // your terminal when you look at what has been asked for. An escape in there rewrites the rows

@@ -1,6 +1,8 @@
 package seen
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -9,6 +11,32 @@ import (
 	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
 )
+
+func TestNullStateDoesNotPanicWhenAKnockArrives(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	file, err := path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("null\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	who := idFor(1)
+	if err := Knocked(who, "/work", "refused", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	all, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].ID != who {
+		t.Fatalf("remembered %+v", all)
+	}
+}
 
 func idFor(seed byte) node.ID {
 	var raw [32]byte

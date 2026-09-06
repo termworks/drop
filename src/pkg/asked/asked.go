@@ -197,7 +197,7 @@ func read() (map[string]stored, error) {
 	}
 
 	out := map[string]stored{}
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
 		return map[string]stored{}, nil
 	}
 	return out, nil
