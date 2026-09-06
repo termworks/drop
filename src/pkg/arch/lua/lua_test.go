@@ -578,6 +578,26 @@ func TestNothingBesideTheConfigIsFine(t *testing.T) {
 	}
 }
 
+func TestArchetypeDirectoryIsBoundedAndOrdered(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"two.lua", "one.lua"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, err := readArchetypeEntries(dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries[0].Name() != "one.lua" || entries[1].Name() != "two.lua" {
+		t.Fatalf("archetype entries are not ordered: %q, %q", entries[0].Name(), entries[1].Name())
+	}
+	if _, err := readArchetypeEntries(dir, 1); err == nil {
+		t.Fatal("an oversized archetype directory was accepted")
+	}
+}
+
 // A plugin may not take the name of an archetype this build was made with.
 func TestAPluginCannotTakeABuiltInName(t *testing.T) {
 	dir := t.TempDir()

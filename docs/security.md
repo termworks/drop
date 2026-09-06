@@ -25,6 +25,8 @@ Interactive path completion stops after 4,096 entries.
 Lua archetypes have a second process-wide ceiling: 16 active runtimes, 128 files opened through
 plugins and four plugin process groups. Reaching one refuses new work instead of waiting while it
 holds an admitted stream.
+Archetype discovery also refuses a plugin directory with more than 256 entries instead of loading
+an unbounded directory into memory during startup.
 
 **How long a read may wait.** Every read in the handshake has a deadline, on both sides. A far end
 that takes what you sent and then says nothing would otherwise hold a goroutine, a stream and a
