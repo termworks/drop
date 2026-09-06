@@ -4,6 +4,9 @@ import (
 	"context"
 	"iter"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,5 +55,35 @@ func TestPreviousEpochCanAnswerWhileCurrentIsSlow(t *testing.T) {
 	}
 	if direct := Direct(got); len(direct) != 1 || direct[0] != want {
 		t.Fatalf("resolved %v, want %v", direct, want)
+	}
+}
+
+func TestUnreadableBookStopsStalePublishers(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "drop"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "drop", "peers.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sk, err := Derive(secret(1), id(7), EpochAt(time.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher, err := iroh.NewPkarrPublisher(sk, "http://127.0.0.1:1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = publisher.Close() })
+
+	service := &Service{publishers: map[string]*iroh.PkarrPublisher{"stale": publisher}}
+	err = service.publishRound(time.Now())
+	if err == nil || !strings.Contains(err.Error(), "address book") {
+		t.Fatalf("publishRound() returned %v, want an address book error", err)
+	}
+	if len(service.publishers) != 0 {
+		t.Fatal("the stale publisher is still running")
 	}
 }

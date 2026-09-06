@@ -94,7 +94,9 @@ func (s *Service) Run(ctx context.Context) {
 			return
 		}
 		said = now
-		s.publishRound(time.Now())
+		if err := s.publishRound(time.Now()); err != nil {
+			fmt.Fprintf(os.Stderr, "drop: rendezvous: %v\n", err)
+		}
 	}
 
 	say(true)
@@ -130,10 +132,11 @@ func whereNow(at netaddr.EndpointAddr) string {
 //
 // One record per pair is the whole point: a single shared record would be one identity that every
 // peer, and the relay, could watch.
-func (s *Service) publishRound(now time.Time) {
+func (s *Service) publishRound(now time.Time) error {
 	b, err := book.Load()
 	if err != nil {
-		return
+		s.closeAll()
+		return fmt.Errorf("reading the address book: %w", err)
 	}
 
 	data := dns.EndpointDataFromAddr(s.node.Endpoint.Addr())
@@ -166,6 +169,7 @@ func (s *Service) publishRound(now time.Time) {
 	}
 
 	s.retire(live)
+	return nil
 }
 
 // retire stops publishers whose epoch has passed, so an old identity stops being refreshed rather
