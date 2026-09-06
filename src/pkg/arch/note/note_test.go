@@ -32,6 +32,45 @@ func TestAStoppedNoteWatcherSaysItIsFinished(t *testing.T) {
 	}
 }
 
+type endedEar struct {
+	heard  chan struct{}
+	minded chan struct{}
+}
+
+func (e *endedEar) Heard() <-chan struct{} { return e.heard }
+
+func (e *endedEar) Mind([]string) {
+	select {
+	case e.minded <- struct{}{}:
+	default:
+	}
+}
+
+func TestAClosedNudgeFallsBackToTheNoteTimer(t *testing.T) {
+	heard := make(chan struct{})
+	close(heard)
+	ear := &endedEar{heard: heard, minded: make(chan struct{}, 2)}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := New(Into{}).watch(ctx, nil, ear, time.Hour)
+
+	select {
+	case <-ear.minded:
+	case <-time.After(time.Second):
+		t.Fatal("the watcher did not run its first round")
+	}
+	select {
+	case <-ear.minded:
+		t.Fatal("the closed nudge channel caused another immediate round")
+	case <-time.After(50 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the watcher did not stop")
+	}
+}
+
 func TestANoteNeedsAFileAndSaysSo(t *testing.T) {
 	n := New(Into{})
 

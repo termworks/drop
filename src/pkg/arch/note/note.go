@@ -167,11 +167,19 @@ func (n *Note) Watch(ctx context.Context, mounts *ns.Table) <-chan struct{} {
 	if err != nil {
 		ear = nil
 	}
+	return n.watch(ctx, mounts, ear, Every)
+}
 
+type changeEar interface {
+	Heard() <-chan struct{}
+	Mind([]string)
+}
+
+func (n *Note) watch(ctx context.Context, mounts *ns.Table, ear changeEar, every time.Duration) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		tick := time.NewTicker(Every)
+		tick := time.NewTicker(every)
 		defer tick.Stop()
 
 		var heard <-chan struct{}
@@ -187,7 +195,10 @@ func (n *Note) Watch(ctx context.Context, mounts *ns.Table) <-chan struct{} {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-			case <-heard:
+			case _, open := <-heard:
+				if !open {
+					heard, ear = nil, nil
+				}
 			}
 		}
 	}()

@@ -38,6 +38,45 @@ func TestAStoppedFilesWatcherSaysItIsFinished(t *testing.T) {
 	}
 }
 
+type endedEar struct {
+	heard  chan struct{}
+	minded chan struct{}
+}
+
+func (e *endedEar) Heard() <-chan struct{} { return e.heard }
+
+func (e *endedEar) Mind([]string) {
+	select {
+	case e.minded <- struct{}{}:
+	default:
+	}
+}
+
+func TestAClosedNudgeFallsBackToTheFilesTimer(t *testing.T) {
+	heard := make(chan struct{})
+	close(heard)
+	ear := &endedEar{heard: heard, minded: make(chan struct{}, 2)}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := New(Into{}).watch(ctx, nil, ear, time.Hour)
+
+	select {
+	case <-ear.minded:
+	case <-time.After(time.Second):
+		t.Fatal("the watcher did not run its first round")
+	}
+	select {
+	case <-ear.minded:
+		t.Fatal("the closed nudge channel caused another immediate round")
+	case <-time.After(50 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the watcher did not stop")
+	}
+}
+
 // readWriter is the two halves of a stream a test has in two buffers.
 type readWriter struct {
 	io.Reader
