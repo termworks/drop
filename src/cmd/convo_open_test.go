@@ -1,13 +1,46 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bresilla/drop/src/pkg/convo"
 )
+
+func TestChatInputReportsOversizedLines(t *testing.T) {
+	line := strings.Repeat("x", convo.MaxBody+1)
+	got := <-chatInput(t.Context(), strings.NewReader(line))
+	if got.err == nil {
+		t.Fatal("an oversized chat line ended as ordinary input")
+	}
+}
+
+func TestChatInputStopsWithItsContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, ok := <-chatInput(ctx, strings.NewReader("unread\n")); ok {
+		t.Fatal("chat input outlived its context")
+	}
+}
+
+func TestChatInputCarriesCompleteLines(t *testing.T) {
+	lines := chatInput(t.Context(), strings.NewReader("one\ntwo\n"))
+	for _, want := range []string{"one", "two"} {
+		got, ok := <-lines
+		if !ok || got.err != nil || got.line != want {
+			t.Fatalf("chat input = %+v, %v; want %q", got, ok, want)
+		}
+	}
+	if _, ok := <-lines; ok {
+		t.Fatal("chat input continued past EOF")
+	}
+}
 
 func TestBrowserOpenersHaveAProcessWideLimit(t *testing.T) {
 	gate := newBrowserGate()

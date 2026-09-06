@@ -298,24 +298,20 @@ func talkTo(ctx context.Context, o opening) error {
 		}
 	})
 
-	lines := make(chan string)
-	go func() {
-		defer close(lines)
-		scan := bufio.NewScanner(os.Stdin)
-		scan.Buffer(make([]byte, 0, 64<<10), convo.MaxBody)
-		for scan.Scan() {
-			lines <- scan.Text()
-		}
-	}()
+	lines := chatInput(ctx, os.Stdin)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case line, ok := <-lines:
+		case input, ok := <-lines:
 			if !ok {
 				return nil
 			}
+			if input.err != nil {
+				return fmt.Errorf("reading chat input: %w", input.err)
+			}
+			line := input.line
 			text := strings.TrimSpace(line)
 			if text == "" {
 				continue
@@ -327,6 +323,39 @@ func talkTo(ctx context.Context, o opening) error {
 			queueDelivery(deliveries)
 		}
 	}
+}
+
+type chatLine struct {
+	line string
+	err  error
+}
+
+func chatInput(ctx context.Context, from io.Reader) <-chan chatLine {
+	lines := make(chan chatLine, 1)
+	go func() {
+		defer close(lines)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		scan := bufio.NewScanner(from)
+		scan.Buffer(make([]byte, 0, 64<<10), convo.MaxBody)
+		for scan.Scan() {
+			select {
+			case lines <- chatLine{line: scan.Text()}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if err := scan.Err(); err != nil {
+			select {
+			case lines <- chatLine{err: err}:
+			case <-ctx.Done():
+			}
+		}
+	}()
+	return lines
 }
 
 // shownOnOpening is how much of a conversation a window opens on.
