@@ -95,6 +95,46 @@ func TestInvalidConfigCannotBeIgnoredByDiallingCommands(t *testing.T) {
 	}
 }
 
+func TestBooleanSettingsMustBeBoolean(t *testing.T) {
+	for _, setting := range []string{"open_links", "rendezvous", "direct"} {
+		path := write(t, `
+			local drop = require("drop")
+			drop.mount("/chat", { type = "chat" })
+			drop.`+setting+` = "false"
+		`)
+		if _, err := Load(known()); err == nil || !strings.Contains(err.Error(), setting) {
+			t.Errorf("%s with a string at %s returned %v", setting, path, err)
+		}
+	}
+}
+
+func TestListSettingsMustContainOnlyStrings(t *testing.T) {
+	for _, value := range []string{`"https://relay.example./"`, `{ "https://relay.example./", 7 }`} {
+		path := write(t, `
+			local drop = require("drop")
+			drop.mount("/chat", { type = "chat" })
+			drop.relays = `+value+`
+		`)
+		if _, err := Load(known()); err == nil || !strings.Contains(err.Error(), "relays") {
+			t.Errorf("relays = %s at %s returned %v", value, path, err)
+		}
+	}
+}
+
+func TestAStringFalseDoesNotOpenAccessToAnyone(t *testing.T) {
+	cfg := load(t, `
+		local drop = require("drop")
+		drop.mount("/private", {
+			type = "chat",
+			access = { anyone = "false" },
+		})
+	`)
+
+	if allowed, _ := cfg.Mounts.Admits("/private", ns.Caller{ID: "stranger"}); allowed {
+		t.Fatal("the string false opened a path to anyone")
+	}
+}
+
 func TestMountsAreRegistered(t *testing.T) {
 	cfg := load(t, `
 		local drop = require("drop")

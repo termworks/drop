@@ -206,7 +206,9 @@ func run(cfg *Config, path string) error {
 		return fail(err)
 	}
 
-	readSettings(cfg, module)
+	if err := readSettings(cfg, module); err != nil {
+		return fail(err)
+	}
 	if err := cfg.name(); err != nil {
 		return fail(err)
 	}
@@ -250,40 +252,109 @@ func (c *Config) name() error {
 //
 // A key the config never mentioned is left unset rather than read as zero, so it does not silently
 // overwrite the environment with a blank.
-func readSettings(cfg *Config, module *rt.Table) {
-	if name, ok := optString(module, "name"); ok {
+func readSettings(cfg *Config, module *rt.Table) error {
+	if name, ok, err := settingString(module, "name"); err != nil {
+		return err
+	} else if ok {
 		cfg.Name, cfg.HasName = name, true
 	}
-	if open, ok := optBool(module, "open_links"); ok {
+	if open, ok, err := settingBool(module, "open_links"); err != nil {
+		return err
+	} else if ok {
 		cfg.OpenLinks, cfg.HasOpenLinks = open, true
 	}
-	if list, ok := optStrings(module, "bootstrap"); ok {
+	if list, ok, err := settingStrings(module, "bootstrap"); err != nil {
+		return err
+	} else if ok {
 		cfg.Bootstrap = list
 	}
-	if on, ok := optBool(module, "rendezvous"); ok {
+	if on, ok, err := settingBool(module, "rendezvous"); err != nil {
+		return err
+	} else if ok {
 		cfg.Rendezvous, cfg.HasRendezvous = on, true
 	}
-	if on, ok := optBool(module, "direct"); ok {
+	if on, ok, err := settingBool(module, "direct"); err != nil {
+		return err
+	} else if ok {
 		cfg.Direct, cfg.HasDirect = on, true
 	}
-	if list, ok := optStrings(module, "relays"); ok {
+	if list, ok, err := settingStrings(module, "relays"); err != nil {
+		return err
+	} else if ok {
 		cfg.Relays = list
 	}
 
 	// A vault is one recipient or several. A bare string is the common case -- a key file beside
 	// the config -- and writing it as a list of one is the sort of thing a config makes you do
 	// once and resent afterwards.
-	if key, ok := optString(module, "user_key"); ok {
+	if key, ok, err := settingString(module, "user_key"); err != nil {
+		return err
+	} else if ok {
 		cfg.UserKey = key
 	}
-	if command, ok := optString(module, "user_sign"); ok {
+	if command, ok, err := settingString(module, "user_sign"); err != nil {
+		return err
+	} else if ok {
 		cfg.UserSign = command
 	}
-	if list, ok := optStrings(module, "vault"); ok {
-		cfg.Vault = list
+	vault := module.Get(rt.StringValue("vault"))
+	if !vault.IsNil() {
+		if one, ok := vault.TryString(); ok {
+			cfg.Vault = []string{one}
+		} else if list, ok, err := settingStrings(module, "vault"); err != nil {
+			return err
+		} else if ok {
+			cfg.Vault = list
+		}
 	}
-	if one, ok := optString(module, "vault"); ok {
-		cfg.Vault = []string{one}
+	return nil
+}
+
+func settingString(t *rt.Table, key string) (string, bool, error) {
+	v := t.Get(rt.StringValue(key))
+	if v.IsNil() {
+		return "", false, nil
+	}
+	value, ok := v.TryString()
+	if !ok {
+		return "", false, fmt.Errorf("drop.%s must be a string", key)
+	}
+	return value, true, nil
+}
+
+func settingBool(t *rt.Table, key string) (bool, bool, error) {
+	v := t.Get(rt.StringValue(key))
+	if v.IsNil() {
+		return false, false, nil
+	}
+	value, ok := v.TryBool()
+	if !ok {
+		return false, false, fmt.Errorf("drop.%s must be true or false", key)
+	}
+	return value, true, nil
+}
+
+func settingStrings(t *rt.Table, key string) ([]string, bool, error) {
+	v := t.Get(rt.StringValue(key))
+	if v.IsNil() {
+		return nil, false, nil
+	}
+	list, ok := v.TryTable()
+	if !ok {
+		return nil, false, fmt.Errorf("drop.%s must be a list of strings", key)
+	}
+
+	var out []string
+	for i := int64(1); ; i++ {
+		item := list.Get(rt.IntValue(i))
+		if item.IsNil() {
+			return out, true, nil
+		}
+		value, ok := item.TryString()
+		if !ok {
+			return nil, false, fmt.Errorf("drop.%s item %d must be a string", key, i)
+		}
+		out = append(out, value)
 	}
 }
 
@@ -468,7 +539,8 @@ func fieldInt(t *rt.Table, key string) int {
 }
 
 func fieldBool(t *rt.Table, key string) bool {
-	return rt.Truth(t.Get(rt.StringValue(key)))
+	b, _ := t.Get(rt.StringValue(key)).TryBool()
+	return b
 }
 
 func fieldStrings(t *rt.Table, key string) []string {
