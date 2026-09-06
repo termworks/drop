@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	rt "github.com/arnodel/golua/runtime"
 
@@ -195,6 +196,123 @@ func TestConfigCanBranch(t *testing.T) {
 	}
 }
 
+func TestConfigCanRequireLocalModulesWithinLimits(t *testing.T) {
+	dir := t.TempDir()
+	module := filepath.Join(dir, "helper.lua")
+	if err := os.WriteFile(module, []byte(`return { path = "/chat" }`), 0o600); err != nil {
+		t.Fatalf("writing module: %v", err)
+	}
+
+	cfg := load(t, fmt.Sprintf(`
+		package.path = %q
+		package.preload.extra = function() return { path = "/inbox" } end
+		local drop = require("drop")
+		local found, problem = package.searchpath("helper", package.path)
+		if not found then error(problem) end
+		local helper = require("helper")
+		local extra = require("extra")
+		drop.mount(helper.path, { type = "chat" })
+		drop.mount(extra.path, { type = "share", dir = "/tmp/in" })
+	`, module))
+
+	if _, _, ok := cfg.Mounts.Lookup("/chat"); !ok {
+		t.Fatal("the module-provided mount is missing")
+	}
+	if _, _, ok := cfg.Mounts.Lookup("/inbox"); !ok {
+		t.Fatal("the preloaded mount is missing")
+	}
+}
+
+func TestRequiredModulesUseTheConfigBudget(t *testing.T) {
+	dir := t.TempDir()
+	module := filepath.Join(dir, "stuck.lua")
+	if err := os.WriteFile(module, []byte(`while true do end`), 0o600); err != nil {
+		t.Fatalf("writing module: %v", err)
+	}
+	path := write(t, fmt.Sprintf(`
+		package.path = %q
+		require("stuck")
+	`, module))
+
+	done := make(chan error, 1)
+	go func() {
+		cfg, err := Load(known())
+		if cfg != nil {
+			cfg.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "CPU limit") || !strings.Contains(err.Error(), filepath.Base(path)) {
+			t.Fatalf("Load(%s) returned %v", path, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("required module did not stop at the config CPU limit")
+	}
+}
+
+func TestConfigRuntimesCanLoadConcurrently(t *testing.T) {
+	dir := t.TempDir()
+	const count = 8
+	paths := make([]string, count)
+	for i := range paths {
+		paths[i] = filepath.Join(dir, fmt.Sprintf("init-%d.lua", i))
+		if err := os.WriteFile(paths[i], []byte(`
+			local drop = require("drop")
+			drop.mount("/chat", { type = "chat" })
+		`), 0o600); err != nil {
+			t.Fatalf("writing config: %v", err)
+		}
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, count)
+	for _, path := range paths {
+		go func() {
+			<-start
+			cfg := &Config{Mounts: ns.NewTable(), known: known(), Path: path}
+			err := run(cfg, path)
+			cfg.Close()
+			errs <- err
+		}()
+	}
+	close(start)
+	for range paths {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent run(): %v", err)
+		}
+	}
+}
+
+func TestTrustedConfigLibrariesWorkWithinLimits(t *testing.T) {
+	cfg := load(t, `
+		local drop = require("drop")
+		drop.mount("/chat", { type = "chat" })
+		local pipe = io.popen("printf ready")
+		startup = { pipe:read("a"), tostring(collectgarbage("count") > 0), os.setlocale("C") }
+		pipe:close()
+		ran = 0
+		drop.on.message(function()
+			local ok = os.execute("true")
+			if not ok then error("command failed") end
+			ran = ran + 1
+		end)
+	`)
+
+	startup := luaStrings(t, cfg, "startup")
+	if len(startup) != 3 || startup[0] != "ready" || startup[1] != "true" || startup[2] != "C" {
+		t.Fatalf("trusted libraries produced %v", startup)
+	}
+	cfg.FireMessage(Message{})
+	cfg.rt.mu.Lock()
+	ran, ok := cfg.rt.lua.GlobalEnv().Get(rt.StringValue("ran")).TryInt()
+	cfg.rt.mu.Unlock()
+	if !ok || ran != 1 {
+		t.Fatalf("os.execute handler ran %d times", ran)
+	}
+}
+
 // A config that does not parse must not start with half a table.
 func TestBrokenConfigIsFatalAndNamesTheFile(t *testing.T) {
 	path := write(t, "this is not lua at all ((((")
@@ -333,6 +451,92 @@ func TestARaisingHandlerDoesNotStopTheRest(t *testing.T) {
 	got := luaStrings(t, cfg, "seen")
 	if len(got) != 1 || got[0] != "still delivered" {
 		t.Fatalf("the second handler did not run: %v", got)
+	}
+}
+
+func TestConfigEvaluationHasACPUCostLimit(t *testing.T) {
+	path := write(t, `while true do end`)
+	done := make(chan error, 1)
+	go func() {
+		cfg, err := Load(known())
+		if cfg != nil {
+			cfg.Close()
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "CPU limit") || !strings.Contains(err.Error(), filepath.Base(path)) {
+			t.Fatalf("Load(%s) returned %v", path, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("config evaluation did not stop at its CPU limit")
+	}
+}
+
+func TestConfigEvaluationHasAMemoryCostLimit(t *testing.T) {
+	path := write(t, `
+		local held = {}
+		while true do held[#held + 1] = string.rep("x", 4096) end
+	`)
+	done := make(chan error, 1)
+	go func() {
+		cfg, err := Load(known())
+		if cfg != nil {
+			cfg.Close()
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "memory limit") || !strings.Contains(err.Error(), filepath.Base(path)) {
+			t.Fatalf("Load(%s) returned %v", path, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("config evaluation did not stop at its memory limit")
+	}
+}
+
+func TestConfigBoundaryRecoversPanics(t *testing.T) {
+	runtime := &runtime{lua: rt.New(os.Stderr)}
+	defer runtime.close()
+
+	err := runtime.within(func() error { panic("deliberate") })
+	if err == nil || !strings.Contains(err.Error(), "deliberate") {
+		t.Fatalf("within() returned %v", err)
+	}
+	if err := runtime.within(func() error { return nil }); err != nil {
+		t.Fatalf("the runtime was not reusable: %v", err)
+	}
+}
+
+func TestAHandlerCostLimitDoesNotStopLaterEvents(t *testing.T) {
+	cfg := load(t, `
+		local drop = require("drop")
+		drop.mount("/chat", { type = "chat" })
+		seen = {}
+		drop.on.message(function(m) while true do end end)
+		drop.on.message(function(m) seen[#seen + 1] = m.body end)
+	`)
+
+	for _, body := range []string{"first", "second"} {
+		done := make(chan struct{})
+		go func() {
+			cfg.FireMessage(Message{Body: body})
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("handler for %q did not stop at its CPU limit", body)
+		}
+	}
+
+	got := luaStrings(t, cfg, "seen")
+	if len(got) != 2 || got[0] != "first" || got[1] != "second" {
+		t.Fatalf("later handlers and events produced %v", got)
 	}
 }
 
