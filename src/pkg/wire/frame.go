@@ -114,7 +114,7 @@ func (c *Conn) WithIdle(idle time.Duration, operation func() error) (err error) 
 func (c *Conn) endReadIdle(err error) error {
 	c.readIdle = 0
 	if c.readDeadline != nil {
-		err = errors.Join(err, c.readDeadline.SetReadDeadline(time.Time{}))
+		err = errors.Join(err, deadlineReset(c.readDeadline.SetReadDeadline(time.Time{})))
 	}
 	return err
 }
@@ -122,10 +122,17 @@ func (c *Conn) endReadIdle(err error) error {
 func (c *Conn) endIdle(err error) error {
 	c.readIdle, c.writeIdle = 0, 0
 	if c.readDeadline != nil {
-		err = errors.Join(err, c.readDeadline.SetReadDeadline(time.Time{}))
+		err = errors.Join(err, deadlineReset(c.readDeadline.SetReadDeadline(time.Time{})))
 	}
 	if c.writeDeadline != nil {
-		err = errors.Join(err, c.writeDeadline.SetWriteDeadline(time.Time{}))
+		err = errors.Join(err, deadlineReset(c.writeDeadline.SetWriteDeadline(time.Time{})))
+	}
+	return err
+}
+
+func deadlineReset(err error) error {
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
+		return nil
 	}
 	return err
 }

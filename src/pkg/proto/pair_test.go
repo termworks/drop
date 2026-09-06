@@ -86,6 +86,17 @@ func TestPairMsgWritesOnlyWhatItsReaderAccepts(t *testing.T) {
 	}
 }
 
+func TestPairingRefusesWrongFrameKinds(t *testing.T) {
+	var framed bytes.Buffer
+	message := pairMsg{From: "who", Name: "n", Nonce: bytes.Repeat([]byte{1}, nonceBytes)}
+	if err := wire.NewConn(&framed).WriteFrame(wire.KindItem, message.encode()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readPairMsg(wire.NewConn(&framed)); err == nil {
+		t.Fatal("readPairMsg() accepted a non-pairing frame")
+	}
+}
+
 // Both sides must derive the same secret whichever direction they see the exchange from.
 func TestDeriveSecretIsSymmetric(t *testing.T) {
 	a, b := testEndpointID(t, 1), testEndpointID(t, 2)
@@ -235,5 +246,51 @@ func TestAPairingRequestThatSaysNothingIsNotHeldForever(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("AnswerPairing is still reading a stream that will never say anything")
+	}
+}
+
+func TestAPairingResponseThatSaysNothingIsNotHeldForever(t *testing.T) {
+	host, caller := testEndpointID(t, 1), testEndpointID(t, 2)
+	silent := &deadlined{set: make(chan struct{})}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Pair(silent, caller, host, "caller", nil, nil)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a pairing response that said nothing was accepted")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Pair is still reading a stream that will never say anything")
+	}
+}
+
+func TestAPairingAnswerThatCannotBeWrittenIsNotHeldForever(t *testing.T) {
+	host, caller := testEndpointID(t, 1), testEndpointID(t, 2)
+	message := pairMsg{From: caller.String(), Name: "caller", Nonce: make([]byte, nonceBytes)}
+	var framed bytes.Buffer
+	if err := wire.NewConn(&framed).WriteFrame(wire.KindOpen, message.encode()); err != nil {
+		t.Fatal(err)
+	}
+	blocked := &writeDeadlined{read: &framed, set: make(chan struct{})}
+	t.Cleanup(func() { _ = blocked.Close() })
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := AnswerPairing(blocked, host, caller, "host", nil)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a blocked pairing answer was written")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AnswerPairing is still writing to a peer that reads nothing")
 	}
 }

@@ -4,11 +4,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
-
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"golang.org/x/crypto/hkdf"
 
@@ -170,20 +168,18 @@ func deriveSecret(self, other node.ID, selfNonce, otherNonce []byte) ([]byte, er
 // what the message says about itself is only checked against it.
 func AnswerPairing(s Stream, self, from node.ID, name string, addrs []string) (Pairing, error) {
 	var out Pairing
-
 	conn := wire.NewConn(s)
+	err := conn.WithIdle(settleIn, func() error {
+		var err error
+		out, err = answerPairing(conn, self, from, name, addrs)
+		return err
+	})
+	return out, err
+}
 
-	// A pairing window is open to whoever dials during it, so the request is bounded: a stream that
-	// says nothing is a goroutine held for the rest of the process's life.
-	_ = s.SetReadDeadline(time.Now().Add(settleIn))
-
-	_, body, err := conn.ReadFrame()
-	if err != nil {
-		return out, err
-	}
-	_ = s.SetReadDeadline(time.Time{})
-
-	theirs, err := decodePairMsg(body)
+func answerPairing(conn *wire.Conn, self, from node.ID, name string, addrs []string) (Pairing, error) {
+	var out Pairing
+	theirs, err := readPairMsg(conn)
 	if err != nil {
 		return out, err
 	}
@@ -207,9 +203,17 @@ func AnswerPairing(s Stream, self, from node.ID, name string, addrs []string) (P
 // the device whose ticket is being answered.
 func Pair(s Stream, self, from node.ID, name string, proof []byte, addrs []string) (Pairing, error) {
 	var out Pairing
-
 	conn := wire.NewConn(s)
+	err := conn.WithIdle(settleIn, func() error {
+		var err error
+		out, err = pair(conn, self, from, name, proof, addrs)
+		return err
+	})
+	return out, err
+}
 
+func pair(conn *wire.Conn, self, from node.ID, name string, proof []byte, addrs []string) (Pairing, error) {
+	var out Pairing
 	mine := pairMsg{From: self.String(), Name: name, Proof: proof, Addrs: addrs, Nonce: make([]byte, nonceBytes)}
 	mine.Badge, mine.Signed = carried()
 	if _, err := rand.Read(mine.Nonce); err != nil {
@@ -219,11 +223,7 @@ func Pair(s Stream, self, from node.ID, name string, proof []byte, addrs []strin
 		return out, fmt.Errorf("sending the pairing request: %w", err)
 	}
 
-	_, body, err := conn.ReadFrame()
-	if err != nil {
-		return out, fmt.Errorf("reading the pairing response: %w", err)
-	}
-	theirs, err := decodePairMsg(body)
+	theirs, err := readPairMsg(conn)
 	if err != nil {
 		return out, fmt.Errorf("reading the pairing response: %w", err)
 	}
@@ -232,6 +232,17 @@ func Pair(s Stream, self, from node.ID, name string, proof []byte, addrs []strin
 	}
 
 	return finishPairing(self, from, theirs, mine)
+}
+
+func readPairMsg(conn *wire.Conn) (pairMsg, error) {
+	kind, body, err := conn.ReadFrame()
+	if err != nil {
+		return pairMsg{}, err
+	}
+	if kind != wire.KindOpen {
+		return pairMsg{}, fmt.Errorf("expected frame kind %d, got %d", wire.KindOpen, kind)
+	}
+	return decodePairMsg(body)
 }
 
 // finishPairing is the half both sides share: the remote id is the one the connection proved, so

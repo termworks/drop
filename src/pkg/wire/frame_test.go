@@ -338,6 +338,27 @@ func TestIdleRefreshesEveryWrittenFramePart(t *testing.T) {
 	}
 }
 
+func TestIdleResetIgnoresAClosedStream(t *testing.T) {
+	stream := &deadlineStream{
+		Reader:        &bytes.Buffer{},
+		Writer:        io.Discard,
+		readResetErr:  io.ErrClosedPipe,
+		writeResetErr: net.ErrClosed,
+	}
+	if err := NewConn(stream).WithIdle(time.Second, func() error { return nil }); err != nil {
+		t.Fatalf("closed stream reset = %v", err)
+	}
+}
+
+func TestIdleResetReportsAnOpenStreamFailure(t *testing.T) {
+	want := errors.New("reset failed")
+	stream := &deadlineStream{Reader: &bytes.Buffer{}, Writer: io.Discard, writeResetErr: want}
+	err := NewConn(stream).WithIdle(time.Second, func() error { return nil })
+	if !errors.Is(err, want) {
+		t.Fatalf("deadline reset = %v, want %v", err, want)
+	}
+}
+
 // both is a stream that reads from one place and writes to another.
 type both struct {
 	r io.Reader
@@ -347,17 +368,25 @@ type both struct {
 type deadlineStream struct {
 	io.Reader
 	io.Writer
-	readSet  []time.Time
-	writeSet []time.Time
+	readSet       []time.Time
+	writeSet      []time.Time
+	readResetErr  error
+	writeResetErr error
 }
 
 func (s *deadlineStream) SetReadDeadline(at time.Time) error {
 	s.readSet = append(s.readSet, at)
+	if at.IsZero() {
+		return s.readResetErr
+	}
 	return nil
 }
 
 func (s *deadlineStream) SetWriteDeadline(at time.Time) error {
 	s.writeSet = append(s.writeSet, at)
+	if at.IsZero() {
+		return s.writeResetErr
+	}
 	return nil
 }
 

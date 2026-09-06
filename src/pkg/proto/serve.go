@@ -68,9 +68,13 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 	guessCtx, cancelGuess := streamContext(ctx, s)
 	defer cancelGuess()
 
-	_ = s.SetReadDeadline(time.Now().Add(settleIn))
-
-	kind, body, err := conn.ReadFrameUpTo(MaxUnknown)
+	var kind byte
+	var body []byte
+	err := conn.WithReadIdle(settleIn, func() error {
+		var err error
+		kind, body, err = conn.ReadFrameUpTo(MaxUnknown)
+		return err
+	})
 	if err != nil {
 		// A stream opened and closed without a word is a peer that changed its mind, not a fault.
 		if wire.Closed(err) {
@@ -87,16 +91,13 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 		return fmt.Errorf("reading the open from %s: %w", node.Brief(from), err)
 	}
 
-	// The session is settled, and what it does next takes as long as it takes.
-	_ = s.SetReadDeadline(time.Time{})
-
 	// A refusal a caller could do nothing about is answered as passing; one that is a decision
 	// about them is answered as settled, so a sender with something queued knows which.
 	refuse := func(reason string) error {
-		return conn.WriteFrame(wire.KindReject, wire.Reject{Reason: reason}.Encode())
+		return writeAnswer(conn, wire.KindReject, wire.Reject{Reason: reason}.Encode())
 	}
 	decided := func(reason string) error {
-		return conn.WriteFrame(wire.KindReject, wire.Reject{Reason: reason, Settled: true}.Encode())
+		return writeAnswer(conn, wire.KindReject, wire.Reject{Reason: reason, Settled: true}.Encode())
 	}
 
 	// A machine that has moved says so before anything is decided about it, so the entry that
@@ -214,7 +215,7 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 		return decided(fmt.Sprintf("%s is a %s namespace", mount.Path, mount.Archetype))
 	}
 
-	if err := conn.WriteFrame(wire.KindAccept, nil); err != nil {
+	if err := writeAnswer(conn, wire.KindAccept, nil); err != nil {
 		return err
 	}
 	return answers.Serve(ctx, arch.Session{
@@ -291,10 +292,16 @@ func meeting(conn *wire.Conn, policy Policy, open Opening, caller ns.Caller, fro
 		return refuse("this node keeps no history")
 	}
 
-	if err := conn.WriteFrame(wire.KindAccept, nil); err != nil {
+	if err := writeAnswer(conn, wire.KindAccept, nil); err != nil {
 		return err
 	}
 	return policy.Met(Meeting{Mount: mount, Who: caller, From: from, Conn: conn})
+}
+
+func writeAnswer(conn *wire.Conn, kind byte, body []byte) error {
+	return conn.WithIdle(settleIn, func() error {
+		return conn.WriteFrame(kind, body)
+	})
 }
 
 // holding finds the namespace both machines call by one name.
