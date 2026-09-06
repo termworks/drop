@@ -67,6 +67,7 @@ func runServe(parent context.Context, quiet bool) error {
 	if err != nil {
 		return err
 	}
+	defer cfg.Close()
 	doing.cfg = cfg
 	if _, err := cfg.Grants(); err != nil {
 		return err
@@ -84,7 +85,6 @@ func runServe(parent context.Context, quiet bool) error {
 	}
 	// Settings take effect before the endpoint starts, because the name is read while it comes up.
 	cfg.Apply()
-	defer cfg.Close()
 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()

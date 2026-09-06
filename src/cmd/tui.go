@@ -48,6 +48,7 @@ func runTUI(parent context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer cfg.Close()
 	if _, err := cfg.Grants(); err != nil {
 		return err
 	}
@@ -55,7 +56,6 @@ func runTUI(parent context.Context) error {
 		return err
 	}
 	cfg.Apply()
-	defer cfg.Close()
 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -297,6 +297,7 @@ func (l *running) Mine() ([]proto.Served, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer cfg.Close()
 	if _, err := cfg.Grants(); err != nil {
 		return nil, err
 	}
