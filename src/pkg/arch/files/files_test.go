@@ -100,6 +100,11 @@ type readWriter struct {
 // serving runs a files namespace over a pipe and hands back the caller's side of the stream.
 func serving(t *testing.T, dir string, writable bool, hooks Into) *wire.Conn {
 	t.Helper()
+	return servingConfig(t, Config{Dir: dir, Writable: writable}, hooks)
+}
+
+func servingConfig(t *testing.T, cfg Config, hooks Into) *wire.Conn {
+	t.Helper()
 
 	caller, server := net.Pipe()
 	t.Cleanup(func() { _ = caller.Close() })
@@ -109,13 +114,23 @@ func serving(t *testing.T, dir string, writable bool, hooks Into) *wire.Conn {
 
 		at := arch.Session{
 			Path:   "/files",
-			Config: Config{Dir: dir, Writable: writable},
+			Config: cfg,
 			Conn:   wire.NewConn(server),
 		}
 		_ = New(hooks).Serve(t.Context(), at)
 	}()
 
 	return wire.NewConn(caller)
+}
+
+func openedConfig(t *testing.T, cfg Config, hooks Into) *Browsing {
+	t.Helper()
+
+	b, err := Browse(servingConfig(t, cfg, hooks))
+	if err != nil {
+		t.Fatalf("Browse(): %v", err)
+	}
+	return b
 }
 
 // opened runs a files namespace and walks it.
@@ -290,7 +305,9 @@ func TestBrowseRefusesEveryWriteOnAReadOnlyMount(t *testing.T) {
 
 func TestBrowseRefusesAnUploadLargerThanFreeSpace(t *testing.T) {
 	dir := t.TempDir()
-	b := opened(t, dir, true, Into{})
+	b := openedConfig(t, Config{
+		Dir: dir, Writable: true, MaxItemBytes: math.MaxInt64, MaxSessionBytes: math.MaxInt64,
+	}, Into{})
 
 	err := b.Put("too-large", strings.NewReader(""), Given{Size: math.MaxInt64, Mode: 0o600})
 	if err == nil || !strings.Contains(err.Error(), "free space") {
@@ -298,6 +315,65 @@ func TestBrowseRefusesAnUploadLargerThanFreeSpace(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "too-large")); !os.IsNotExist(err) {
 		t.Fatalf("the refused upload left a file: %v", err)
+	}
+}
+
+func TestAnUnknownUploadCannotCrossItsItemLimit(t *testing.T) {
+	dir := t.TempDir()
+	b := openedConfig(t, Config{Dir: dir, Writable: true, MaxItemBytes: 4, MaxSessionBytes: 8}, Into{})
+
+	err := b.Put("too-large", strings.NewReader("12345"), Given{Size: wire.SizeUnknown, Mode: 0o600})
+	if err == nil {
+		t.Fatal("an unknown-size upload crossed its item limit")
+	}
+	left, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(left) != 0 {
+		t.Fatalf("the refused upload left %d entries", len(left))
+	}
+}
+
+func TestAFileSessionCannotCrossItsByteLimit(t *testing.T) {
+	dir := t.TempDir()
+	b := openedConfig(t, Config{Dir: dir, Writable: true, MaxItemBytes: 8, MaxSessionBytes: 10}, Into{})
+
+	if err := b.Put("first", strings.NewReader("123456"), Given{Size: 6}); err != nil {
+		t.Fatalf("first Put(): %v", err)
+	}
+	if err := b.Put("refused", strings.NewReader("12345"), Given{Size: 5}); err == nil || !strings.Contains(err.Error(), "bytes left") {
+		t.Fatalf("second Put() = %v", err)
+	}
+	if err := b.Put("last", strings.NewReader("1234"), Given{Size: 4}); err != nil {
+		t.Fatalf("third Put(): %v", err)
+	}
+	if got := string(read(t, filepath.Join(dir, "first"))); got != "123456" {
+		t.Fatalf("first = %q", got)
+	}
+	if got := string(read(t, filepath.Join(dir, "last"))); got != "1234" {
+		t.Fatalf("last = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "refused")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("refused upload exists: %v", err)
+	}
+}
+
+func TestAnUnknownUploadCannotCrossTheSessionRemainder(t *testing.T) {
+	dir := t.TempDir()
+	b := openedConfig(t, Config{Dir: dir, Writable: true, MaxItemBytes: 4, MaxSessionBytes: 4}, Into{})
+
+	if err := b.Put("first", strings.NewReader("123"), Given{Size: 3}); err != nil {
+		t.Fatalf("first Put(): %v", err)
+	}
+	if err := b.Put("overflow", strings.NewReader("12"), Given{Size: wire.SizeUnknown}); err == nil {
+		t.Fatal("an unknown-size upload crossed the session remainder")
+	}
+	if got := string(read(t, filepath.Join(dir, "first"))); got != "123" {
+		t.Fatalf("first = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "overflow")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("overflow upload exists: %v", err)
 	}
 }
 

@@ -38,8 +38,10 @@ import (
 // Config is what a files namespace was told: the directory it serves, and whether anything may be
 // written into it.
 type Config struct {
-	Dir      string
-	Writable bool
+	Dir             string
+	Writable        bool
+	MaxItemBytes    int64
+	MaxSessionBytes int64
 }
 
 // Into is what the process running a files namespace hands it.
@@ -85,7 +87,19 @@ func (f *Files) Read(d arch.Declared) (arch.Config, error) {
 		return nil, fmt.Errorf("a files namespace needs a dir")
 	}
 	writable, _ := d.Bool("writable")
-	return Config{Dir: dir, Writable: writable}, nil
+	maxItem, err := configuredLimit(d, "max_item")
+	if err != nil {
+		return nil, err
+	}
+	maxSession, err := configuredLimit(d, "max_session")
+	if err != nil {
+		return nil, err
+	}
+	limits := quotaFor(Config{MaxItemBytes: maxItem, MaxSessionBytes: maxSession})
+	if limits.session < limits.item {
+		return nil, fmt.Errorf("max_session must not be smaller than max_item")
+	}
+	return Config{Dir: dir, Writable: writable, MaxItemBytes: maxItem, MaxSessionBytes: maxSession}, nil
 }
 
 func (f *Files) Note(c arch.Config) arch.Note {
@@ -109,6 +123,11 @@ func (f *Files) Serve(ctx context.Context, at arch.Session) error {
 	cfg, ok := at.Config.(Config)
 	if !ok || cfg.Dir == "" {
 		reject := wire.Reject{Reason: "this namespace has no directory"}
+		return at.Conn.WriteFrame(wire.KindReject, reject.Encode())
+	}
+	quota := quotaFor(cfg)
+	if cfg.MaxItemBytes < 0 || cfg.MaxSessionBytes < 0 || quota.session < quota.item {
+		reject := wire.Reject{Reason: "this namespace has invalid transfer limits"}
 		return at.Conn.WriteFrame(wire.KindReject, reject.Encode())
 	}
 
@@ -145,7 +164,7 @@ func (f *Files) Serve(ctx context.Context, at arch.Session) error {
 		if err != nil {
 			return err
 		}
-		if err := f.answer(conn, at, dir, cfg.Writable, q); err != nil {
+		if err := f.answer(conn, at, dir, cfg.Writable, &quota, q); err != nil {
 			return err
 		}
 	}

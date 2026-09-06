@@ -169,13 +169,13 @@ type arriving struct {
 //
 // Nothing that arrives replaces a file that was on this disk first, nothing is written through a
 // name somebody else laid a link on, and the part this one fills is nobody else's.
-func takeInto(conn *wire.Conn, dir *os.Root, name string, q request, progress func(string, int64, int64)) (string, int64, error) {
+func takeInto(conn *wire.Conn, dir *os.Root, name string, quota *transferQuota, q request, progress func(string, int64, int64)) (string, int64, error) {
 	part, err := partName(name)
 	if err != nil {
 		return "", 0, err
 	}
 
-	got, err := land(conn, dir, arriving{part: part}, path.Base(name), q.Size, q.Mode, progress)
+	got, err := land(conn, dir, arriving{part: part}, path.Base(name), q.Size, q.Mode, quota, progress)
 	if err != nil {
 		return "", 0, err
 	}
@@ -198,13 +198,13 @@ func takeInto(conn *wire.Conn, dir *os.Root, name string, q request, progress fu
 // takeOver reads one item into a namespace and puts it where the caller said, over whatever is
 // there. The destination is checked again after the item arrives and immediately before it is
 // replaced.
-func takeOver(conn *wire.Conn, dir *os.Root, name string, q request, progress func(string, int64, int64)) (int64, bool, error) {
+func takeOver(conn *wire.Conn, dir *os.Root, name string, quota *transferQuota, q request, progress func(string, int64, int64)) (int64, bool, error) {
 	part, err := partName(name)
 	if err != nil {
 		return 0, false, err
 	}
 
-	got, err := land(conn, dir, arriving{part: part}, path.Base(name), q.Size, q.Mode, progress)
+	got, err := land(conn, dir, arriving{part: part}, path.Base(name), q.Size, q.Mode, quota, progress)
 	if err != nil {
 		return 0, false, err
 	}
@@ -271,7 +271,7 @@ func takeOnto(conn *wire.Conn, into, name string, e Entry, sum []byte, from int6
 		return err
 	}
 
-	if _, err := land(conn, dir, at, name, e.Size, e.Mode, progress); err != nil {
+	if _, err := land(conn, dir, at, name, e.Size, e.Mode, nil, progress); err != nil {
 		return err
 	}
 	if err := dir.Rename(at.part, final); err != nil {
@@ -301,17 +301,17 @@ func already(where, name string, sum []byte) int64 {
 // when the part is named after the digest of what is coming, because that name is where the next
 // attempt for the same bytes looks, and thrown away when it is not, because a name nothing can
 // recognise is a name nothing will ever finish.
-func land(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mode uint32, progress func(string, int64, int64)) (int64, error) {
+func land(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mode uint32, quota *transferQuota, progress func(string, int64, int64)) (int64, error) {
 	var got int64
 	err := conn.WithIdle(wire.FiniteIdle, func() error {
 		var err error
-		got, err = landWithin(conn, dir, a, name, size, mode, progress)
+		got, err = landWithin(conn, dir, a, name, size, mode, quota, progress)
 		return err
 	})
 	return got, err
 }
 
-func landWithin(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mode uint32, progress func(string, int64, int64)) (int64, error) {
+func landWithin(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mode uint32, quota *transferQuota, progress func(string, int64, int64)) (int64, error) {
 	out, seed, err := opening(dir, a)
 	if err != nil {
 		return 0, fmt.Errorf("opening %s: %w", a.part, err)
@@ -328,7 +328,7 @@ func landWithin(conn *wire.Conn, dir *os.Root, a arriving, name string, size int
 		stopped = func(err error) (int64, error) { return 0, err }
 	}
 
-	got, reason, err := drain(conn, out, a, seed, name, size, progress)
+	got, reason, err := drain(conn, out, a, seed, name, size, quota, progress)
 	if err != nil {
 		return stopped(err)
 	}
@@ -360,7 +360,7 @@ func landWithin(conn *wire.Conn, dir *os.Root, a arriving, name string, size int
 // drain reads a run of data frames into an open file and weighs what arrived against the count, the
 // digest the sender ended with, and the size the round was opened on. A reason back means the item
 // is not what was promised.
-func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, name string, size int64, progress func(string, int64, int64)) (int64, string, error) {
+func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, name string, size int64, quota *transferQuota, progress func(string, int64, int64)) (int64, string, error) {
 	buf := make([]byte, wire.DataChunk)
 	got := a.have
 
@@ -402,6 +402,11 @@ func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, nam
 		}
 		if size != wire.SizeUnknown && int64(length) > size-got {
 			return 0, "", fmt.Errorf("%s sent more than the announced %d bytes", name, size)
+		}
+		if quota != nil {
+			if err := quota.take(name, got, int64(length)); err != nil {
+				return 0, "", err
+			}
 		}
 		if err := keep.Room(out, int64(length)); err != nil {
 			return 0, "", fmt.Errorf("%s: not enough free space: %w", name, err)

@@ -68,7 +68,7 @@ func lockReplacement(dir *os.Root, name string) (func(), error) {
 
 // answer carries out one request. A refusal is a reply, not an error: the session stays open so the
 // caller can ask for something else.
-func (f *Files) answer(conn *wire.Conn, at arch.Session, dir *os.Root, writable bool, q request) error {
+func (f *Files) answer(conn *wire.Conn, at arch.Session, dir *os.Root, writable bool, quota *transferQuota, q request) error {
 	refuse := func(reason string) error {
 		return conn.WriteFrame(wire.KindReply, reply{Reason: reason}.encode())
 	}
@@ -108,10 +108,10 @@ func (f *Files) answer(conn *wire.Conn, at arch.Session, dir *os.Root, writable 
 		return f.handGet(conn, dir, name, q)
 
 	case opPut:
-		return f.handPut(conn, at, dir, name, q)
+		return f.handPut(conn, at, dir, name, quota, q)
 
 	case opReplace:
-		return f.handReplace(conn, at, dir, name, q)
+		return f.handReplace(conn, at, dir, name, quota, q)
 
 	case opRemove:
 		if err := dir.Remove(name); err != nil {
@@ -192,7 +192,7 @@ func (f *Files) handGet(conn *wire.Conn, dir *os.Root, name string, q request) e
 }
 
 // handPut answers a put and then takes the file in.
-func (f *Files) handPut(conn *wire.Conn, at arch.Session, dir *os.Root, name string, q request) error {
+func (f *Files) handPut(conn *wire.Conn, at arch.Session, dir *os.Root, name string, quota *transferQuota, q request) error {
 	refuse := func(reason string) error {
 		return conn.WriteFrame(wire.KindReply, reply{Reason: reason}.encode())
 	}
@@ -200,6 +200,9 @@ func (f *Files) handPut(conn *wire.Conn, at arch.Session, dir *os.Root, name str
 	// What cannot be taken is refused before the caller starts sending, so a put that has nowhere to
 	// land ends the round rather than the session.
 	if reason := roomFor(dir, name); reason != "" {
+		return refuse(reason)
+	}
+	if reason := quota.preflight(q.Size); reason != "" {
 		return refuse(reason)
 	}
 	if q.Size != wire.SizeUnknown {
@@ -211,7 +214,7 @@ func (f *Files) handPut(conn *wire.Conn, at arch.Session, dir *os.Root, name str
 		return err
 	}
 
-	final, size, err := takeInto(conn, dir, name, q, f.into.Progress)
+	final, size, err := takeInto(conn, dir, name, quota, q, f.into.Progress)
 	if err != nil {
 		return err
 	}
@@ -226,7 +229,7 @@ func (f *Files) handPut(conn *wire.Conn, at arch.Session, dir *os.Root, name str
 // The caller names the version they believe is at that name. What is actually there is weighed
 // against it before a byte is sent, so a file that somebody else changed in the meantime is a
 // refusal the caller can act on rather than a version silently written over.
-func (f *Files) handReplace(conn *wire.Conn, at arch.Session, dir *os.Root, name string, q request) error {
+func (f *Files) handReplace(conn *wire.Conn, at arch.Session, dir *os.Root, name string, quota *transferQuota, q request) error {
 	refuse := func(reason string) error {
 		return conn.WriteFrame(wire.KindReply, reply{Reason: reason}.encode())
 	}
@@ -237,6 +240,9 @@ func (f *Files) handReplace(conn *wire.Conn, at arch.Session, dir *os.Root, name
 	defer unlock()
 
 	if reason := roomFor(dir, name); reason != "" {
+		return refuse(reason)
+	}
+	if reason := quota.preflight(q.Size); reason != "" {
 		return refuse(reason)
 	}
 	if q.Size != wire.SizeUnknown {
@@ -251,7 +257,7 @@ func (f *Files) handReplace(conn *wire.Conn, at arch.Session, dir *os.Root, name
 		return err
 	}
 
-	size, replaced, err := takeOver(conn, dir, name, q, f.into.Progress)
+	size, replaced, err := takeOver(conn, dir, name, quota, q, f.into.Progress)
 	if err != nil {
 		return err
 	}

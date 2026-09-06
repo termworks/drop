@@ -44,11 +44,19 @@ otherwise.
 
 ```lua
 drop.mount("/papers", { type = "files", dir = "~/papers" })
-drop.mount("/scratch", { type = "files", dir = "~/scratch", writable = true, access = { "me" } })
+drop.mount("/scratch", {
+  type = "files", dir = "~/scratch", writable = true, access = { "me" },
+  max_item = "4 GiB", max_session = "16 GiB",
+})
 ```
 
 `writable` is one flag, not one per operation: whoever it admits may upload, make directories, move
 things and **delete** them. Write it against a rule you would say out loud.
+
+Incoming files are limited to 4 GiB each and 16 GiB over one open session by default. Set
+`max_item` and `max_session` to positive whole-byte sizes using `B`, `KiB`, `MiB`, `GiB`, or
+`TiB`. The session limit cannot be smaller than the item limit. These bounds also apply when
+standard input or another stream did not know its size before it started.
 
 Rounds, one request and one reply at a time, for as long as the caller keeps asking. Every path is
 resolved through `os.Root`, so a name that climbs out — with `..`, an absolute path, a backslash, a
