@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -308,6 +309,71 @@ func TestHeadsWithTrailingBytesAreRefused(t *testing.T) {
 	if _, err := readHeads(wire.NewConn(here)); err == nil {
 		t.Fatal("readHeads() accepted trailing bytes")
 	}
+}
+
+func TestAskStopsWhenTheFarEndStalls(t *testing.T) {
+	here, there := net.Pipe()
+	defer func() { _ = here.Close() }()
+	defer func() { _ = there.Close() }()
+
+	go func() {
+		_, _, _ = wire.NewConn(there).ReadFrame()
+	}()
+
+	stream := &shortDeadline{Conn: here}
+	started := time.Now()
+	if _, err := Ask(wire.NewConn(stream), aLog(t), "them", anybody); err == nil {
+		t.Fatal("Ask() waited forever for a stalled peer")
+	}
+	if time.Since(started) > time.Second {
+		t.Fatalf("Ask() took %s to stop", time.Since(started))
+	}
+	if stream.set < 2 || !stream.cleared {
+		t.Fatalf("read deadline was set %d times and cleared %t", stream.set, stream.cleared)
+	}
+}
+
+func TestAnswerStopsWhenTheFarEndStalls(t *testing.T) {
+	here, there := net.Pipe()
+	defer func() { _ = here.Close() }()
+	defer func() { _ = there.Close() }()
+
+	go func() {
+		conn := wire.NewConn(there)
+		w := wire.NewWriter()
+		w.Uint(0)
+		if err := conn.WriteFrame(wire.KindItem, w.Body()); err != nil {
+			return
+		}
+		_, _, _ = conn.ReadFrame()
+	}()
+
+	stream := &shortDeadline{Conn: here}
+	started := time.Now()
+	if _, err := Answer(wire.NewConn(stream), aLog(t), "them", anybody); err == nil {
+		t.Fatal("Answer() waited forever for a stalled peer")
+	}
+	if time.Since(started) > time.Second {
+		t.Fatalf("Answer() took %s to stop", time.Since(started))
+	}
+	if stream.set < 2 || !stream.cleared {
+		t.Fatalf("read deadline was set %d times and cleared %t", stream.set, stream.cleared)
+	}
+}
+
+type shortDeadline struct {
+	net.Conn
+	set     int
+	cleared bool
+}
+
+func (s *shortDeadline) SetReadDeadline(at time.Time) error {
+	if at.IsZero() {
+		s.cleared = true
+		return s.Conn.SetReadDeadline(at)
+	}
+	s.set++
+	return s.Conn.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
 }
 
 func TestMeetingChangeBytesAreBounded(t *testing.T) {

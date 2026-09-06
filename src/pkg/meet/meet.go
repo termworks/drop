@@ -54,6 +54,16 @@ type Caught struct {
 // admits nobody, because a namespace that cannot say who may change it is one nobody may.
 func Ask(conn *wire.Conn, l *history.Log, who string, admits func(author string) bool) (Caught, error) {
 	var out Caught
+	err := conn.WithReadIdle(wire.FiniteReadIdle, func() error {
+		var err error
+		out, err = ask(conn, l, who, admits)
+		return err
+	})
+	return out, err
+}
+
+func ask(conn *wire.Conn, l *history.Log, who string, admits func(author string) bool) (Caught, error) {
+	var out Caught
 
 	if err := writeHeads(conn, l.Heads()); err != nil {
 		return out, err
@@ -78,6 +88,16 @@ func Ask(conn *wire.Conn, l *history.Log, who string, admits func(author string)
 // Answer runs a meeting from the side that took the session. The same exchange, in the order that
 // keeps the two sides in step: whoever speaks first here listens first there.
 func Answer(conn *wire.Conn, l *history.Log, who string, admits func(author string) bool) (Caught, error) {
+	var out Caught
+	err := conn.WithReadIdle(wire.FiniteReadIdle, func() error {
+		var err error
+		out, err = answer(conn, l, who, admits)
+		return err
+	})
+	return out, err
+}
+
+func answer(conn *wire.Conn, l *history.Log, who string, admits func(author string) bool) (Caught, error) {
 	var out Caught
 
 	theirs, err := readHeads(conn)
