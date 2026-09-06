@@ -292,6 +292,10 @@ func (k *keeper) recover(root *os.Root, want Folder, now map[string]mark) (map[s
 			trouble = append(trouble, fmt.Errorf("renaming %s: %w", made[path], err))
 			continue
 		}
+		if err := syncLanding(root, path); err != nil {
+			trouble = append(trouble, fmt.Errorf("syncing %s: %w", path, err))
+			continue
+		}
 		done[path] = true
 		if err := k.dressed(root, path, want[path], want[path].Sum); err != nil {
 			trouble = append(trouble, err)
@@ -467,7 +471,7 @@ func parting(path string) string {
 func written(root *os.Root, path string, body []byte) error {
 	part := parting(path)
 
-	out, err := root.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	out, err := freshPart(root, part)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", part, err)
 	}
@@ -475,6 +479,11 @@ func written(root *os.Root, path string, body []byte) error {
 		_ = out.Close()
 		_ = root.Remove(part)
 		return fmt.Errorf("writing %s: %w", part, err)
+	}
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		_ = root.Remove(part)
+		return fmt.Errorf("syncing %s: %w", part, err)
 	}
 	if err := out.Close(); err != nil {
 		_ = root.Remove(part)
@@ -484,7 +493,7 @@ func written(root *os.Root, path string, body []byte) error {
 		_ = root.Remove(part)
 		return fmt.Errorf("renaming %s: %w", part, err)
 	}
-	return nil
+	return syncLanding(root, path)
 }
 
 // copyOut puts the bytes already at one path into a part file, ready to be put into place.
@@ -495,7 +504,7 @@ func copyOut(root *os.Root, from, part string) error {
 	}
 	defer func() { _ = held.Close() }()
 
-	out, err := root.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	out, err := freshPart(root, part)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", part, err)
 	}
@@ -504,11 +513,23 @@ func copyOut(root *os.Root, from, part string) error {
 		_ = root.Remove(part)
 		return fmt.Errorf("writing %s: %w", part, err)
 	}
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		_ = root.Remove(part)
+		return fmt.Errorf("syncing %s: %w", part, err)
+	}
 	if err := out.Close(); err != nil {
 		_ = root.Remove(part)
 		return fmt.Errorf("closing %s: %w", part, err)
 	}
 	return nil
+}
+
+func freshPart(root *os.Root, part string) (*os.File, error) {
+	if err := root.Remove(part); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	return root.OpenFile(part, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 }
 
 // sumOf is what a file holds, as one number.

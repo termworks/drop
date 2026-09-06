@@ -93,6 +93,64 @@ func changed(t *testing.T, b *Browsing, name string) Entry {
 	return Entry{}
 }
 
+func TestFolderWriteDoesNotFollowAPartLink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("victim", filepath.Join(dir, parting("report"))); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := written(root, "report", []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := read(t, victim); string(got) != "original" {
+		t.Fatalf("part link target = %q", got)
+	}
+	if got := read(t, filepath.Join(dir, "report")); string(got) != "new" {
+		t.Fatalf("written file = %q", got)
+	}
+}
+
+func TestFolderCopyDoesNotFollowAPartLink(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "source"), []byte("copied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	part := parting("report")
+	if err := os.Symlink("victim", filepath.Join(dir, part)); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := copyOut(root, "source", part); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := read(t, victim); string(got) != "original" {
+		t.Fatalf("part link target = %q", got)
+	}
+	if got := read(t, filepath.Join(dir, part)); string(got) != "copied" {
+		t.Fatalf("copied part = %q", got)
+	}
+}
+
 // A save and the save three milliseconds after it are two saves. At whole seconds they are one, and
 // a folder held up against the times in a listing would never see the second.
 func TestTwoSavesAMillisecondApartAreTwoSaves(t *testing.T) {
