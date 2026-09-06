@@ -34,7 +34,7 @@ type Service struct {
 
 	mu         sync.Mutex
 	publishers map[string]*iroh.PkarrPublisher
-	resolver   *iroh.PkarrResolver
+	resolver   iroh.AddressResolver
 	relay      string
 }
 
@@ -197,26 +197,63 @@ func (s *Service) closeAll() {
 // The returned address carries the peer's real identity, not the derived one: the derived identity
 // exists only to name the record, and dialling it would reach nothing.
 func (s *Service) Find(ctx context.Context, entry book.Entry) (netaddr.EndpointAddr, bool) {
+	return s.findAt(ctx, entry, time.Now())
+}
+
+func (s *Service) findAt(ctx context.Context, entry book.Entry, now time.Time) (netaddr.EndpointAddr, bool) {
 	if !entry.Paired() {
 		return netaddr.EndpointAddr{}, false
 	}
 
-	for _, epoch := range ResolveEpochs(time.Now()) {
+	lookupCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	epochs := ResolveEpochs(now)
+	results := make(chan resolveResult, len(epochs))
+	pending := 0
+	for _, epoch := range epochs {
 		sk, err := Derive(entry.Secret, entry.ID, epoch)
 		if err != nil {
 			continue
 		}
+		pending++
 
-		for item, err := range s.resolver.Resolve(ctx, sk.Public().EndpointID()) {
-			if err != nil {
-				continue
+		go func(id node.ID) {
+			for item, err := range s.resolver.Resolve(lookupCtx, id) {
+				if err != nil {
+					continue
+				}
+				if addr, ok := rebind(item.EndpointInfo(), entry.ID); ok {
+					select {
+					case results <- resolveResult{addr: addr, found: true}:
+					case <-lookupCtx.Done():
+					}
+					return
+				}
 			}
-			if addr, ok := rebind(item.EndpointInfo(), entry.ID); ok {
-				return addr, true
+			select {
+			case results <- resolveResult{}:
+			case <-lookupCtx.Done():
 			}
+		}(sk.Public().EndpointID())
+	}
+
+	for range pending {
+		select {
+		case result := <-results:
+			if result.found {
+				return result.addr, true
+			}
+		case <-ctx.Done():
+			return netaddr.EndpointAddr{}, false
 		}
 	}
 	return netaddr.EndpointAddr{}, false
+}
+
+type resolveResult struct {
+	addr  netaddr.EndpointAddr
+	found bool
 }
 
 // rebind moves the addresses out of a record and onto the identity they actually belong to.
