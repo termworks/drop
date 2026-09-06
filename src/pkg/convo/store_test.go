@@ -10,6 +10,7 @@ import (
 
 	"github.com/tmc/go-iroh/key"
 
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
@@ -106,6 +107,38 @@ func TestDeliveredEverythingRemovesTheOutbox(t *testing.T) {
 	waiting, _ := s.Pending()
 	if len(waiting) != 0 {
 		t.Fatalf("Pending() = %d, want 0", len(waiting))
+	}
+}
+
+func TestOutboxChangesWaitForOtherProcesses(t *testing.T) {
+	s := openStore(t)
+	m := queue(t, s, "waiting")
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lockErr := make(chan error, 1)
+	go func() {
+		lockErr <- keep.While(s.outbox, func() error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+
+	done := make(chan error, 1)
+	go func() { done <- s.Delivered(m.ID) }()
+	select {
+	case err := <-done:
+		t.Fatalf("Delivered() passed a held cross-process lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-lockErr; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

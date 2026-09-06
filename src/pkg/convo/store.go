@@ -9,6 +9,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/wire"
 
 	"github.com/bresilla/drop/src/pkg/node"
@@ -247,27 +248,32 @@ func (s *Store) Add(m Message) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.known(); err != nil {
-		return false, err
-	}
-	if s.ids[m.ID] {
-		return false, nil
-	}
-	body, err := record(m, s.peer.String())
-	if err != nil {
-		return false, err
-	}
-	if err := appendTo(s.history, body); err != nil {
-		return false, err
-	}
+	fresh := false
+	err := keep.While(s.history, func() error {
+		if err := s.known(); err != nil {
+			return err
+		}
+		if s.ids[m.ID] {
+			return nil
+		}
+		body, err := record(m, s.peer.String())
+		if err != nil {
+			return err
+		}
+		if err := appendTo(s.history, body); err != nil {
+			return err
+		}
 
-	s.ids[m.ID] = true
-	if at, err := os.Stat(s.history); err == nil {
-		s.size = at.Size()
-	} else {
-		s.ids = nil
-	}
-	return true, nil
+		s.ids[m.ID] = true
+		if at, err := os.Stat(s.history); err == nil {
+			s.size = at.Size()
+		} else {
+			s.ids = nil
+		}
+		fresh = true
+		return nil
+	})
+	return fresh, err
 }
 
 // History is everything that passed with this peer, oldest first.
@@ -302,7 +308,7 @@ func (s *Store) Queue(m Message) error {
 	if err != nil {
 		return err
 	}
-	return appendTo(s.outbox, body)
+	return keep.While(s.outbox, func() error { return appendTo(s.outbox, body) })
 }
 
 // Pending is what has not been delivered, oldest first.
@@ -310,7 +316,12 @@ func (s *Store) Pending() ([]Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	out, err := readAll(s.outbox, s.peer.String())
+	var out []Message
+	err := keep.While(s.outbox, func() error {
+		var err error
+		out, err = readAll(s.outbox, s.peer.String())
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -335,41 +346,28 @@ func (s *Store) Delivered(ids ...string) error {
 		gone[id] = true
 	}
 
-	waiting, err := readAll(s.outbox, s.peer.String())
-	if err != nil {
-		return err
-	}
-
-	var keep []byte
-	for _, m := range waiting {
-		if gone[m.ID] {
-			continue
-		}
-		body, err := record(m, s.peer.String())
+	return keep.While(s.outbox, func() error {
+		waiting, err := readAll(s.outbox, s.peer.String())
 		if err != nil {
 			return err
 		}
-		var head [binary.MaxVarintLen64]byte
-		n := binary.PutUvarint(head[:], uint64(len(body)))
-		keep = append(keep, head[:n]...)
-		keep = append(keep, body...)
-	}
 
-	if len(keep) == 0 {
-		if err := os.Remove(s.outbox); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("clearing %s: %w", s.outbox, err)
+		var raw []byte
+		for _, m := range waiting {
+			if gone[m.ID] {
+				continue
+			}
+			body, err := record(m, s.peer.String())
+			if err != nil {
+				return err
+			}
+			var head [binary.MaxVarintLen64]byte
+			n := binary.PutUvarint(head[:], uint64(len(body)))
+			raw = append(raw, head[:n]...)
+			raw = append(raw, body...)
 		}
-		return nil
-	}
-
-	scratch := s.outbox + ".new"
-	if err := os.WriteFile(scratch, keep, 0o600); err != nil {
-		return fmt.Errorf("writing %s: %w", scratch, err)
-	}
-	if err := os.Rename(scratch, s.outbox); err != nil {
-		return fmt.Errorf("replacing %s: %w", s.outbox, err)
-	}
-	return nil
+		return keep.Replace(s.outbox, raw)
+	})
 }
 
 // Note records something drop did, so the log reads as one story rather than only the chat half.
