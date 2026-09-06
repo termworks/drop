@@ -65,13 +65,26 @@ func serveLoopKeeping(
 	held *dial.Kept,
 	arrived func(node.ID),
 ) {
+	var waiting time.Duration
+
 	for {
 		conn, err := n.Accept(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
+			if waiting == 0 {
+				fmt.Fprintf(os.Stderr, "drop: cannot accept endpoint connection: %v\n", err)
+			}
+			waiting = nextAcceptWait(waiting)
+			if !waitForAcceptRetry(ctx, waiting) {
+				return
+			}
 			continue
+		}
+		if waiting != 0 {
+			fmt.Fprintln(os.Stderr, "drop: accepting endpoint connections again")
+			waiting = 0
 		}
 
 		// Only a session connection is worth keeping. A hello is one question from a command that
@@ -191,13 +204,26 @@ func listenKeeping(
 	l := &listener{handlers: handlers}
 
 	go func() {
+		var waiting time.Duration
+
 		for {
 			conn, err := n.Accept(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
+				if waiting == 0 {
+					fmt.Fprintf(os.Stderr, "drop: cannot accept endpoint connection: %v\n", err)
+				}
+				waiting = nextAcceptWait(waiting)
+				if !waitForAcceptRetry(ctx, waiting) {
+					return
+				}
 				continue
+			}
+			if waiting != 0 {
+				fmt.Fprintln(os.Stderr, "drop: accepting endpoint connections again")
+				waiting = 0
 			}
 
 			if held != nil && conn.ALPN() == node.ALPNSession {
@@ -212,6 +238,35 @@ func listenKeeping(
 	}()
 
 	return l
+}
+
+const (
+	// firstAcceptWait is the initial delay after an accept failure.
+	firstAcceptWait = 10 * time.Millisecond
+	// slowestAcceptWait caps the delay between accept attempts.
+	slowestAcceptWait = 2 * time.Second
+)
+
+func nextAcceptWait(current time.Duration) time.Duration {
+	if current == 0 {
+		return firstAcceptWait
+	}
+	if current >= slowestAcceptWait/2 {
+		return slowestAcceptWait
+	}
+	return current * 2
+}
+
+func waitForAcceptRetry(ctx context.Context, waiting time.Duration) bool {
+	timer := time.NewTimer(waiting)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // holding keeps a connection to everybody paired, so a device that nothing can dial is reachable

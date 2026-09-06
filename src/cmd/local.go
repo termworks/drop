@@ -387,13 +387,8 @@ func castSocket() (string, error) {
 }
 
 const (
-	// firstAcceptWait is how long the socket is left alone after one failed accept.
-	firstAcceptWait = 10 * time.Millisecond
-	// slowestAcceptWait is where the doubling stops. Whatever is wrong is not going to be fixed by
-	// asking faster, and a machine that recovers waits at most this long to be noticed.
-	slowestAcceptWait = 2 * time.Second
-	localHelloWithin  = 10 * time.Second
-	maxLocalLine      = 1 << 20
+	localHelloWithin = 10 * time.Second
+	maxLocalLine     = 1 << 20
 )
 
 func localGuard(path string) (*os.File, error) {
@@ -440,9 +435,6 @@ func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 		_ = os.Remove(path)
 	}()
 
-	// How long to wait after an accept that failed, doubling from there. A machine out of file
-	// descriptors fails every accept, and a loop that only ever continues spends a whole core
-	// saying so to nobody.
 	var waiting time.Duration
 
 	for {
@@ -453,16 +445,11 @@ func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 			}
 
 			if waiting == 0 {
-				waiting = firstAcceptWait
 				fmt.Fprintf(os.Stderr, "drop: cannot accept on %s: %v\n", path, err)
-			} else if waiting < slowestAcceptWait {
-				waiting *= 2
 			}
-
-			select {
-			case <-ctx.Done():
+			waiting = nextAcceptWait(waiting)
+			if !waitForAcceptRetry(ctx, waiting) {
 				return nil
-			case <-time.After(waiting):
 			}
 			continue
 		}

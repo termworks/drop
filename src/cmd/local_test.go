@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The pairing line between a local `drop pair` and the daemon is exactly three fields. Both ends
@@ -68,5 +69,27 @@ func TestOnlyOneLocalServerOwnsTheSocket(t *testing.T) {
 	}
 	if stat, err := os.Stat(path + ".lock"); err != nil || stat.Mode().Perm() != 0o600 {
 		t.Fatalf("socket lock mode = %v, %v", stat, err)
+	}
+}
+
+func TestAcceptFailuresBackOffToTheLimit(t *testing.T) {
+	waiting := time.Duration(0)
+	want := []time.Duration{
+		10 * time.Millisecond,
+		20 * time.Millisecond,
+		40 * time.Millisecond,
+		80 * time.Millisecond,
+		160 * time.Millisecond,
+		320 * time.Millisecond,
+		640 * time.Millisecond,
+		1280 * time.Millisecond,
+		2 * time.Second,
+		2 * time.Second,
+	}
+	for attempt, expected := range want {
+		waiting = nextAcceptWait(waiting)
+		if waiting != expected {
+			t.Fatalf("attempt %d waits %s, want %s", attempt+1, waiting, expected)
+		}
 	}
 }
