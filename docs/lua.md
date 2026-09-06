@@ -102,6 +102,10 @@ write, bounded, and passed through the same sanitiser everything printed goes th
 A program started with `s:run` gets a process group of its own and the group is killed when the
 session ends, so a plugin cannot leave something behind holding your machine.
 
+Across the daemon, at most 16 Lua sessions, 128 plugin-opened files and four plugin process groups
+are active at once. One session may hold at most 64 of those files. Work above a limit is refused
+immediately, and closing a file or ending a session returns its capacity.
+
 Each session gets a runtime of its own. The interpreter's runtime is not safe to share between
 goroutines — seven out of eight panicked when tried — so they are not shared. The compiled unit is,
 which is the cheap part: loading one takes about 380 nanoseconds against about 35 microseconds to

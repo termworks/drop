@@ -49,6 +49,8 @@ type Plugin struct {
 	unit *code.Unit
 	// keeps is where namespaces of this archetype keep their own files.
 	keeps string
+	// limits are shared by every plugin in this process.
+	limits *resourceLimits
 }
 
 func (p *Plugin) Name() string { return p.name }
@@ -118,10 +120,19 @@ func (p *Plugin) Note(c arch.Config) arch.Note {
 
 // Serve answers one session in its own Lua runtime.
 func (p *Plugin) Serve(ctx context.Context, at arch.Session) error {
+	limits := p.limits
+	if limits == nil {
+		limits = processLimits
+	}
+	if !limits.sessions.take() {
+		return fmt.Errorf("serving %s: %d Lua sessions are active already", at.Path, cap(limits.sessions))
+	}
+	defer limits.sessions.give()
+
 	w := newWorld(p.file, p.name)
 	defer w.close()
 
-	s := &session{ctx: ctx, at: at, where: filepath.Join(p.keeps, p.name, slug(at.Path))}
+	s := &session{ctx: ctx, at: at, where: filepath.Join(p.keeps, p.name, slug(at.Path)), limits: limits}
 	defer s.shut()
 
 	return w.within(p.unit, rt.RuntimeResources{Cpu: sessionSteps, Memory: sessionBytes}, func() error {

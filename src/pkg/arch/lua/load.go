@@ -98,7 +98,10 @@ func compile(file, keeps string) ([]*Plugin, error) {
 		}
 		shape, _ := said.Get(rt.StringValue("shape")).TryString()
 
-		out = append(out, &Plugin{file: file, name: name, version: version, shape: shape, unit: unit, keeps: keeps})
+		out = append(out, &Plugin{
+			file: file, name: name, version: version, shape: shape, unit: unit,
+			keeps: keeps, limits: processLimits,
+		})
 	}
 	return out, nil
 }

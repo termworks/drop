@@ -19,6 +19,9 @@ At most 64 stream handlers run across all inbound connections, with no more than
 one connection, so those per-stream bounds also have a process-wide ceiling.
 Streams arriving over connections held to paired devices have the same 64-handler process ceiling
 and 64-handler per-connection ceiling.
+Lua archetypes have a second process-wide ceiling: 16 active runtimes, 128 files opened through
+plugins and four plugin process groups. Reaching one refuses new work instead of waiting while it
+holds an admitted stream.
 
 **How long a read may wait.** Every read in the handshake has a deadline, on both sides. A far end
 that takes what you sent and then says nothing would otherwise hold a goroutine, a stream and a

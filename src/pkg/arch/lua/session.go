@@ -45,6 +45,8 @@ const Lingering = 2 * time.Second
 type session struct {
 	ctx context.Context
 	at  arch.Session
+	// limits are shared by every plugin in this process.
+	limits *resourceLimits
 	// where is the directory this namespace keeps its own files in, and dir is that directory
 	// opened. Nothing is made on disk until a plugin asks for a file.
 	where string
@@ -59,7 +61,9 @@ type session struct {
 func (s *session) shut() {
 	for _, file := range s.open {
 		_ = file.Close()
+		s.limits.files.give()
 	}
+	s.open = nil
 	if s.dir != nil {
 		s.sweep()
 		_ = s.dir.Close()
@@ -199,6 +203,16 @@ func (s *session) opens(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if len(s.open) >= MaxOpen {
 		return nil, fmt.Errorf("this session holds %d files open already, which is as many as it may", MaxOpen)
 	}
+	if !s.limits.files.take() {
+		return nil, fmt.Errorf("%d plugin files are open already, which is as many as the process may hold", cap(s.limits.files))
+	}
+	kept := false
+	defer func() {
+		if !kept {
+			s.limits.files.give()
+		}
+	}()
+
 	dir, err := s.under()
 	if err != nil {
 		return nil, err
@@ -210,6 +224,7 @@ func (s *session) opens(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		return nil, fmt.Errorf("opening %s: %w", name, err)
 	}
 	s.open = append(s.open, file)
+	kept = true
 
 	return c.PushingNext1(t.Runtime, s.holding(t.Runtime, file)), nil
 }
@@ -260,6 +275,10 @@ func (s *session) runs(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if _, err := s.under(); err != nil {
 		return nil, err
 	}
+	if !s.limits.processes.take() {
+		return nil, fmt.Errorf("%d plugin processes are running already, which is as many as the process may hold", cap(s.limits.processes))
+	}
+	defer s.limits.processes.give()
 	t.RequireCPU(costRun)
 
 	ctx, stop := context.WithTimeout(s.ctx, Waiting)
@@ -429,22 +448,26 @@ func writing(file *os.File) rt.GoFunctionFunc {
 
 func (s *session) closing(file *os.File) rt.GoFunctionFunc {
 	return func(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
-		if err := file.Close(); err != nil {
+		err := file.Close()
+		if s.forget(file) {
+			s.limits.files.give()
+		}
+		if err != nil {
 			return nil, fmt.Errorf("closing: %w", err)
 		}
-		s.forget(file)
 		return c.Next(), nil
 	}
 }
 
 // forget drops a file the plugin closed, so closing one gives its place back.
-func (s *session) forget(file *os.File) {
+func (s *session) forget(file *os.File) bool {
 	for i, held := range s.open {
 		if held == file {
 			s.open = append(s.open[:i], s.open[i+1:]...)
-			return
+			return true
 		}
 	}
+	return false
 }
 
 // capped takes what a process says up to a limit and throws the rest away, so a program that never
