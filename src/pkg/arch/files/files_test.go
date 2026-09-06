@@ -948,6 +948,49 @@ func TestALinkSwappedInUnderASessionIsNotFollowed(t *testing.T) {
 	}
 }
 
+func TestScanNoticesAReplacementWithMatchingMetadata(t *testing.T) {
+	dir := t.TempDir()
+	at := filepath.Join(dir, "same.txt")
+	if err := os.WriteFile(at, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(at, when, when); err != nil {
+		t.Fatal(err)
+	}
+	first, err := scan(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.Open(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := held.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	replacement := filepath.Join(dir, "replacement")
+	if err := os.WriteFile(replacement, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(replacement, when, when); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, at); err != nil {
+		t.Fatal(err)
+	}
+	second, err := scan(dir, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first["same.txt"].Sum == second["same.txt"].Sum {
+		t.Fatal("replacement with matching size and timestamp kept the old digest")
+	}
+}
+
 // A pipe under a name is answered, not waited on: an open that waits for a writer has no deadline
 // and nothing to end it.
 func TestAPipeUnderANameIsNotWaitedOn(t *testing.T) {

@@ -57,6 +57,7 @@ type mark struct {
 	Size int64
 	At   int64
 	Exec bool
+	File os.FileInfo
 }
 
 // keeper holds one folder: the directory, its history, and what has passed between them.
@@ -370,7 +371,7 @@ func (k *keeper) dressed(root *os.Root, path string, h Held, sum [32]byte) error
 	if err != nil {
 		return fmt.Errorf("looking at %s: %w", path, err)
 	}
-	k.held[path] = mark{Sum: sum, Size: stat.Size(), At: stat.ModTime().UnixNano(), Exec: h.Exec}
+	k.held[path] = mark{Sum: sum, Size: stat.Size(), At: stat.ModTime().UnixNano(), Exec: h.Exec, File: stat}
 	return nil
 }
 
@@ -414,8 +415,8 @@ func scan(dir string, was map[string]mark) (map[string]mark, error) {
 		if err != nil {
 			return nil
 		}
-		m := mark{Size: stat.Size(), At: stat.ModTime().UnixNano(), Exec: stat.Mode().Perm()&0o111 != 0}
-		if held, knew := was[rel]; knew && held.Size == m.Size && held.At == m.At {
+		m := mark{Size: stat.Size(), At: stat.ModTime().UnixNano(), Exec: stat.Mode().Perm()&0o111 != 0, File: stat}
+		if held, knew := was[rel]; knew && held.File != nil && os.SameFile(held.File, stat) && held.Size == m.Size && held.At == m.At {
 			m.Sum = held.Sum
 			out[rel] = m
 			return nil
