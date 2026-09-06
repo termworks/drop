@@ -2,10 +2,12 @@
 package book
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,6 +19,9 @@ import (
 
 // SecretBytes is the width of the shared secret two paired peers derive.
 const SecretBytes = 32
+
+// MaxEntries caps how many peers one address book holds.
+const MaxEntries = 1 << 12
 
 // Entry is one known peer. Secret is empty for a peer that was pinned by id rather than paired;
 // such a peer can be reached on the local network, but not looked up privately.
@@ -157,8 +162,8 @@ func Load() (*Book, error) {
 	}
 	b.seen = at
 
-	var onDisk map[string]stored
-	if err := json.Unmarshal(raw, &onDisk); err != nil {
+	onDisk, err := decode(raw, MaxEntries)
+	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", file, err)
 	}
 
@@ -193,6 +198,9 @@ func Load() (*Book, error) {
 func (b *Book) Save() error {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	if len(b.entries) > MaxEntries {
+		return fmt.Errorf("address book has %d peers, over the %d-peer limit", len(b.entries), MaxEntries)
+	}
 
 	file, err := path()
 	if err != nil {
@@ -216,6 +224,51 @@ func (b *Book) Save() error {
 		return fmt.Errorf("creating %s: %w", filepath.Dir(file), err)
 	}
 	return keep.Replace(file, append(raw, '\n'))
+}
+
+func decode(raw []byte, most int) (map[string]stored, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	start, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if start != json.Delim('{') {
+		return nil, errors.New("an address book is not an object")
+	}
+
+	out := make(map[string]stored)
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		name, ok := token.(string)
+		if !ok {
+			return nil, errors.New("an address book name is not a string")
+		}
+		var entry stored
+		if err := decoder.Decode(&entry); err != nil {
+			return nil, err
+		}
+		if _, exists := out[name]; !exists && len(out) >= most {
+			return nil, fmt.Errorf("an address book names more than the %d-peer limit", most)
+		}
+		out[name] = entry
+	}
+	end, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if end != json.Delim('}') {
+		return nil, errors.New("an address book does not end as an object")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("an address book has another value after it")
+		}
+		return nil, err
+	}
+	return out, nil
 }
 
 // Pin records a name for a peer id, without a shared secret.

@@ -3,6 +3,7 @@ package book
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -64,6 +65,43 @@ func TestPairSurvivesReload(t *testing.T) {
 	}
 	if !entry.Paired() {
 		t.Fatal("Paired() is false for an entry with a secret")
+	}
+}
+
+func TestAddressBookStopsAtItsPeerLimit(t *testing.T) {
+	id := testID(t)
+	raw, err := json.Marshal(map[string]stored{
+		"one": {ID: id.String()},
+		"two": {ID: id.String()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decode(raw, 1); err == nil {
+		t.Fatal("decode() accepted more peers than its limit")
+	}
+}
+
+func TestAddressBookRefusesToSavePastItsPeerLimit(t *testing.T) {
+	config := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", config)
+	file := filepath.Join(config, "drop", "peers.json")
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("kept"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := &Book{entries: make(map[string]Entry, MaxEntries+1)}
+	entry := Entry{ID: testID(t)}
+	for i := range MaxEntries + 1 {
+		b.entries[fmt.Sprintf("peer-%d", i)] = entry
+	}
+	if err := b.Save(); err == nil {
+		t.Fatal("Save() accepted more peers than its limit")
+	}
+	if raw, err := os.ReadFile(file); err != nil || string(raw) != "kept" {
+		t.Fatalf("refused save left %q, %v", raw, err)
 	}
 }
 
