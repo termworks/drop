@@ -37,6 +37,8 @@ const (
 	partingWithin = 5 * time.Second
 	// outputDrainWithin bounds reading the last output after a shell exits.
 	outputDrainWithin = 2 * time.Second
+	// MaxTerminals bounds live shell-backed terminal namespaces.
+	MaxTerminals = 16
 )
 
 // Config is what a tty namespace was told: what to start, and whether the far end may type.
@@ -157,6 +159,9 @@ func (t *TTY) at(path string, cfg Config) (*terminal, error) {
 
 	if live, ok := t.open[path]; ok {
 		return live, nil
+	}
+	if len(t.open) >= MaxTerminals {
+		return nil, fmt.Errorf("%d terminal shells are running already", MaxTerminals)
 	}
 
 	shell := cfg.Shell

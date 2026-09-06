@@ -120,6 +120,8 @@ what ends a tty session is the shell being waited for, and the tidying happens t
 behind the pty read. Before that, one watcher who typed `sleep 600 &` and exited left the terminal
 in the table with no shell behind it, and **every later watcher of that path got nothing until the
 daemon restarted**.
+At most 16 shell-backed terminal namespaces are live at once. Watchers of an existing terminal do
+not consume another shell; a seventeenth namespace is refused until one shell exits.
 
 ## One writer at a time
 

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -214,5 +215,49 @@ func TestAFastShellDrainsItsOutput(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the shell output did not finish")
+	}
+}
+
+func TestTerminalShellsHaveAProcessWideLimit(t *testing.T) {
+	tty := New(Into{})
+	defer tty.Stop()
+
+	terminals := make([]*terminal, 0, MaxTerminals)
+	for i := 0; i < MaxTerminals; i++ {
+		term, err := tty.at("/shell/"+strconv.Itoa(i), Config{Shell: "/bin/sh"})
+		if err != nil {
+			t.Fatalf("starting terminal %d before the limit: %v", i, err)
+		}
+		terminals = append(terminals, term)
+	}
+	if _, err := tty.at("/shell/over", Config{Shell: "/bin/sh"}); err == nil {
+		t.Fatal("a terminal shell started above the process limit")
+	}
+
+	if _, err := terminals[0].ptmx.WriteString("exit\n"); err != nil {
+		t.Fatalf("ending the first terminal: %v", err)
+	}
+	select {
+	case <-terminals[0].reaped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first terminal was not reaped")
+	}
+
+	until := time.Now().Add(2 * time.Second)
+	for {
+		tty.mu.Lock()
+		_, still := tty.open["/shell/0"]
+		tty.mu.Unlock()
+		if !still {
+			break
+		}
+		if time.Now().After(until) {
+			t.Fatal("the reaped terminal kept its process capacity")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if _, err := tty.at("/shell/after", Config{Shell: "/bin/sh"}); err != nil {
+		t.Fatalf("a terminal stayed refused after capacity returned: %v", err)
 	}
 }
