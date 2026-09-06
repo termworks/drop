@@ -14,7 +14,12 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/argon2"
+
+	"github.com/bresilla/drop/src/pkg/wire"
 )
+
+// MaxPlain is the largest password carried by the session protocol.
+const MaxPlain = wire.MaxString
 
 // The cost of one guess. Deliberately expensive: the whole value of a hash is that trying the
 // dictionary takes longer than the attacker is willing to wait.
@@ -30,6 +35,9 @@ const (
 func Hash(plain string) (string, error) {
 	if plain == "" {
 		return "", fmt.Errorf("an empty password guards nothing")
+	}
+	if len(plain) > MaxPlain {
+		return "", fmt.Errorf("a password is %d bytes, over the %d-byte limit", len(plain), MaxPlain)
 	}
 
 	salt := make([]byte, saltLength)
@@ -53,6 +61,9 @@ func Verify(hash, plain string) bool {
 }
 
 func verifyContext(ctx context.Context, hash, plain string) bool {
+	if len(plain) > MaxPlain {
+		return false
+	}
 	parsed, err := parse(hash)
 	if err != nil {
 		return false

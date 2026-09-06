@@ -139,6 +139,20 @@ func TestAnEmptyPasswordIsRefused(t *testing.T) {
 	}
 }
 
+func TestAnOversizedPasswordCostsNothing(t *testing.T) {
+	plain := strings.Repeat("x", MaxPlain+1)
+	before := Spent()
+	if _, err := Hash(plain); err == nil {
+		t.Fatal("Hash() accepted an oversized password")
+	}
+	if Verify("not a hash", plain) {
+		t.Fatal("Verify() accepted an oversized password")
+	}
+	if got := Spent() - before; got != 0 {
+		t.Fatalf("an oversized password ran %d expensive hashes", got)
+	}
+}
+
 // A config given a plaintext password by mistake should be told, rather than quietly never matching.
 func TestLooksSpotsAHash(t *testing.T) {
 	hash, _ := Hash("x")
