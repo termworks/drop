@@ -26,9 +26,6 @@ const Relay = iroh.N0DNSPkarrRelayProd
 const Refresh = 5 * time.Minute
 
 // Service keeps this device findable by the devices it has paired with.
-//
-// It is off unless drop.rendezvous is turned on, because it writes to a relay this machine does
-// not own, and that is not something to start doing on a user's behalf without being asked.
 type Service struct {
 	node *node.Node
 

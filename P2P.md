@@ -66,7 +66,7 @@ drop tries three things, cheapest first — `reachAt` in `src/cmd/dial.go`:
             ▼
   ┌──────────────────────────────────────────────────────────────┐
   │ 3. the rendezvous ask a pkarr relay where it is now          │
-  │                   off unless drop.rendezvous = true          │
+  │                   on unless drop.rendezvous = false          │
   │                   the only step that talks to a stranger     │
   └──────────────────────────────────────────────────────────────┘
 ```
@@ -135,8 +135,9 @@ why so nobody helpfully adds the other one back.
 
 ## 4. Rung 3 — the rendezvous, and the privacy problem
 
-Off by default. It writes to a relay you do not own, and that is not something
-to start doing on someone's behalf. `drop.rendezvous = true` turns it on.
+On by default, so a paired device remains findable after it changes networks.
+It writes derived, rotating identities and addresses to a relay you do not own;
+`drop.rendezvous = false` turns it off when local-only reachability is preferred.
 
 ### What it is built on
 
@@ -430,9 +431,9 @@ That is `drop serve`, installed as a user service:
 ```
 
 Without it, both sides have to be running drop at the same moment — which is
-croc's model, not "pair once and reach forever". With `drop.rendezvous = true`
-the same process republishes its address every 5 minutes, because a record
-that stops being refreshed stops being findable.
+croc's model, not "pair once and reach forever". Unless rendezvous publishing
+is disabled, the same process republishes its address every 5 minutes, because
+a record that stops being refreshed stops being findable.
 
 `drop` with no arguments also holds the node open, so a terminal on this machine keeps it
 reachable for as long as the page is.
