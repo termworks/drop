@@ -78,6 +78,10 @@ func (k kept) To(ctx context.Context, entry book.Entry, alpn string) (io.Closer,
 	return staysOpen{}, s, nil
 }
 
+func (k kept) Reach(ctx context.Context, entry book.Entry, alpn string) error {
+	return k.held.Reach(ctx, entry, alpn)
+}
+
 // staysOpen is what a held connection hands back in place of itself.
 type staysOpen struct{}
 

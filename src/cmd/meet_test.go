@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -282,6 +283,30 @@ type counting struct {
 
 	mu sync.Mutex
 	n  int
+}
+
+type unreachable struct {
+	streams int
+}
+
+func (u *unreachable) Reach(context.Context, book.Entry, string) error {
+	return errors.New("offline")
+}
+
+func (u *unreachable) To(context.Context, book.Entry, string) (io.Closer, proto.Stream, error) {
+	u.streams++
+	return nil, nil, errors.New("redialed")
+}
+
+func TestAFailedBacklogReachStartsNoStreams(t *testing.T) {
+	over := &unreachable{}
+	err := pushHeldTo(context.Background(), over, book.Entry{Name: "offline"}, nil, nil)
+	if err == nil || err.Error() != "offline" {
+		t.Fatalf("pushHeldTo() = %v", err)
+	}
+	if over.streams != 0 {
+		t.Fatalf("failed reach started %d streams", over.streams)
+	}
 }
 
 func (c *counting) To(ctx context.Context, entry book.Entry, alpn string) (io.Closer, proto.Stream, error) {

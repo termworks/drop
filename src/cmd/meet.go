@@ -158,6 +158,20 @@ func pushTo(ctx context.Context, over reaches, entry book.Entry, mounts *ns.Tabl
 	}
 }
 
+type heldReaches interface {
+	reaches
+	Reach(context.Context, book.Entry, string) error
+}
+
+// pushHeldTo sends a backlog only after its peer has one usable connection.
+func pushHeldTo(ctx context.Context, over heldReaches, entry book.Entry, mounts *ns.Table, pinned *book.Book) error {
+	if err := over.Reach(ctx, entry, node.ALPNSession); err != nil {
+		return err
+	}
+	pushTo(ctx, over, entry, mounts, pinned)
+	return nil
+}
+
 // catchUp opens a meeting with one peer about one namespace.
 func catchUp(ctx context.Context, over reaches, entry book.Entry, mount ns.Mount, rule ns.Access, pinned *book.Book) (meet.Caught, error) {
 	l, err := history.Open(mount.Shared.ID())

@@ -341,6 +341,7 @@ func backlog(ctx context.Context, pinned *book.Book, held *dial.Kept, mounts *ns
 			continue
 		}
 
+		over := kept{held: held}
 		for _, entry := range pinned.Paired() {
 			select {
 			case <-ctx.Done():
@@ -348,14 +349,9 @@ func backlog(ctx context.Context, pinned *book.Book, held *dial.Kept, mounts *ns
 			default:
 			}
 
-			// A connection first, whether or not there is anything to send. This device may be
-			// one nothing can dial, and then the connection it opens is the only way anybody has
-			// of reaching it — including to hand it what they have been holding.
-			if err := held.Reach(ctx, entry, node.ALPNSession); err != nil {
+			if err := pushHeldTo(ctx, over, entry, mounts, pinned); err != nil {
 				trace(fmt.Sprintf("reaching %s: %v", entry.Name, err))
 			}
-
-			pushTo(ctx, kept{held: held}, entry, mounts, pinned)
 		}
 	}
 }
