@@ -67,6 +67,71 @@ func TestAnUnreadableHashNeverVerifies(t *testing.T) {
 	}
 }
 
+func TestAHashCannotChooseItsResourceCost(t *testing.T) {
+	hash, err := Hash("bounded")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := map[string]string{
+		"too much memory":  strings.Replace(hash, "m=65536", "m=4294967295", 1),
+		"too much time":    strings.Replace(hash, "t=3", "t=4294967295", 1),
+		"too many threads": strings.Replace(hash, "p=4", "p=255", 1),
+		"weak memory":      strings.Replace(hash, "m=65536", "m=1", 1),
+		"trailing cost":    strings.Replace(hash, "p=4", "p=4junk", 1),
+	}
+
+	before := Spent()
+	for name, hostile := range cases {
+		t.Run(name, func(t *testing.T) {
+			if Verify(hostile, "bounded") {
+				t.Fatal("a hash with a foreign cost verified")
+			}
+		})
+	}
+	if got := Spent() - before; got != 0 {
+		t.Fatalf("invalid costs ran %d expensive hashes", got)
+	}
+}
+
+func TestAHashMustHaveGeneratedSizedParts(t *testing.T) {
+	hash, err := Hash("bounded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(hash, "$")
+
+	cases := map[string]string{}
+	for name, replacement := range map[string]string{
+		"short salt": encode(make([]byte, saltLength-1)),
+		"long salt":  encode(make([]byte, saltLength+1)),
+	} {
+		changed := append([]string(nil), parts...)
+		changed[4] = replacement
+		cases[name] = strings.Join(changed, "$")
+	}
+	for name, replacement := range map[string]string{
+		"short sum": encode(make([]byte, keyLength-1)),
+		"long sum":  encode(make([]byte, keyLength+1)),
+	} {
+		changed := append([]string(nil), parts...)
+		changed[5] = replacement
+		cases[name] = strings.Join(changed, "$")
+	}
+
+	before := Spent()
+	for name, malformed := range cases {
+		t.Run(name, func(t *testing.T) {
+			if Verify(malformed, "bounded") {
+				t.Fatal("a hash with a foreign part size verified")
+			}
+		})
+	}
+	if got := Spent() - before; got != 0 {
+		t.Fatalf("invalid part sizes ran %d expensive hashes", got)
+	}
+}
+
 func TestAnEmptyPasswordIsRefused(t *testing.T) {
 	if _, err := Hash(""); err == nil {
 		t.Fatal("an empty password was hashed")

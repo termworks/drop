@@ -80,15 +80,18 @@ func parse(hash string) (parts, error) {
 		return out, fmt.Errorf("not an argon2id hash")
 	}
 
-	var version int
-	if _, err := fmt.Sscanf(field[2], "v=%d", &version); err != nil {
-		return out, fmt.Errorf("unreadable version: %w", err)
+	if field[2] != fmt.Sprintf("v=%d", argon2.Version) {
+		return out, fmt.Errorf("unsupported argon2 version")
 	}
-	if version != argon2.Version {
-		return out, fmt.Errorf("argon2 version %d, expected %d", version, argon2.Version)
+	wantCost := fmt.Sprintf("m=%d,t=%d,p=%d", memoryCost, timeCost, threads)
+	if field[3] != wantCost {
+		return out, fmt.Errorf("unsupported argon2 cost")
 	}
-	if _, err := fmt.Sscanf(field[3], "m=%d,t=%d,p=%d", &out.memory, &out.time, &out.threads); err != nil {
-		return out, fmt.Errorf("unreadable cost: %w", err)
+	if len(field[4]) != base64.RawStdEncoding.EncodedLen(saltLength) {
+		return out, fmt.Errorf("unexpected salt length")
+	}
+	if len(field[5]) != base64.RawStdEncoding.EncodedLen(keyLength) {
+		return out, fmt.Errorf("unexpected hash length")
 	}
 
 	salt, err := decode(field[4])
@@ -99,10 +102,11 @@ func parse(hash string) (parts, error) {
 	if err != nil {
 		return out, fmt.Errorf("unreadable hash: %w", err)
 	}
-	if len(sum) == 0 {
-		return out, fmt.Errorf("the hash is empty")
+	if len(salt) != saltLength || len(sum) != keyLength {
+		return out, fmt.Errorf("unexpected decoded length")
 	}
 
+	out.memory, out.time, out.threads = memoryCost, timeCost, threads
 	out.salt, out.sum = salt, sum
 	return out, nil
 }
