@@ -498,28 +498,34 @@ func (s *Store) Rewrite(to []byte) error {
 	s.ids, s.seen = nil, nil
 
 	for _, at := range []string{s.history, s.outbox} {
-		all, err := readAll(at, s.peer.String())
-		if err != nil {
-			return err
-		}
-		if len(all) == 0 {
-			continue
-		}
-
-		var out []byte
-		for _, m := range all {
-			body, err := recordWith(m, s.peer.String(), to)
+		err := keep.While(at, func() error {
+			all, err := readAll(at, s.peer.String())
 			if err != nil {
 				return err
 			}
-			var head [binary.MaxVarintLen64]byte
-			n := binary.PutUvarint(head[:], uint64(len(body)))
-			out = append(out, head[:n]...)
-			out = append(out, body...)
-		}
+			if len(all) == 0 {
+				return nil
+			}
 
-		if err := keep.Replace(at, out); err != nil {
-			return fmt.Errorf("rewriting %s: %w", at, err)
+			var out []byte
+			for _, m := range all {
+				body, err := recordWith(m, s.peer.String(), to)
+				if err != nil {
+					return err
+				}
+				var head [binary.MaxVarintLen64]byte
+				n := binary.PutUvarint(head[:], uint64(len(body)))
+				out = append(out, head[:n]...)
+				out = append(out, body...)
+			}
+
+			if err := keep.Replace(at, out); err != nil {
+				return fmt.Errorf("rewriting %s: %w", at, err)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
 		}
 	}
 	return nil

@@ -147,6 +147,16 @@ func newVaultClearCmd() *cobra.Command {
 
 // reseal walks every conversation on this disk and writes it back, sealed or not.
 func reseal(seal bool) error {
+	path, err := castSocket()
+	if err != nil {
+		return err
+	}
+	guard, err := localGuard(path)
+	if err != nil {
+		return fmt.Errorf("stop drop before rewriting its history: %w", err)
+	}
+	defer func() { _ = guard.Close() }()
+
 	cfg, err := conf.Load(reading())
 	if err != nil {
 		return err
