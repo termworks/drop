@@ -79,14 +79,20 @@ func (k *keeper) once() (bool, error) {
 	made := false
 	var trouble error
 	if there && !(k.known && k.wrote == blake3.Sum256(raw)) {
-		switch err := k.record(raw); {
-		case err == nil:
-			made = true
-		default:
-			if err := k.spare(raw); err != nil {
-				return false, err
+		level, err := k.fromHistory(raw)
+		switch {
+		case err != nil:
+			return false, err
+		case !level:
+			switch err := k.record(raw); {
+			case err == nil:
+				made = true
+			default:
+				if err := k.spare(raw); err != nil {
+					return false, err
+				}
+				trouble = err
 			}
-			trouble = err
 		}
 	}
 
@@ -162,10 +168,36 @@ func (k *keeper) record(raw []byte) error {
 	if err != nil {
 		return fmt.Errorf("recording %s: %w", k.file, err)
 	}
-	if _, err := k.log.Add(c); err != nil {
+	id, err := k.log.Add(c)
+	if err != nil {
 		return fmt.Errorf("recording %s: %w", k.file, err)
 	}
-	return k.remember(raw, k.heads, k.built)
+	return k.remember(raw, []history.ID{id}, true)
+}
+
+// fromHistory repairs the mark when the file already is what the history makes.
+func (k *keeper) fromHistory(raw []byte) (bool, error) {
+	changes, err := k.log.Ordered()
+	if err != nil {
+		return false, fmt.Errorf("reading the history of %s: %w", k.file, err)
+	}
+	if len(changes) == 0 {
+		return false, nil
+	}
+
+	body, _, err := Whole(changes)
+	if err != nil {
+		return false, fmt.Errorf("keeping %s: %w", k.file, err)
+	}
+	if !bytes.Equal(raw, body) {
+		return false, nil
+	}
+
+	heads := weave.Heads(changes)
+	if err := k.remember(raw, heads, true); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // seen is the history the file on disk was written from, and nothing at all until this machine has

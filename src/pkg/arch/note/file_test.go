@@ -183,6 +183,31 @@ func TestAnEditMadeWhileDropWasOffIsNoticedAndOneItMadeIsNot(t *testing.T) {
 	}
 }
 
+func TestAFileThatReachedDiskBeforeItsMarkIsRecognised(t *testing.T) {
+	asSomebody(t, "alice")
+	k := aKeeper(t)
+
+	save(t, k.file, "one\ntwo\n")
+	k.turn(t)
+
+	save(t, k.file, "ONE\ntwo\n")
+	c, err := history.Sign(k.log.At(), []byte("ONE\ntwo\n"), k.log.Heads())
+	if err != nil {
+		t.Fatalf("Sign(): %v", err)
+	}
+	if _, err := k.log.Add(c); err != nil {
+		t.Fatalf("Add(): %v", err)
+	}
+
+	again := &keeper{file: k.file, log: k.log}
+	if again.turn(t) {
+		t.Fatal("the file already represented by the history was recorded again")
+	}
+	if n := again.count(t); n != 2 {
+		t.Fatalf("recovery left %d changes, want 2", n)
+	}
+}
+
 // A note that only exists as a history — the machine that joined it — gets the file written for it.
 func TestANoteWithNoFileYetIsWrittenFromItsHistory(t *testing.T) {
 	asSomebody(t, "alice")
