@@ -158,7 +158,8 @@ func TestMountsAreRegistered(t *testing.T) {
 	`)
 
 	m, _, ok := cfg.Mounts.Lookup("/inbox")
-	if !ok || m.Archetype != "share" || m.Config != (share.Config{Dir: "/tmp/in"}) {
+	shared, sharedOK := m.Config.(share.Config)
+	if !ok || m.Archetype != "share" || !sharedOK || shared.Dir != "/tmp/in" {
 		t.Fatalf("/inbox = %+v ok %v", m, ok)
 	}
 	m, _, _ = cfg.Mounts.Lookup("/term")
@@ -618,7 +619,8 @@ func TestTildeIsExpanded(t *testing.T) {
 	`)
 
 	m, _, _ := cfg.Mounts.Lookup("/inbox")
-	if m.Config != (share.Config{Dir: filepath.Join(home, "Downloads")}) {
+	shared, ok := m.Config.(share.Config)
+	if !ok || shared.Dir != filepath.Join(home, "Downloads") {
 		t.Fatalf("dir = %+v, want it expanded", m.Config)
 	}
 }

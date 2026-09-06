@@ -17,11 +17,13 @@ import (
 
 // Config is what a share namespace was told: where what arrives is put.
 type Config struct {
-	Dir string
+	Dir      string
+	instance *configInstance
 }
 
-// Into is what the process running a share hands it: how to report bytes as they land, and what to
-// do about an item once it has.
+type configInstance [1]byte
+
+// Into is what the process running a share hands it: how to report items and completed batches.
 type Into struct {
 	// Progress, when set, is called as bytes land. Total is wire.SizeUnknown for an item with no
 	// length.
@@ -29,6 +31,8 @@ type Into struct {
 	// Landed, when set, is called once an item is complete and verified, under the name it
 	// actually took on this disk.
 	Landed func(from node.ID, name string, size int64)
+	// Completed, when set, is called after a non-empty batch has landed in full.
+	Completed func(from node.ID, path string, config Config)
 }
 
 // Share serves one-shot pushes.
@@ -47,7 +51,7 @@ func (s *Share) Read(d arch.Declared) (arch.Config, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("a share namespace needs a dir")
 	}
-	return Config{Dir: dir}, nil
+	return Config{Dir: dir, instance: &configInstance{}}, nil
 }
 
 func (s *Share) Note(c arch.Config) arch.Note {
@@ -67,5 +71,19 @@ func (s *Share) Serve(ctx context.Context, at arch.Session) error {
 		reject := wire.Reject{Reason: "this namespace has nowhere to put anything"}
 		return at.Conn.WriteFrame(wire.KindReject, reject.Encode())
 	}
-	return receive(at.Conn, cfg.Dir, at.From, s.into)
+	landed := false
+	into := s.into
+	into.Landed = func(from node.ID, name string, size int64) {
+		landed = true
+		if s.into.Landed != nil {
+			s.into.Landed(from, name, size)
+		}
+	}
+	if err := receive(at.Conn, cfg.Dir, at.From, into); err != nil {
+		return err
+	}
+	if landed && s.into.Completed != nil {
+		s.into.Completed(at.From, at.Path, cfg)
+	}
+	return nil
 }

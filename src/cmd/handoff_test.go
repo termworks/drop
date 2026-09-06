@@ -3,13 +3,15 @@ package cmd
 import (
 	"testing"
 
+	"github.com/bresilla/drop/src/pkg/arch/share"
+	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 )
 
 // A handoff stands for one transfer. A session that landed nothing is not it: a peer that opened
 // the path and hung up, or one whose file failed its digest, must leave the path up so the sender
 // can come back to the part file it left behind.
-func TestAHandoffSurvivesASessionThatTookNothing(t *testing.T) {
+func TestAHandoffStaysOpenWithoutCompletion(t *testing.T) {
 	host := newShareHost(ns.NewTable(), (&doings{}).serving())
 
 	box, err := host.begin(t.TempDir(), nil)
@@ -18,7 +20,6 @@ func TestAHandoffSurvivesASessionThatTookNothing(t *testing.T) {
 	}
 	defer host.end(box)
 
-	host.finished(SharePath)
 	select {
 	case <-box.done:
 		t.Fatal("a session that took nothing in closed the handoff")
@@ -37,12 +38,73 @@ func TestAHandoffEndsOnASubpathToo(t *testing.T) {
 	}
 	defer host.end(box)
 
-	host.took()
-	host.finished(SharePath + "/a")
+	host.finished(node.ID{}, SharePath+"/a", box.config)
 
 	select {
 	case <-box.done:
 	default:
 		t.Fatal("a transfer through a path under the handoff left it open")
+	}
+}
+
+func TestAConfiguredShareCannotCompleteAHandoff(t *testing.T) {
+	mounts := ns.NewTable()
+	known := (&doings{}).serving()
+	answers, _ := known.Lookup("share", 0)
+	value, err := answers.Read(saying{"dir": t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured := value.(share.Config)
+	if err := mounts.Add(ns.Mount{Path: "/inbox", Archetype: "share", Config: configured}); err != nil {
+		t.Fatal(err)
+	}
+	host := newShareHost(mounts, known)
+	box, err := host.begin(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.end(box)
+
+	host.finished(node.ID{}, "/inbox", configured)
+	select {
+	case <-box.done:
+		t.Fatal("a configured share completed the handoff")
+	default:
+	}
+	host.finished(node.ID{}, SharePath, box.config)
+	select {
+	case <-box.done:
+	default:
+		t.Fatal("the handoff's own completion left it open")
+	}
+}
+
+func TestALateCompletionCannotCloseAReplacementHandoff(t *testing.T) {
+	host := newShareHost(ns.NewTable(), (&doings{}).serving())
+	dir := t.TempDir()
+	first, err := host.begin(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.end(first)
+	second, err := host.begin(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.end(second)
+
+	host.finished(node.ID{}, SharePath, first.config)
+	select {
+	case <-second.done:
+		t.Fatal("the old handoff's completion closed its replacement")
+	default:
+	}
+	host.finished(node.ID{}, SharePath, second.config)
+	host.finished(node.ID{}, SharePath, second.config)
+	select {
+	case <-second.done:
+	default:
+		t.Fatal("the replacement handoff did not complete")
 	}
 }

@@ -128,7 +128,7 @@ func runServe(parent context.Context, quiet bool) error {
 	// A handoff is put up the same way: mounted while somebody is waiting for a file, and gone
 	// again the moment they are not.
 	shares := newShareHost(cfg.Mounts, known)
-	doing.took = shares.took
+	doing.completed = shares.finished
 	doing.shown = func(path string) (*cast.Caster, bool) {
 		if path != CastPath {
 			return nil, false
@@ -176,21 +176,9 @@ func runServe(parent context.Context, quiet bool) error {
 				return
 			}
 
-			// Which path this session was for, so an ephemeral mount learns when the transfer it
-			// was put up for is over. Nothing is asked of a caller that was turned away.
-			asked, watched := "", policy
-			watched.Allow = func(from node.ID, open proto.Opening) (bool, string) {
-				allowed, why := policy.Allow(from, open)
-				if allowed {
-					asked = open.Path
-				}
-				return allowed, why
-			}
-
-			if err := proto.Handle(ctx, s, from, watched); err != nil {
+			if err := proto.Handle(ctx, s, from, policy); err != nil {
 				fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 			}
-			shares.finished(asked)
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
 			defer func() { _ = s.Close() }()

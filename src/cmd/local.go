@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/bresilla/drop/src/pkg/arch"
+	"github.com/bresilla/drop/src/pkg/arch/share"
 	"github.com/bresilla/drop/src/pkg/asciicast"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/cast"
@@ -180,11 +181,9 @@ type shareHost struct {
 
 // handoff is one handoff on the air, and how whoever asked for it learns it is over.
 type handoff struct {
-	done chan struct{}
-	over bool
-	// took says something has actually come through it. A session that landed nothing — one that
-	// was refused, or that hung up mid-file — is not the transfer this was put up for.
-	took bool
+	done   chan struct{}
+	over   bool
+	config share.Config
 }
 
 func newShareHost(mounts *ns.Table, known *arch.Registry) *shareHost {
@@ -213,7 +212,12 @@ func (h *shareHost) begin(dir string, to []string) (*handoff, error) {
 		return nil, err
 	}
 
-	h.open = &handoff{done: make(chan struct{})}
+	config, ok := mount.Config.(share.Config)
+	if !ok {
+		h.mounts.Drop(SharePath)
+		return nil, fmt.Errorf("the share mount has invalid settings")
+	}
+	h.open = &handoff{done: make(chan struct{}), config: config}
 	return h.open, nil
 }
 
@@ -231,36 +235,20 @@ func (h *shareHost) end(box *handoff) {
 	h.mounts.Drop(SharePath)
 }
 
-// took notes that a share namespace received something. A handoff that is open is the one that may
-// have taken it.
-func (h *shareHost) took() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if h.open != nil {
-		h.open.took = true
-	}
-}
-
-// finished is a session on some path having ended. A handoff takes one transfer, so once one has
-// come through, the one that was open for that path is over.
-//
-// The path a session named is not the path it was served at: a mount answers for everything under
-// it, so /share/anything is the handoff too and has to end it like anything else.
-func (h *shareHost) finished(path string) {
+// finished closes the handoff served by one completed share batch.
+func (h *shareHost) finished(_ node.ID, path string, config share.Config) {
 	at, err := ns.Clean(path)
 	if err != nil {
 		return
 	}
-	mount, _, ok := h.mounts.Lookup(at)
-	if !ok || mount.Path != SharePath {
+	if at != SharePath && !strings.HasPrefix(at, SharePath+"/") {
 		return
 	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.open == nil || h.open.over || !h.open.took {
+	if h.open == nil || h.open.over || h.open.config != config {
 		return
 	}
 	h.open.over = true

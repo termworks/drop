@@ -41,9 +41,8 @@ type doings struct {
 	// changed, when set, is told that something in a namespace has moved, so that whoever else
 	// holds it hears about it rather than finding out the next time they ask.
 	changed arch.Changed
-	// took, when set, is told that something arrived in a share namespace, for a handoff that is
-	// up for one transfer.
-	took func()
+	// completed, when set, is told that a whole non-empty share batch arrived.
+	completed func(from node.ID, path string, config share.Config)
 	// shown, when set, answers whether a path is a screen this process is already running rather
 	// than a shell to start.
 	shown func(path string) (*cast.Caster, bool)
@@ -69,7 +68,7 @@ func reading() *arch.Registry {
 // serving registers everything a config can name.
 func (d *doings) serving() *arch.Registry {
 	known := arch.NewRegistry()
-	known.Register(share.New(share.Into{Progress: d.moving, Landed: d.dropped}))
+	known.Register(share.New(share.Into{Progress: d.moving, Landed: d.dropped, Completed: d.completedShare}))
 	known.Register(d.filing())
 	known.Register(chat.New(chat.Into{Store: d.store}))
 	known.Register(link.New(link.Into{Store: d.store}))
@@ -189,12 +188,14 @@ func (d *doings) landed(from node.ID, name string, size int64) {
 	d.knock()
 }
 
-// dropped records a file that arrived in a share namespace, which is the one kind of arrival a
-// handoff is put up for.
+// dropped records a file that arrived in a share namespace.
 func (d *doings) dropped(from node.ID, name string, size int64) {
 	d.landed(from, name, size)
-	if d.took != nil {
-		d.took()
+}
+
+func (d *doings) completedShare(from node.ID, path string, config share.Config) {
+	if d.completed != nil {
+		d.completed(from, path, config)
 	}
 }
 
