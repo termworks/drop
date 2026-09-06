@@ -279,6 +279,71 @@ func TestRefreshNoticesAddressBookRemoval(t *testing.T) {
 	}
 }
 
+func TestAFailedChangeDoesNotRemainInMemory(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	b, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Pair("alpha", testID(t), testSecret(t))
+	if err := b.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(file)
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	err = b.Change(func() (bool, error) {
+		b.Pair("beta", testID(t), testSecret(t))
+		if err := os.Chmod(dir, 0o500); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
+	if chmodErr := os.Chmod(dir, 0o700); chmodErr != nil {
+		t.Fatal(chmodErr)
+	}
+	if err == nil {
+		t.Fatal("the address book was written in a read-only directory")
+	}
+	if _, ok := b.Lookup("beta"); ok {
+		t.Fatal("a failed change remained live in memory")
+	}
+	if _, ok := b.Lookup("alpha"); !ok {
+		t.Fatal("restoring a failed change lost the prior entry")
+	}
+
+	onDisk, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := onDisk.Lookup("beta"); ok {
+		t.Fatal("a failed change reached the disk")
+	}
+}
+
+func TestAnUncommittedChangeDoesNotRemainInMemory(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	b, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Change(func() (bool, error) {
+		b.Pair("beta", testID(t), testSecret(t))
+		return false, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := b.Lookup("beta"); ok {
+		t.Fatal("a change reported as uncommitted remained live in memory")
+	}
+}
+
 // Finding a device is the expensive part of talking to it. The address that answered is the best
 // guess for next time, and it is only worth anything if it is written down.
 func TestTheAddressThatAnsweredIsRemembered(t *testing.T) {

@@ -525,12 +525,39 @@ func (b *Book) Change(alter func() (bool, error)) error {
 		if err := b.reload(); err != nil {
 			return err
 		}
+
+		b.mu.RLock()
+		before, seen := cloneEntries(b.entries), b.seen
+		b.mu.RUnlock()
+		restore := func() {
+			b.mu.Lock()
+			b.entries, b.seen = before, seen
+			b.mu.Unlock()
+		}
+
 		changed, err := alter()
 		if err != nil || !changed {
+			restore()
 			return err
 		}
-		return b.Save()
+		if err := b.Save(); err != nil {
+			if reloadErr := b.reload(); reloadErr != nil {
+				return errors.Join(err, fmt.Errorf("restoring the address book after the failed write: %w", reloadErr))
+			}
+			return err
+		}
+		return nil
 	})
+}
+
+func cloneEntries(entries map[string]Entry) map[string]Entry {
+	out := make(map[string]Entry, len(entries))
+	for name, entry := range entries {
+		entry.Secret = append([]byte(nil), entry.Secret...)
+		entry.Addrs = append([]string(nil), entry.Addrs...)
+		out[name] = entry
+	}
+	return out
 }
 
 func (b *Book) reload() error {
