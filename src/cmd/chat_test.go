@@ -4,7 +4,9 @@ import (
 	"context"
 	"io"
 	"net"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/convo"
@@ -53,6 +55,62 @@ func TestARefusalAboutTheSenderEmptiesTheQueue(t *testing.T) {
 	}
 	if left := stillQueued(t, entry); len(left) != 0 {
 		t.Fatalf("%d messages are still queued against a decision", len(left))
+	}
+}
+
+func TestChatDeliveriesAreCoalescedAndSerialized(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	requests := make(chan struct{}, 1)
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	done := make(chan struct{})
+
+	var mu sync.Mutex
+	active, maximum, calls := 0, 0, 0
+	deliver := func() error {
+		mu.Lock()
+		active++
+		calls++
+		if active > maximum {
+			maximum = active
+		}
+		mu.Unlock()
+
+		started <- struct{}{}
+		<-release
+
+		mu.Lock()
+		active--
+		mu.Unlock()
+		return nil
+	}
+	go func() {
+		deliveryLoop(ctx, time.Hour, requests, deliver, func(error) {})
+		close(done)
+	}()
+
+	queueDelivery(requests)
+	<-started
+	for range 100 {
+		queueDelivery(requests)
+	}
+	release <- struct{}{}
+	<-started
+	cancel()
+	release <- struct{}{}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("delivery loop did not stop")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("delivery calls = %d, want 2", calls)
+	}
+	if maximum != 1 {
+		t.Fatalf("concurrent deliveries = %d, want 1", maximum)
 	}
 }
 

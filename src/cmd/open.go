@@ -280,7 +280,19 @@ func talkTo(ctx context.Context, o opening) error {
 
 	fmt.Printf("\ntalking to %s; ctrl-c or ctrl-d to stop\n\n", o.entry.Name)
 
-	go flushLoop(ctx, o)
+	deliveries := make(chan struct{}, 1)
+	go deliveryLoop(ctx, flushEvery, deliveries, func() error {
+		_, err := deliverTo(ctx, o.node, o.lan, o.entry, o.served.Path, "chat")
+		return err
+	}, func(err error) {
+		switch {
+		case err == nil:
+		case proto.Settled(err):
+			fmt.Printf("  (not delivered: %v)\n", err)
+		default:
+			fmt.Printf("  (queued: %v)\n", err)
+		}
+	})
 
 	lines := make(chan string)
 	go func() {
@@ -308,17 +320,7 @@ func talkTo(ctx context.Context, o opening) error {
 				fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 				continue
 			}
-			// Sent in the background so a slow or absent far end does not stop the typing.
-			go func() {
-				_, err := deliverTo(ctx, o.node, o.lan, o.entry, o.served.Path, "chat")
-				switch {
-				case err == nil:
-				case proto.Settled(err):
-					fmt.Printf("  (not delivered: %v)\n", err)
-				default:
-					fmt.Printf("  (queued: %v)\n", err)
-				}
-			}()
+			queueDelivery(deliveries)
 		}
 	}
 }
@@ -329,18 +331,31 @@ const shownOnOpening = 20
 // flushEvery is how often a chat retries whatever is still queued.
 const flushEvery = 15 * time.Second
 
-// flushLoop keeps trying whatever is still queued, so a device coming back gets the backlog without
-// anyone typing again.
-func flushLoop(ctx context.Context, o opening) {
-	tick := time.NewTicker(flushEvery)
+func queueDelivery(deliveries chan<- struct{}) {
+	select {
+	case deliveries <- struct{}{}:
+	default:
+	}
+}
+
+// deliveryLoop serializes requested deliveries and retries pending messages periodically.
+func deliveryLoop(ctx context.Context, every time.Duration, requests <-chan struct{}, deliver func() error, report func(error)) {
+	tick := time.NewTicker(every)
 	defer tick.Stop()
 
 	for {
+		reportResult := false
 		select {
 		case <-ctx.Done():
 			return
+		case <-requests:
+			reportResult = true
 		case <-tick.C:
-			_, _ = deliverTo(ctx, o.node, o.lan, o.entry, o.served.Path, "chat")
+		}
+
+		err := deliver()
+		if reportResult {
+			report(err)
 		}
 	}
 }
