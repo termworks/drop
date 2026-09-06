@@ -5,6 +5,16 @@ import (
 	"testing"
 )
 
+func FuzzDecodeReady(f *testing.F) {
+	f.Add(ready{Writable: true}.encode())
+	f.Add([]byte{})
+	f.Add([]byte{0xff})
+
+	f.Fuzz(func(t *testing.T, body []byte) {
+		_, _ = decodeReady(body)
+	})
+}
+
 // A request from whoever opened the namespace, and a reply from whoever they opened it on. Both
 // carry paths, and a path from the far end that reaches the disk is the whole danger here.
 func FuzzDecodeRequest(f *testing.F) {

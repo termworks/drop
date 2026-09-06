@@ -74,6 +74,22 @@ func FuzzDecodeHello(f *testing.F) {
 	})
 }
 
+func FuzzDecodePairMsg(f *testing.F) {
+	f.Add(pairMsg{From: "peer", Name: "laptop", Nonce: make([]byte, nonceBytes)}.encode())
+	f.Add([]byte{})
+	f.Add([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f})
+
+	f.Fuzz(func(t *testing.T, body []byte) {
+		got, err := decodePairMsg(body)
+		if err != nil {
+			return
+		}
+		if len(got.Name) > mostName || len(got.Addrs) > maxPairAddrs || len(got.Nonce) > nonceBytes {
+			t.Fatalf("decoded pairing fields %d/%d/%d", len(got.Name), len(got.Addrs), len(got.Nonce))
+		}
+	})
+}
+
 // spoken is every string in a hello that a person is shown.
 func spoken(said Hello) []string {
 	var out []string
