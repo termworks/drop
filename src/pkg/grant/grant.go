@@ -19,7 +19,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
@@ -40,11 +39,8 @@ type Store struct {
 	// interface writes to it, and because Refresh replaces the whole map under them.
 	mu    sync.RWMutex
 	paths map[string]Rule
-	// read is when the file was last written and how big it was, so Refresh can tell whether
-	// anything has happened since. Size as well as time, because a grant made and revoked within
-	// the same second of a filesystem that counts in seconds would otherwise go unnoticed.
-	read time.Time
-	size int64
+	// seen identifies the file revision loaded into paths.
+	seen os.FileInfo
 	// broken is why the file last refused to load, and nil once it has loaded. A rule set nobody
 	// can read is not a rule set that allows everything.
 	broken error
@@ -75,8 +71,9 @@ func (s *Store) Refresh() error {
 		return err
 	}
 
-	at, err := os.Stat(file)
+	current, err := os.Stat(file)
 	if errors.Is(err, os.ErrNotExist) {
+		s.clear()
 		return nil
 	}
 	if err != nil {
@@ -84,13 +81,18 @@ func (s *Store) Refresh() error {
 	}
 
 	s.mu.RLock()
-	fresh := at.ModTime().Equal(s.read) && at.Size() == s.size
+	fresh := sameRevision(s.seen, current)
 	s.mu.RUnlock()
 
 	if fresh {
 		return nil
 	}
 	return s.reread()
+}
+
+func sameRevision(left, right os.FileInfo) bool {
+	return left != nil && right != nil && os.SameFile(left, right) &&
+		left.Size() == right.Size() && left.ModTime().Equal(right.ModTime())
 }
 
 // reread builds the whole rule set before putting any of it in place.
@@ -104,9 +106,19 @@ func (s *Store) reread() error {
 		return s.failed(err)
 	}
 
+	at, err := os.Stat(file)
+	if errors.Is(err, os.ErrNotExist) {
+		s.clear()
+		return nil
+	}
+	if err != nil {
+		return s.failed(fmt.Errorf("stating %s: %w", file, err))
+	}
+
 	raw, err := os.ReadFile(file)
 	if errors.Is(err, os.ErrNotExist) {
-		return s.failed(nil)
+		s.clear()
+		return nil
 	}
 	if err != nil {
 		return s.failed(fmt.Errorf("reading %s: %w", file, err))
@@ -129,11 +141,16 @@ func (s *Store) reread() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.paths, s.broken = fresh, nil
-	if stamp, err := os.Stat(file); err == nil {
-		s.read, s.size = stamp.ModTime(), stamp.Size()
-	}
+	s.paths, s.broken, s.seen = fresh, nil, at
 	return nil
+}
+
+func (s *Store) clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.paths = map[string]Rule{}
+	s.seen, s.broken = nil, nil
 }
 
 // failed records why the grants could not be read and leaves what was last read in place.
