@@ -406,6 +406,37 @@ func TestARecordThatWillNotReadDoesNotHideTheRest(t *testing.T) {
 	}
 }
 
+func TestRewriteDoesNotFollowAPredictableScratchLink(t *testing.T) {
+	s := openStore(t)
+	queue(t, s, "kept")
+
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, s.history+".new"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Rewrite(nil); err != nil {
+		t.Fatalf("Rewrite(): %v", err)
+	}
+	if raw, err := os.ReadFile(victim); err != nil || string(raw) != "untouched" {
+		t.Fatalf("scratch link target = %q, %v", raw, err)
+	}
+	stat, err := os.Lstat(s.history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stat.Mode().IsRegular() {
+		t.Fatalf("rewritten history mode = %v", stat.Mode())
+	}
+	history, err := s.History()
+	if err != nil || len(history) != 1 || history[0].Body != "kept" {
+		t.Fatalf("rewritten history = %+v, %v", history, err)
+	}
+}
+
 // Storing a message must not cost a read of everything said before it. The daemon opens the
 // conversation once per arriving message, so the walk has to be paid once, not per message.
 func TestStoringDoesNotRereadTheWholeLog(t *testing.T) {

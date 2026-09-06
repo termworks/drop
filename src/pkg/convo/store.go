@@ -462,12 +462,8 @@ func (s *Store) Rewrite(to []byte) error {
 			out = append(out, body...)
 		}
 
-		scratch := at + ".new"
-		if err := os.WriteFile(scratch, out, 0o600); err != nil {
-			return fmt.Errorf("writing %s: %w", scratch, err)
-		}
-		if err := os.Rename(scratch, at); err != nil {
-			return fmt.Errorf("replacing %s: %w", at, err)
+		if err := keep.Replace(at, out); err != nil {
+			return fmt.Errorf("rewriting %s: %w", at, err)
 		}
 	}
 	return nil
