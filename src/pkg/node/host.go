@@ -2,11 +2,13 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
 	"strconv"
 	"sync"
+	"syscall"
 
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/netaddr"
@@ -90,7 +92,7 @@ func Start(ctx context.Context) (*Node, error) {
 	borrowed := false
 
 	ep, err := iroh.Bind(ctx, opts...)
-	if err != nil && Port() != 0 {
+	if err != nil && Port() != 0 && portConflict(err) {
 		// The preferred port is taken. An address others wrote down will not reach this node
 		// until it is free again, but refusing to start would be worse: everything that does not
 		// depend on a remembered address still works.
@@ -112,6 +114,8 @@ func Start(ctx context.Context) (*Node, error) {
 
 	return n, nil
 }
+
+func portConflict(err error) bool { return errors.Is(err, syscall.EADDRINUSE) }
 
 // ID is this node's address.
 func (n *Node) ID() ID {

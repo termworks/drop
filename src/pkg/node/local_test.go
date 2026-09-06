@@ -2,10 +2,12 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -117,6 +119,15 @@ func TestASecondNodeSaysThePortIsTaken(t *testing.T) {
 	}
 	if !strings.Contains(wrong, strconv.Itoa(port)) {
 		t.Errorf("it did not name the port that was taken: %q", wrong)
+	}
+}
+
+func TestOnlyAPortConflictCanBorrow(t *testing.T) {
+	if !portConflict(fmt.Errorf("binding: %w", syscall.EADDRINUSE)) {
+		t.Fatal("a wrapped port conflict was not recognised")
+	}
+	if portConflict(fmt.Errorf("binding: %w", syscall.EACCES)) {
+		t.Fatal("a permission failure was treated as a port conflict")
 	}
 }
 
