@@ -6,6 +6,7 @@
 package passwd
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -48,15 +49,21 @@ func Hash(plain string) (string, error) {
 // A hash it cannot read is a failure, never a pass: a corrupted line in a config must close a path,
 // not open it.
 func Verify(hash, plain string) bool {
+	return verifyContext(context.Background(), hash, plain)
+}
+
+func verifyContext(ctx context.Context, hash, plain string) bool {
 	parsed, err := parse(hash)
 	if err != nil {
 		return false
 	}
 
 	var sum []byte
-	spend(func() {
+	if !spendContext(ctx, hashing, func() {
 		sum = argon2.IDKey([]byte(plain), parsed.salt, parsed.time, parsed.memory, parsed.threads, uint32(len(parsed.sum)))
-	})
+	}) {
+		return false
+	}
 	return subtle.ConstantTimeCompare(sum, parsed.sum) == 1
 }
 

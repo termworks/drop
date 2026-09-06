@@ -57,6 +57,50 @@ type stream struct{ net.Conn }
 
 func (s stream) SetReadDeadline(t time.Time) error { return s.Conn.SetReadDeadline(t) }
 
+type streamWithContext struct {
+	stream
+	ctx context.Context
+}
+
+func (s streamWithContext) Context() context.Context { return s.ctx }
+
+func TestStreamContextEndsWithEitherLifetime(t *testing.T) {
+	for _, ending := range []string{"server", "stream"} {
+		t.Run(ending, func(t *testing.T) {
+			serverCtx, stopServer := context.WithCancel(context.Background())
+			remoteCtx, stopRemote := context.WithCancel(context.Background())
+			defer stopServer()
+			defer stopRemote()
+			joined, stopJoined := streamContext(serverCtx, streamWithContext{ctx: remoteCtx})
+			defer stopJoined()
+
+			if ending == "server" {
+				stopServer()
+			} else {
+				stopRemote()
+			}
+			select {
+			case <-joined.Done():
+			case <-time.After(time.Second):
+				t.Fatalf("joined context did not end with the %s context", ending)
+			}
+		})
+	}
+}
+
+func TestStreamContextSeesAnAlreadyClosedStream(t *testing.T) {
+	remoteCtx, stopRemote := context.WithCancel(context.Background())
+	stopRemote()
+	joined, stopJoined := streamContext(context.Background(), streamWithContext{ctx: remoteCtx})
+	defer stopJoined()
+
+	select {
+	case <-joined.Done():
+	default:
+		t.Fatal("an already closed stream left its context live")
+	}
+}
+
 // The whole point of the boundary: an archetype nothing in this package knows about is registered,
 // mounted, opened and served, and Handle gains no case for it.
 func TestHandleServesAnArchetypeItHasNeverHeardOf(t *testing.T) {

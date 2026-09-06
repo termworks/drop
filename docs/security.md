@@ -35,6 +35,10 @@ what it says:
   with two streams could alternate — guess, open something public, guess again — for ever.
 - One guess is hashed once however many rules ask about it. Resolving a path walks every rule above
   it; without a cache, **one guess against eight rules cost eight hashes**. It now costs one.
+- Only the exact cost and salt/hash sizes produced by `drop me passwd` are accepted. A stored line
+  cannot request an enormous allocation, excessive passes or threads, or silently lower the cost.
+- Hashes waiting for a memory slot leave the queue when the stream or server ends. An abandoned
+  request does not start its expensive work later.
 
 **How much disk a stranger may spend.** A device nobody knows that dials is written down so you can
 let it in later without copying its id out of a log. That write is flushed to the disk itself, so it

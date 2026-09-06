@@ -64,6 +64,8 @@ const settleIn = 10 * time.Second
 // endpoint underneath change without touching this.
 func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 	conn := wire.NewConn(s)
+	guessCtx, cancelGuess := streamContext(ctx, s)
+	defer cancelGuess()
 
 	_ = s.SetReadDeadline(time.Now().Add(settleIn))
 
@@ -151,7 +153,7 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 	// the same question of the same guess. Each asking costs 64 MiB and three passes, so without
 	// somewhere to remember the answer one guess is paid for as many times as there are rules in the
 	// way — the guess allowance counts six, and each of the six is worth several.
-	caller.Tried = passwd.NewTried()
+	caller.Tried = passwd.NewTriedContext(guessCtx)
 	if open.Secret != "" && !guessing.spare(from) {
 		turnedAway(policy, from, path, "too many password attempts")
 		return refuse("too many attempts, wait a while")
@@ -223,6 +225,28 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 		Conn:   conn,
 		Stream: s,
 	})
+}
+
+func streamContext(ctx context.Context, s Stream) (context.Context, context.CancelFunc) {
+	stream, ok := s.(interface{ Context() context.Context })
+	if !ok {
+		return context.WithCancel(ctx)
+	}
+
+	streamCtx := stream.Context()
+	if streamCtx == nil {
+		return context.WithCancel(ctx)
+	}
+	joined, cancel := context.WithCancel(ctx)
+	if streamCtx.Err() != nil {
+		cancel()
+		return joined, cancel
+	}
+	stop := context.AfterFunc(streamCtx, cancel)
+	return joined, func() {
+		stop()
+		cancel()
+	}
 }
 
 // unreadable is what a caller is told about a path this node cannot even spell.
