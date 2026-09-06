@@ -180,6 +180,8 @@ Conversation histories are capped at 4,096 peers, and their directory is read wi
 iterator. New histories take a cross-process lock before checking the limit, so simultaneous
 senders cannot race past it. A peer history path that is a symlink or another non-directory object
 is refused rather than followed.
+Rewriting an existing history to turn vault encryption on or off keeps the same 64 MiB per-log
+limit and leaves the original untouched if the encoded replacement would exceed it.
 
 The record beside a shared folder is different: it can legitimately describe 131,072 paths, each
 up to 1024 bytes. It is decoded and written as a stream instead of being held as a second complete

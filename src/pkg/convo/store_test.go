@@ -1,6 +1,7 @@
 package convo
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -205,6 +206,26 @@ func TestDeliveredEverythingRemovesTheOutbox(t *testing.T) {
 	waiting, _ := s.Pending()
 	if len(waiting) != 0 {
 		t.Fatalf("Pending() = %d, want 0", len(waiting))
+	}
+}
+
+func TestARewriteCannotGrowALogPastItsLimit(t *testing.T) {
+	s := openStore(t)
+	queue(t, s, "kept in the original log")
+
+	before, err := os.ReadFile(s.history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rewriteLog(s.history, s.peer.String(), make([]byte, 32), 1); err == nil {
+		t.Fatal("a rewritten log grew past its limit")
+	}
+	after, err := os.ReadFile(s.history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("a refused rewrite changed the original log")
 	}
 }
 
