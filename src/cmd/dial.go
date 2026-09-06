@@ -69,6 +69,8 @@ func serveLoopKeeping(
 	connections := make(chan struct{}, maxServingConnections)
 	streams := make(chan struct{}, maxServingStreams)
 	pushes := make(chan struct{}, maxArrivalPushes)
+	peerConnections := newPeerLimit(maxConnectionsPerPeer)
+	peerStreams := newPeerLimit(maxStreamsPerPeer)
 
 	for {
 		conn, err := n.Accept(ctx)
@@ -90,7 +92,8 @@ func serveLoopKeeping(
 			waiting = 0
 		}
 
-		if !startBounded(connections, func() {
+		from := conn.RemoteID()
+		if !startPeerBounded(peerConnections, from, connections, func() {
 			// Only a session connection is worth keeping. A hello is one question from a command that
 			// exits straight after, and holding it means the next question goes down a pipe whose far
 			// end left — which answers nothing, slowly.
@@ -100,14 +103,14 @@ func serveLoopKeeping(
 			if arrived != nil {
 				_ = startBounded(pushes, func() { arrived(conn.RemoteID()) })
 			}
-			serveConn(ctx, conn, handlers, streams)
+			serveConn(ctx, conn, handlers, streams, peerStreams)
 		}) {
 			_ = conn.Close()
 		}
 	}
 }
 
-func serveConn(ctx context.Context, conn *iroh.Conn, handlers map[string]func(node.ID, *iroh.Stream), allStreams chan struct{}) {
+func serveConn(ctx context.Context, conn *iroh.Conn, handlers map[string]func(node.ID, *iroh.Stream), allStreams chan struct{}, peerStreams *peerLimit) {
 	defer func() { _ = conn.Close() }()
 
 	handle, ok := handlers[conn.ALPN()]
@@ -122,7 +125,7 @@ func serveConn(ctx context.Context, conn *iroh.Conn, handlers map[string]func(no
 		if err != nil {
 			return
 		}
-		if !startBoundedWithin(streams, allStreams, func() { handle(from, s) }) {
+		if !startPeerBoundedWithin(peerStreams, from, streams, allStreams, func() { handle(from, s) }) {
 			_ = s.Close()
 		}
 	}
@@ -130,10 +133,44 @@ func serveConn(ctx context.Context, conn *iroh.Conn, handlers map[string]func(no
 
 const (
 	maxServingConnections   = 256
+	maxConnectionsPerPeer   = 16
 	maxServingStreams       = 64
+	maxStreamsPerPeer       = 16
 	maxStreamsPerConnection = 16
 	maxArrivalPushes        = 64
 )
+
+type peerLimit struct {
+	mu   sync.Mutex
+	most int
+	used map[node.ID]int
+}
+
+func newPeerLimit(most int) *peerLimit {
+	return &peerLimit{most: most, used: make(map[node.ID]int)}
+}
+
+func (p *peerLimit) take(id node.ID) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.used[id] >= p.most {
+		return false
+	}
+	p.used[id]++
+	return true
+}
+
+func (p *peerLimit) give(id node.ID) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.used[id] <= 1 {
+		delete(p.used, id)
+		return
+	}
+	p.used[id]--
+}
 
 func startBounded(slots chan struct{}, work func()) bool {
 	select {
@@ -146,6 +183,20 @@ func startBounded(slots chan struct{}, work func()) bool {
 	default:
 		return false
 	}
+}
+
+func startPeerBounded(peers *peerLimit, id node.ID, slots chan struct{}, work func()) bool {
+	if !peers.take(id) {
+		return false
+	}
+	if startBounded(slots, func() {
+		defer peers.give(id)
+		work()
+	}) {
+		return true
+	}
+	peers.give(id)
+	return false
 }
 
 func startBoundedWithin(slots, all chan struct{}, work func()) bool {
@@ -168,6 +219,20 @@ func startBoundedWithin(slots, all chan struct{}, work func()) bool {
 		work()
 	}()
 	return true
+}
+
+func startPeerBoundedWithin(peers *peerLimit, id node.ID, slots, all chan struct{}, work func()) bool {
+	if !peers.take(id) {
+		return false
+	}
+	if startBoundedWithin(slots, all, func() {
+		defer peers.give(id)
+		work()
+	}) {
+		return true
+	}
+	peers.give(id)
+	return false
 }
 
 // startRendezvous begins publishing this device's address, when the config asked for it.
@@ -259,6 +324,8 @@ func listenKeeping(
 		connections := make(chan struct{}, maxServingConnections)
 		streams := make(chan struct{}, maxServingStreams)
 		pushes := make(chan struct{}, maxArrivalPushes)
+		peerConnections := newPeerLimit(maxConnectionsPerPeer)
+		peerStreams := newPeerLimit(maxStreamsPerPeer)
 
 		for {
 			conn, err := n.Accept(ctx)
@@ -280,14 +347,15 @@ func listenKeeping(
 				waiting = 0
 			}
 
-			if !startBounded(connections, func() {
+			from := conn.RemoteID()
+			if !startPeerBounded(peerConnections, from, connections, func() {
 				if held != nil && conn.ALPN() == node.ALPNSession {
 					held.Adopt(conn.RemoteID(), conn.ALPN(), conn)
 				}
 				if arrived != nil {
 					_ = startBounded(pushes, func() { arrived(conn.RemoteID()) })
 				}
-				l.answer(ctx, conn, streams)
+				l.answer(ctx, conn, streams, peerStreams)
 			}) {
 				_ = conn.Close()
 			}
@@ -365,7 +433,7 @@ func (l *listener) Handle(alpn string, handle func(node.ID, *iroh.Stream)) {
 	l.handlers[alpn] = handle
 }
 
-func (l *listener) answer(ctx context.Context, conn *iroh.Conn, allStreams chan struct{}) {
+func (l *listener) answer(ctx context.Context, conn *iroh.Conn, allStreams chan struct{}, peerStreams *peerLimit) {
 	defer func() { _ = conn.Close() }()
 
 	l.mu.Lock()
@@ -383,7 +451,7 @@ func (l *listener) answer(ctx context.Context, conn *iroh.Conn, allStreams chan 
 		if err != nil {
 			return
 		}
-		if !startBoundedWithin(streams, allStreams, func() { handle(from, s) }) {
+		if !startPeerBoundedWithin(peerStreams, from, streams, allStreams, func() { handle(from, s) }) {
 			_ = s.Close()
 		}
 	}

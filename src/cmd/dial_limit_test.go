@@ -6,6 +6,27 @@ import (
 	"time"
 )
 
+func TestPeerLimitsSpanConnections(t *testing.T) {
+	peers := newPeerLimit(2)
+	alice, bob := idFor(1), idFor(2)
+
+	for range 2 {
+		if !peers.take(alice) {
+			t.Fatal("a peer was refused before its limit")
+		}
+	}
+	if peers.take(alice) {
+		t.Fatal("one peer crossed its shared limit")
+	}
+	if !peers.take(bob) {
+		t.Fatal("one peer consumed another peer's capacity")
+	}
+	peers.give(alice)
+	if !peers.take(alice) {
+		t.Fatal("released peer capacity stayed occupied")
+	}
+}
+
 func TestBoundedWorkRefusesPastItsCapacity(t *testing.T) {
 	slots := make(chan struct{}, 2)
 	release := make(chan struct{})
@@ -78,5 +99,14 @@ func TestBoundedWorkSharesCapacityAcrossConnections(t *testing.T) {
 func TestOneConnectionCannotConsumeEveryStreamSlot(t *testing.T) {
 	if maxStreamsPerConnection >= maxServingStreams {
 		t.Fatalf("one connection may consume %d of %d stream slots", maxStreamsPerConnection, maxServingStreams)
+	}
+}
+
+func TestOnePeerCannotConsumeEveryServingSlot(t *testing.T) {
+	if maxConnectionsPerPeer >= maxServingConnections {
+		t.Fatalf("one peer may consume %d of %d connection slots", maxConnectionsPerPeer, maxServingConnections)
+	}
+	if maxStreamsPerPeer >= maxServingStreams {
+		t.Fatalf("one peer may consume %d of %d stream slots", maxStreamsPerPeer, maxServingStreams)
 	}
 }
