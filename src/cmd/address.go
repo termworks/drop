@@ -2,9 +2,9 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
-	"net"
 	"strings"
 	"time"
 
@@ -20,7 +20,7 @@ import (
 // work out which of theirs — and when it cannot, it says so instead of picking.
 
 // resolve turns an address into the machine it names.
-func resolve(at ns.Address) (book.Entry, error) {
+func resolve(ctx context.Context, at ns.Address) (book.Entry, error) {
 	if at.Here {
 		return book.Entry{}, fmt.Errorf("%s is this machine, and this command is for somebody else's", at)
 	}
@@ -41,8 +41,11 @@ func resolve(at ns.Address) (book.Entry, error) {
 		return theirs[0], nil
 	}
 
-	if one, ok := onlyAnswering(theirs); ok {
+	if one, ok := onlyAnswering(ctx, theirs); ok {
 		return one, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return book.Entry{}, err
 	}
 	return book.Entry{}, fmt.Errorf("%s has %d machines here and none of them answered: say which of %s",
 		at.User, len(theirs), namesOf(theirs))
@@ -67,8 +70,8 @@ func machinesOf(pinned *book.Book, who string) []book.Entry {
 
 // onlyAnswering narrows a person's machines to the one this node is holding a connection to, and
 // gives up when that is none of them or more than one.
-func onlyAnswering(theirs []book.Entry) (book.Entry, bool) {
-	held := heldHere()
+func onlyAnswering(ctx context.Context, theirs []book.Entry) (book.Entry, bool) {
+	held := heldHere(ctx)
 	if len(held) == 0 {
 		return book.Entry{}, false
 	}
@@ -90,13 +93,13 @@ func onlyAnswering(theirs []book.Entry) (book.Entry, bool) {
 //
 // Not a probe: the daemon is asked what it is already holding, so narrowing a person's machines to
 // one costs nothing. With no daemon there is nothing to narrow with and the answer is empty.
-func heldHere() map[node.ID]bool {
+func heldHere(ctx context.Context) map[node.ID]bool {
 	path, err := castSocket()
 	if err != nil {
 		return nil
 	}
 
-	conn, err := net.Dial("unix", path)
+	conn, err := dialLocal(ctx, path)
 	if err != nil {
 		return nil
 	}

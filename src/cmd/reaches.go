@@ -87,7 +87,7 @@ func (staysOpen) Close() error { return nil }
 type borrowed struct{ fallback reaches }
 
 func (b borrowed) To(ctx context.Context, entry book.Entry, alpn string) (io.Closer, proto.Stream, error) {
-	s, err := viaDaemon(entry, alpn)
+	s, err := viaDaemon(ctx, entry, alpn)
 	if err == nil {
 		return lentDone{s}, s, nil
 	}
@@ -123,14 +123,17 @@ type noClose struct{}
 func (noClose) Close() error { return nil }
 
 // viaDaemon opens a stream over the running node's connection to a device.
-func viaDaemon(entry book.Entry, alpn string) (*lent, error) {
+func viaDaemon(ctx context.Context, entry book.Entry, alpn string) (*lent, error) {
 	path, err := castSocket()
 	if err != nil {
 		return nil, errNoDaemon
 	}
 
-	conn, err := net.Dial("unix", path)
+	conn, err := dialLocal(ctx, path)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, errNoDaemon
 	}
 

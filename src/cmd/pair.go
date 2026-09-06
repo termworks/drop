@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"os"
 	"os/signal"
@@ -358,8 +357,11 @@ func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration
 		return errNoDaemon
 	}
 
-	conn, err := net.Dial("unix", path)
+	conn, err := dialLocal(ctx, path)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return errNoDaemon
 	}
 	defer func() { _ = conn.Close() }()

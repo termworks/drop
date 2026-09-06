@@ -85,7 +85,7 @@ func runJoin(parent context.Context, target, here string, declared made.Settings
 		return fmt.Errorf("%s names a machine and not a namespace on it: `drop path ls %s` says what it shares", address, address)
 	}
 
-	entry, err := resolve(address)
+	entry, err := resolve(parent, address)
 	if err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ func runJoin(parent context.Context, target, here string, declared made.Settings
 		return err
 	}
 	if !held {
-		if err := writeJoined(known, line); err != nil {
+		if err := writeJoined(ctx, known, line); err != nil {
 			return err
 		}
 	}
@@ -267,7 +267,7 @@ func already(mounts []ns.Mount, store *made.Store, line made.Line) (string, bool
 // Checked before it is written, because a namespace written down and refused at the next start is a
 // path that silently is not there — a `files` joined without saying which directory it is, on the
 // machine doing the joining.
-func writeJoined(known *arch.Registry, line made.Line) error {
+func writeJoined(ctx context.Context, known *arch.Registry, line made.Line) error {
 	answers, ok := known.Lookup(line.Archetype, line.Version)
 	if !ok {
 		return known.Missing(line.Archetype, line.Version)
@@ -286,7 +286,7 @@ func writeJoined(known *arch.Registry, line made.Line) error {
 
 	// Nothing serving here is the ordinary case, and the file is what makes it here after a
 	// restart. The catching up that follows needs no node of this machine's own.
-	conn, err := asking()
+	conn, err := asking(ctx)
 	if errors.Is(err, errNoNode) {
 		return nil
 	}

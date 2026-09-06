@@ -158,7 +158,7 @@ func runConnect(parent context.Context, text string, args []string, stdinName st
 		return fmt.Errorf("%s is this machine, and connect opens somebody else's namespace", at)
 	}
 
-	entry, err := resolve(at)
+	entry, err := resolve(parent, at)
 	if err != nil {
 		return err
 	}

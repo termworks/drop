@@ -119,7 +119,7 @@ func newPathRemoveCmd() *cobra.Command {
 			"declares is not this command's to remove, and it says which file to edit instead.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRemove(args[0])
+			return runRemove(cmd.Context(), args[0])
 		},
 	}
 }
@@ -185,18 +185,18 @@ func runCreate(parent context.Context, known *arch.Registry, at string, entry ma
 		}
 		return holdCreated(parent, at, entry)
 	}
-	return keepCreated(store, file, at, entry)
+	return keepCreated(parent, store, file, at, entry)
 }
 
 // keepCreated writes a namespace down and then puts it up, in that order: a node that is not
 // running is the ordinary case, and losing the file because there was nothing to tell would be the
 // one outcome nobody asked for.
-func keepCreated(store *made.Store, file, at string, entry made.Entry) error {
+func keepCreated(ctx context.Context, store *made.Store, file, at string, entry made.Entry) error {
 	if err := store.Add(at, entry); err != nil {
 		return err
 	}
 
-	conn, err := asking()
+	conn, err := asking(ctx)
 	if errors.Is(err, errNoNode) {
 		fmt.Printf("%s is written down in %s; nothing is serving here, so it starts with `drop serve`\n", at, file)
 		return nil
@@ -219,14 +219,14 @@ func keepCreated(store *made.Store, file, at string, entry made.Entry) error {
 // is not reachable at the address everybody has written down, so a namespace it served would be one
 // nobody could find. It is the same reason a handoff goes this way.
 func holdCreated(parent context.Context, at string, entry made.Entry) error {
-	conn, err := asking()
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	conn, err := asking(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = conn.Close() }()
-
-	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	if _, err := tell(conn, made.Line{Path: at, Entry: entry}); err != nil {
 		return err
@@ -257,7 +257,7 @@ func holdCreated(parent context.Context, at string, entry made.Entry) error {
 	return nil
 }
 
-func runRemove(at string) error {
+func runRemove(ctx context.Context, at string) error {
 	at, err := ns.Clean(at)
 	if err != nil {
 		return err
@@ -294,7 +294,7 @@ func runRemove(at string) error {
 	// answering is the one failure that matters here: somebody stops sharing something and it goes
 	// on being shared, and being told so is the difference between fixing it and not knowing.
 	fmt.Printf("%s is out of %s\n", at, file)
-	switch err := unmounted(at); {
+	switch err := unmounted(ctx, at); {
 	case err == nil:
 	case errors.Is(err, errNoNode):
 	default:
@@ -420,8 +420,8 @@ func names(text string) []string {
 
 // unmounted asks the node running here to stop serving a path, and says nothing when there is no
 // node: a path nobody is serving is already down.
-func unmounted(at string) error {
-	conn, err := asking()
+func unmounted(ctx context.Context, at string) error {
+	conn, err := asking(ctx)
 	if err != nil {
 		return err
 	}
@@ -445,13 +445,16 @@ func unmounted(at string) error {
 var errNoNode = errors.New("nothing is serving on this device: start `drop serve` first")
 
 // asking connects to the node already running here.
-func asking() (net.Conn, error) {
+func asking(ctx context.Context) (net.Conn, error) {
 	path, err := castSocket()
 	if err != nil {
 		return nil, err
 	}
-	conn, err := net.Dial("unix", path)
+	conn, err := dialLocal(ctx, path)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, errNoNode
 	}
 	return conn, nil

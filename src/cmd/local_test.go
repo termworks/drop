@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"bufio"
+	"context"
+	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -9,6 +12,96 @@ import (
 	"testing"
 	"time"
 )
+
+func TestLocalDialHonorsContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.sock")
+	var listen net.ListenConfig
+	listener, err := listen.Listen(t.Context(), "unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	canceled, cancelNow := context.WithCancel(context.Background())
+	cancelNow()
+	if conn, err := dialLocal(canceled, path); !errors.Is(err, context.Canceled) {
+		if conn != nil {
+			_ = conn.Close()
+		}
+		t.Fatalf("dial with canceled context returned %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	client, err := dialLocal(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	server, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	read := make(chan error, 1)
+	go func() {
+		var one [1]byte
+		_, err := client.Read(one[:])
+		read <- err
+	}()
+	cancel()
+
+	select {
+	case err := <-read:
+		if err == nil {
+			t.Fatal("a read ended without an error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a local connection outlived its context")
+	}
+}
+
+func TestLocalDialPreservesHalfClose(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.sock")
+	var listen net.ListenConfig
+	listener, err := listen.Listen(t.Context(), "unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	client, err := dialLocal(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	server, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	if _, err := io.WriteString(client, "request"); err != nil {
+		t.Fatal(err)
+	}
+	half, ok := client.(interface{ CloseWrite() error })
+	if !ok {
+		t.Fatal("a local Unix connection lost CloseWrite")
+	}
+	if err := half.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := io.ReadAll(server); err != nil || string(got) != "request" {
+		t.Fatalf("server read %q, %v", got, err)
+	}
+	if _, err := server.Write([]byte("r")); err != nil {
+		t.Fatal(err)
+	}
+	var reply [1]byte
+	if _, err := io.ReadFull(client, reply[:]); err != nil || reply != [1]byte{'r'} {
+		t.Fatalf("client read %q, %v", reply, err)
+	}
+}
 
 type deadlineTrackingConn struct {
 	net.Conn

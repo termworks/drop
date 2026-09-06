@@ -47,7 +47,7 @@ func walk(parent context.Context, target string, wait time.Duration) (*walking, 
 		return nil, err
 	}
 
-	entry, err := resolve(at)
+	entry, err := resolve(parent, at)
 	if err != nil {
 		return nil, err
 	}

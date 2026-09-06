@@ -387,10 +387,40 @@ func castSocket() (string, error) {
 }
 
 const (
+	localDialWithin     = 2 * time.Second
 	localHelloWithin    = 10 * time.Second
 	maxLocalLine        = 1 << 20
 	maxLocalConnections = 64
 )
+
+type localClient struct {
+	net.Conn
+	stop func() bool
+}
+
+func (c *localClient) Close() error {
+	c.stop()
+	return c.Conn.Close()
+}
+
+func (c *localClient) CloseWrite() error {
+	half, ok := c.Conn.(interface{ CloseWrite() error })
+	if !ok {
+		return errors.New("local connection cannot close its write side")
+	}
+	return half.CloseWrite()
+}
+
+func dialLocal(ctx context.Context, path string) (net.Conn, error) {
+	dialer := net.Dialer{Timeout: localDialWithin}
+	conn, err := dialer.DialContext(ctx, "unix", path)
+	if err != nil {
+		return nil, err
+	}
+	client := &localClient{Conn: conn}
+	client.stop = context.AfterFunc(ctx, func() { _ = conn.Close() })
+	return client, nil
+}
 
 func localGuard(path string) (*os.File, error) {
 	guard, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
@@ -420,7 +450,8 @@ func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 	// permanently unusable.
 	_ = os.Remove(path)
 
-	listening, err := net.Listen("unix", path)
+	var listen net.ListenConfig
+	listening, err := listen.Listen(ctx, "unix", path)
 	if err != nil {
 		return err
 	}

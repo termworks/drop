@@ -45,7 +45,7 @@ func TestCreatingOverADeclaredPathIsRefusedAndNamesTheConfig(t *testing.T) {
 func TestRemovingADeclaredPathIsRefusedAndNamesTheConfig(t *testing.T) {
 	config := declaring(t, `require("drop").mount("/work", { type = "chat", access = "paired" })`)
 
-	err := runRemove("/work")
+	err := runRemove(t.Context(), "/work")
 	if err == nil {
 		t.Fatal("a path in the config was removed")
 	}

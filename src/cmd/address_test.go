@@ -58,7 +58,7 @@ func TestAUserWithOneMachineResolvesToIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAddress(): %v", err)
 	}
-	entry, err := resolve(at)
+	entry, err := resolve(t.Context(), at)
 	if err != nil {
 		t.Fatalf("resolve(): %v", err)
 	}
@@ -76,7 +76,7 @@ func TestAUserWithSeveralMachinesIsNotGuessedAt(t *testing.T) {
 		t.Fatalf("ParseAddress(): %v", err)
 	}
 
-	_, err = resolve(at)
+	_, err = resolve(t.Context(), at)
 	if err == nil {
 		t.Fatal("one of two machines was picked silently")
 	}
@@ -95,7 +95,7 @@ func TestAMachineTheBookDoesNotHaveIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAddress(): %v", err)
 	}
-	if _, err := resolve(at); err == nil {
+	if _, err := resolve(t.Context(), at); err == nil {
 		t.Fatal("a machine nobody has heard of resolved")
 	}
 }
@@ -112,7 +112,7 @@ func TestThisMachineIsNotResolvedToAPeer(t *testing.T) {
 		t.Fatal("/chat is not this machine")
 	}
 
-	_, err = resolve(at)
+	_, err = resolve(t.Context(), at)
 	if err == nil {
 		t.Fatal("this machine resolved to an entry in the address book")
 	}

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -284,8 +283,11 @@ func castThroughDaemon(ctx context.Context, addressFile string) error {
 		return errNoDaemon
 	}
 
-	conn, err := net.Dial("unix", path)
+	conn, err := dialLocal(ctx, path)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return errNoDaemon
 	}
 	defer func() { _ = conn.Close() }()

@@ -48,7 +48,7 @@ func askFor(parent context.Context, target, why string) error {
 		return fmt.Errorf("say which path: drop path ask <machine>:/<path>")
 	}
 
-	entry, err := resolve(at)
+	entry, err := resolve(parent, at)
 	if err != nil {
 		return err
 	}
