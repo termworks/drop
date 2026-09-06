@@ -86,6 +86,7 @@ func TestWaitingOnADialEndsWithTheCaller(t *testing.T) {
 
 func TestAnsweringWorkRefusesPastItsCapacity(t *testing.T) {
 	slots := make(chan struct{}, 2)
+	all := make(chan struct{}, 2)
 	release := make(chan struct{})
 	started := make(chan struct{}, 2)
 	var done sync.WaitGroup
@@ -97,21 +98,54 @@ func TestAnsweringWorkRefusesPastItsCapacity(t *testing.T) {
 	}
 
 	for range 2 {
-		if !startAnswering(slots, work) {
+		if !startAnswering(slots, all, work) {
 			t.Fatal("answer was refused before the limit")
 		}
 	}
 	<-started
 	<-started
-	if startAnswering(slots, func() {}) {
+	if startAnswering(slots, all, func() {}) {
 		t.Fatal("answer was accepted past the limit")
 	}
 	close(release)
 	done.Wait()
 
 	accepted := make(chan struct{})
-	if !startAnswering(slots, func() { close(accepted) }) {
+	if !startAnswering(slots, all, func() { close(accepted) }) {
 		t.Fatal("answer stayed refused after capacity returned")
+	}
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("accepted answer did not run")
+	}
+}
+
+func TestAnsweringWorkSharesCapacityAcrossConnections(t *testing.T) {
+	all := make(chan struct{}, 1)
+	first := make(chan struct{}, 1)
+	second := make(chan struct{}, 1)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if !startAnswering(first, all, func() {
+		close(started)
+		<-release
+	}) {
+		t.Fatal("the first answer was refused")
+	}
+	<-started
+	if startAnswering(second, all, func() {}) {
+		t.Fatal("another connection crossed the shared answer limit")
+	}
+	close(release)
+
+	until := time.Now().Add(time.Second)
+	for len(all) != 0 && time.Now().Before(until) {
+		time.Sleep(time.Millisecond)
+	}
+	accepted := make(chan struct{})
+	if !startAnswering(second, all, func() { close(accepted) }) {
+		t.Fatal("an answer stayed refused after shared capacity returned")
 	}
 	select {
 	case <-accepted:

@@ -28,7 +28,8 @@ type Kept struct {
 	open map[string]*iroh.Conn
 	// dialling is the dial in progress for a device and protocol, so that everybody asking for one
 	// at the same moment waits for the same connection instead of opening one each.
-	dialling map[string]*flight
+	dialling  map[string]*flight
+	answering chan struct{}
 	// ctx bounds the accept loops on connections we made.
 	ctx context.Context
 	// serve is what answers streams the far end opens on a connection we made.
@@ -45,11 +46,12 @@ type Kept struct {
 
 func Hold(n *node.Node, wire Wire, find Finder) *Kept {
 	return &Kept{
-		node:     n,
-		wire:     wire,
-		find:     find,
-		open:     map[string]*iroh.Conn{},
-		dialling: map[string]*flight{},
+		node:      n,
+		wire:      wire,
+		find:      find,
+		open:      map[string]*iroh.Conn{},
+		dialling:  map[string]*flight{},
+		answering: make(chan struct{}, maxAnsweringTotal),
 	}
 }
 
@@ -90,25 +92,37 @@ func (k *Kept) answerOn(conn *iroh.Conn) {
 		if err != nil {
 			return
 		}
-		if !startAnswering(streams, func() { answer(from, alpn, s) }) {
+		if !startAnswering(streams, k.answering, func() { answer(from, alpn, s) }) {
 			_ = s.Close()
 		}
 	}
 }
 
-const maxAnsweringStreams = 64
+const (
+	maxAnsweringStreams = 64
+	maxAnsweringTotal   = 256
+)
 
-func startAnswering(slots chan struct{}, work func()) bool {
+func startAnswering(slots, all chan struct{}, work func()) bool {
 	select {
 	case slots <- struct{}{}:
-		go func() {
-			defer func() { <-slots }()
-			work()
-		}()
-		return true
 	default:
 		return false
 	}
+	select {
+	case all <- struct{}{}:
+	default:
+		<-slots
+		return false
+	}
+	go func() {
+		defer func() {
+			<-all
+			<-slots
+		}()
+		work()
+	}()
+	return true
 }
 
 // To opens a stream to a device, over the connection already held if there is one.

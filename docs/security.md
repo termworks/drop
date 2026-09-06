@@ -17,6 +17,8 @@ before it was fixed: **200 stalled streams, fed 1000 bytes in total, grew the he
 Both pre-auth reads now refuse at the header, at 256 KiB, before anything is allocated.
 At most 256 stream handlers run across all inbound connections, with no more than 64 belonging to
 one connection, so those per-stream bounds also have a process-wide ceiling.
+Streams arriving over connections held to paired devices have the same 256-handler process ceiling
+and 64-handler per-connection ceiling.
 
 **How long a read may wait.** Every read in the handshake has a deadline, on both sides. A far end
 that takes what you sent and then says nothing would otherwise hold a goroutine, a stream and a
