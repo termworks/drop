@@ -342,7 +342,11 @@ func syncLanding(dir *os.Root, name string) error {
 		return err
 	}
 
-	parent, err := dir.Open(path.Dir(name))
+	return syncDirectory(dir, path.Dir(name))
+}
+
+func syncDirectory(dir *os.Root, name string) error {
+	parent, err := dir.Open(name)
 	if err != nil {
 		return err
 	}

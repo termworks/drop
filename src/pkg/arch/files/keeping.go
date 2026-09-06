@@ -246,6 +246,10 @@ func (k *keeper) apply(want Folder, now map[string]mark, fetch func(Wanted) erro
 			trouble = append(trouble, fmt.Errorf("removing %s: %w", path, err))
 			continue
 		}
+		if err := syncDirectory(root, gopath.Dir(path)); err != nil {
+			trouble = append(trouble, fmt.Errorf("syncing removal of %s: %w", path, err))
+			continue
+		}
 		delete(k.held, path)
 	}
 	return errors.Join(trouble...)
@@ -455,8 +459,15 @@ func branches(root *os.Root, path string) error {
 	at := ""
 	for _, part := range strings.Split(dir, "/") {
 		at = gopath.Join(at, part)
-		if err := root.Mkdir(at, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-			return fmt.Errorf("making %s: %w", at, err)
+		err := root.Mkdir(at, 0o700)
+		if err != nil {
+			if !errors.Is(err, fs.ErrExist) {
+				return fmt.Errorf("making %s: %w", at, err)
+			}
+			continue
+		}
+		if err := syncDirectory(root, gopath.Dir(at)); err != nil {
+			return fmt.Errorf("syncing %s: %w", at, err)
 		}
 	}
 	return nil

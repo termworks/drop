@@ -70,11 +70,17 @@ func (f *Files) answer(conn *wire.Conn, at arch.Session, dir *os.Root, writable 
 		if err := dir.Remove(name); err != nil {
 			return refuse(fmt.Sprintf("cannot remove %s: %v", name, unpath(err)))
 		}
+		if err := syncDirectory(dir, path.Dir(name)); err != nil {
+			return fmt.Errorf("syncing removal of %s: %w", name, err)
+		}
 		return conn.WriteFrame(wire.KindReply, reply{OK: true}.encode())
 
 	case opMkdir:
 		if err := dir.Mkdir(name, 0o700); err != nil {
 			return refuse(fmt.Sprintf("cannot make %s: %v", name, unpath(err)))
+		}
+		if err := syncDirectory(dir, path.Dir(name)); err != nil {
+			return fmt.Errorf("syncing directory %s: %w", name, err)
 		}
 		return conn.WriteFrame(wire.KindReply, reply{OK: true}.encode())
 
@@ -88,6 +94,15 @@ func (f *Files) answer(conn *wire.Conn, at arch.Session, dir *os.Root, writable 
 		}
 		if err := dir.Rename(name, to); err != nil {
 			return refuse(fmt.Sprintf("cannot move %s: %v", name, unpath(err)))
+		}
+		fromDir, toDir := path.Dir(name), path.Dir(to)
+		if err := syncDirectory(dir, fromDir); err != nil {
+			return fmt.Errorf("syncing move of %s: %w", name, err)
+		}
+		if toDir != fromDir {
+			if err := syncDirectory(dir, toDir); err != nil {
+				return fmt.Errorf("syncing move to %s: %w", to, err)
+			}
 		}
 		return conn.WriteFrame(wire.KindReply, reply{OK: true}.encode())
 
