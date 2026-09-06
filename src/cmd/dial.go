@@ -67,6 +67,7 @@ func serveLoopKeeping(
 ) {
 	var waiting time.Duration
 	connections := make(chan struct{}, maxServingConnections)
+	streams := make(chan struct{}, maxServingStreams)
 	pushes := make(chan struct{}, maxArrivalPushes)
 
 	for {
@@ -99,14 +100,14 @@ func serveLoopKeeping(
 			if arrived != nil {
 				_ = startBounded(pushes, func() { arrived(conn.RemoteID()) })
 			}
-			serveConn(ctx, conn, handlers)
+			serveConn(ctx, conn, handlers, streams)
 		}) {
 			_ = conn.Close()
 		}
 	}
 }
 
-func serveConn(ctx context.Context, conn *iroh.Conn, handlers map[string]func(node.ID, *iroh.Stream)) {
+func serveConn(ctx context.Context, conn *iroh.Conn, handlers map[string]func(node.ID, *iroh.Stream), allStreams chan struct{}) {
 	defer func() { _ = conn.Close() }()
 
 	handle, ok := handlers[conn.ALPN()]
@@ -121,7 +122,7 @@ func serveConn(ctx context.Context, conn *iroh.Conn, handlers map[string]func(no
 		if err != nil {
 			return
 		}
-		if !startBounded(streams, func() { handle(from, s) }) {
+		if !startBoundedWithin(streams, allStreams, func() { handle(from, s) }) {
 			_ = s.Close()
 		}
 	}
@@ -129,6 +130,7 @@ func serveConn(ctx context.Context, conn *iroh.Conn, handlers map[string]func(no
 
 const (
 	maxServingConnections   = 256
+	maxServingStreams       = 256
 	maxStreamsPerConnection = 64
 	maxArrivalPushes        = 64
 )
@@ -144,6 +146,28 @@ func startBounded(slots chan struct{}, work func()) bool {
 	default:
 		return false
 	}
+}
+
+func startBoundedWithin(slots, all chan struct{}, work func()) bool {
+	select {
+	case slots <- struct{}{}:
+	default:
+		return false
+	}
+	select {
+	case all <- struct{}{}:
+	default:
+		<-slots
+		return false
+	}
+	go func() {
+		defer func() {
+			<-all
+			<-slots
+		}()
+		work()
+	}()
+	return true
 }
 
 // startRendezvous begins publishing this device's address, when the config asked for it.
@@ -233,6 +257,7 @@ func listenKeeping(
 	go func() {
 		var waiting time.Duration
 		connections := make(chan struct{}, maxServingConnections)
+		streams := make(chan struct{}, maxServingStreams)
 		pushes := make(chan struct{}, maxArrivalPushes)
 
 		for {
@@ -262,7 +287,7 @@ func listenKeeping(
 				if arrived != nil {
 					_ = startBounded(pushes, func() { arrived(conn.RemoteID()) })
 				}
-				l.answer(ctx, conn)
+				l.answer(ctx, conn, streams)
 			}) {
 				_ = conn.Close()
 			}
@@ -340,7 +365,7 @@ func (l *listener) Handle(alpn string, handle func(node.ID, *iroh.Stream)) {
 	l.handlers[alpn] = handle
 }
 
-func (l *listener) answer(ctx context.Context, conn *iroh.Conn) {
+func (l *listener) answer(ctx context.Context, conn *iroh.Conn, allStreams chan struct{}) {
 	defer func() { _ = conn.Close() }()
 
 	l.mu.Lock()
@@ -358,7 +383,7 @@ func (l *listener) answer(ctx context.Context, conn *iroh.Conn) {
 		if err != nil {
 			return
 		}
-		if !startBounded(streams, func() { handle(from, s) }) {
+		if !startBoundedWithin(streams, allStreams, func() { handle(from, s) }) {
 			_ = s.Close()
 		}
 	}
