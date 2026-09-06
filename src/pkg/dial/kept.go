@@ -318,8 +318,8 @@ func (k *Kept) knows(id node.ID) bool {
 			return false
 		}
 		k.known = pinned
-	} else {
-		_ = k.known.Refresh()
+	} else if err := k.known.Refresh(); err != nil {
+		return false
 	}
 
 	_, ok := k.known.ByID(id)

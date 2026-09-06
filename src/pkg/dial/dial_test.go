@@ -3,6 +3,8 @@ package dial
 import (
 	"context"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -100,7 +102,8 @@ func onlyThisMachine(t *testing.T) *node.Node {
 // that ever dialled is a map that only grows, and nothing ever looks at those entries: every caller
 // asking for a connection hands in an entry read out of the book.
 func TestOnlyADeviceTheBookHasIsKept(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	config := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", config)
 
 	held := Hold(nil, nil, nil)
 
@@ -122,6 +125,15 @@ func TestOnlyADeviceTheBookHasIsKept(t *testing.T) {
 	held.Adopt(idFor(12), forTesting, &iroh.Conn{})
 	if len(held.open) != 1 {
 		t.Fatalf("a paired device's connection was not kept: %v", held.open)
+	}
+
+	delete(held.open, key(idFor(12), forTesting))
+	if err := os.WriteFile(filepath.Join(config, "drop", "peers.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	held.Adopt(idFor(12), forTesting, &iroh.Conn{})
+	if len(held.open) != 0 {
+		t.Fatalf("an unreadable address book left a stale peer trusted: %v", held.open)
 	}
 }
 
