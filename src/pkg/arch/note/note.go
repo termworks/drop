@@ -272,7 +272,7 @@ func (n *Note) Amiss(c arch.Config) string {
 		return ""
 	}
 
-	if raw, err := os.ReadFile(cfg.File); err == nil {
+	if raw, _, err := readRegular(cfg.File, MaxSize); err == nil {
 		if who := weave.Unsettled(raw); len(who) > 0 {
 			return fmt.Sprintf("unsettled: %s", strings.Join(who, " and "))
 		}

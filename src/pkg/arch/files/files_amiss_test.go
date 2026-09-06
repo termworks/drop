@@ -47,3 +47,18 @@ func TestAFolderWithAConflictInItSaysSo(t *testing.T) {
 		t.Fatalf("a binary file that happens to hold markers says %q", said)
 	}
 }
+
+func TestALargeFolderFileIsNotReadForConflictMarkers(t *testing.T) {
+	dir := t.TempDir()
+	at := filepath.Join(dir, "large.txt")
+	if err := os.WriteFile(at, []byte("<<<<<<< alice\n=======\n>>>>>>> bob\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(at, 128<<20); err != nil {
+		t.Fatal(err)
+	}
+
+	if said := New(Into{}).Amiss(Config{Dir: dir}); said != "" {
+		t.Fatalf("a file too large to merge reports conflict markers: %q", said)
+	}
+}

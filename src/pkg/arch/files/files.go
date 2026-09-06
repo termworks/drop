@@ -292,7 +292,7 @@ func (f *Files) Amiss(c arch.Config) string {
 			beside++
 			return nil
 		}
-		raw, err := os.ReadFile(at)
+		raw, err := readInline(at)
 		if err != nil || !weave.Textual(raw) {
 			return nil
 		}

@@ -960,6 +960,19 @@ func TestAPipeUnderANameIsNotWaitedOn(t *testing.T) {
 		_ = file.Close()
 		t.Fatal("lifted() accepted a pipe for upload")
 	}
+	summed := make(chan error, 1)
+	go func() {
+		_, _, err := sumOf(pipe)
+		summed <- err
+	}()
+	select {
+	case err := <-summed:
+		if err == nil {
+			t.Fatal("sumOf() accepted a pipe")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("hashing a pipe waited for a writer")
+	}
 
 	root, err := os.OpenRoot(dir)
 	if err != nil {

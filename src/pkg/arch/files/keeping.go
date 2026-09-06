@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"lukechampine.com/blake3"
 
 	"github.com/bresilla/drop/src/pkg/history"
@@ -166,7 +167,7 @@ func (k *keeper) told(path string, m mark) Held {
 		return h
 	}
 
-	raw, err := os.ReadFile(filepath.Join(k.dir, filepath.FromSlash(path)))
+	raw, err := readInline(filepath.Join(k.dir, filepath.FromSlash(path)))
 	if err != nil || blake3.Sum256(raw) != m.Sum || !carries(raw) {
 		return h
 	}
@@ -336,7 +337,7 @@ func (k *keeper) put(root *os.Root, path string, h Held, fetch func(Wanted) erro
 		// Bytes that do not match are not a version of this file: they are whatever the sender
 		// felt like, on a path the folder is missing, with the mode the change asks for put on
 		// them afterwards. So they go, and the round tries again, which reaches a different holder.
-		landed, err := sumOf(at)
+		landed, _, err := sumOf(at)
 		if err != nil {
 			return err
 		}
@@ -420,12 +421,11 @@ func scan(dir string, was map[string]mark) (map[string]mark, error) {
 			return nil
 		}
 
-		sum, err := sumOf(at)
+		sum, readAt, err := sumOf(at)
 		if err != nil {
 			return nil
 		}
-		after, err := os.Lstat(at)
-		if err != nil || after.Size() != m.Size || after.ModTime().UnixNano() != m.At {
+		if !os.SameFile(stat, readAt) || readAt.Size() != m.Size || readAt.ModTime().UnixNano() != m.At {
 			return nil
 		}
 		m.Sum = sum
@@ -543,19 +543,78 @@ func freshPart(root *os.Root, part string) (*os.File, error) {
 	return root.OpenFile(part, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 }
 
-// sumOf is what a file holds, as one number.
-func sumOf(at string) ([32]byte, error) {
-	file, err := os.Open(at)
+// sumOf is what a stable regular file holds, as one number.
+func sumOf(at string) ([32]byte, os.FileInfo, error) {
+	file, before, err := openRegular(at)
 	if err != nil {
-		return [32]byte{}, fmt.Errorf("reading %s: %w", at, err)
+		return [32]byte{}, nil, fmt.Errorf("reading %s: %w", at, err)
 	}
 	defer func() { _ = file.Close() }()
 
 	sum := blake3.New(32, nil)
 	if _, err := io.Copy(sum, file); err != nil {
-		return [32]byte{}, fmt.Errorf("reading %s: %w", at, err)
+		return [32]byte{}, nil, fmt.Errorf("reading %s: %w", at, err)
 	}
-	return [32]byte(sum.Sum(nil)), nil
+	if err := stillCurrent(at, file, before); err != nil {
+		return [32]byte{}, nil, fmt.Errorf("reading %s: %w", at, err)
+	}
+	return [32]byte(sum.Sum(nil)), before, nil
+}
+
+func readInline(at string) ([]byte, error) {
+	file, before, err := openRegular(at)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	if before.Size() > MaxInline {
+		return nil, fmt.Errorf("it is larger than %d bytes", MaxInline)
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, MaxInline+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > MaxInline {
+		return nil, fmt.Errorf("it is larger than %d bytes", MaxInline)
+	}
+	if err := stillCurrent(at, file, before); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+func openRegular(at string) (*os.File, os.FileInfo, error) {
+	file, err := os.OpenFile(at, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	stat, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, nil, err
+	}
+	if !stat.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, nil, errors.New("it is not a regular file")
+	}
+	return file, stat, nil
+}
+
+func stillCurrent(at string, file *os.File, before os.FileInfo) error {
+	after, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	current, err := os.Lstat(at)
+	if err != nil {
+		return err
+	}
+	if !current.Mode().IsRegular() || !os.SameFile(before, current) ||
+		after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) ||
+		current.Size() != before.Size() || !current.ModTime().Equal(before.ModTime()) {
+		return errors.New("it changed while it was read")
+	}
+	return nil
 }
 
 // partial reports whether a name is a transfer in flight rather than a file.
