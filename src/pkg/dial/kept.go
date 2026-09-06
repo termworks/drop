@@ -100,7 +100,7 @@ func (k *Kept) answerOn(conn *iroh.Conn) {
 
 const (
 	maxAnsweringStreams = 64
-	maxAnsweringTotal   = 256
+	maxAnsweringTotal   = 64
 )
 
 func startAnswering(slots, all chan struct{}, work func()) bool {
