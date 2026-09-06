@@ -67,6 +67,23 @@ func TestReadFileWithStreamsAndChecksTheWholeFile(t *testing.T) {
 	}
 }
 
+func TestReadFileWithRefusesGrowthAfterTheCallbackReads(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "state")
+	if err := os.WriteFile(file, []byte("state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ReadFileWith(file, 5, func(from io.Reader) error {
+		if _, err := io.Copy(io.Discard, from); err != nil {
+			return err
+		}
+		return os.WriteFile(file, []byte("states"), 0o600)
+	})
+	if err == nil || !strings.Contains(err.Error(), "5-byte limit") {
+		t.Fatalf("ReadFileWith() = %v, want growth past its limit refused", err)
+	}
+}
+
 func TestReadFileRefusesAnOversizedSparseFile(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "state")
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
