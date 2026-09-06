@@ -6,6 +6,24 @@ import (
 	"testing"
 )
 
+func TestEachEndpointGetsOnePublicResolver(t *testing.T) {
+	first, err := publicLookup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := publicLookup()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first == second {
+		t.Fatal("two endpoints shared an address resolver registry")
+	}
+	if first.Len() != 1 || second.Len() != 1 {
+		t.Fatalf("resolver counts are %d and %d, want one each", first.Len(), second.Len())
+	}
+}
+
 // A device told not to tell a relay it exists must not write a record to one when a pairing code is
 // shown. The record goes up under this device's own endpoint id, so it says that id is alive and
 // what address the machine writing it came from — and with the rendezvous off it carries no relay,
