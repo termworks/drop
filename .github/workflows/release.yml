@@ -64,7 +64,7 @@ jobs:
       - name: Race test
         env:
           CGO_ENABLED: '1'
-        run: go test -race ./...
+        run: go test -race -shuffle=on ./...
 
       - name: Fuzz wire decoders
         run: |
