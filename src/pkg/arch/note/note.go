@@ -105,7 +105,7 @@ func (n *Note) Serve(ctx context.Context, at arch.Session) error {
 		return at.Conn.WriteFrame(wire.KindReject, reject.Encode())
 	}
 
-	raw, err := os.ReadFile(cfg.File)
+	raw, _, err := readRegular(cfg.File, MaxSize)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		reject := wire.Reject{Reason: "this namespace's file cannot be read"}
 		return at.Conn.WriteFrame(wire.KindReject, reject.Encode())

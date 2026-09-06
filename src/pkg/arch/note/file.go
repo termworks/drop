@@ -5,11 +5,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"lukechampine.com/blake3"
 
 	"github.com/bresilla/drop/src/pkg/history"
@@ -366,22 +368,48 @@ func steady(file string) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("reading %s: %w", file, errBusy)
 	}
 
-	raw, err := os.ReadFile(file)
+	raw, readAt, err := readRegular(file, MaxSize)
 	if err != nil {
 		return nil, false, fmt.Errorf("reading %s: %w", file, err)
 	}
-
-	after, err := os.Lstat(file)
-	if err != nil {
-		return nil, false, fmt.Errorf("reading %s: %w", file, err)
-	}
-	if !after.Mode().IsRegular() {
-		return nil, false, fmt.Errorf("reading %s: %w", file, errBusy)
-	}
-	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+	if !os.SameFile(before, readAt) {
 		return nil, false, fmt.Errorf("reading %s: %w", file, errBusy)
 	}
 	return raw, true, nil
+}
+
+func readRegular(file string, limit int64) ([]byte, os.FileInfo, error) {
+	opened, err := os.OpenFile(file, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = opened.Close() }()
+
+	before, err := opened.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !before.Mode().IsRegular() {
+		return nil, nil, errors.New("it is not a file")
+	}
+	raw, err := io.ReadAll(io.LimitReader(opened, limit+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	after, err := opened.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	landed, err := os.Lstat(file)
+	if err != nil {
+		return nil, nil, errBusy
+	}
+	if !landed.Mode().IsRegular() || !os.SameFile(before, landed) ||
+		after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) ||
+		landed.Size() != before.Size() || !landed.ModTime().Equal(before.ModTime()) {
+		return nil, nil, errBusy
+	}
+	return raw, before, nil
 }
 
 // same reports whether a history is where it was.

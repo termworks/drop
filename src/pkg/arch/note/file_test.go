@@ -372,6 +372,25 @@ func TestAFileBeingWrittenIsSkipped(t *testing.T) {
 	}
 }
 
+func TestAnOversizedNoteIsReadOnlyToItsLimit(t *testing.T) {
+	at := filepath.Join(t.TempDir(), "large.md")
+	if err := os.WriteFile(at, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(at, MaxSize+4096); err != nil {
+		t.Fatal(err)
+	}
+	settled(t, at)
+
+	raw, there, err := steady(at)
+	if err != nil || !there {
+		t.Fatalf("steady() = %d bytes, %v, %v", len(raw), there, err)
+	}
+	if len(raw) != MaxSize+1 {
+		t.Fatalf("steady() read %d bytes, want the %d-byte detection limit", len(raw), MaxSize+1)
+	}
+}
+
 // A note saved over and over must not grow a history without end. Once everybody holding it has
 // caught up, what came before is folded into one change that says what it all came to.
 func TestANoteSavedManyTimesFoldsItsHistory(t *testing.T) {
