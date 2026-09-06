@@ -221,6 +221,36 @@ func TestConversationRewriteCannotExceedAccountLimit(t *testing.T) {
 	}
 }
 
+func BenchmarkConversationBytes(b *testing.B) {
+	for _, peers := range []int{16, 256, MaxConversations} {
+		b.Run(fmt.Sprintf("peers-%d", peers), func(b *testing.B) {
+			root := b.TempDir()
+			for i := range peers {
+				dir := filepath.Join(root, fmt.Sprintf("peer-%d", i))
+				if err := os.Mkdir(dir, 0o700); err != nil {
+					b.Fatal(err)
+				}
+				for _, name := range []string{"history", "outbox"} {
+					if err := os.WriteFile(filepath.Join(dir, name), []byte{0}, 0o600); err != nil {
+						b.Fatal(err)
+					}
+				}
+			}
+
+			b.ResetTimer()
+			for range b.N {
+				used, err := conversationBytes(root, MaxConversations+2)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if used != int64(peers*2) {
+					b.Fatalf("measured %d bytes, want %d", used, peers*2)
+				}
+			}
+		})
+	}
+}
+
 func queue(t *testing.T, s *Store, body string) Message {
 	t.Helper()
 
