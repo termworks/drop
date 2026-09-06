@@ -119,8 +119,8 @@ func runServe(parent context.Context, quiet bool) error {
 	// And the archetypes that have something to do when nobody has opened anything: a note is a
 	// file somebody saves in their own editor, and a shared folder is a directory somebody saves
 	// into. Noticing that is a timer of its own.
-	doing.noting().Watch(ctx, cfg.Mounts)
-	doing.filing().Watch(ctx, cfg.Mounts)
+	notesStopped := doing.noting().Watch(ctx, cfg.Mounts)
+	filesStopped := doing.filing().Watch(ctx, cfg.Mounts)
 
 	// A cast feeds this node over a local socket rather than standing up a second one, so a
 	// terminal can be shared while the daemon is running.
@@ -249,6 +249,8 @@ func runServe(parent context.Context, quiet bool) error {
 		select {
 		case <-ctx.Done():
 			fmt.Println("\nstopping")
+			<-notesStopped
+			<-filesStopped
 			return nil
 		case <-report.C:
 			if quiet {

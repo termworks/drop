@@ -2,6 +2,7 @@ package files
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -17,6 +18,24 @@ import (
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
+
+func TestAStoppedFilesWatcherSaysItIsFinished(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	done := New(Into{}).Watch(ctx, nil)
+
+	select {
+	case <-done:
+		t.Fatal("the watcher stopped before its context")
+	default:
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the watcher did not finish after its context stopped")
+	}
+}
 
 // readWriter is the two halves of a stream a test has in two buffers.
 type readWriter struct {

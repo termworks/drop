@@ -207,9 +207,23 @@ func (n *node) background(args ...string) (*exec.Cmd, *lockedBuffer, func()) {
 		}
 	}()
 
+	var once sync.Once
 	return cmd, said, func() {
-		stop()
-		_ = cmd.Wait()
+		once.Do(func() {
+			_ = cmd.Process.Signal(os.Interrupt)
+			waited := make(chan struct{})
+			go func() {
+				_ = cmd.Wait()
+				close(waited)
+			}()
+			select {
+			case <-waited:
+			case <-time.After(5 * time.Second):
+				stop()
+				<-waited
+			}
+			stop()
+		})
 	}
 }
 

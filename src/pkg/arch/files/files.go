@@ -157,7 +157,7 @@ func (f *Files) Serve(ctx context.Context, at arch.Session) error {
 // The table is read again every time round, so a namespace created while this is running is picked
 // up without anything having to say so. A files namespace nobody else holds is left alone: it is a
 // directory this machine serves, and there is nothing for it to be level with.
-func (f *Files) Watch(ctx context.Context, mounts *ns.Table) {
+func (f *Files) Watch(ctx context.Context, mounts *ns.Table) <-chan struct{} {
 	// A nudge makes somebody's edit quick; the timer is what makes every edit eventually seen. A
 	// machine with no inotify, or one at its watch limit, keeps the timer and loses the quickness.
 	ear, err := nudge.Listen(ctx)
@@ -165,7 +165,9 @@ func (f *Files) Watch(ctx context.Context, mounts *ns.Table) {
 		ear = nil
 	}
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		tick := time.NewTicker(Every)
 		defer tick.Stop()
 
@@ -186,6 +188,7 @@ func (f *Files) Watch(ctx context.Context, mounts *ns.Table) {
 			}
 		}
 	}()
+	return done
 }
 
 // round brings every shared folder level with its history once, and says which directories are

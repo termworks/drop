@@ -1,11 +1,31 @@
 package note
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/made"
 )
+
+func TestAStoppedNoteWatcherSaysItIsFinished(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	done := New(Into{}).Watch(ctx, nil)
+
+	select {
+	case <-done:
+		t.Fatal("the watcher stopped before its context")
+	default:
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the watcher did not finish after its context stopped")
+	}
+}
 
 func TestANoteNeedsAFileAndSaysSo(t *testing.T) {
 	n := New(Into{})

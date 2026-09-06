@@ -144,7 +144,7 @@ func Text(conn *wire.Conn) ([]byte, error) {
 //
 // The table is read again every time round, so a namespace created while this is running is picked
 // up without anything having to say so.
-func (n *Note) Watch(ctx context.Context, mounts *ns.Table) {
+func (n *Note) Watch(ctx context.Context, mounts *ns.Table) <-chan struct{} {
 	// A nudge makes a save quick; the timer is what makes every save eventually seen. A machine
 	// with no inotify, or one at its watch limit, keeps the timer and loses only the quickness.
 	ear, err := nudge.Listen(ctx)
@@ -152,7 +152,9 @@ func (n *Note) Watch(ctx context.Context, mounts *ns.Table) {
 		ear = nil
 	}
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		tick := time.NewTicker(Every)
 		defer tick.Stop()
 
@@ -173,6 +175,7 @@ func (n *Note) Watch(ctx context.Context, mounts *ns.Table) {
 			}
 		}
 	}()
+	return done
 }
 
 // round brings every note level with its history once, and says which directories are worth
