@@ -255,7 +255,7 @@ func (f *Files) round(ctx context.Context, mounts *ns.Table, watched watchedFold
 		return
 	}
 
-	present := map[string]struct{}{}
+	present := map[string]string{}
 
 	for _, mount := range mounts.All() {
 		if ctx.Err() != nil {
@@ -268,7 +268,7 @@ func (f *Files) round(ctx context.Context, mounts *ns.Table, watched watchedFold
 		if !ok || cfg.Dir == "" {
 			continue
 		}
-		present[mount.Path] = struct{}{}
+		present[mount.Path] = cfg.Dir
 		previous, known := watched[mount.Path]
 		if !needsReconciliation(full, cfg.Dir, previous, known, dirty) {
 			continue
@@ -294,6 +294,24 @@ func (f *Files) round(ctx context.Context, mounts *ns.Table, watched watchedFold
 	for path := range watched {
 		if _, ok := present[path]; !ok {
 			delete(watched, path)
+		}
+	}
+	f.retain(present)
+}
+
+func (f *Files) retain(present map[string]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	for path, k := range f.kept {
+		dir, exists := present[path]
+		if !exists || k.dir != dir {
+			delete(f.kept, path)
+		}
+	}
+	for path := range f.said {
+		if _, exists := present[path]; !exists {
+			delete(f.said, path)
 		}
 	}
 }

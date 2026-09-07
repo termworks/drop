@@ -209,10 +209,13 @@ func (n *Note) watch(ctx context.Context, mounts *ns.Table, ear changeEar, every
 // listening to until the next one.
 func (n *Note) round(mounts *ns.Table) []string {
 	if mounts == nil {
+		n.retain(nil, nil)
 		return nil
 	}
 
 	var dirs []string
+	keeping := map[string]string{}
+	present := map[string]struct{}{}
 
 	for _, mount := range mounts.All() {
 		if mount.Archetype != n.Name() {
@@ -222,10 +225,12 @@ func (n *Note) round(mounts *ns.Table) []string {
 		if !ok || cfg.File == "" {
 			continue
 		}
+		present[mount.Path] = struct{}{}
 		if !mount.Shared.Declared() {
 			n.say(mount.Path, fmt.Sprintf("%s is a note nobody else holds, so nothing is kept for it", mount.Path))
 			continue
 		}
+		keeping[mount.Path] = cfg.File
 
 		// The directory and not the file: an editor saves by writing beside it and renaming over
 		// it, so the file being watched is not the file that is written.
@@ -241,7 +246,25 @@ func (n *Note) round(mounts *ns.Table) []string {
 			n.into.Changed(mount.Path)
 		}
 	}
+	n.retain(keeping, present)
 	return dirs
+}
+
+func (n *Note) retain(keeping map[string]string, present map[string]struct{}) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	for path, k := range n.kept {
+		file, exists := keeping[path]
+		if !exists || k.file != file {
+			delete(n.kept, path)
+		}
+	}
+	for path := range n.said {
+		if _, exists := present[path]; !exists {
+			delete(n.said, path)
+		}
+	}
 }
 
 // keep runs one note's turn, and says whether a change of this machine's own was recorded.

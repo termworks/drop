@@ -11,6 +11,7 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/made"
+	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -68,6 +69,38 @@ func TestAClosedNudgeFallsBackToTheNoteTimer(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("the watcher did not stop")
+	}
+}
+
+func TestNoteWatcherForgetsRetiredNamespaceState(t *testing.T) {
+	table := ns.NewTable()
+	if err := table.Add(ns.Mount{
+		Path: "/current", Archetype: "note", Config: Config{File: "/tmp/current.md"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n := New(Into{})
+	n.kept["/old"] = &keeper{file: "/tmp/old.md"}
+	n.kept["/current"] = &keeper{file: "/tmp/previous.md"}
+	n.said["/old"] = "old trouble"
+	n.said["/current"] = "current trouble"
+	n.round(table)
+
+	if len(n.kept) != 0 {
+		t.Fatalf("retired keepers = %v", n.kept)
+	}
+	if len(n.said) != 1 {
+		t.Fatalf("diagnostic state = %v", n.said)
+	}
+	if _, exists := n.said["/current"]; !exists {
+		t.Fatalf("active diagnostic state was removed: %v", n.said)
+	}
+
+	table.Drop("/current")
+	n.round(table)
+	if len(n.kept) != 0 || len(n.said) != 0 {
+		t.Fatalf("state after removal: kept=%v said=%v", n.kept, n.said)
 	}
 }
 

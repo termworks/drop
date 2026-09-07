@@ -150,6 +150,44 @@ func TestAnEventRoundReconcilesOnlyItsDirtyFolder(t *testing.T) {
 	}
 }
 
+func TestFilesWatcherForgetsRetiredNamespaceState(t *testing.T) {
+	current := t.TempDir()
+	table := ns.NewTable()
+	if err := table.Add(ns.Mount{
+		Path: "/current", Archetype: "files", Config: Config{Dir: current},
+		Shared: ns.Shared{Creator: "tester", At: "/shared"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	f := New(Into{})
+	f.kept["/old"] = &keeper{dir: "/old"}
+	f.kept["/current"] = &keeper{dir: "/previous"}
+	f.said["/old"] = "old trouble"
+	f.said["/current"] = "current trouble"
+	watched := watchedFolders{
+		"/old":     {dir: "/old"},
+		"/current": {dir: current},
+	}
+	f.round(t.Context(), table, watched, nil, false)
+
+	if len(f.kept) != 0 {
+		t.Fatalf("retired keepers = %v", f.kept)
+	}
+	if len(f.said) != 1 || f.said["/current"] != "current trouble" {
+		t.Fatalf("diagnostic state = %v", f.said)
+	}
+	if len(watched) != 1 {
+		t.Fatalf("watched folders = %v", watched)
+	}
+
+	table.Drop("/current")
+	f.round(t.Context(), table, watched, nil, false)
+	if len(f.kept) != 0 || len(f.said) != 0 || len(watched) != 0 {
+		t.Fatalf("state after removal: kept=%v said=%v watched=%v", f.kept, f.said, watched)
+	}
+}
+
 // readWriter is the two halves of a stream a test has in two buffers.
 type readWriter struct {
 	io.Reader
