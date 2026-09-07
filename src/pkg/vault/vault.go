@@ -53,7 +53,7 @@ func (v *Vault) Key() []byte {
 	if v == nil {
 		return nil
 	}
-	return v.key
+	return append([]byte(nil), v.key...)
 }
 
 // On reports whether anything is encrypted at all.

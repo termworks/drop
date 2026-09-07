@@ -1,6 +1,7 @@
 package convo
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -39,6 +40,41 @@ func aKey() []byte {
 		key[i] = byte(i)
 	}
 	return key
+}
+
+func TestUnlockOwnsItsKey(t *testing.T) {
+	key := aKey()
+	want := append([]byte(nil), key...)
+	Unlock(key)
+	t.Cleanup(func() { Unlock(nil) })
+	key[0] ^= 0xff
+
+	got, err := keyed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("mutating the supplied key changed the retained key")
+	}
+}
+
+func TestLazyUnlockOwnsItsKey(t *testing.T) {
+	key := aKey()
+	want := append([]byte(nil), key...)
+	Unlocking(func() ([]byte, error) { return key, nil })
+	t.Cleanup(func() { Unlock(nil) })
+	if _, err := keyed(); err != nil {
+		t.Fatal(err)
+	}
+	key[0] ^= 0xff
+
+	got, err := keyed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("mutating the resolved key changed the retained key")
+	}
 }
 
 // Without a key, `strings` reads the history. With one, it does not -- and drop still does.

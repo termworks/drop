@@ -18,6 +18,39 @@ func aKey(t *testing.T) []byte {
 	return key
 }
 
+func TestUnlockOwnsItsKey(t *testing.T) {
+	key := aKey(t)
+	want := append([]byte(nil), key...)
+	key[0] ^= 0xff
+
+	got, err := keyed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("mutating the supplied key changed the retained key")
+	}
+}
+
+func TestLazyUnlockOwnsItsKey(t *testing.T) {
+	key := bytes.Repeat([]byte{7}, 32)
+	want := append([]byte(nil), key...)
+	Unlocking(func() ([]byte, error) { return key, nil })
+	t.Cleanup(func() { Unlock(nil) })
+	if _, err := keyed(); err != nil {
+		t.Fatal(err)
+	}
+	key[0] ^= 0xff
+
+	got, err := keyed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("mutating the resolved key changed the retained key")
+	}
+}
+
 // A history holds somebody's notes and the contents of the folders they share. Without a key,
 // `strings` reads it. With one, it does not — and drop still does.
 func TestASealedLogDoesNotReadInTheClear(t *testing.T) {

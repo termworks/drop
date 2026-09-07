@@ -26,6 +26,52 @@ func TestNothingConfiguredIsNotAFailure(t *testing.T) {
 	}
 }
 
+func TestKeyDoesNotExposeVaultStorage(t *testing.T) {
+	v := &Vault{key: bytes.Repeat([]byte{7}, KeyBytes)}
+	key := v.Key()
+	key[0] = 9
+
+	if got := v.Key()[0]; got != 7 {
+		t.Fatalf("mutating Key() changed the vault key to %d", got)
+	}
+}
+
+func TestPeekReportsEveryVaultStateWithoutCreatingOne(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	key := filepath.Join(dir, "vault.key")
+	configured := []string{key}
+
+	if state, err := Peek(nil); err != nil || state != Off {
+		t.Fatalf("Peek(nil) = %v, %v; want off", state, err)
+	}
+	if state, err := Peek(configured); err != nil || state != Fresh {
+		t.Fatalf("Peek(fresh) = %v, %v; want fresh", state, err)
+	}
+	wrapped, err := where()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, absent := range []string{key, wrapped} {
+		if _, err := os.Stat(absent); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Peek() created %s", absent)
+		}
+	}
+
+	if _, err := Open(configured); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := Peek(configured); err != nil || state != Unlocked {
+		t.Fatalf("Peek(open) = %v, %v; want unlocked", state, err)
+	}
+	if err := os.Remove(key); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := Peek(configured); err != nil || state != Locked {
+		t.Fatalf("Peek(no key) = %v, %v; want locked", state, err)
+	}
+}
+
 // The data key is made once and unwrapped every time after: a key that changed on restart would
 // take the history with it.
 func TestTheDataKeySurvivesARestart(t *testing.T) {

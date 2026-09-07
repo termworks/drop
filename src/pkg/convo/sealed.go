@@ -45,7 +45,7 @@ func Unlock(key []byte) {
 	held.Lock()
 	defer held.Unlock()
 
-	held.key, held.get, held.asked, held.err = key, nil, true, nil
+	held.key, held.get, held.asked, held.err = append([]byte(nil), key...), nil, true, nil
 }
 
 // Unlocking says how to get the data key, without getting it.
@@ -67,7 +67,8 @@ func keyed() ([]byte, error) {
 	defer held.Unlock()
 
 	if !held.asked && held.get != nil {
-		held.key, held.err = held.get()
+		key, err := held.get()
+		held.key, held.err = append([]byte(nil), key...), err
 		held.asked = true
 	}
 	return held.key, held.err
