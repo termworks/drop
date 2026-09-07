@@ -20,6 +20,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/live"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/proto"
+	"github.com/bresilla/drop/src/pkg/wire"
 )
 
 // What each kind of namespace does when it is opened from a terminal.
@@ -116,22 +117,34 @@ func sendFiles(parent context.Context, o opening, sources []share.Source) error 
 	ctx, cancel := o.within(parent)
 	defer cancel()
 
-	done, s, err := o.over().To(ctx, o.entry, node.ALPNSession)
+	transfer, err := share.NewTransfer(sources)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = done.Close() }()
-	defer func() { _ = s.Close() }()
-	defer stopStreamOnDone(parent, s)()
+	defer func() { _ = transfer.Close() }()
 
 	bar := &progress{}
 	defer bar.clear()
 
-	conn, err := proto.Open(s, o.served.Path, "share", 0, "", node.DisplayName())
-	if err != nil {
-		return err
+	open := func(ctx context.Context) (*wire.Conn, func(), error) {
+		done, s, err := o.over().To(ctx, o.entry, node.ALPNSession)
+		if err != nil {
+			return nil, nil, err
+		}
+		stop := stopStreamOnDone(ctx, s)
+		close := func() {
+			stop()
+			_ = s.Close()
+			_ = done.Close()
+		}
+		conn, err := proto.Open(s, o.served.Path, "share", 0, "", node.DisplayName())
+		if err != nil {
+			close()
+			return nil, nil, err
+		}
+		return conn, close, nil
 	}
-	if err := share.Send(conn, sources, bar.update); err != nil {
+	if err := retryTransfer(ctx, transfer, bar.update, open); err != nil {
 		return err
 	}
 	for _, src := range sources {

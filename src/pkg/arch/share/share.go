@@ -21,8 +21,6 @@ type Config struct {
 	instance *configInstance
 }
 
-type configInstance [1]byte
-
 // Into is what the process running a share hands it: how to report items and completed batches.
 type Into struct {
 	// Progress, when set, is called as bytes land. Total is wire.SizeUnknown for an item with no
@@ -51,7 +49,7 @@ func (s *Share) Read(d arch.Declared) (arch.Config, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("a share namespace needs a dir")
 	}
-	return Config{Dir: dir, instance: &configInstance{}}, nil
+	return Config{Dir: dir, instance: newConfigInstance()}, nil
 }
 
 func (s *Share) Note(c arch.Config) arch.Note {
@@ -79,7 +77,7 @@ func (s *Share) Serve(ctx context.Context, at arch.Session) error {
 			s.into.Landed(from, name, size)
 		}
 	}
-	if err := receive(at.Conn, cfg.Dir, at.From, into); err != nil {
+	if err := receiveWithReceipts(at.Conn, cfg.Dir, at.From, into, cfg.instance); err != nil {
 		return err
 	}
 	if landed && s.into.Completed != nil {

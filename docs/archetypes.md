@@ -29,9 +29,13 @@ A push carries files, not whole directories. Each item is offered with its name 
 with how much is already held, then sent and verified against a blake3 digest.
 
 An item waits in a `.part` file while it arrives, so a dropped connection resumes rather than
-starting again. The sender is folded into that name along with the name and the size, because two
-peers offering a file of the same name and size would otherwise write into one file and each be told
-theirs had arrived.
+starting again. The sender and a random identity for the logical transfer are folded into that
+name. Retrying the transfer finds the same partial file, while a separate send of identical bytes
+gets a different identity.
+
+A verified landing is retained as a bounded receipt. If the final acknowledgement is lost, the
+sender reopens the namespace with the same identity and the receiver verifies and acknowledges the
+receipt instead of landing a numbered duplicate.
 
 `share` and `files` are not the same thing, and the difference is the point. A share appears and
 disappears: one side sends, the other receives, and afterwards there is nothing to open. A files

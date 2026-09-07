@@ -18,6 +18,8 @@ import (
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
+var testTransferID = transferID{1}
+
 // spoke is one item as a sender puts it on the wire: what it sends now, and everything the item is,
 // which is what the digest covers.
 type spoke struct {
@@ -53,7 +55,7 @@ func taking(t *testing.T, dir string, items []Item, sent *bytes.Buffer, done *[]
 	t.Helper()
 
 	var offering bytes.Buffer
-	if err := wire.NewConn(readWriter{&offering, &offering}).WriteFrame(wire.KindItem, offer{Items: items}.encode()); err != nil {
+	if err := wire.NewConn(readWriter{&offering, &offering}).WriteFrame(wire.KindItem, offer{ID: testTransferID, Items: items}.encode()); err != nil {
 		t.Fatalf("writing the offer: %v", err)
 	}
 	offering.Write(sent.Bytes())
@@ -93,7 +95,7 @@ func offerLive(t *testing.T, dir string, from node.ID, item Item) liveTaking {
 		t.Fatal(err)
 	}
 	conn := wire.NewConn(sender)
-	if err := conn.WriteFrame(wire.KindItem, offer{Items: []Item{item}}.encode()); err != nil {
+	if err := conn.WriteFrame(wire.KindItem, offer{ID: testTransferID, Items: []Item{item}}.encode()); err != nil {
 		t.Fatalf("writing live offer: %v", err)
 	}
 	return liveTaking{conn: conn, peer: sender, done: done}
@@ -293,7 +295,7 @@ func TestAStalePartIsNotLeftUnderTheItem(t *testing.T) {
 	item := Item{Name: "notes", Size: wire.SizeUnknown, Mode: 0o644}
 
 	stale := bytes.Repeat([]byte("x"), 4096)
-	if err := os.WriteFile(filepath.Join(dir, partName(node.ID{}, item)), stale, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, partName(node.ID{}, transferID{2}, item)), stale, 0o600); err != nil {
 		t.Fatalf("planting a stale part: %v", err)
 	}
 
@@ -311,7 +313,7 @@ func TestAStalePartIsNotLeftUnderTheItem(t *testing.T) {
 func TestResumeOnlyPicksUpTheSameOffer(t *testing.T) {
 	dir := t.TempDir()
 	earlier := Item{Name: "a.txt", Size: 10}
-	if err := os.WriteFile(filepath.Join(dir, partName(node.ID{}, earlier)), []byte("0123456789"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, partName(node.ID{}, testTransferID, earlier)), []byte("0123456789"), 0o600); err != nil {
 		t.Fatalf("planting an earlier part: %v", err)
 	}
 
@@ -341,7 +343,7 @@ func TestResumeContinuesTheSameOffer(t *testing.T) {
 	whole := []byte("0123456789abcdef")
 	item := Item{Name: "b.bin", Size: int64(len(whole))}
 
-	if err := os.WriteFile(filepath.Join(dir, partName(node.ID{}, item)), whole[:6], 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, partName(node.ID{}, testTransferID, item)), whole[:6], 0o600); err != nil {
 		t.Fatalf("planting a part: %v", err)
 	}
 
@@ -559,7 +561,7 @@ func TestASymlinkedPartIsNotWrittenThrough(t *testing.T) {
 	}
 
 	item := Item{Name: "notes", Size: wire.SizeUnknown}
-	if err := os.Symlink(outside, filepath.Join(dir, partName(node.ID{}, item))); err != nil {
+	if err := os.Symlink(outside, filepath.Join(dir, partName(node.ID{}, testTransferID, item))); err != nil {
 		t.Fatalf("planting a symlink: %v", err)
 	}
 
@@ -645,7 +647,7 @@ func TestAPartPlantedInsideIsNotWrittenThrough(t *testing.T) {
 	defer func() { _ = dir.Close() }()
 
 	item := Item{Name: "report.txt", Size: 4, Mode: 0o644}
-	part := partName(node.ID{}, item)
+	part := partName(node.ID{}, testTransferID, item)
 	if err := os.Symlink("already-here", filepath.Join(base, part)); err != nil {
 		t.Fatal(err)
 	}
@@ -680,7 +682,7 @@ func TestResumeOnlyCarriesOnInAPlainFile(t *testing.T) {
 	defer func() { _ = dir.Close() }()
 
 	item := Item{Name: "report.txt", Size: 40, Mode: 0o644}
-	part := partName(node.ID{}, item)
+	part := partName(node.ID{}, testTransferID, item)
 
 	if err := os.WriteFile(filepath.Join(base, "elsewhere"), []byte("0123456789"), 0o600); err != nil {
 		t.Fatal(err)
@@ -720,19 +722,22 @@ func idFor(n byte) node.ID {
 func TestTwoSendersDoNotShareOnePartFile(t *testing.T) {
 	item := Item{Name: "report.pdf", Size: 4096}
 
-	one, two := partName(idFor(1), item), partName(idFor(2), item)
+	one := partName(idFor(1), transferID{1}, item)
+	two := partName(idFor(2), transferID{1}, item)
 	if one == two {
 		t.Fatalf("two senders offering %q at %d bytes both wait in %s", item.Name, item.Size, one)
 	}
 
 	// And one sender coming back to the same offer finds its own file again, or a dropped
 	// connection would start from nothing every time.
-	if again := partName(idFor(1), item); again != one {
+	if again := partName(idFor(1), transferID{1}, item); again != one {
 		t.Fatalf("the same sender came back to %s, having left %s", again, one)
 	}
 
-	// A different offer from the same sender is still a different file.
-	if other := partName(idFor(1), Item{Name: "report.pdf", Size: 8192}); other == one {
+	if other := partName(idFor(1), transferID{2}, item); other == one {
+		t.Fatal("two transfers from one sender share a part file")
+	}
+	if other := partName(idFor(1), transferID{1}, Item{Name: "report.pdf", Size: 8192}); other == one {
 		t.Fatal("two different offers from one sender share a part file")
 	}
 }

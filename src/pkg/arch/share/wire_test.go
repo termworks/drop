@@ -17,7 +17,7 @@ import (
 )
 
 func TestShareWireDecodersRefuseTrailingBytes(t *testing.T) {
-	offerBody := append(offer{}.encode(), 0)
+	offerBody := append(offer{ID: testTransferID}.encode(), 0)
 	if _, err := decodeOffer(offerBody); err == nil {
 		t.Fatal("decodeOffer() accepted trailing bytes")
 	}
@@ -28,8 +28,29 @@ func TestShareWireDecodersRefuseTrailingBytes(t *testing.T) {
 	}
 }
 
+func TestOfferDecoderRefusesAnEmptyTransferIdentity(t *testing.T) {
+	if _, err := decodeOffer(offer{}.encode()); err == nil {
+		t.Fatal("decodeOffer() accepted an empty transfer identity")
+	}
+}
+
+func TestSeparateTransfersHaveSeparateIdentities(t *testing.T) {
+	first, err := NewTransfer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewTransfer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.id.valid() || !second.id.valid() || first.id == second.id {
+		t.Fatalf("transfer identities = %x and %x", first.id, second.id)
+	}
+}
+
 func TestOfferDecoderRefusesModeOverflow(t *testing.T) {
 	w := wire.NewWriter()
+	w.Bytes(testTransferID[:])
 	w.Uint(1)
 	w.String("item")
 	w.Int(0)

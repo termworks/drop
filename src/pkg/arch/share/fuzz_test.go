@@ -3,7 +3,7 @@ package share
 import "testing"
 
 func FuzzDecodeOffer(f *testing.F) {
-	f.Add(offer{Items: []Item{{Name: "notes", Size: 4, Mode: 0o600}}}.encode())
+	f.Add(offer{ID: testTransferID, Items: []Item{{Name: "notes", Size: 4, Mode: 0o600}}}.encode())
 	f.Add([]byte{})
 	f.Add([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f})
 

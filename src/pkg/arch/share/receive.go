@@ -31,17 +31,11 @@ func safeName(name string) string {
 
 // partName is where an item waits while it arrives.
 //
-// Who is sending goes into the name along with the name and the length, so two peers offering a
-// file of the same name and size never write into one file. Without that they would take turns
-// writing into it and each be told at the end that theirs had arrived, when what is there is a
-// weave of both and matches neither digest — or worse, matches one, and the other peer is told
-// their file landed when somebody else's did.
-//
-// The sender is in it rather than the moment, so a peer whose connection dropped still comes back
-// to its own half-written file and carries on from where it stopped.
-func partName(from node.ID, item Item) string {
+// The sender and transfer identity go into the name with the item metadata. A retry finds its own
+// partial file, while separate transfers of the same name and size use separate files.
+func partName(from node.ID, transfer transferID, item Item) string {
 	name := safeName(item.Name)
-	sum := blake3.Sum256(fmt.Appendf(nil, "%s\x00%s\x00%d", from, name, item.Size))
+	sum := blake3.Sum256(fmt.Appendf(nil, "%s\x00%x\x00%s\x00%d", from, transfer, name, item.Size))
 	return fmt.Sprintf(".%s.%x.part", name, sum[:6])
 }
 
@@ -68,12 +62,16 @@ func offered(items []Item) error {
 
 // receive reads the offer, answers it, and takes the items one at a time.
 func receive(conn *wire.Conn, into string, from node.ID, hooks Into) error {
+	return receiveWithReceipts(conn, into, from, hooks, nil)
+}
+
+func receiveWithReceipts(conn *wire.Conn, into string, from node.ID, hooks Into, receipts *configInstance) error {
 	return conn.WithIdle(wire.FiniteIdle, func() error {
-		return receiveWithin(conn, into, from, hooks)
+		return receiveWithin(conn, into, from, hooks, receipts)
 	})
 }
 
-func receiveWithin(conn *wire.Conn, into string, from node.ID, hooks Into) error {
+func receiveWithin(conn *wire.Conn, into string, from node.ID, hooks Into, receipts *configInstance) error {
 	kind, body, err := conn.ReadFrame()
 	if err != nil {
 		// A sender that closes before offering anything has pushed nothing, which is not a fault.
@@ -122,21 +120,27 @@ func receiveWithin(conn *wire.Conn, into string, from node.ID, hooks Into) error
 	}
 	defer func() { _ = locked.Close() }()
 
-	picked := resume{At: make([]int64, len(out.Items))}
+	picked := resume{At: make([]int64, len(out.Items)), Done: make([]bool, len(out.Items))}
+	completed := make([]receipt, len(out.Items))
 	for i, item := range out.Items {
-		// Only a known-size item can be resumed: without a length there is no way to tell a partial
-		// file from a complete one.
-		if !item.Known() {
+		key := receiptKey{from: from, transfer: out.ID, item: uint32(i)}
+		stored, found, err := receipts.lookup(key, item)
+		if err != nil {
+			_ = refuse(err.Error())
+			return err
+		}
+		if found {
+			picked.At[i], picked.Done[i], completed[i] = stored.size, true, stored
 			continue
 		}
-		stat, err := dir.Lstat(partName(from, item))
-		if err == nil && stat.Mode().IsRegular() && stat.Size() <= item.Size {
+		stat, err := dir.Lstat(partName(from, out.ID, item))
+		if err == nil && stat.Mode().IsRegular() && (!item.Known() || stat.Size() <= item.Size) {
 			picked.At[i] = stat.Size()
 		}
 	}
 	want := int64(0)
 	for i, item := range out.Items {
-		if !item.Known() {
+		if picked.Done[i] || !item.Known() {
 			continue
 		}
 		left := item.Size - picked.At[i]
@@ -155,7 +159,14 @@ func receiveWithin(conn *wire.Conn, into string, from node.ID, hooks Into) error
 	}
 
 	for i, item := range out.Items {
-		if err := receiveOne(conn, dir, from, item, picked.At[i], hooks); err != nil {
+		key := receiptKey{from: from, transfer: out.ID, item: uint32(i)}
+		var err error
+		if picked.Done[i] {
+			err = receiveCompleted(conn, completed[i], key, receipts, from, hooks)
+		} else {
+			err = receiveOne(conn, dir, from, out.ID, uint32(i), item, picked.At[i], hooks, receipts)
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -225,9 +236,9 @@ func opening(dir *os.Root, part string, at int64) (*os.File, int64, error) {
 	return out, 0, nil
 }
 
-func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64, hooks Into) error {
+func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, transfer transferID, index uint32, item Item, at int64, hooks Into, receipts *configInstance) error {
 	name := safeName(item.Name)
-	part := partName(from, item)
+	part := partName(from, transfer, item)
 
 	out, at, err := opening(dir, part, at)
 	if err != nil {
@@ -266,7 +277,8 @@ func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64
 			if err != nil {
 				return err
 			}
-			return finishOne(conn, dir, from, item, name, part, out, digest, got, end, hooks)
+			key := receiptKey{from: from, transfer: transfer, item: index}
+			return finishOne(conn, dir, from, item, key, name, part, out, digest, got, end, hooks, receipts)
 		}
 		if kind != wire.KindData {
 			return fmt.Errorf("expected data for %s, got frame kind %d", name, kind)
@@ -297,7 +309,7 @@ func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, at int64
 	}
 }
 
-func finishOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, name, part string, out *os.File, digest *blake3.Hasher, got int64, end wire.End, hooks Into) error {
+func finishOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, key receiptKey, name, part string, out *os.File, digest *blake3.Hasher, got int64, end wire.End, hooks Into, receipts *configInstance) error {
 	refuse := func(reason string) error {
 		_ = dir.Remove(part)
 		_ = conn.WriteFrame(wire.KindAck, wire.Ack{Reason: reason}.Encode())
@@ -340,12 +352,41 @@ func finishOne(conn *wire.Conn, dir *os.Root, from node.ID, item Item, name, par
 	if err := syncDir(dir); err != nil {
 		return fmt.Errorf("syncing the receiving directory: %w", err)
 	}
+	var sum [32]byte
+	copy(sum[:], end.Digest)
+	receipts.remember(key, item, final, got, sum)
 
 	if err := conn.WriteFrame(wire.KindAck, wire.Ack{OK: true}.Encode()); err != nil {
 		return fmt.Errorf("acknowledging %s: %w", final, err)
 	}
-	if hooks.Landed != nil {
+	if receipts.report(key) && hooks.Landed != nil {
 		hooks.Landed(from, final, got)
+	}
+	return nil
+}
+
+func receiveCompleted(conn *wire.Conn, stored receipt, key receiptKey, receipts *configInstance, from node.ID, hooks Into) error {
+	kind, body, err := conn.ReadFrame()
+	if err != nil {
+		return fmt.Errorf("confirming completed %s: %w", stored.name, err)
+	}
+	if kind != wire.KindEnd {
+		return fmt.Errorf("expected an end for completed %s, got frame kind %d", stored.name, kind)
+	}
+	end, err := wire.DecodeEnd(body)
+	if err != nil {
+		return err
+	}
+	if end.Size != stored.size || !bytes.Equal(end.Digest, stored.digest[:]) {
+		reason := "completed item does not match its receipt"
+		_ = conn.WriteFrame(wire.KindAck, wire.Ack{Reason: reason}.Encode())
+		return fmt.Errorf("%s: %s", stored.name, reason)
+	}
+	if err := conn.WriteFrame(wire.KindAck, wire.Ack{OK: true}.Encode()); err != nil {
+		return fmt.Errorf("acknowledging %s: %w", stored.name, err)
+	}
+	if receipts.report(key) && hooks.Landed != nil {
+		hooks.Landed(from, stored.name, stored.size)
 	}
 	return nil
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/seen"
 	"github.com/bresilla/drop/src/pkg/shares"
 	"github.com/bresilla/drop/src/pkg/tui"
+	"github.com/bresilla/drop/src/pkg/wire"
 )
 
 func runTUI(parent context.Context) error {
@@ -317,19 +318,29 @@ func (l *running) Send(ctx context.Context, to book.Entry, path string, files []
 	if err != nil {
 		return err
 	}
-
-	s, err := l.held.To(ctx, to, node.ALPNSession)
+	transfer, err := share.NewTransfer(sources)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = s.Close() }()
-	defer stopStreamOnDone(ctx, s)()
-
-	conn, err := proto.Open(s, path, "share", 0, "", node.DisplayName())
-	if err != nil {
-		return err
+	defer func() { _ = transfer.Close() }()
+	open := func(ctx context.Context) (*wire.Conn, func(), error) {
+		s, err := l.held.To(ctx, to, node.ALPNSession)
+		if err != nil {
+			return nil, nil, err
+		}
+		stop := stopStreamOnDone(ctx, s)
+		close := func() {
+			stop()
+			_ = s.Close()
+		}
+		conn, err := proto.Open(s, path, "share", 0, "", node.DisplayName())
+		if err != nil {
+			close()
+			return nil, nil, err
+		}
+		return conn, close, nil
 	}
-	if err := share.Send(conn, sources, progress); err != nil {
+	if err := retryTransfer(ctx, transfer, progress, open); err != nil {
 		return err
 	}
 	for _, src := range sources {

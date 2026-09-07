@@ -1,10 +1,13 @@
 package share
 
 import (
+	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"golang.org/x/sys/unix"
 	"lukechampine.com/blake3"
@@ -21,6 +24,49 @@ type Source struct {
 	Mode   uint32
 	Reader io.Reader
 	stat   os.FileInfo
+}
+
+// Transfer is one logical batch, reusable only when delivery could not be confirmed.
+type Transfer struct {
+	mu      sync.Mutex
+	id      transferID
+	sources []Source
+	replays []*replayBody
+	ended   []wire.End
+	done    []bool
+	closed  bool
+}
+
+// NewTransfer prepares sources with one identity retained across retry attempts.
+func NewTransfer(sources []Source) (*Transfer, error) {
+	if err := validSources(sources); err != nil {
+		return nil, err
+	}
+	var id transferID
+	for !id.valid() {
+		if _, err := rand.Read(id[:]); err != nil {
+			return nil, fmt.Errorf("creating a transfer identity: %w", err)
+		}
+	}
+	transfer := &Transfer{
+		id:      id,
+		sources: append([]Source(nil), sources...),
+		replays: make([]*replayBody, len(sources)),
+		ended:   make([]wire.End, len(sources)),
+		done:    make([]bool, len(sources)),
+	}
+	for i, src := range transfer.sources {
+		if src.Reader == nil {
+			continue
+		}
+		replay, err := newReplay(src.Reader)
+		if err != nil {
+			_ = transfer.Close()
+			return nil, fmt.Errorf("preparing %s for retry: %w", src.Name, err)
+		}
+		transfer.replays[i] = replay
+	}
+	return transfer, nil
 }
 
 // Known reports whether this source's length was settled before sending.
@@ -51,20 +97,58 @@ func FileFromReader(name string, r io.Reader) Source {
 
 // Send offers sources on an opened share namespace and writes the ones it accepts.
 func Send(conn *wire.Conn, sources []Source, progress func(name string, done, total int64)) error {
+	transfer, err := NewTransfer(sources)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = transfer.Close() }()
+	return transfer.Send(conn, progress)
+}
+
+// Send attempts this transfer over an opened share namespace.
+func (t *Transfer) Send(conn *wire.Conn, progress func(name string, done, total int64)) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return fmt.Errorf("transfer is closed")
+	}
 	return conn.WithIdle(wire.FiniteIdle, func() error {
-		return send(conn, sources, progress)
+		return t.send(conn, progress)
 	})
 }
 
-func send(conn *wire.Conn, sources []Source, progress func(name string, done, total int64)) error {
+// Close removes retry copies of streamed inputs.
+func (t *Transfer) Close() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return nil
+	}
+	t.closed = true
+	var out error
+	for _, replay := range t.replays {
+		if replay != nil {
+			out = errors.Join(out, replay.close())
+		}
+	}
+	return out
+}
+
+func validSources(sources []Source) error {
 	if len(sources) > maxItems {
 		return fmt.Errorf("offering %d items, over the %d limit", len(sources), maxItems)
 	}
-	out := offer{}
 	for _, src := range sources {
 		if src.Size < wire.SizeUnknown {
 			return fmt.Errorf("%s has invalid size %d", src.Name, src.Size)
 		}
+	}
+	return nil
+}
+
+func (t *Transfer) send(conn *wire.Conn, progress func(name string, done, total int64)) error {
+	out := offer{ID: t.id, Items: make([]Item, 0, len(t.sources))}
+	for _, src := range t.sources {
 		out.Items = append(out.Items, Item{Name: src.Name, Size: src.Size, Mode: src.Mode})
 	}
 	if err := conn.WriteFrame(wire.KindItem, out.encode()); err != nil {
@@ -91,21 +175,39 @@ func send(conn *wire.Conn, sources []Source, progress func(name string, done, to
 	if err != nil {
 		return err
 	}
-	if len(picked.At) != len(sources) {
-		return fmt.Errorf("the answer covers %d items, expected %d", len(picked.At), len(sources))
+	if len(picked.At) != len(t.sources) || len(picked.Done) != len(t.sources) {
+		return fmt.Errorf("the answer covers %d items, expected %d", len(picked.At), len(t.sources))
 	}
 	for i, at := range picked.At {
-		src := sources[i]
-		if !src.Known() && at != 0 {
-			return fmt.Errorf("the answer resumes unknown-size item %s at %d", src.Name, at)
+		src := t.sources[i]
+		if picked.Done[i] {
+			if !t.done[i] || t.ended[i].Size != at {
+				return fmt.Errorf("the answer completed unknown transfer state for %s", src.Name)
+			}
+			if src.Known() && at != src.Size {
+				return fmt.Errorf("the answer completed %s at %d, expected %d", src.Name, at, src.Size)
+			}
+			continue
+		}
+		if !src.Known() && at != 0 && (t.replays[i] == nil || at > t.replays[i].cached) {
+			return fmt.Errorf("the answer resumes unknown-size item %s at unavailable offset %d", src.Name, at)
 		}
 		if src.Known() && at > src.Size {
 			return fmt.Errorf("the answer resumes %s at %d, beyond its %d bytes", src.Name, at, src.Size)
 		}
 	}
 
-	for i, src := range sources {
-		if err := sendOne(conn, src, picked.At[i], progress); err != nil {
+	for i, src := range t.sources {
+		var err error
+		if picked.Done[i] {
+			err = sendCompleted(conn, src.Name, t.ended[i])
+		} else {
+			if t.replays[i] != nil {
+				src.Reader = t.replays[i].reader()
+			}
+			err = sendOneTracked(conn, src, picked.At[i], progress, &t.ended[i], &t.done[i])
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -113,6 +215,10 @@ func send(conn *wire.Conn, sources []Source, progress func(name string, done, to
 }
 
 func sendOne(conn *wire.Conn, src Source, at int64, progress func(string, int64, int64)) error {
+	return sendOneTracked(conn, src, at, progress, nil, nil)
+}
+
+func sendOneTracked(conn *wire.Conn, src Source, at int64, progress func(string, int64, int64), ended *wire.End, complete *bool) error {
 	body := src.Reader
 	var opened *os.File
 	var before os.FileInfo
@@ -131,9 +237,8 @@ func sendOne(conn *wire.Conn, src Source, at int64, progress func(string, int64,
 
 	digest := blake3.New(32, nil)
 
-	// The digest covers the whole item, so a resumed prefix is hashed without being sent. Only a
-	// known-size item can be resumed; there is nothing to seek in a pipe.
-	if at > 0 && src.Known() {
+	// A resumed prefix is hashed without being sent.
+	if at > 0 {
 		if _, err := io.CopyN(digest, body, at); err != nil {
 			return fmt.Errorf("hashing the resumed part of %s: %w", src.Name, err)
 		}
@@ -185,30 +290,78 @@ func sendOne(conn *wire.Conn, src Source, at int64, progress func(string, int64,
 		endDigest = nil
 	}
 	end := wire.End{Size: sent, Digest: endDigest}
+	if localErr == nil && ended != nil && complete != nil {
+		*ended = wire.End{Size: end.Size, Digest: append([]byte(nil), end.Digest...)}
+		*complete = true
+	}
 	if err := conn.WriteFrame(wire.KindEnd, end.Encode()); err != nil {
-		return err
+		if localErr != nil {
+			return localErr
+		}
+		return unconfirmed(src.Name, err)
 	}
 
-	// Waiting on the verdict is what makes a successful return mean the bytes were verified on the
-	// other side, rather than only that they were written to a socket.
-	kind, ackBody, err := conn.ReadFrame()
-	if err != nil {
-		return fmt.Errorf("waiting for %s to be confirmed: %w", src.Name, err)
-	}
-	if kind != wire.KindAck {
-		return fmt.Errorf("expected an ack for %s, got frame kind %d", src.Name, kind)
-	}
-	ack, err := wire.DecodeAck(ackBody)
-	if err != nil {
-		return err
-	}
+	ack, err := confirmation(conn, src.Name)
 	if localErr != nil {
 		return localErr
+	}
+	if err != nil {
+		return err
 	}
 	if !ack.OK {
 		return fmt.Errorf("%s was rejected: %s", src.Name, ack.Reason)
 	}
 	return nil
+}
+
+func sendCompleted(conn *wire.Conn, name string, end wire.End) error {
+	if err := conn.WriteFrame(wire.KindEnd, end.Encode()); err != nil {
+		return unconfirmed(name, err)
+	}
+	ack, err := confirmation(conn, name)
+	if err != nil {
+		return err
+	}
+	if !ack.OK {
+		return fmt.Errorf("%s was rejected: %s", name, ack.Reason)
+	}
+	return nil
+}
+
+func confirmation(conn *wire.Conn, name string) (wire.Ack, error) {
+	kind, ackBody, err := conn.ReadFrame()
+	if err != nil {
+		return wire.Ack{}, unconfirmed(name, err)
+	}
+	if kind != wire.KindAck {
+		return wire.Ack{}, fmt.Errorf("expected an ack for %s, got frame kind %d", name, kind)
+	}
+	ack, err := wire.DecodeAck(ackBody)
+	if err != nil {
+		return wire.Ack{}, err
+	}
+	return ack, nil
+}
+
+type unconfirmedError struct {
+	name string
+	err  error
+}
+
+func (e *unconfirmedError) Error() string {
+	return fmt.Sprintf("waiting for %s to be confirmed: %v", e.name, e.err)
+}
+
+func (e *unconfirmedError) Unwrap() error { return e.err }
+
+func unconfirmed(name string, err error) error {
+	return &unconfirmedError{name: name, err: err}
+}
+
+// Unconfirmed reports whether a completed item may have landed without its verdict arriving.
+func Unconfirmed(err error) bool {
+	var target *unconfirmedError
+	return errors.As(err, &target)
 }
 
 func openSource(path string) (*os.File, os.FileInfo, error) {
