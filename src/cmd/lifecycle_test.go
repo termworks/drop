@@ -12,6 +12,7 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/asciicast"
 	"github.com/bresilla/drop/src/pkg/cast"
+	"github.com/bresilla/drop/src/pkg/made"
 	"github.com/bresilla/drop/src/pkg/ns"
 )
 
@@ -230,4 +231,38 @@ func TestACastRefusesAFullNamespaceTable(t *testing.T) {
 	if _, _, ok := table.Lookup(CastPath); ok {
 		t.Fatal("the full table unexpectedly gained a cast mount")
 	}
+}
+
+func TestACastAndACreatedNamespaceCannotReplaceEachOther(t *testing.T) {
+	table := ns.NewTable()
+	casts := newCastHost(table, reading())
+	created := newMountHost(table, reading())
+	line := made.Line{Path: CastPath, Entry: made.Entry{
+		Archetype: "chat",
+		Access:    made.Access{Paired: true},
+	}}
+
+	if err := created.begin(line); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := casts.begin(80, 24); err == nil {
+		t.Fatal("a cast replaced the held namespace")
+	}
+	if mount, _, ok := table.Lookup(CastPath); !ok || mount.Archetype != "chat" {
+		t.Fatal("the refused cast changed the held namespace")
+	}
+	created.end(CastPath)
+
+	stage, err := casts.begin(80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line.Keep = true
+	if err := created.begin(line); err == nil {
+		t.Fatal("a written namespace replaced the live cast")
+	}
+	if mount, _, ok := table.Lookup(CastPath); !ok || mount.Archetype != "tty" {
+		t.Fatal("the refused namespace changed the live cast mount")
+	}
+	casts.end(stage)
 }

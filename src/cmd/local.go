@@ -107,11 +107,10 @@ type castHost struct {
 	mu     sync.Mutex
 	stage  *cast.Caster
 	mounts *ns.Table
+	lease  ns.Lease
 	// known is what a cast's path is, so the mount it puts up carries the settings the tty
 	// archetype reads rather than a shape this file made up.
 	known *arch.Registry
-	// declared keeps an existing tty mount in place when the cast ends.
-	declared bool
 }
 
 func newCastHost(mounts *ns.Table, known *arch.Registry) *castHost {
@@ -136,16 +135,20 @@ func (h *castHost) begin(cols, rows int) (*cast.Caster, error) {
 		return nil, errors.New("this device is already casting a terminal")
 	}
 
-	mount, _, ok := h.mounts.Lookup(CastPath)
-	h.declared = ok && mount.Path == CastPath
-	if h.declared && mount.Archetype != "tty" {
-		return nil, fmt.Errorf("%s is already a %s namespace", CastPath, kindOf(mount.Archetype))
-	}
-	if !h.declared {
-		if err := h.mounts.Add(castMount(h.known)); err != nil {
+	mount, lease, reserved := h.mounts.Reserve(CastPath)
+	if reserved {
+		if mount.Archetype != "tty" {
+			lease.Release()
+			return nil, fmt.Errorf("%s is already a %s namespace", CastPath, kindOf(mount.Archetype))
+		}
+	} else {
+		var err error
+		lease, err = h.mounts.Claim(castMount(h.known))
+		if err != nil {
 			return nil, fmt.Errorf("putting up %s: %w", CastPath, err)
 		}
 	}
+	h.lease = lease
 	h.stage = cast.New(cols, rows)
 	return h.stage, nil
 }
@@ -162,9 +165,8 @@ func (h *castHost) end(stage *cast.Caster) {
 
 	h.stage.Stop()
 	h.stage = nil
-	if !h.declared {
-		h.mounts.Drop(CastPath)
-	}
+	h.lease.Release()
+	h.lease = ns.Lease{}
 }
 
 // shareHost is the handoff open through this node, if any.
@@ -185,6 +187,7 @@ type handoff struct {
 	done   chan struct{}
 	over   bool
 	config share.Config
+	lease  ns.Lease
 }
 
 func newShareHost(mounts *ns.Table, known *arch.Registry) *shareHost {
@@ -209,16 +212,17 @@ func (h *shareHost) begin(dir string, to []string) (*handoff, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := h.mounts.Add(mount); err != nil {
+	lease, err := h.mounts.Claim(mount)
+	if err != nil {
 		return nil, err
 	}
 
 	config, ok := mount.Config.(share.Config)
 	if !ok {
-		h.mounts.Drop(SharePath)
+		lease.Release()
 		return nil, fmt.Errorf("the share mount has invalid settings")
 	}
-	h.open = &handoff{done: make(chan struct{}), config: config}
+	h.open = &handoff{done: make(chan struct{}), config: config, lease: lease}
 	return h.open, nil
 }
 
@@ -233,7 +237,7 @@ func (h *shareHost) end(box *handoff) {
 	}
 
 	h.open = nil
-	h.mounts.Drop(SharePath)
+	box.lease.Release()
 }
 
 // finished closes the handoff served by one completed share batch.
@@ -263,7 +267,7 @@ func (h *shareHost) finished(_ node.ID, path string, config share.Config) {
 // first would otherwise take down the mount the other is holding.
 type mountHost struct {
 	mu     sync.Mutex
-	up     map[string]bool
+	up     map[string]ns.Lease
 	mounts *ns.Table
 	// known is what a created namespace is, so the mount carries the settings the archetype it
 	// names reads rather than a shape this file made up.
@@ -271,7 +275,7 @@ type mountHost struct {
 }
 
 func newMountHost(mounts *ns.Table, known *arch.Registry) *mountHost {
-	return &mountHost{up: map[string]bool{}, mounts: mounts, known: known}
+	return &mountHost{up: map[string]ns.Lease{}, mounts: mounts, known: known}
 }
 
 // begin puts a namespace up and declares the path it is served at. It refuses a path the config
@@ -285,7 +289,7 @@ func (h *mountHost) begin(line made.Line) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.up[at] {
+	if _, ok := h.up[at]; ok {
 		return fmt.Errorf("%s is already up", at)
 	}
 	if m, _, ok := h.mounts.Lookup(at); ok && m.Path == at {
@@ -314,7 +318,7 @@ func (h *mountHost) begin(line made.Line) error {
 	if line.Keep {
 		source = ns.Written
 	}
-	if err := h.mounts.Add(ns.Mount{
+	mount := ns.Mount{
 		Path:      at,
 		Source:    source,
 		Archetype: line.Archetype,
@@ -322,32 +326,29 @@ func (h *mountHost) begin(line made.Line) error {
 		Config:    settings,
 		Access:    line.Access.Rule(),
 		Shared:    line.Shared,
-	}); err != nil {
+	}
+	if line.Keep {
+		return h.mounts.ReplaceWritten(mount)
+	}
+	lease, err := h.mounts.Claim(mount)
+	if err != nil {
 		return err
 	}
-
-	h.up[at] = true
+	h.up[at] = lease
 	return nil
 }
 
 // end takes a held namespace down, and the path with it.
-// mine reports whether this node is the one that put a path up.
-func (h *mountHost) mine(at string) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	return h.up[at]
-}
-
 func (h *mountHost) end(at string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if !h.up[at] {
+	lease, ok := h.up[at]
+	if !ok {
 		return
 	}
 	delete(h.up, at)
-	h.mounts.Drop(at)
+	lease.Release()
 }
 
 // removeWritten takes an exact written namespace down from the running node.
@@ -355,11 +356,7 @@ func (h *mountHost) removeWritten(at string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if !h.mounts.DropIfSource(at, ns.Written) {
-		return false
-	}
-	delete(h.up, at)
-	return true
+	return h.mounts.DropIfSource(at, ns.Written)
 }
 
 // castSocket is where a cast hands its output to the node.

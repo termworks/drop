@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/bresilla/drop/src/pkg/arch/share"
+	"github.com/bresilla/drop/src/pkg/made"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 )
@@ -107,4 +108,36 @@ func TestALateCompletionCannotCloseAReplacementHandoff(t *testing.T) {
 	default:
 		t.Fatal("the replacement handoff did not complete")
 	}
+}
+
+func TestAHandoffAndACreatedNamespaceCannotReplaceEachOther(t *testing.T) {
+	table := ns.NewTable()
+	known := (&doings{}).serving()
+	handoffs := newShareHost(table, known)
+	created := newMountHost(table, known)
+	line := made.Line{Path: SharePath, Entry: made.Entry{
+		Archetype: "chat",
+		Access:    made.Access{Paired: true},
+	}}
+
+	if err := created.begin(line); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handoffs.begin(t.TempDir(), nil); err == nil {
+		t.Fatal("a handoff replaced the held namespace")
+	}
+	created.end(SharePath)
+
+	box, err := handoffs.begin(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line.Keep = true
+	if err := created.begin(line); err == nil {
+		t.Fatal("a written namespace replaced the live handoff")
+	}
+	if mount, _, ok := table.Lookup(SharePath); !ok || mount.Archetype != "share" {
+		t.Fatal("the refused namespace changed the handoff mount")
+	}
+	handoffs.end(box)
 }

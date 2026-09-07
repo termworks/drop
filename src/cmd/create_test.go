@@ -105,10 +105,8 @@ func TestAnAccessRuleReadsTheWordsAConfigUses(t *testing.T) {
 	}
 }
 
-// A namespace taken off the list has to stop being served, not merely stop being written down.
-// Somebody who removes a path is trying to stop sharing something, and a node that goes on
-// answering for it until a restart is the one failure that matters here.
-func TestWhatIsRemovedStopsBeingServed(t *testing.T) {
+// A held namespace is served for exactly the lifetime of its command.
+func TestAHeldNamespaceStopsBeingServed(t *testing.T) {
 	mounts := ns.NewTable()
 	host := newMountHost(mounts, reading())
 
@@ -116,7 +114,7 @@ func TestWhatIsRemovedStopsBeingServed(t *testing.T) {
 		Archetype: "files",
 		Settings:  map[string]any{"dir": t.TempDir()},
 		Access:    made.Access{Paired: true},
-	}, Keep: true}
+	}}
 
 	if err := host.begin(up); err != nil {
 		t.Fatalf("putting /notes up: %v", err)
@@ -124,21 +122,44 @@ func TestWhatIsRemovedStopsBeingServed(t *testing.T) {
 	if _, _, ok := mounts.Lookup("/notes"); !ok {
 		t.Fatal("/notes was not put up at all")
 	}
-	if !host.mine("/notes") {
-		t.Fatal("the node does not know it put /notes up")
-	}
-
 	host.end("/notes")
 
 	if _, _, ok := mounts.Lookup("/notes"); ok {
 		t.Fatal("/notes is still served after being taken off the list")
 	}
-	if host.mine("/notes") {
-		t.Error("the node still counts /notes as one of its own")
+	if err := mounts.Add(ns.Mount{Path: "/notes", Archetype: "chat"}); err != nil {
+		t.Fatal(err)
 	}
-	// Ending it twice is what a second `drop path rm` does, and it must not take down whatever
-	// happens to be at that path by then.
 	host.end("/notes")
+	if mount, _, ok := mounts.Lookup("/notes"); !ok || mount.Archetype != "chat" {
+		t.Fatal("the old command took down a replacement namespace")
+	}
+}
+
+func TestAWrittenNamespaceCanBeUpdatedAndRemoved(t *testing.T) {
+	mounts := ns.NewTable()
+	host := newMountHost(mounts, reading())
+
+	first := made.Line{Path: "/notes", Keep: true, Entry: made.Entry{
+		Archetype: "chat",
+		Access:    made.Access{Paired: true},
+	}}
+	second := first
+	second.Access = made.Access{Trusted: true}
+
+	if err := host.begin(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.begin(second); err != nil {
+		t.Fatalf("updating the written namespace: %v", err)
+	}
+	mount, _, ok := mounts.Lookup("/notes")
+	if !ok || !mount.Access.AnyTrusted || mount.Access.AnyPaired {
+		t.Fatalf("the updated rule is %+v", mount.Access)
+	}
+	if !host.removeWritten("/notes") {
+		t.Fatal("the updated written namespace was not removed")
+	}
 }
 
 func TestAStartupWrittenNamespaceStopsBeingServed(t *testing.T) {

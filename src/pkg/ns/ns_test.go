@@ -186,6 +186,65 @@ func TestDropIfSourceRemovesOnlyTheNamedSource(t *testing.T) {
 	}
 }
 
+func TestAClaimOwnsItsMountUntilRelease(t *testing.T) {
+	table := NewTable()
+	lease, err := table.Claim(Mount{Path: "/cast", Source: Held, Archetype: "tty"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := table.Add(Mount{Path: "/cast", Archetype: "chat"}); err == nil {
+		t.Fatal("Add replaced a claimed namespace")
+	}
+	if table.Drop("/cast") || table.DropIfSource("/cast", Held) {
+		t.Fatal("a table drop removed a claimed namespace")
+	}
+	if !lease.Release() {
+		t.Fatal("the lease did not release its namespace")
+	}
+	if _, _, ok := table.Lookup("/cast"); ok {
+		t.Fatal("the released transient namespace remained mounted")
+	}
+	if lease.Release() {
+		t.Fatal("the same lease released twice")
+	}
+}
+
+func TestAReservationLeavesItsMountOnRelease(t *testing.T) {
+	table := NewTable()
+	mustAdd(t, table, Mount{Path: "/cast", Source: Written, Archetype: "tty"})
+
+	mount, lease, ok := table.Reserve("/cast")
+	if !ok || mount.Archetype != "tty" {
+		t.Fatal("the written namespace could not be reserved")
+	}
+	if err := table.ReplaceWritten(Mount{Path: "/cast", Source: Written, Archetype: "chat"}); err == nil {
+		t.Fatal("a reserved namespace was replaced")
+	}
+	if !lease.Release() {
+		t.Fatal("the reservation was not released")
+	}
+	if err := table.ReplaceWritten(Mount{Path: "/cast", Source: Written, Archetype: "chat"}); err != nil {
+		t.Fatalf("updating the released namespace: %v", err)
+	}
+	if mount, _, ok := table.Lookup("/cast"); !ok || mount.Archetype != "chat" {
+		t.Fatal("the replacement did not remain mounted")
+	}
+}
+
+func TestReplaceWrittenRefusesOtherSources(t *testing.T) {
+	for _, source := range []Source{Configured, Held} {
+		table := NewTable()
+		mustAdd(t, table, Mount{Path: "/work", Source: source, Archetype: "files"})
+		if err := table.ReplaceWritten(Mount{Path: "/work", Source: Written, Archetype: "chat"}); err == nil {
+			t.Errorf("a %s namespace was replaced", source)
+		}
+		if mount, _, ok := table.Lookup("/work"); !ok || mount.Archetype != "files" {
+			t.Errorf("the refused replacement changed the %s namespace", source)
+		}
+	}
+}
+
 func TestAddRefusesAnUntypedMount(t *testing.T) {
 	table := NewTable()
 	if err := table.Add(Mount{Path: "/x"}); err == nil {
