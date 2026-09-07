@@ -36,7 +36,7 @@ func safeName(name string) string {
 func partName(from node.ID, transfer transferID, item Item) string {
 	name := safeName(item.Name)
 	sum := blake3.Sum256(fmt.Appendf(nil, "%s\x00%x\x00%s\x00%d", from, transfer, name, item.Size))
-	return fmt.Sprintf(".%s.%x.part", name, sum[:6])
+	return fmt.Sprintf("%s%x%s", partPrefix, sum[:partDigestBytes], partSuffix)
 }
 
 // offered reads an offer before anything is made for it. Two items on one name means the second
@@ -48,6 +48,9 @@ func offered(items []Item) error {
 		name := safeName(item.Name)
 		if name == "" {
 			return fmt.Errorf("%q is not a file name", item.Name)
+		}
+		if len(name) > maxLandingNameBytes {
+			return fmt.Errorf("%q is over the %d-byte file-name limit", name, maxLandingNameBytes)
 		}
 		if item.Size < wire.SizeUnknown {
 			return fmt.Errorf("%s has invalid size %d", name, item.Size)
@@ -120,6 +123,10 @@ func receiveWithin(conn *wire.Conn, into string, from node.ID, hooks Into, recei
 		return fmt.Errorf("locking %s: %w", into, err)
 	}
 	defer func() { _ = locked.Close() }()
+	if err := trimParts(dir, quota.session); err != nil {
+		_ = refuse("cannot manage partial transfers")
+		return fmt.Errorf("trimming partial transfers in %s: %w", into, err)
+	}
 
 	picked := resume{At: make([]int64, len(out.Items)), Done: make([]bool, len(out.Items))}
 	completed := make([]receipt, len(out.Items))

@@ -40,6 +40,11 @@ starting again. The sender and a random identity for the logical transfer are fo
 name. Retrying the transfer finds the same partial file, while a separate send of identical bytes
 gets a different identity.
 
+Receiver-owned partials use the reserved `.drop-<digest>.part` shape. Before another transfer is
+accepted, the oldest of those files are removed until their retained bytes fit `max_session` and
+no more than 1,024 remain. An active transfer can add no more than one further part and session
+limit. Other hidden `.part` files are not treated as drop's property.
+
 A verified landing is retained as a bounded receipt. If the final acknowledgement is lost, the
 sender reopens the namespace with the same identity and the receiver verifies and acknowledges the
 receipt instead of landing a numbered duplicate.
