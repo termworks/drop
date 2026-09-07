@@ -114,7 +114,7 @@ func (t *TTY) Serve(ctx context.Context, at arch.Session) error {
 				return fmt.Errorf("nothing is being cast")
 			}
 			t.watched(at, stage.Watching()+1)
-			return attach(d, stage, io.Discard, nil)
+			return attach(ctx, d, stage, io.Discard, nil)
 		}
 	}
 
@@ -135,7 +135,7 @@ func (t *TTY) Serve(ctx context.Context, at arch.Session) error {
 		_ = pty.Setsize(term.ptmx, &pty.Winsize{Cols: cols, Rows: rows})
 		term.stage.Resize(cols, rows)
 	}
-	return attach(d, term.stage, into, resize)
+	return attach(ctx, d, term.stage, into, resize)
 }
 
 func (t *TTY) watched(at arch.Session, total int) {

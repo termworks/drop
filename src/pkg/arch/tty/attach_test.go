@@ -2,6 +2,7 @@ package tty
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,7 +28,7 @@ func TestAnEndedFeedEndsTheAttach(t *testing.T) {
 	d := live.New(wire.NewConn(s), s)
 
 	done := make(chan error, 1)
-	go func() { done <- attach(d, stage, io.Discard, nil) }()
+	go func() { done <- attach(context.Background(), d, stage, io.Discard, nil) }()
 
 	select {
 	case err := <-done:
