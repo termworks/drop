@@ -68,6 +68,10 @@ func (l *running) Access(path string) (tui.Rule, error) {
 
 // waiting is who has rung the bell on a path and not been answered.
 func waiting(path string) ([]tui.Wanting, error) {
+	path, err := ns.Clean(path)
+	if err != nil {
+		return nil, err
+	}
 	all, err := asked.All()
 	if err != nil {
 		return nil, err

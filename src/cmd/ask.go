@@ -159,6 +159,10 @@ func newRequestsRefuseCmd() *cobra.Command {
 // answering is the shared half of allowing and refusing: change the grant, then drop every request
 // for that path from whoever it was, because it has been dealt with either way.
 func answering(path, who string, allow bool) error {
+	path, err := ns.Clean(path)
+	if err != nil {
+		return err
+	}
 	store, err := grant.Load()
 	if err != nil {
 		return err
