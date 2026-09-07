@@ -53,3 +53,10 @@ func TestFileTransferIsRecorded(t *testing.T) {
 		t.Fatalf("recorded transfer = %+v", history)
 	}
 }
+
+func TestConflictingPersonNameIsNotUsedForAttribution(t *testing.T) {
+	pinned := conflictingPersonBook(t)
+	if got := (&doings{pinned: pinned}).person(aliceKey); got != "" {
+		t.Fatalf("conflicting person was attributed as %q", got)
+	}
+}

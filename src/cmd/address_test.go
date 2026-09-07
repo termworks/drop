@@ -89,6 +89,44 @@ func TestAUserWithSeveralMachinesIsNotGuessedAt(t *testing.T) {
 	}
 }
 
+func conflictingPersonBook(t *testing.T) *book.Book {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	pinned, err := book.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned.Pair("alice", idFor(24), make([]byte, book.SecretBytes))
+	pinned.Belongs("alice", aliceKey)
+	pinned.Pair("desktop", idFor(25), make([]byte, book.SecretBytes))
+	pinned.Belongs("desktop", aliceKey)
+	pinned.Remove("alice")
+	pinned.Pair("alice", idFor(26), make([]byte, book.SecretBytes))
+	pinned.Belongs("alice", carolKey)
+	if err := pinned.Save(); err != nil {
+		t.Fatal(err)
+	}
+	return pinned
+}
+
+func TestConflictingPersonNamesDoNotResolve(t *testing.T) {
+	pinned := conflictingPersonBook(t)
+
+	at, err := ns.ParseAddress("alice::/chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolve(t.Context(), at); err == nil || !strings.Contains(err.Error(), "more than one person") {
+		t.Fatalf("resolving conflicting people returned %v", err)
+	}
+	theirs, err := machinesOf(pinned, aliceKey)
+	if err != nil || len(theirs) != 1 || theirs[0].Name != "desktop" {
+		t.Fatalf("resolving by user key = %+v, %v", theirs, err)
+	}
+}
+
 // A name that is neither in the book nor a peer id is nothing to dial.
 func TestAMachineTheBookDoesNotHaveIsRefused(t *testing.T) {
 	booked(t, map[string]string{"laptop": "bob"})

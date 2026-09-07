@@ -33,7 +33,10 @@ func resolve(ctx context.Context, at ns.Address) (book.Entry, error) {
 		return book.Entry{}, err
 	}
 
-	theirs := machinesOf(pinned, at.User)
+	theirs, err := machinesOf(pinned, at.User)
+	if err != nil {
+		return book.Entry{}, err
+	}
 	switch len(theirs) {
 	case 0:
 		return book.Entry{}, fmt.Errorf("nobody here is called %q: pair with a machine of theirs first", at.User)
@@ -53,19 +56,26 @@ func resolve(ctx context.Context, at ns.Address) (book.Entry, error) {
 
 // machinesOf is every machine in the book that belongs to a person, found by the name they are
 // called here or by the user key itself.
-func machinesOf(pinned *book.Book, who string) []book.Entry {
+func machinesOf(pinned *book.Book, who string) ([]book.Entry, error) {
 	mine := myKey()
 
 	var out []book.Entry
+	owner, foundOwner := "", false
 	for _, entry := range pinned.All() {
 		if !entry.Owned() {
 			continue
+		}
+		if entry.Person == who {
+			if foundOwner && entry.User != owner {
+				return nil, fmt.Errorf("%q names more than one person in the address book", who)
+			}
+			owner, foundOwner = entry.User, true
 		}
 		if entry.Person == who || entry.User == who || (who == "me" && mine != "" && entry.User == mine) {
 			out = append(out, entry)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // onlyAnswering narrows a person's machines to the one this node is holding a connection to, and

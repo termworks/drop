@@ -155,6 +155,9 @@ func (d *doings) person(author string) string {
 		return ""
 	}
 	if owner, known := d.pinned.ByUser(author); known {
+		if localLabelConflict(d.pinned, owner.Person, owner.User) {
+			return ""
+		}
 		return personOf(owner)
 	}
 	return ""
