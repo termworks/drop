@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"context"
 	"net"
 	"net/netip"
 	"strings"
@@ -210,6 +211,83 @@ func TestASightingNeedsARealID(t *testing.T) {
 
 	if len(l.peers) != 0 {
 		t.Fatalf("%d peers were written down for a packet whose id is not an id", len(l.peers))
+	}
+}
+
+func TestASightingKeepsOnlyUsableAddresses(t *testing.T) {
+	peer := idFrom(2).String()
+	l := &LAN{peers: map[string]sighting{}, self: idFrom(1).String()}
+	from := netip.MustParseAddr("192.168.1.50")
+
+	l.heard(encodeAnnounce(peer, addrs(t,
+		"192.168.1.50:47777",
+		"10.0.0.5:47777",
+		"0.0.0.0:47777",
+		"127.0.0.1:47777",
+		"169.254.1.2:47777",
+		"239.255.77.88:47777",
+		"192.168.1.50:0",
+	)), from)
+
+	got := l.peers[peer].addrs
+	want := addrs(t, "192.168.1.50:47777", "10.0.0.5:47777")
+	if len(got) != len(want) {
+		t.Fatalf("stored addresses are %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("stored address %d is %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestASightingNeedsAUsableSenderClaim(t *testing.T) {
+	peer := idFrom(2).String()
+	l := &LAN{peers: map[string]sighting{}, self: idFrom(1).String()}
+	from := netip.MustParseAddr("192.168.1.50")
+
+	l.heard(encodeAnnounce(peer, addrs(t, "192.168.1.50:0", "10.0.0.5:47777")), from)
+
+	if len(l.peers) != 0 {
+		t.Fatalf("stored a sighting with no usable sender claim: %v", l.peers)
+	}
+}
+
+func TestFindReturnsAFreshSighting(t *testing.T) {
+	peer := idFrom(2)
+	want := netip.MustParseAddrPort("192.168.1.50:47777")
+	l := &LAN{peers: map[string]sighting{
+		peer.String(): {addrs: []netip.AddrPort{want}, seen: time.Now()},
+	}}
+
+	got, found := l.Find(t.Context(), peer)
+	if !found {
+		t.Fatal("fresh sighting was not found")
+	}
+	if got.ID != peer || len(got.Addrs()) != 1 {
+		t.Fatalf("found %v, want %s at %s", got, peer, want)
+	}
+}
+
+func TestFindIgnoresAStaleSighting(t *testing.T) {
+	peer := idFrom(2)
+	l := &LAN{peers: map[string]sighting{
+		peer.String(): {addrs: addrs(t, "192.168.1.50:47777"), seen: time.Now().Add(-Stale)},
+	}}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, found := l.Find(ctx, peer); found {
+		t.Fatal("stale sighting was found")
+	}
+}
+
+func TestFindStopsWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, found := (&LAN{peers: map[string]sighting{}}).Find(ctx, idFrom(2)); found {
+		t.Fatal("cancelled lookup found an absent peer")
 	}
 }
 

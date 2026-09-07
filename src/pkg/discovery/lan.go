@@ -187,6 +187,7 @@ func (l *LAN) heard(packet []byte, from netip.Addr) {
 	if _, err := node.ParseID(id); err != nil {
 		return
 	}
+	addrs = usable(addrs)
 	if !claims(addrs, from) {
 		return
 	}
@@ -207,6 +208,16 @@ func (l *LAN) heard(packet []byte, from netip.Addr) {
 		}
 	}
 	l.peers[id] = sighting{addrs: addrs, seen: now}
+}
+
+func usable(addrs []netip.AddrPort) []netip.AddrPort {
+	out := make([]netip.AddrPort, 0, len(addrs))
+	for _, at := range addrs {
+		if at.Port() != 0 && node.Dialable(at.Addr()) {
+			out = append(out, at)
+		}
+	}
+	return out
 }
 
 // claims reports whether an announcement includes the address it came from.
