@@ -150,9 +150,18 @@ func whoIs(pinned *book.Book) func(node.ID, proto.Badged, proto.Stood) ns.Caller
 // nothing to look up afterwards. A stranger is the case this exists for: it dialled, so its id is
 // known, and letting it in later should not mean copying sixty-four characters of hex out of a log.
 func noting(pinned *book.Book) func(node.ID, string, string) {
+	return notingWith(pinned, time.Now, seen.Knocked)
+}
+
+func notingWith(
+	pinned *book.Book,
+	now func() time.Time,
+	knocked func(node.ID, string, string, time.Time) error,
+) func(node.ID, string, string) {
 	var (
-		mu    sync.Mutex
-		noted = map[node.ID]time.Time{}
+		mu      sync.Mutex
+		noted   = map[node.ID]time.Time{}
+		written []time.Time
 	)
 
 	return func(from node.ID, asked, why string) {
@@ -166,23 +175,35 @@ func noting(pinned *book.Book) func(node.ID, string, string) {
 		// caller has been authenticated — so a stranger that dials in a loop makes this machine do
 		// synchronous disk work as fast as it can ask for it. Only the last knock from a device is
 		// kept anyway, so collapsing the repeats loses nothing that was going to be shown.
-		now := time.Now()
+		at := now()
 
 		mu.Lock()
-		last, seenBefore := noted[from]
-		if seenBefore && now.Sub(last) < notingEvery {
-			mu.Unlock()
-			return
-		}
-		noted[from] = now
 		for who, when := range noted {
-			if now.Sub(when) > notingEvery {
+			if at.Sub(when) >= notingEvery {
 				delete(noted, who)
 			}
 		}
+		last, seenBefore := noted[from]
+		if seenBefore && at.Sub(last) < notingEvery {
+			mu.Unlock()
+			return
+		}
+		first := 0
+		for first < len(written) && at.Sub(written[first]) >= notingEvery {
+			first++
+		}
+		written = append(written[:0], written[first:]...)
+		if len(written) >= seen.Most {
+			mu.Unlock()
+			return
+		}
+		noted[from] = at
+		written = append(written, at)
 		mu.Unlock()
 
-		_ = seen.Knocked(from, asked, why, now)
+		if err := knocked(from, asked, why, at); err != nil {
+			fmt.Fprintf(os.Stderr, "drop: remembering a refused caller: %v\n", err)
+		}
 	}
 }
 

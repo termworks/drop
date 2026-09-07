@@ -51,7 +51,9 @@ what it says:
 
 **How much disk a stranger may spend.** A device nobody knows that dials is written down so you can
 let it in later without copying its id out of a log. That write is flushed to the disk itself, so it
-happens at most once every thirty seconds per device rather than once per dial.
+happens at most once every thirty seconds per device rather than once per dial. Rotating endpoint
+IDs does not bypass the limit: at most 64 stranger records are written in one thirty-second process
+window.
 
 ## What a peer says, and what your terminal does with it
 
