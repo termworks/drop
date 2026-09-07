@@ -148,7 +148,9 @@ func sendFiles(parent context.Context, o opening, sources []share.Source) error 
 		return err
 	}
 	for _, src := range sources {
-		noteFile(o.entry.ID, convo.Out, src.Name, src.Size)
+		if err := noteFile(o.entry.ID, convo.Out, src.Name, src.Size); err != nil {
+			return fmt.Errorf("sent %d item(s) to %s, but %w", len(sources), o.where(), err)
+		}
 	}
 
 	fmt.Printf("\nsent %d item(s) to %s\n", len(sources), o.where())

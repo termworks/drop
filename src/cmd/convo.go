@@ -237,12 +237,15 @@ func render(who string, m convo.Message) string {
 const MaxSaid = 2000
 
 // noteFile records a file changing hands, so `drop me log` reads as the whole story.
-func noteFile(with node.ID, dir byte, name string, size int64) {
+func noteFile(with node.ID, dir byte, name string, size int64) error {
 	store, err := convo.Open(with)
 	if err != nil {
-		return
+		return fmt.Errorf("recording %s in the conversation: %w", name, err)
 	}
-	_ = store.Note(convo.KindFile, dir, name, bytes(size))
+	if err := store.Note(convo.KindFile, dir, name, bytes(size)); err != nil {
+		return fmt.Errorf("recording %s in the conversation: %w", name, err)
+	}
+	return nil
 }
 
 // kindName is what a config sees a message kind as.

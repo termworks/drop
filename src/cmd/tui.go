@@ -41,7 +41,10 @@ func runTUI(parent context.Context) error {
 		return err
 	}
 
-	doing := &doings{pinned: pinned}
+	doing := &doings{
+		pinned:  pinned,
+		trouble: func(text string) { fmt.Fprintf(os.Stderr, "drop: %s\n", text) },
+	}
 	known := doing.serving()
 	defer doing.stop()
 
@@ -344,7 +347,9 @@ func (l *running) Send(ctx context.Context, to book.Entry, path string, files []
 		return err
 	}
 	for _, src := range sources {
-		noteFile(to.ID, convo.Out, src.Name, src.Size)
+		if err := noteFile(to.ID, convo.Out, src.Name, src.Size); err != nil {
+			return fmt.Errorf("sent %d item(s) to %s, but %w", len(sources), to.Name, err)
+		}
 	}
 	return nil
 }
@@ -673,8 +678,12 @@ func (l *running) Fetch(ctx context.Context, from book.Entry, path, dir, name st
 		return "", err
 	}
 
-	if at, err := os.Stat(into); err == nil {
-		noteFile(from.ID, convo.In, filepath.Base(name), at.Size())
+	at, err := os.Stat(into)
+	if err != nil {
+		return into, fmt.Errorf("downloaded %s, but could not record it: %w", into, err)
+	}
+	if err := noteFile(from.ID, convo.In, filepath.Base(name), at.Size()); err != nil {
+		return into, fmt.Errorf("downloaded %s, but %w", into, err)
 	}
 	return into, nil
 }
@@ -692,8 +701,12 @@ func (l *running) Put(ctx context.Context, to book.Entry, path, dir, from string
 		return err
 	}
 
-	if at, err := os.Stat(from); err == nil {
-		noteFile(to.ID, convo.Out, name, at.Size())
+	at, err := os.Stat(from)
+	if err != nil {
+		return fmt.Errorf("uploaded %s, but could not record it: %w", name, err)
+	}
+	if err := noteFile(to.ID, convo.Out, name, at.Size()); err != nil {
+		return fmt.Errorf("uploaded %s, but %w", name, err)
 	}
 	return nil
 }

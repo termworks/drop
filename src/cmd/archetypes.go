@@ -32,6 +32,8 @@ type doings struct {
 	cfg *conf.Config
 	// notes, when set, prints one line about something that happened.
 	notes func(text string)
+	// trouble, when set, reports a non-fatal failure.
+	trouble func(text string)
 	// bar, when set, prints transfers as they go.
 	bar *progress
 	// said, when set, is told about a message that was stored.
@@ -109,7 +111,7 @@ func (d *doings) filing() *files.Files {
 			Landed:   d.landed,
 			Changed:  d.moved,
 			Fetch:    d.pull,
-			Trouble:  d.note,
+			Trouble:  d.warn,
 		})
 	}
 	return d.folders
@@ -127,7 +129,7 @@ func (d *doings) pull(w files.Wanted) error {
 // noting is this process's notes, made once so that the config reads the same ones the timer keeps.
 func (d *doings) noting() *note.Note {
 	if d.pages == nil {
-		d.pages = note.New(note.Into{Changed: d.moved, Named: d.person, Trouble: d.note})
+		d.pages = note.New(note.Into{Changed: d.moved, Named: d.person, Trouble: d.warn})
 	}
 	return d.pages
 }
@@ -181,7 +183,9 @@ func (d *doings) moving(name string, done, total int64) {
 // landed records a file that arrived, wherever it arrived.
 func (d *doings) landed(from node.ID, name string, size int64) {
 	d.note(fmt.Sprintf("received %s (%s)", name, bytes(size)))
-	noteFile(from, convo.In, name, size)
+	if err := noteFile(from, convo.In, name, size); err != nil {
+		d.warn(err.Error())
+	}
 	if d.cfg != nil {
 		d.cfg.FireFile(conf.File{From: nameFor(d.pinned, from), Name: name, Size: size})
 	}
@@ -223,6 +227,14 @@ func (d *doings) note(text string) {
 	if d.notes != nil {
 		d.notes(text)
 	}
+}
+
+func (d *doings) warn(text string) {
+	if d.trouble != nil {
+		d.trouble(text)
+		return
+	}
+	d.note(text)
 }
 
 func (d *doings) knock() {
