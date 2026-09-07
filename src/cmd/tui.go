@@ -228,16 +228,31 @@ func (l *running) Peers() ([]book.Entry, error) {
 // memory rather than from the device.
 func (l *running) Serves(ctx context.Context, with book.Entry) ([]proto.Served, error) {
 	asked, err := l.askShares(ctx, with)
-	if err == nil {
-		_ = shares.Remember(with.ID, asked)
+	return availableServes(with, asked, err)
+}
+
+type currentServesError struct{ err error }
+
+func (e currentServesError) Error() string     { return e.err.Error() }
+func (e currentServesError) Unwrap() error     { return e.err }
+func (e currentServesError) CurrentData() bool { return true }
+
+func availableServes(with book.Entry, asked []proto.Served, askErr error) ([]proto.Served, error) {
+	if askErr == nil {
+		if err := shares.Remember(with.ID, asked); err != nil {
+			return asked, currentServesError{fmt.Errorf("showing current namespaces from %s, but caching them: %w", with.Name, err)}
+		}
 		return asked, nil
 	}
 
-	remembered, kept := shares.Recall(with.ID)
-	if kept != nil || len(remembered) == 0 {
-		return nil, err
+	remembered, err := shares.Recall(with.ID)
+	if err != nil {
+		return nil, errors.Join(askErr, fmt.Errorf("reading cached namespaces for %s: %w", with.Name, err))
 	}
-	return remembered, err
+	if len(remembered) == 0 {
+		return nil, askErr
+	}
+	return remembered, askErr
 }
 
 func (l *running) askShares(ctx context.Context, with book.Entry) ([]proto.Served, error) {

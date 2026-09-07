@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"os"
@@ -200,10 +201,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// A list may come back with the failure: what the device said the last time anybody
 			// asked. It is worth showing, because a conversation with a device that is off is
 			// still on this disk and there is no other way in to it.
-			if len(msg.paths) == 0 {
-				return m, nil
+			if !reportsCurrentData(msg.err) {
+				if len(msg.paths) == 0 {
+					return m, nil
+				}
+				m.trouble = "not reachable — showing what it last shared"
 			}
-			m.trouble = "not reachable — showing what it last shared"
 		}
 
 		if m.known == nil {
@@ -321,6 +324,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+func reportsCurrentData(err error) bool {
+	var current interface{ CurrentData() bool }
+	return errors.As(err, &current) && current.CurrentData()
 }
 
 func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

@@ -1483,6 +1483,29 @@ func TestADeviceThatIsOffStillOpens(t *testing.T) {
 	}
 }
 
+type currentPathsError string
+
+func (e currentPathsError) Error() string     { return string(e) }
+func (e currentPathsError) CurrentData() bool { return true }
+
+func TestCurrentPathsWithACacheFailureStayCurrent(t *testing.T) {
+	back := withOne()
+	m := start(t, back)
+	m = settle(t, m, pathsLoaded{
+		peer:  "beta",
+		paths: []proto.Served{{Path: "/current", Archetype: "chat"}},
+		err:   currentPathsError("could not cache beta's current paths"),
+	})
+
+	view := m.View()
+	if !strings.Contains(view, "could not cache") {
+		t.Fatalf("the cache failure was not shown:\n%s", view)
+	}
+	if strings.Contains(view, "last shared") {
+		t.Fatalf("current paths were described as stale:\n%s", view)
+	}
+}
+
 func (f *fake) Reaching() map[string]bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
