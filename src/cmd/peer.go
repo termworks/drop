@@ -8,6 +8,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/proto"
+	"github.com/bresilla/drop/src/pkg/shares"
 )
 
 // The address book: which machines this one knows, whose they are, and what it thinks of them.
@@ -111,16 +112,7 @@ func newPeerForgetCmd() *cobra.Command {
 			"pair to reach each other by name. Nobody else is told.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			pinned, err := book.Load()
-			if err != nil {
-				return err
-			}
-			if err := pinned.Change(func() (bool, error) {
-				if !pinned.Remove(args[0]) {
-					return false, fmt.Errorf("%q is not known", args[0])
-				}
-				return true, nil
-			}); err != nil {
+			if err := forgetKnown(args[0], false); err != nil {
 				return err
 			}
 
@@ -128,6 +120,29 @@ func newPeerForgetCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func forgetKnown(name string, personFirst bool) error {
+	pinned, err := book.Load()
+	if err != nil {
+		return err
+	}
+
+	return pinned.Change(func() (bool, error) {
+		targets, _ := managedEntries(pinned, name, personFirst)
+		if len(targets) == 0 {
+			return false, fmt.Errorf("%q is not known", name)
+		}
+		for _, entry := range targets {
+			if err := shares.Forget(entry.ID); err != nil {
+				return false, fmt.Errorf("forgetting what %s shared: %w", entry.Name, err)
+			}
+		}
+		for _, entry := range targets {
+			pinned.Remove(entry.Name)
+		}
+		return true, nil
+	})
 }
 
 func newPeerWhoisCmd() *cobra.Command {
