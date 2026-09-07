@@ -110,8 +110,7 @@ type castHost struct {
 	// known is what a cast's path is, so the mount it puts up carries the settings the tty
 	// archetype reads rather than a shape this file made up.
 	known *arch.Registry
-	// declared says the path was in the config, so ending a cast leaves it alone. A /cast a person
-	// wrote down carries their access rule, and a cast that came and went must not replace it.
+	// declared keeps an existing tty mount in place when the cast ends.
 	declared bool
 }
 
@@ -136,16 +135,18 @@ func (h *castHost) begin(cols, rows int) (*cast.Caster, error) {
 	if h.stage != nil {
 		return nil, errors.New("this device is already casting a terminal")
 	}
-	h.stage = cast.New(cols, rows)
 
-	// The path is put up only when nothing declared it. A config that names /cast already says who
-	// may watch it, and overwriting that with "any paired device" hands out a screen its owner
-	// meant for one person.
 	mount, _, ok := h.mounts.Lookup(CastPath)
 	h.declared = ok && mount.Path == CastPath
-	if !h.declared {
-		_ = h.mounts.Add(castMount(h.known))
+	if h.declared && mount.Archetype != "tty" {
+		return nil, fmt.Errorf("%s is already a %s namespace", CastPath, kindOf(mount.Archetype))
 	}
+	if !h.declared {
+		if err := h.mounts.Add(castMount(h.known)); err != nil {
+			return nil, fmt.Errorf("putting up %s: %w", CastPath, err)
+		}
+	}
+	h.stage = cast.New(cols, rows)
 	return h.stage, nil
 }
 

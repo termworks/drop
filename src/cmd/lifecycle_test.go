@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -178,5 +179,55 @@ func TestADeclaredCastPathKeepsItsRule(t *testing.T) {
 	host.end(stage)
 	if _, _, ok := table.Lookup(CastPath); !ok {
 		t.Fatal("a cast ending took away a path the config declared")
+	}
+}
+
+func TestACastRefusesAPathOwnedByAnotherArchetype(t *testing.T) {
+	table := ns.NewTable()
+	if err := table.Add(ns.Mount{Path: CastPath, Archetype: "chat"}); err != nil {
+		t.Fatal(err)
+	}
+	host := newCastHost(table, reading())
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+
+	done := make(chan error, 1)
+	go func() {
+		defer func() { _ = server.Close() }()
+		done <- takeCast(t.Context(), host, strings.NewReader(`{"version":2,"width":80,"height":24}`+"\n"), server)
+	}()
+
+	line, err := bufio.NewReader(client).ReadString('\n')
+	if err != nil || !strings.Contains(line, "no /cast is already a chat namespace") {
+		t.Fatalf("cast refusal = %q, %v", line, err)
+	}
+	if err := <-done; err == nil {
+		t.Fatal("the conflicting cast reported success")
+	}
+	if host.live() != nil {
+		t.Fatal("the refused cast remained live")
+	}
+	if mount, _, ok := table.Lookup(CastPath); !ok || mount.Archetype != "chat" {
+		t.Fatalf("the refused cast changed the existing mount: %+v", mount)
+	}
+}
+
+func TestACastRefusesAFullNamespaceTable(t *testing.T) {
+	table := ns.NewTable()
+	for i := range ns.MaxMounts {
+		if err := table.Add(ns.Mount{Path: fmt.Sprintf("/path%d", i), Archetype: "chat"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	host := newCastHost(table, reading())
+	if _, err := host.begin(80, 24); err == nil || !strings.Contains(err.Error(), "already 4096 namespaces") {
+		t.Fatalf("begin() on a full table returned %v", err)
+	}
+	if host.live() != nil {
+		t.Fatal("the unmounted cast remained live")
+	}
+	if _, _, ok := table.Lookup(CastPath); ok {
+		t.Fatal("the full table unexpectedly gained a cast mount")
 	}
 }
