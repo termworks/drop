@@ -161,3 +161,30 @@ func TestAPairedCallerIsToldWhoHoldsIt(t *testing.T) {
 		t.Fatalf("a paired caller was told nothing about who holds it: %+v", hello.Serves)
 	}
 }
+
+func TestConflictingLocalNamesGrantNeitherIdentity(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	pinned, err := book.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	person, machine := idFor(10), idFor(11)
+	pinned.Pair("alice", idFor(9), make([]byte, book.SecretBytes))
+	pinned.Belongs("alice", aliceKey)
+	pinned.Pair("desktop", person, make([]byte, book.SecretBytes))
+	pinned.Belongs("desktop", aliceKey)
+	pinned.Remove("alice")
+	pinned.Pair("alice", machine, make([]byte, book.SecretBytes))
+
+	rule := ns.Access{Named: []string{"alice"}}
+	callers := []ns.Caller{
+		whoIs(pinned)(person, proto.Badged{Key: aliceKey}, proto.Stood{}),
+		whoIs(pinned)(machine, proto.Badged{}, proto.Stood{}),
+	}
+	for _, caller := range callers {
+		if ok, _ := rule.Admits(caller); ok {
+			t.Fatalf("conflicting identity was admitted as alice: %+v", caller)
+		}
+	}
+}

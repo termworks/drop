@@ -129,7 +129,10 @@ func forgetKnown(name string, personFirst bool) error {
 	}
 
 	return pinned.Change(func() (bool, error) {
-		targets, _ := managedEntries(pinned, name, personFirst)
+		targets, _, err := managedEntries(pinned, name, personFirst)
+		if err != nil {
+			return false, err
+		}
 		if len(targets) == 0 {
 			return false, fmt.Errorf("%q is not known", name)
 		}

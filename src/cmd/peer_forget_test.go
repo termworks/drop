@@ -111,3 +111,40 @@ func TestCacheCleanupFailureKeepsThePairing(t *testing.T) {
 		t.Fatal("cache cleanup failure removed the pairing")
 	}
 }
+
+func TestAmbiguousPersonStateCannotBeManaged(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	alice, _ := pairedPerson(t)
+
+	pinned, err := book.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pinned.Change(func() (bool, error) {
+		pinned.Remove(alice.Name)
+		pinned.Pair(alice.Name, idFor(63), pairSecret(16))
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	back := &running{held: dial.Hold(nil, nil, nil)}
+	if _, err := back.Managed(alice.Name); err == nil {
+		t.Fatal("managed a name shared by a person and a machine")
+	}
+	if err := back.Trust(alice.Name, true); err == nil {
+		t.Fatal("trusted a name shared by a person and a machine")
+	}
+	if err := back.Forget(alice.Name); err == nil {
+		t.Fatal("forgot a name shared by a person and a machine")
+	}
+
+	after, err := book.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.All()) != 2 {
+		t.Fatalf("ambiguous operations changed the address book: %+v", after.All())
+	}
+}

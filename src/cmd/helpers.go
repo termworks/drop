@@ -108,6 +108,7 @@ func greeting(pinned *book.Book, mounts *ns.Table, known *arch.Registry, from no
 func whoIs(pinned *book.Book) func(node.ID, proto.Badged, proto.Stood) ns.Caller {
 	return func(from node.ID, badge proto.Badged, on proto.Stood) ns.Caller {
 		who := ns.Caller{ID: from.String()}
+		ambiguous := false
 
 		// What machine it is running on, which is a different question from whose it is: several
 		// people with accounts on one machine all stand on the same one.
@@ -119,10 +120,11 @@ func whoIs(pinned *book.Book) func(node.ID, proto.Badged, proto.Stood) ns.Caller
 			who.Name = entry.Name
 			who.Paired = entry.Paired()
 			who.Trusted = entry.Trusted
+			ambiguous = localLabelConflict(pinned, entry.Name, entry.User)
 		}
 
 		if !badge.Shown() {
-			return who
+			return withoutConflictingLabel(who, ambiguous)
 		}
 		who.User, who.Label = badge.Key, badge.As
 
@@ -135,13 +137,37 @@ func whoIs(pinned *book.Book) func(node.ID, proto.Badged, proto.Stood) ns.Caller
 
 		owner, known := pinned.ByUser(badge.Key)
 		if !known {
-			return who
+			return withoutConflictingLabel(who, ambiguous)
 		}
 		who.UserName = owner.Person
 		who.Paired = who.Paired || owner.Paired()
 		who.Trusted = who.Trusted || owner.Trusted
+		ambiguous = ambiguous || localLabelConflict(pinned, owner.Person, owner.User)
+		return withoutConflictingLabel(who, ambiguous)
+	}
+}
+
+func withoutConflictingLabel(who ns.Caller, ambiguous bool) ns.Caller {
+	if !ambiguous {
 		return who
 	}
+	who.Name = ""
+	who.UserName = ""
+	who.Paired = false
+	who.Trusted = false
+	return who
+}
+
+func localLabelConflict(pinned *book.Book, name, owner string) bool {
+	if name == "" {
+		return false
+	}
+	for _, entry := range pinned.All() {
+		if (entry.Name == name || entry.Person == name) && entry.User != owner {
+			return true
+		}
+	}
+	return false
 }
 
 // noting writes down a caller that was turned away, unless it is somebody already known.

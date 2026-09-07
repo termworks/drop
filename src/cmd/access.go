@@ -216,7 +216,10 @@ func (l *running) Managed(name string) (tui.Managed, error) {
 		return tui.Managed{}, err
 	}
 
-	entries, person := managedEntries(pinned, name, true)
+	entries, person, err := managedEntries(pinned, name, true)
+	if err != nil {
+		return tui.Managed{}, err
+	}
 	if len(entries) == 0 {
 		return tui.Managed{}, fmt.Errorf("%s is not in the address book", name)
 	}
@@ -249,22 +252,30 @@ func (l *running) Managed(name string) (tui.Managed, error) {
 	return out, nil
 }
 
-func managedEntries(pinned *book.Book, name string, personFirst bool) ([]book.Entry, bool) {
+func managedEntries(pinned *book.Book, name string, personFirst bool) ([]book.Entry, bool, error) {
 	if personFirst {
 		var theirs []book.Entry
+		owner, foundOwner := "", false
 		for _, entry := range pinned.All() {
 			if entry.Person == name {
+				if foundOwner && entry.User != owner {
+					return nil, false, fmt.Errorf("%q names more than one person in the address book", name)
+				}
+				owner, foundOwner = entry.User, true
 				theirs = append(theirs, entry)
 			}
 		}
 		if len(theirs) > 0 {
-			return theirs, true
+			if exact, ok := pinned.Lookup(name); ok && exact.User != owner {
+				return nil, false, fmt.Errorf("%q names both a person and a machine in the address book", name)
+			}
+			return theirs, true, nil
 		}
 	}
 	if entry, ok := pinned.Lookup(name); ok {
-		return []book.Entry{entry}, false
+		return []book.Entry{entry}, false, nil
 	}
-	return nil, false
+	return nil, false, nil
 }
 
 // decided is every path somebody has been granted or refused here.
@@ -296,20 +307,20 @@ func (l *running) Trust(name string, trusted bool) error {
 	}
 
 	return pinned.Change(func() (bool, error) {
-		changed := false
-		pinned.Trust(name, trusted)
-		if _, ok := pinned.Lookup(name); ok {
-			return true, nil
+		entries, _, err := managedEntries(pinned, name, true)
+		if err != nil {
+			return false, err
 		}
-
-		// A person's heading: trust every machine filed under them.
-		for _, one := range pinned.All() {
-			if one.Person == name {
-				pinned.Trust(one.Name, trusted)
-				changed = true
+		if len(entries) == 0 {
+			return false, nil
+		}
+		for _, entry := range entries {
+			if entry.Trusted != trusted {
+				pinned.Trust(entries[0].Name, trusted)
+				return true, nil
 			}
 		}
-		return changed, nil
+		return false, nil
 	})
 }
 

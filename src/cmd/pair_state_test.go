@@ -118,3 +118,73 @@ func TestChangedPairingOwnerDoesNotInheritTrust(t *testing.T) {
 		t.Fatalf("trust crossed from the previous owner: %+v", entry)
 	}
 }
+
+func TestPairingCannotReuseAPersonName(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	if _, err := filed(proto.Pairing{Peer: idFor(44), Secret: pairSecret(7), User: aliceKey}, "alice", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := filed(proto.Pairing{Peer: idFor(45), Secret: pairSecret(8), User: aliceKey}, "desktop", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := forgetKnown("alice", false); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := filed(proto.Pairing{Peer: idFor(46), Secret: pairSecret(9), User: carolKey}, "alice", false)
+	if err == nil || !strings.Contains(err.Error(), "already names a person") {
+		t.Fatalf("reusing alice for another person returned %v", err)
+	}
+
+	pinned, loadErr := book.Load()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if _, ok := pinned.Lookup("alice"); ok {
+		t.Fatal("the colliding pairing was written")
+	}
+	if desktop, ok := pinned.Lookup("desktop"); !ok || desktop.Person != "alice" || desktop.User != aliceKey {
+		t.Fatalf("the original person changed: %+v, %v", desktop, ok)
+	}
+}
+
+func TestStandaloneMachineCannotReuseAPersonName(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	if _, err := filed(proto.Pairing{Peer: idFor(47), Secret: pairSecret(10), User: aliceKey}, "alice", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := filed(proto.Pairing{Peer: idFor(48), Secret: pairSecret(11), User: aliceKey}, "desktop", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := forgetKnown("alice", false); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := filed(proto.Pairing{Peer: idFor(49), Secret: pairSecret(12)}, "alice", true)
+	if err == nil || !strings.Contains(err.Error(), "already names a person") {
+		t.Fatalf("reusing alice for a standalone machine returned %v", err)
+	}
+}
+
+func TestPersonCanReuseTheirOwnName(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	if _, err := filed(proto.Pairing{Peer: idFor(50), Secret: pairSecret(13), User: aliceKey}, "alice", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := filed(proto.Pairing{Peer: idFor(51), Secret: pairSecret(14), User: aliceKey}, "desktop", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := forgetKnown("alice", false); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := filed(proto.Pairing{Peer: idFor(52), Secret: pairSecret(15), User: aliceKey}, "alice", false); err != nil {
+		t.Fatalf("reusing alice for the same person: %v", err)
+	}
+}
