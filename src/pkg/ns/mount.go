@@ -126,6 +126,24 @@ func (t *Table) Drop(path string) bool {
 	return had
 }
 
+// DropIfSource removes an exact namespace only when it came from source.
+func (t *Table) DropIfSource(path string, source Source) bool {
+	path, err := Clean(path)
+	if err != nil {
+		return false
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	mount, had := t.mounts[path]
+	if !had || mount.Source != source {
+		return false
+	}
+	delete(t.mounts, path)
+	return true
+}
+
 // Lookup finds who serves a path, and what is left of it.
 //
 // The longest declared prefix wins, and the remainder is handed to the mount. That is what makes

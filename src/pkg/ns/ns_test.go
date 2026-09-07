@@ -170,6 +170,22 @@ func TestAddNormalisesThePath(t *testing.T) {
 	}
 }
 
+func TestDropIfSourceRemovesOnlyTheNamedSource(t *testing.T) {
+	table := NewTable()
+	mustAdd(t, table, Mount{Path: "/written", Source: Written, Archetype: "files"})
+	mustAdd(t, table, Mount{Path: "/held", Source: Held, Archetype: "files"})
+
+	if !table.DropIfSource("written/", Written) {
+		t.Fatal("the matching written namespace was not removed")
+	}
+	if table.DropIfSource("/held", Written) {
+		t.Fatal("a held namespace was removed as written")
+	}
+	if _, _, ok := table.Lookup("/held"); !ok {
+		t.Fatal("the refused namespace was changed")
+	}
+}
+
 func TestAddRefusesAnUntypedMount(t *testing.T) {
 	table := NewTable()
 	if err := table.Add(Mount{Path: "/x"}); err == nil {

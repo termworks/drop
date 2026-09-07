@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -137,4 +139,84 @@ func TestWhatIsRemovedStopsBeingServed(t *testing.T) {
 	// Ending it twice is what a second `drop path rm` does, and it must not take down whatever
 	// happens to be at that path by then.
 	host.end("/notes")
+}
+
+func TestAStartupWrittenNamespaceStopsBeingServed(t *testing.T) {
+	mounts := ns.NewTable()
+	if err := mounts.Add(ns.Mount{Path: "/notes", Source: ns.Written, Archetype: "chat"}); err != nil {
+		t.Fatal(err)
+	}
+	host := newMountHost(mounts, reading())
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+
+	done := make(chan error, 1)
+	go func() {
+		defer func() { _ = server.Close() }()
+		done <- takeUnmount(host, server, "/notes")
+	}()
+
+	if line, err := bufio.NewReader(client).ReadString('\n'); err != nil || line != "ok\n" {
+		t.Fatalf("unmount reply = %q, %v", line, err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := mounts.Lookup("/notes"); ok {
+		t.Fatal("the startup-loaded namespace is still served")
+	}
+}
+
+func TestUnmountDoesNotRemoveAHeldNamespace(t *testing.T) {
+	mounts := ns.NewTable()
+	if err := mounts.Add(ns.Mount{Path: "/notes", Source: ns.Held, Archetype: "chat"}); err != nil {
+		t.Fatal(err)
+	}
+	host := newMountHost(mounts, reading())
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+
+	done := make(chan error, 1)
+	go func() {
+		defer func() { _ = server.Close() }()
+		done <- takeUnmount(host, server, "/notes")
+	}()
+
+	line, err := bufio.NewReader(client).ReadString('\n')
+	if err != nil || line != "no something is holding that open\n" {
+		t.Fatalf("unmount reply = %q, %v", line, err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := mounts.Lookup("/notes"); !ok {
+		t.Fatal("the held namespace was removed")
+	}
+}
+
+func TestUnmountDoesNotRemoveAConfiguredNamespace(t *testing.T) {
+	mounts := ns.NewTable()
+	if err := mounts.Add(ns.Mount{Path: "/notes", Source: ns.Configured, Archetype: "chat"}); err != nil {
+		t.Fatal(err)
+	}
+	host := newMountHost(mounts, reading())
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+
+	done := make(chan error, 1)
+	go func() {
+		defer func() { _ = server.Close() }()
+		done <- takeUnmount(host, server, "/notes")
+	}()
+
+	line, err := bufio.NewReader(client).ReadString('\n')
+	if err != nil || line != "no this node did not put that up\n" {
+		t.Fatalf("unmount reply = %q, %v", line, err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := mounts.Lookup("/notes"); !ok {
+		t.Fatal("the configured namespace was removed")
+	}
 }

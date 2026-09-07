@@ -350,6 +350,18 @@ func (h *mountHost) end(at string) {
 	h.mounts.Drop(at)
 }
 
+// removeWritten takes an exact written namespace down from the running node.
+func (h *mountHost) removeWritten(at string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if !h.mounts.DropIfSource(at, ns.Written) {
+		return false
+	}
+	delete(h.up, at)
+	return true
+}
+
 // castSocket is where a cast hands its output to the node.
 //
 // Named after the identity, so several nodes on one machine — which is what testing drop looks
@@ -753,18 +765,14 @@ func takeUnmount(host *mountHost, conn net.Conn, rest string) error {
 		return writeLocal(conn, "no %v\n", err)
 	}
 
-	if !host.mine(at) {
-		return writeLocal(conn, "no this node did not put that up\n")
+	if host.removeWritten(at) {
+		fmt.Printf("  %s is gone\n", at)
+		return writeLocal(conn, "ok\n")
 	}
-	// Only one that was written down: a held namespace goes when the command holding it goes, and
-	// taking it out from under that command would leave it waiting on a path that is not there.
-	if m, _, ok := host.mounts.Lookup(at); ok && m.Path == at && m.Source != ns.Written {
+	if m, _, ok := host.mounts.Lookup(at); ok && m.Path == at && m.Source == ns.Held {
 		return writeLocal(conn, "no something is holding that open\n")
 	}
-	host.end(at)
-
-	fmt.Printf("  %s is gone\n", at)
-	return writeLocal(conn, "ok\n")
+	return writeLocal(conn, "no this node did not put that up\n")
 }
 
 // offerAsked reads what a local `drop pair` asked for: a code, a name to file the far end under,
