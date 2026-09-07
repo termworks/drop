@@ -22,11 +22,18 @@ A drop box. Things are pushed in and land in a directory; nothing in that direct
 readable from the other side.
 
 ```lua
-drop.mount("/inbox", { type = "share", dir = "~/Downloads" })
+drop.mount("/inbox", {
+  type = "share", dir = "~/Downloads",
+  max_item = "4 GiB", max_session = "16 GiB",
+})
 ```
 
 A push carries files, not whole directories. Each item is offered with its name and size, accepted
 with how much is already held, then sent and verified against a blake3 digest.
+
+Incoming items are limited to 4 GiB each and 16 GiB over one session by default. `max_item` and
+`max_session` use the same positive whole-byte sizes as [`files`](#files), including streamed input
+whose size was not known before it started.
 
 An item waits in a `.part` file while it arrives, so a dropped connection resumes rather than
 starting again. The sender and a random identity for the logical transfer are folded into that

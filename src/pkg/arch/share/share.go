@@ -17,8 +17,10 @@ import (
 
 // Config is what a share namespace was told: where what arrives is put.
 type Config struct {
-	Dir      string
-	instance *configInstance
+	Dir             string
+	MaxItemBytes    int64
+	MaxSessionBytes int64
+	instance        *configInstance
 }
 
 // Into is what the process running a share hands it: how to report items and completed batches.
@@ -49,7 +51,21 @@ func (s *Share) Read(d arch.Declared) (arch.Config, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("a share namespace needs a dir")
 	}
-	return Config{Dir: dir, instance: newConfigInstance()}, nil
+	maxItem, err := configuredLimit(d, "max_item")
+	if err != nil {
+		return nil, err
+	}
+	maxSession, err := configuredLimit(d, "max_session")
+	if err != nil {
+		return nil, err
+	}
+	limits := quotaFor(Config{MaxItemBytes: maxItem, MaxSessionBytes: maxSession})
+	if limits.session < limits.item {
+		return nil, fmt.Errorf("max_session must not be smaller than max_item")
+	}
+	return Config{
+		Dir: dir, MaxItemBytes: maxItem, MaxSessionBytes: maxSession, instance: newConfigInstance(),
+	}, nil
 }
 
 func (s *Share) Note(c arch.Config) arch.Note {
@@ -69,6 +85,11 @@ func (s *Share) Serve(ctx context.Context, at arch.Session) error {
 		reject := wire.Reject{Reason: "this namespace has nowhere to put anything"}
 		return at.Conn.WriteFrame(wire.KindReject, reject.Encode())
 	}
+	quota := quotaFor(cfg)
+	if cfg.MaxItemBytes < 0 || cfg.MaxSessionBytes < 0 || quota.session < quota.item {
+		reject := wire.Reject{Reason: "this namespace has invalid transfer limits"}
+		return at.Conn.WriteFrame(wire.KindReject, reject.Encode())
+	}
 	landed := false
 	into := s.into
 	into.Landed = func(from node.ID, name string, size int64) {
@@ -77,7 +98,7 @@ func (s *Share) Serve(ctx context.Context, at arch.Session) error {
 			s.into.Landed(from, name, size)
 		}
 	}
-	if err := receiveWithReceipts(at.Conn, cfg.Dir, at.From, into, cfg.instance); err != nil {
+	if err := receiveWithReceipts(at.Conn, cfg.Dir, at.From, into, cfg.instance, &quota); err != nil {
 		return err
 	}
 	if landed && s.into.Completed != nil {

@@ -62,16 +62,17 @@ func offered(items []Item) error {
 
 // receive reads the offer, answers it, and takes the items one at a time.
 func receive(conn *wire.Conn, into string, from node.ID, hooks Into) error {
-	return receiveWithReceipts(conn, into, from, hooks, nil)
+	quota := quotaFor(Config{})
+	return receiveWithReceipts(conn, into, from, hooks, nil, &quota)
 }
 
-func receiveWithReceipts(conn *wire.Conn, into string, from node.ID, hooks Into, receipts *configInstance) error {
+func receiveWithReceipts(conn *wire.Conn, into string, from node.ID, hooks Into, receipts *configInstance, quota *transferQuota) error {
 	return conn.WithIdle(wire.FiniteIdle, func() error {
-		return receiveWithin(conn, into, from, hooks, receipts)
+		return receiveWithin(conn, into, from, hooks, receipts, quota)
 	})
 }
 
-func receiveWithin(conn *wire.Conn, into string, from node.ID, hooks Into, receipts *configInstance) error {
+func receiveWithin(conn *wire.Conn, into string, from node.ID, hooks Into, receipts *configInstance, quota *transferQuota) error {
 	kind, body, err := conn.ReadFrame()
 	if err != nil {
 		// A sender that closes before offering anything has pushed nothing, which is not a fault.
@@ -138,6 +139,10 @@ func receiveWithin(conn *wire.Conn, into string, from node.ID, hooks Into, recei
 			picked.At[i] = stat.Size()
 		}
 	}
+	if reason := quota.preflight(out.Items, picked); reason != "" {
+		_ = refuse(reason)
+		return fmt.Errorf("receiving from %s: %s", node.Brief(from), reason)
+	}
 	want := int64(0)
 	for i, item := range out.Items {
 		if picked.Done[i] || !item.Known() {
@@ -164,7 +169,7 @@ func receiveWithin(conn *wire.Conn, into string, from node.ID, hooks Into, recei
 		if picked.Done[i] {
 			err = receiveCompleted(conn, completed[i], key, receipts, from, hooks)
 		} else {
-			err = receiveOne(conn, dir, from, out.ID, uint32(i), item, picked.At[i], hooks, receipts)
+			err = receiveOne(conn, dir, from, out.ID, uint32(i), item, picked.At[i], hooks, receipts, quota)
 		}
 		if err != nil {
 			return err
@@ -236,7 +241,7 @@ func opening(dir *os.Root, part string, at int64) (*os.File, int64, error) {
 	return out, 0, nil
 }
 
-func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, transfer transferID, index uint32, item Item, at int64, hooks Into, receipts *configInstance) error {
+func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, transfer transferID, index uint32, item Item, at int64, hooks Into, receipts *configInstance, quota *transferQuota) error {
 	name := safeName(item.Name)
 	part := partName(from, transfer, item)
 
@@ -293,6 +298,11 @@ func receiveOne(conn *wire.Conn, dir *os.Root, from node.ID, transfer transferID
 		if item.Known() && int64(size) > item.Size-got {
 			_ = dir.Remove(part)
 			return fmt.Errorf("%s sent more than the announced %d bytes", name, item.Size)
+		}
+		if err := quota.take(got, int64(size)); err != nil {
+			_ = dir.Remove(part)
+			_ = conn.WriteFrame(wire.KindAck, wire.Ack{Reason: err.Error()}.Encode())
+			return fmt.Errorf("%s: %w", name, err)
 		}
 		if err := keep.Room(out, int64(size)); err != nil {
 			_ = dir.Remove(part)

@@ -437,13 +437,17 @@ func TestAnOfferCannotUseAnInvalidUnknownSize(t *testing.T) {
 func TestAnOfferLargerThanFreeSpaceIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	item := Item{Name: "too-large", Size: math.MaxInt64}
+	config := Config{
+		Dir: dir, MaxItemBytes: math.MaxInt64, MaxSessionBytes: math.MaxInt64, instance: newConfigInstance(),
+	}
 
-	out, err := taking(t, dir, []Item{item}, spoken(t), nil)
+	var out bytes.Buffer
+	err := serveBatch(t, New(Into{}), config, "/share", []Item{item}, spoken(t), &out)
 	if err == nil || !strings.Contains(err.Error(), "stay free") {
 		t.Fatalf("the oversized offer was answered with %v", err)
 	}
 
-	conn := wire.NewConn(readWriter{out, &bytes.Buffer{}})
+	conn := wire.NewConn(readWriter{&out, &bytes.Buffer{}})
 	kind, body, err := conn.ReadFrame()
 	if err != nil {
 		t.Fatalf("reading the refusal: %v", err)
