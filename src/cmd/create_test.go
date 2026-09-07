@@ -136,6 +136,24 @@ func TestAHeldNamespaceStopsBeingServed(t *testing.T) {
 	}
 }
 
+func TestAHeldNamespaceTeardownNormalizesItsPath(t *testing.T) {
+	mounts := ns.NewTable()
+	host := newMountHost(mounts, reading())
+	up := made.Line{Path: "//notes/", Entry: made.Entry{
+		Archetype: "chat",
+		Access:    made.Access{Paired: true},
+	}}
+
+	if err := host.begin(up); err != nil {
+		t.Fatalf("putting /notes up: %v", err)
+	}
+	host.end(up.Path)
+
+	if _, _, ok := mounts.Lookup("/notes"); ok {
+		t.Fatal("the normalized mount survived its command")
+	}
+}
+
 func TestAWrittenNamespaceCanBeUpdatedAndRemoved(t *testing.T) {
 	mounts := ns.NewTable()
 	host := newMountHost(mounts, reading())

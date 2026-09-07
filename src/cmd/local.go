@@ -340,6 +340,11 @@ func (h *mountHost) begin(line made.Line) error {
 
 // end takes a held namespace down, and the path with it.
 func (h *mountHost) end(at string) {
+	at, err := ns.Clean(at)
+	if err != nil {
+		return
+	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
