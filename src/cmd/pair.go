@@ -251,10 +251,26 @@ func filed(p proto.Pairing, as string, machine bool) (string, error) {
 		if held, taken := b.Lookup(name); taken && held.ID != p.Peer {
 			return false, fmt.Errorf("%q is already %s here; pair with --as to choose another name", name, node.Brief(held.ID))
 		}
+		for _, held := range b.All() {
+			if held.ID == p.Peer && held.Name != name {
+				return false, fmt.Errorf("%s is already filed as %q; forget %q before pairing it as %q",
+					node.Brief(p.Peer), held.Name, held.Name, name)
+			}
+		}
+
+		held, replacing := b.Lookup(name)
+		nextUser := ""
+		if !machine {
+			nextUser = p.User
+		}
+		keepTrust := replacing && held.ID == p.Peer && held.Trusted && held.User == nextUser
 
 		b.Pair(name, p.Peer, p.Secret, p.Addrs...)
 		if !machine {
 			b.Belongs(name, p.User)
+		}
+		if keepTrust {
+			b.Trust(name, true)
 		}
 		return true, nil
 	})
