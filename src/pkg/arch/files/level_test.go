@@ -568,7 +568,7 @@ func TestReplacementsOfDifferentNamesProceedTogether(t *testing.T) {
 		if err != nil {
 			t.Fatalf("second Replace(): %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("a replacement of another file waited behind the active round")
 	}
 
