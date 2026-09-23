@@ -3,109 +3,104 @@ package dev.bresilla.drop
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
-import androidx.core.app.NotificationCompat
-import mobile.Events
-import mobile.Mobile
-import mobile.Node
+import kotlin.concurrent.thread
 
 /**
- * Keeps the node up while the app is not in front.
+ * Keeps the node up while the app is not on screen.
  *
- * Android stops ordinary work when the app leaves the screen, and a node nobody can reach is not a
- * node. A foreground service is the only way to stay listening, and it costs a notification.
+ * A node nobody can reach is not a node, so this is a foreground service: the price is a notification
+ * that stays, and there is no way around that on Android since 8.
  */
 class NodeService : Service() {
-    private var node: Node? = null
-
-    companion object {
-        const val CHANNEL = "drop.node"
-        const val NOTIFICATION = 1
-
-        /** What the node last said, for the activity to draw. */
-        @Volatile var status: String = "starting"
-        @Volatile var address: String = ""
-        @Volatile var id: String = ""
-
-        fun start(context: Context) {
-            val intent = Intent(context, NodeService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
-        }
-
-        fun stop(context: Context) {
-            context.stopService(Intent(context, NodeService::class.java))
-        }
-    }
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        makeChannel()
-        startForeground(NOTIFICATION, notification("starting"))
+        channels(this)
 
-        val events = object : Events {
-            override fun onStatus(text: String) {
-                status = text
-                notify(text)
-            }
+        val running = Notification.Builder(this, QUIET)
+            .setSmallIcon(R.drawable.ic_stat_drop)
+            .setContentTitle("drop")
+            .setContentText("reachable by the people you have paired with")
+            .setContentIntent(opening(this, null))
+            .setOngoing(true)
+            .build()
 
-            override fun onAddress(text: String) {
-                address = text
-            }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(ONGOING, running, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(ONGOING, running)
         }
 
-        try {
-            val started = Mobile.start(
-                filesDir.resolve("config").absolutePath,
-                filesDir.resolve("data").absolutePath,
-                Build.MODEL ?: "android",
-                events,
-            )
-            node = started
-            id = started.brief()
-            status = "reachable as ${started.brief()}"
-            notify(status)
-        } catch (e: Exception) {
-            status = "did not start: ${e.message}"
-            notify(status)
-        }
+        Drop.onSaid = { from, text -> tell(this, from, text) }
+        // Off the main thread: starting a node reads keys and binds sockets, which is long enough for
+        // Android to call the app frozen.
+        thread(name = "drop-start") { runCatching { Drop.start(applicationContext) } }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onDestroy() {
-        node?.stop()
-        node = null
+        Drop.onSaid = null
+        Drop.stop()
         super.onDestroy()
     }
 
-    private fun makeChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+    companion object {
+        private const val QUIET = "drop.node"
+        private const val LOUD = "drop.messages"
+        private const val ONGOING = 1
 
-        val channel = NotificationChannel(CHANNEL, "drop", NotificationManager.IMPORTANCE_LOW)
-        channel.description = "Keeps this device reachable"
-        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-    }
+        /** Which machine a notification opens, when it is about one. */
+        const val MACHINE = "machine"
 
-    private fun notification(text: String): Notification =
-        NotificationCompat.Builder(this, CHANNEL)
-            .setContentTitle("drop")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_sys_upload)
-            .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
+        fun start(context: Context) {
+            context.startForegroundService(Intent(context, NodeService::class.java))
+        }
 
-    private fun notify(text: String) {
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION, notification(text))
+        private fun channels(context: Context) {
+            val manager = context.getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(
+                NotificationChannel(QUIET, "Staying reachable", NotificationManager.IMPORTANCE_MIN),
+            )
+            manager.createNotificationChannel(
+                NotificationChannel(LOUD, "Messages", NotificationManager.IMPORTANCE_HIGH),
+            )
+        }
+
+        private fun opening(context: Context, machine: String?): PendingIntent {
+            val intent = Intent(context, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            if (machine != null) intent.putExtra(MACHINE, machine)
+            return PendingIntent.getActivity(
+                context,
+                machine?.hashCode() ?: 0,
+                intent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+        }
+
+        /** Says a message arrived, unless the conversation it belongs to is the one on screen. */
+        private fun tell(context: Context, from: String, text: String) {
+            if (Drop.watching == from) return
+
+            val said = Notification.Builder(context, LOUD)
+                .setSmallIcon(R.drawable.ic_stat_drop)
+                .setContentTitle(from)
+                .setContentText(text)
+                .setStyle(Notification.BigTextStyle().bigText(text))
+                .setContentIntent(opening(context, from))
+                .setAutoCancel(true)
+                .setCategory(Notification.CATEGORY_MESSAGE)
+                .build()
+            context.getSystemService(NotificationManager::class.java).notify(from.hashCode(), said)
+        }
     }
 }

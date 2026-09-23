@@ -1,83 +1,60 @@
 package dev.bresilla.drop
 
 import android.Manifest
-import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.view.Gravity
-import android.view.ViewGroup
-import android.widget.LinearLayout
-import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.mutableStateOf
+import androidx.core.content.IntentCompat
+import dev.bresilla.drop.ui.App
+import dev.bresilla.drop.ui.Arrival
+import dev.bresilla.drop.ui.DropTheme
 
-/**
- * What this device is, and whether anybody can reach it.
- *
- * The screen is built in code rather than XML: there is one of them, and a layout file would be a
- * second place to look.
- */
-class MainActivity : Activity() {
-    private lateinit var name: TextView
-    private lateinit var state: TextView
-    private lateinit var where: TextView
+class MainActivity : ComponentActivity() {
+    private val arrival = mutableStateOf<Arrival?>(null)
 
-    private val tick = Handler(Looper.getMainLooper())
-    private val redraw = object : Runnable {
-        override fun run() {
-            draw()
-            tick.postDelayed(this, 1000)
-        }
-    }
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
 
-    override fun onCreate(saved: Bundle?) {
-        super.onCreate(saved)
-        setContentView(screen())
-        askForNotifications()
-        NodeService.start(this)
-    }
-
-    override fun onResume() {
-        super.onResume()
-        tick.post(redraw)
-    }
-
-    override fun onPause() {
-        tick.removeCallbacks(redraw)
-        super.onPause()
-    }
-
-    private fun screen(): ViewGroup {
-        val pad = (24 * resources.displayMetrics.density).toInt()
-
-        name = TextView(this).apply { textSize = 28f }
-        state = TextView(this).apply { textSize = 16f; setPadding(0, pad / 2, 0, 0) }
-        where = TextView(this).apply { textSize = 12f; setPadding(0, pad / 2, 0, 0) }
-
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(pad, pad, pad, pad)
-            addView(name)
-            addView(state)
-            addView(where)
-        }
-    }
-
-    private fun draw() {
-        name.text = if (NodeService.id.isEmpty()) "drop" else NodeService.id
-        state.text = NodeService.status
-        where.text = NodeService.address
-    }
-
-    /** Without this the foreground notification is silently dropped on Android 13 and later. */
-    private fun askForNotifications() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
-
-        val granted = checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-        if (granted != PackageManager.PERMISSION_GRANTED) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
+        NodeService.start(this)
+
+        if (savedInstanceState == null) arrival.value = arrivalOf(intent)
+        setContent {
+            DropTheme {
+                App(arrival = arrival.value, taken = { arrival.value = null })
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        arrival.value = arrivalOf(intent)
+    }
+
+    private fun arrivalOf(intent: Intent?): Arrival? {
+        intent ?: return null
+        intent.getStringExtra(NodeService.MACHINE)?.let { return Arrival.Open(it) }
+
+        return when (intent.action) {
+            Intent.ACTION_VIEW -> intent.dataString?.let { Arrival.Join(it) }
+            Intent.ACTION_SEND ->
+                IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.let { Arrival.Send(listOf(it)) }
+            Intent.ACTION_SEND_MULTIPLE ->
+                IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { Arrival.Send(it) }
+            else -> null
         }
     }
 }

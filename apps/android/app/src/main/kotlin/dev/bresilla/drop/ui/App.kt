@@ -1,0 +1,84 @@
+package dev.bresilla.drop.ui
+
+import android.net.Uri
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+
+/** Where somebody is. Entering rather than tabbing: what a path is depends on the machine it is on. */
+sealed interface Screen {
+    data object Home : Screen
+    data class Person(val name: String) : Screen
+    data class Machine(val name: String) : Screen
+    data class Chat(val machine: String) : Screen
+    data class Files(val machine: String, val path: String, val dir: String, val writable: Boolean) : Screen
+    data class Live(val machine: String, val path: String, val archetype: String, val typing: Boolean) : Screen
+    data class Pair(val ticket: String? = null, val scan: Boolean = false) : Screen
+    data object Me : Screen
+    data class Sending(val uris: List<Uri>) : Screen
+}
+
+/** Something the activity was handed from outside: a link, a notification, another app's share. */
+sealed interface Arrival {
+    data class Join(val ticket: String) : Arrival
+    data class Open(val machine: String) : Arrival
+    data class Send(val uris: List<Uri>) : Arrival
+}
+
+@Composable
+fun App(arrival: Arrival?, taken: () -> Unit) {
+    var stack by remember { mutableStateOf(listOf<Screen>(Screen.Home)) }
+    var forward by remember { mutableStateOf(true) }
+
+    val go: (Screen) -> Unit = { forward = true; stack = stack + it }
+    val back: () -> Unit = { if (stack.size > 1) { forward = false; stack = stack.dropLast(1) } }
+    // Replacing what is on top, for a screen that was only ever the way to another one.
+    val instead: (Screen) -> Unit = { forward = true; stack = stack.dropLast(1) + it }
+    val home: () -> Unit = { forward = false; stack = listOf(Screen.Home) }
+
+    LaunchedEffect(arrival) {
+        when (arrival) {
+            is Arrival.Join -> stack = listOf(Screen.Home, Screen.Pair(arrival.ticket))
+            is Arrival.Open -> stack = listOf(Screen.Home, Screen.Chat(arrival.machine))
+            is Arrival.Send -> stack = listOf(Screen.Home, Screen.Sending(arrival.uris))
+            null -> return@LaunchedEffect
+        }
+        taken()
+    }
+
+    BackHandler(enabled = stack.size > 1, onBack = back)
+
+    val top = stack.last()
+    AnimatedContent(
+        targetState = top,
+        transitionSpec = {
+            val shift = if (forward) 1 else -1
+            (slideInHorizontally(tween(260)) { it * shift / 5 } + fadeIn(tween(260)))
+                .togetherWith(slideOutHorizontally(tween(200)) { -it * shift / 5 } + fadeOut(tween(200)))
+        },
+        label = "screens",
+    ) { screen ->
+        when (screen) {
+            Screen.Home -> HomeScreen(go)
+            is Screen.Person -> PersonScreen(screen.name, go, back)
+            is Screen.Machine -> MachineScreen(screen.name, go, back, home)
+            is Screen.Chat -> ChatScreen(screen.machine, go, back)
+            is Screen.Files -> FilesScreen(screen, go, back)
+            is Screen.Live -> LiveScreen(screen, back)
+            is Screen.Pair -> PairScreen(screen.ticket, screen.scan, back, paired = { instead(Screen.Machine(it)) })
+            Screen.Me -> MeScreen(back)
+            is Screen.Sending -> SendingScreen(screen.uris, back, done = { instead(Screen.Chat(it)) })
+        }
+    }
+}
