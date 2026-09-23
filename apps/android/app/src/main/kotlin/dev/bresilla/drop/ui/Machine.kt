@@ -83,9 +83,13 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
     LaunchedEffect(tick) {
         machine = Drop.people().getOrNull()?.flatMap { it.machines }?.firstOrNull { it.name == name }
     }
-    LaunchedEffect(name) {
-        asking = true
-        Drop.paths(name).onSuccess { paths = it; failed = null }.onFailure { failed = it.message }
+    // Asked again as the screen refreshes: a machine that comes back, or one that was still writing
+    // down a pairing made a moment ago, answers differently the second time.
+    LaunchedEffect(name, tick) {
+        if (paths == null) asking = true
+        Drop.paths(name)
+            .onSuccess { paths = it; failed = null }
+            .onFailure { if (paths == null) failed = it.message }
         asking = false
     }
 
