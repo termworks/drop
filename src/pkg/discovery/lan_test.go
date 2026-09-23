@@ -391,3 +391,17 @@ func heardFrom(conn net.PacketConn) int {
 		seen++
 	}
 }
+
+// A node that has been listening longer than the window has already heard everybody on the wire, so
+// asking about somebody it has not heard answers at once rather than after another window.
+func TestALongListenerAnswersAtOnce(t *testing.T) {
+	l := &LAN{peers: map[string]sighting{}, self: idFrom(1).String(), since: time.Now().Add(-time.Minute)}
+
+	start := time.Now()
+	if _, found := l.Find(t.Context(), idFrom(2)); found {
+		t.Fatal("found a device nobody announced")
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Fatalf("waited %s for a device that had a minute to announce itself", waited)
+	}
+}
