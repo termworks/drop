@@ -197,7 +197,7 @@ jobs:
             drop-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
 
   release:
-    needs: [binaries]
+    needs: [binaries, android]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
