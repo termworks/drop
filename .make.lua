@@ -443,6 +443,52 @@ make.recipe{
   end,
 }
 
+-- The display a window should open on, found when the command runs rather than when the shell was
+-- entered: a compositor restart, or a shell opened over ssh, leaves the inherited variables pointing
+-- at a socket that is gone. Wayland when there is one, X otherwise; $_dr_backend says which, for the
+-- program to be told. The names are private because DISPLAY and friends can be readonly.
+local function onDisplay(cmd)
+  return [[
+_dr_runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+_dr_wl=""
+if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -S "$_dr_runtime/$WAYLAND_DISPLAY" ]; then
+  _dr_wl="$WAYLAND_DISPLAY"
+elif [ -S "$_dr_runtime/wayland-0" ]; then
+  _dr_wl="wayland-0"
+else
+  _dr_wl=$(ls -t "$_dr_runtime"/wayland-* 2>/dev/null | grep -v '\.lock$' | head -n1 | xargs -r basename)
+fi
+export XDG_RUNTIME_DIR="$_dr_runtime"
+if [ -n "$_dr_wl" ]; then
+  _dr_backend=wayland
+  export WAYLAND_DISPLAY="$_dr_wl"
+  unset DISPLAY
+else
+  _dr_backend=x11
+  export DISPLAY="${DISPLAY:-:0}"
+  unset WAYLAND_DISPLAY
+fi
+]] .. cmd
+end
+
+make.recipe{
+  name = "screen",
+  desc = "a window onto the emulator or a plugged-in phone",
+  run = function()
+    assert(oslo.run{ "sh", "-c", "command -v scrcpy && command -v nixGL" }.ok,
+           "scrcpy is not here; it is in the default shell, `nix develop`")
+    assert(oslo.run{ "sh", "-c", "adb get-state" }.ok,
+           "no device: `make emulator`, or plug a phone in")
+
+    -- scrcpy is built against the store's SDL and mesa, which cannot drive the host's GPU on
+    -- their own; nixGL puts the host driver under it. The emulator runs with no audio, so there
+    -- is none to forward.
+    oslo.run{ "sh", "-c", onDisplay(
+      "SDL_VIDEODRIVER=$_dr_backend nixGL scrcpy --window-title drop --stay-awake --no-audio"
+    ) }
+  end,
+}
+
 ---------------------------------------------------------------------------- releasing
 
 make.recipe{

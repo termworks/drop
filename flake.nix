@@ -4,10 +4,21 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+
+    # nixGL puts the host's GPU drivers under a program built here, which is what lets a window
+    # open on a machine that is not NixOS. It gets a nixpkgs of its own, pinned: nixpkgs after
+    # 2026-04 dropped the `kernel` argument nixGL's NVIDIA wrapper passes, and drop itself should
+    # not be held back to wait for that.
+    nixpkgs-gl.url = "github:NixOS/nixpkgs?rev=4c1018dae018162ec878d42fec712642d214fdfa";
+    nixgl = {
+      url = "github:nix-community/nixGL?rev=b6105297e6f0cd041670c3e8628394d4ee247ed5";
+      inputs.nixpkgs.follows = "nixpkgs-gl";
+      inputs.flake-utils.follows = "flake-utils";
+    };
   };
 
   outputs =
-    { nixpkgs, flake-utils, ... }:
+    { nixpkgs, flake-utils, nixgl, nixpkgs-gl, ... }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
@@ -39,6 +50,42 @@
             abiVersions = [ "x86_64" ];
           }).androidsdk;
 
+        # The driver this machine actually has, read by .env.lua before the shell is built. Empty in
+        # CI and in any pure evaluation, which picks the mesa wrapper and never builds NVIDIA's.
+        nvidiaVersion = builtins.getEnv "NVIDIA_VERSION";
+        hasNvidia = nvidiaVersion != "";
+
+        gl = import "${nixgl}/default.nix" (
+          {
+            pkgs = import nixpkgs-gl {
+              inherit system;
+              config = {
+                allowUnfree = true;
+                nvidia.acceptLicense = true;
+              };
+            };
+          }
+          // nixpkgs.lib.optionalAttrs hasNvidia {
+            inherit nvidiaVersion;
+            nvidiaHash = null;
+          }
+        );
+
+        # One name, whatever the hardware: `nixGL scrcpy` rather than a command per vendor.
+        nixGL = pkgs.runCommand "nixGL" { } ''
+          mkdir -p $out/bin
+          ln -s ${
+            if hasNvidia then "${gl.nixGLNvidia}/bin/nixGLNvidia-${nvidiaVersion}" else "${gl.nixGLIntel}/bin/nixGLIntel"
+          } $out/bin/nixGL
+        '';
+
+        # For looking at a device rather than building for one: kept out of the android shell, so CI
+        # builds the APK without pulling a graphics stack it never opens.
+        guiTools = [
+          pkgs.scrcpy
+          nixGL
+        ];
+
         # Everything needed to compile, vet and test, without the tools only a release needs.
         buildTools = [
           pkgs.go
@@ -69,6 +116,13 @@
           # Gradle picks the build tools out of the SDK by exact version, and aapt2 in the store is
           # not writable, so gradle is told to use the one it was given.
           GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${sdk}/libexec/android-sdk/build-tools/35.0.0/aapt2";
+
+          # gomobile keeps its toolchain under the first GOPATH entry, and its wrapper appends its
+          # own store path. With GOPATH unset, as on a CI runner, that store path is the only entry
+          # and `gomobile init` fails trying to write into it.
+          shellHook = ''
+            export GOPATH="''${GOPATH:-$HOME/go}"
+          '';
         };
       in
       {
@@ -93,6 +147,7 @@
             packages =
               buildTools
               ++ androidTools
+              ++ guiTools
               ++ [
                 # `make changelog` shells out to this.
                 pkgs.git-cliff
