@@ -580,7 +580,7 @@ func (l *running) Listing(ctx context.Context, on book.Entry, path, dir string) 
 
 	out := make([]tui.Held, 0, len(entries))
 	for _, at := range entries {
-		out = append(out, tui.Held{Name: at.Name, Size: at.Size, At: time.Unix(at.At, 0), Dir: at.Dir})
+		out = append(out, tui.Held{Name: at.Name, Size: at.Size, At: time.Unix(0, at.At), Dir: at.Dir})
 	}
 	arrange(out)
 	return out, nil
