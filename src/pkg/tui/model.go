@@ -544,7 +544,7 @@ func offer(back Backend) tea.Cmd {
 		// The code is drawn rather than the ticket alone: a phone has no keyboard worth typing a
 		// hundred characters on, and a camera is the whole point of showing one.
 		if drawn, err := tickets.Code(ticket); err == nil {
-			at.code = tickets.Render(drawn)
+			at.code = tickets.Painted(drawn)
 		}
 		return pairStarted{at: at}
 	}

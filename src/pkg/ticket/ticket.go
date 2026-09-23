@@ -79,6 +79,24 @@ func Render(code *qr.Code) string {
 	return out.String()
 }
 
+// Painted is Render with its colours fixed: black modules on a white ground.
+//
+// Left to the terminal, a module is drawn in whatever the foreground is, and on a dark theme that
+// is a light code on a dark ground — inverted, which plenty of cameras will not read. The colours
+// are from the 256-colour cube rather than the first sixteen, because themes repaint those.
+func Painted(code *qr.Code) string {
+	const (
+		ink   = "\x1b[38;5;16;48;5;231m"
+		reset = "\x1b[0m"
+	)
+
+	var out strings.Builder
+	for _, line := range strings.Split(strings.TrimRight(Render(code), "\n"), "\n") {
+		out.WriteString(ink + line + reset + "\n")
+	}
+	return out.String()
+}
+
 // black reports whether a module is set, treating everything outside the code as light so the quiet
 // zone comes out blank rather than out of range.
 func black(code *qr.Code, x, y int) bool {

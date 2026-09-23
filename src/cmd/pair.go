@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tmc/go-iroh/iroh"
+	"golang.org/x/term"
 
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/dial"
@@ -29,7 +30,6 @@ import (
 func newPairCmd() *cobra.Command {
 	var (
 		as      string
-		showQR  bool
 		code    string
 		wait    time.Duration
 		machine bool
@@ -51,13 +51,12 @@ func newPairCmd() *cobra.Command {
 			if len(args) == 1 {
 				return joinPairing(cmd.Context(), args[0], as, wait, machine, at)
 			}
-			return offerPairing(cmd.Context(), as, code, wait, showQR, machine)
+			return offerPairing(cmd.Context(), as, code, wait, machine)
 		},
 	}
 
 	cmd.Flags().StringVar(&as, "as", "", "the local name to file the other device under")
 	cmd.Flags().StringVar(&code, "code", "", "use this pairing code instead of a generated one")
-	cmd.Flags().BoolVar(&showQR, "qr", false, "draw the ticket as a code a phone can read")
 	cmd.Flags().DurationVarP(&wait, "wait", "w", 5*time.Minute, "how long to keep pairing open")
 	cmd.Flags().BoolVar(&machine, "machine", false, "pair with this device alone, not with whoever owns it")
 	cmd.Flags().StringSliceVar(&at, "at", nil, "where to reach the other device, when finding it fails (host:port)")
@@ -123,7 +122,7 @@ func codeProof(code string, initiator, responder node.ID) []byte {
 	return mac.Sum(nil)
 }
 
-func offerPairing(parent context.Context, as, code string, wait time.Duration, showQR, machine bool) error {
+func offerPairing(parent context.Context, as, code string, wait time.Duration, machine bool) error {
 	// A given code makes pairing scriptable: the ticket can be built by the caller rather than
 	// scraped out of this output.
 	if code == "" {
@@ -141,7 +140,7 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, s
 
 	// Through the daemon when one is running: it holds this identity's address, so it is the one
 	// anybody dialling the ticket will reach, and only it can answer them.
-	if err := offerThroughDaemon(ctx, as, code, wait, showQR, machine); err == nil {
+	if err := offerThroughDaemon(ctx, as, code, wait, machine); err == nil {
 		return nil
 	} else if !errors.Is(err, errNoDaemon) {
 		return err
@@ -166,7 +165,7 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, s
 
 	invite := ticketFor(n.ID(), code)
 
-	showTicket(invite, wait, showQR)
+	showTicket(invite, wait)
 
 	paired := make(chan proto.Pairing, 1)
 	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){
@@ -370,7 +369,7 @@ func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as stri
 }
 
 // offerThroughDaemon asks the running node to show a code, and waits for somebody to take it.
-func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration, showQR, machine bool) error {
+func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration, machine bool) error {
 	path, err := castSocket()
 	if err != nil {
 		return errNoDaemon
@@ -403,7 +402,7 @@ func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration
 		return err
 	}
 
-	showTicket(ticketFor(id, code), wait, showQR)
+	showTicket(ticketFor(id, code), wait)
 
 	// The daemon answers with one line: who paired, or why nobody did. Closing this connection is
 	// what takes the code back down, so a cancelled command does not leave one live.
@@ -439,10 +438,13 @@ func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration
 }
 
 // showTicket prints an invitation the same way whoever is answering it happens to be arranged.
-func showTicket(invite string, wait time.Duration, showQR bool) {
-	if showQR {
+//
+// The code is drawn whenever a person is reading, because the other device is as likely to be a
+// phone with a camera as a machine with a keyboard. Piped, it is only the text a script wants.
+func showTicket(invite string, wait time.Duration) {
+	if term.IsTerminal(int(os.Stdout.Fd())) {
 		if qrCode, err := tickets.Code(invite); err == nil {
-			fmt.Printf("\n%s", tickets.Render(qrCode))
+			fmt.Printf("\n%s", tickets.Painted(qrCode))
 		} else {
 			fmt.Fprintf(os.Stderr, "drop: could not draw a code: %v\n", err)
 		}
