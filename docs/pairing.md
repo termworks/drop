@@ -10,6 +10,27 @@ $ drop peer pair                        # on one machine
 $ drop peer pair 9363f77d…#qxwo-e62y    # on the other: done, forever
 ```
 
+## A code a camera can read
+
+In a terminal the ticket is drawn as a QR code above the text, black on white whatever the
+terminal's theme is — a code drawn in a dark theme's own colours comes out inverted, and plenty of
+cameras give up on that. Piped, it is only the text. The interface's pairing screen draws the same
+code, and the [Android app](../apps/android/README.md) both shows one and reads one.
+
+The code is a link, `drop://pair/<ticket>`, so a phone that reads it with its own camera app opens
+drop at the right place, and so does tapping one somebody sent.
+
+## Which node answers
+
+With `drop serve` running, pairing goes through it — offering a code and taking one alike. The
+daemon is what the other device reaches from then on, so it is the one whose address the pairing
+has to carry: a command that paired with a node of its own would write down that node's address,
+which is gone the moment the command exits.
+
+The side that shows the code writes the pairing down *before* it answers, and a side that refuses
+says so, so a device never believes it paired with somebody who threw the attempt away. As soon as
+a pairing lands, the rendezvous is published for it, rather than on the next five-minute round.
+
 ## Pairing is with a person
 
 The exchange carries a **badge**, and both sides write down the other's user key. A machine of

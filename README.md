@@ -6,9 +6,12 @@ Pair two devices once, by key. After that either can reach the other from anywhe
 across networks, through address changes.
 
 ```console
-drop peer pair                      # on one machine: prints a ticket
+drop peer pair                      # on one machine: prints a ticket, and a QR of it
 drop peer pair 9363f77d…#qxwo-e62y  # on the other: done, forever
 ```
+
+A phone pairs by pointing its camera at that code: the [Android app](apps/android/README.md) is the
+same node, with chat, files, and a live view of a terminal on the machine it paired with.
 
 ---
 
