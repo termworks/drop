@@ -323,6 +323,126 @@ make.recipe{
   end,
 }
 
+---------------------------------------------------------------------------- android
+
+local ANDROID = "apps/android"
+local AAR = ANDROID .. "/libs/mobile.aar"
+local APK = ANDROID .. "/app/build/outputs/apk/release/app-release.apk"
+
+-- Every Go file, because the AAR carries the whole core and not just the binding.
+local MOBILE = {
+  "apps/android/mobile/*.go",
+  "src/**/*.go",
+  "src/**/**/*.go",
+  "go.mod",
+  "go.sum",
+}
+
+-- Whether the Android SDK is here. The recipes below need the android shell, and saying so beats
+-- a gradle error forty lines deep.
+local function androidReady()
+  return os.getenv("ANDROID_HOME") ~= nil
+end
+
+make.recipe{
+  name = "aar",
+  desc = "the Go core as an Android library",
+  inputs = MOBILE,
+  outputs = { AAR },
+  stale = "content",
+  run = function()
+    assert(androidReady(),
+           "no Android SDK in this shell; enter it with `nix develop .#android`")
+
+    oslo.env.set("CGO_ENABLED", "1")
+
+    -- gomobile builds in a work tree of its own, where stamping the commit fails rather than
+    -- being merely absent. It passes no such flag through, so the go tool is told directly.
+    oslo.env.set("GOFLAGS", "-buildvcs=false")
+
+    sh.mkdir("-p", ANDROID .. "/libs")
+
+    assert(oslo.run{ "gomobile", "init" }.ok, "gomobile init failed")
+    assert(oslo.run{
+      "gomobile", "bind",
+      -- amd64 is for the emulator, which is x86_64 so KVM can carry it. It costs about ten
+      -- megabytes in the APK and is what makes the app testable without a phone.
+      "-target", "android/arm64,android/arm,android/amd64",
+      "-androidapi", "26",
+      "-trimpath",
+      "-ldflags", "-s -w",
+      "-o", AAR,
+      "./apps/android/mobile",
+    }.ok, "gomobile bind failed")
+
+    print("  aar  " .. AAR)
+  end,
+}
+
+make.recipe{
+  name = "apk",
+  desc = "the Android app, signed and installable",
+  deps = { "aar" },
+  run = function()
+    assert(androidReady(),
+           "no Android SDK in this shell; enter it with `nix develop .#android`")
+
+    assert(oslo.run{
+      "gradle", "--project-dir", ANDROID, "--no-daemon",
+      "-PdropVersion=" .. VERSION,
+      "assembleRelease",
+    }.ok, "gradle assembleRelease failed")
+
+    print("  apk  " .. APK)
+  end,
+}
+
+make.recipe{
+  name = "install-apk",
+  desc = "put the apk on a plugged-in device",
+  deps = { "apk" },
+  run = function()
+    assert(oslo.run{ "sh", "-c", "command -v adb" }.ok,
+           "adb is not here; enter the android shell")
+    oslo.run{ "adb", "install", "-r", APK }
+  end,
+}
+
+
+local AVD = "drop-test"
+
+make.recipe{
+  name = "emulator",
+  desc = "start an emulator to run the app on",
+  run = function()
+    assert(androidReady(),
+           "no Android SDK in this shell; enter it with `nix develop .#android`")
+
+    local home = os.getenv("HOME") .. "/.android/avd"
+    local made = oslo.run{ "sh", "-c", "test -d " .. home .. "/" .. AVD .. ".avd", capture = true }
+
+    if not made.ok then
+      print("making the " .. AVD .. " device")
+      assert(oslo.run{
+        "sh", "-c",
+        "echo no | avdmanager create avd -n " .. AVD ..
+        " -k 'system-images;android-35;google_apis;x86_64' --force",
+      }.ok, "could not make the avd")
+    end
+
+    -- No window and no audio: this is for running the app, not for looking at it. The console is
+    -- how a test drives it, and logcat is how it reports.
+    oslo.run{
+      "sh", "-c",
+      "emulator -avd " .. AVD .. " -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect &",
+    }
+    print("  waiting for it to come up")
+    assert(oslo.run{ "adb", "wait-for-device" }.ok, "the emulator never arrived")
+    oslo.run{ "sh", "-c", "adb shell 'while [ \"$(getprop sys.boot_completed)\" != 1 ]; do sleep 2; done'" }
+    print("  ready; `make install-apk` puts the app on it")
+  end,
+}
+
 ---------------------------------------------------------------------------- releasing
 
 make.recipe{

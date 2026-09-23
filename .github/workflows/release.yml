@@ -83,6 +83,55 @@ jobs:
           CGO_ENABLED: '0'
         run: go test -tags=e2e -count=1 -timeout=15m ./src/e2e/
 
+
+  # The Android app: the Go core as an AAR through gomobile, then the Kotlin shell around it. Built
+  # in the flake's android shell so the SDK, NDK and gomobile are the pinned ones.
+  android:
+    needs: [quality]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: cachix/install-nix-action@d1ca217b388ee87b2507a9a93bf01368bde7cec2 # v31
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+            experimental-features = nix-command flakes
+
+      - uses: cachix/cachix-action@0fc020193b5a1fa3ac4575aa3a7d3aa6a35435ad # v16
+        continue-on-error: true
+        with:
+          name: nix-community
+
+      - name: Build the APK
+        run: nix develop .#android --command bash -c 'gomobile init && gradle --project-dir apps/android --no-daemon -PdropVersion="$(sed -n "s/.*version[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" src/main.go)" assembleRelease'
+        env:
+          CGO_ENABLED: '1'
+
+      - name: Name it
+        id: apk
+        run: |
+          set -euo pipefail
+          built="apps/android/app/build/outputs/apk/release/app-release.apk"
+          test -f "${built}"
+          version="$(sed -n 's/.*version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' src/main.go)"
+          name="drop-${version}-android.apk"
+          mv "${built}" "${name}"
+          sha256sum "${name}" > "${name}.sha256"
+          echo "name=${name}" >> "${GITHUB_OUTPUT}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: drop-android
+          path: |
+            ${{ steps.apk.outputs.name }}
+            ${{ steps.apk.outputs.name }}.sha256
+          if-no-files-found: error
+
   # The binary is pure Go with cgo off, so both targets cross-compile from one runner and the
   # result is static. No musl, no container, no QEMU — which is the whole reason the build
   # stayed cgo-free in the first place.
