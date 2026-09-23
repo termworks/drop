@@ -39,7 +39,134 @@ import (
 // always means the same thing.
 //
 // The first line says which it is: "cast", "share <who> <dir>", "mount <declaration>",
-// "pair <code> <name>", "via <device> <protocol>", or "held".
+// "pair <code> <name>", "via <device> <protocol>", "held", or "arrivals".
+
+// hosts is everything a local connection may ask this node for.
+type hosts struct {
+	casts  *castHost
+	shares *shareHost
+	put    *mountHost
+	offers *pairHost
+	held   *dial.Kept
+	rung   *bell
+}
+
+// bell tells whoever on this machine is listening that something landed.
+//
+// An interface open beside the daemon is a second process: what arrives lands in the daemon, and
+// without this the conversation on screen is the one that was there when it was opened.
+type bell struct {
+	mu        sync.Mutex
+	listening map[chan struct{}]struct{}
+}
+
+func newBell() *bell { return &bell{listening: make(map[chan struct{}]struct{})} }
+
+// ring never waits: a listener that has not caught up already has a ring pending, and one means the
+// same as ten.
+func (b *bell) ring() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for at := range b.listening {
+		knock(at)
+	}
+}
+
+func (b *bell) listen() (<-chan struct{}, func()) {
+	at := make(chan struct{}, 1)
+	b.mu.Lock()
+	b.listening[at] = struct{}{}
+	b.mu.Unlock()
+
+	return at, func() {
+		b.mu.Lock()
+		delete(b.listening, at)
+		b.mu.Unlock()
+	}
+}
+
+// arrivalLine is what the daemon writes each time the bell rings.
+const arrivalLine = "landed"
+
+// hearDaemon knocks for everything the daemon says landed, and listens again when it comes back
+// after a restart.
+func hearDaemon(ctx context.Context, arriving chan struct{}) {
+	for ctx.Err() == nil {
+		_ = listenDaemon(ctx, arriving)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func listenDaemon(ctx context.Context, arriving chan struct{}) error {
+	path, err := castSocket()
+	if err != nil {
+		return err
+	}
+	conn, err := dialLocal(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
+
+	if err := writeLocal(conn, "arrivals\n"); err != nil {
+		return err
+	}
+	reading := bufio.NewReader(conn)
+	first, err := readLocalLine(reading)
+	if err != nil {
+		return err
+	}
+	if said := strings.TrimSpace(first); said != "ok" {
+		return fmt.Errorf("the node said %q", said)
+	}
+
+	// Anything may have landed while nobody was listening.
+	knock(arriving)
+	for {
+		if _, err := readLocalLine(reading); err != nil {
+			return err
+		}
+		knock(arriving)
+	}
+}
+
+// takeArrivals writes a line whenever something lands, for as long as whoever asked stays connected.
+func takeArrivals(ctx context.Context, rung *bell, conn net.Conn) error {
+	if rung == nil {
+		return writeLocal(conn, "no this node rings for nobody\n")
+	}
+	at, stop := rung.listen()
+	defer stop()
+
+	if err := writeLocal(conn, "ok\n"); err != nil {
+		return err
+	}
+
+	// The listener going away is the only way this ends, and a read is how that is seen.
+	gone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, conn)
+		close(gone)
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-gone:
+			return nil
+		case <-at:
+			if err := writeLocal(conn, "%s\n", arrivalLine); err != nil {
+				return nil
+			}
+		}
+	}
+}
 
 // pairHost is the pairing offer open on this node, if any.
 //
@@ -493,7 +620,7 @@ func (s *localServer) Close() error {
 }
 
 // hostLocal listens for whatever on this machine wants to act as this node.
-func hostLocal(ctx context.Context, server *localServer, casts *castHost, shares *shareHost, put *mountHost, offers *pairHost, held *dial.Kept) error {
+func hostLocal(ctx context.Context, server *localServer, h hosts) error {
 	var waiting time.Duration
 	connections := make(chan struct{}, maxLocalConnections)
 
@@ -522,7 +649,7 @@ func hostLocal(ctx context.Context, server *localServer, casts *castHost, shares
 		accepted := conn
 		if !startBounded(connections, func() {
 			defer func() { _ = accepted.Close() }()
-			if err := takeLocal(ctx, casts, shares, put, offers, held, accepted); err != nil {
+			if err := takeLocal(ctx, h, accepted); err != nil {
 				fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 			}
 		}) {
@@ -564,7 +691,7 @@ func takeCast(ctx context.Context, host *castHost, from io.Reader, conn net.Conn
 }
 
 // takeLocal reads what this connection is for and does it.
-func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mountHost, offers *pairHost, held *dial.Kept, conn net.Conn) error {
+func takeLocal(ctx context.Context, h hosts, conn net.Conn) error {
 	reading := bufio.NewReader(conn)
 
 	if err := conn.SetReadDeadline(time.Now().Add(localHelloWithin)); err != nil {
@@ -579,30 +706,33 @@ func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 	what, rest, _ := strings.Cut(strings.TrimSpace(first), " ")
 	switch what {
 	case "cast":
-		return takeCast(ctx, casts, reading, conn)
+		return takeCast(ctx, h.casts, reading, conn)
 
 	case "share":
-		return takeShare(ctx, shares, conn, rest)
+		return takeShare(ctx, h.shares, conn, rest)
 
 	case "mount":
-		return takeMount(ctx, put, conn, rest)
+		return takeMount(ctx, h.put, conn, rest)
 
 	case "unmount":
-		return takeUnmount(put, conn, rest)
+		return takeUnmount(h.put, conn, rest)
 
 	case "pair":
 		code, as, machine, err := offerAsked(rest)
 		if err != nil {
 			return err
 		}
-		return takeOffer(ctx, offers, conn, code, as, machine)
+		return takeOffer(ctx, h.offers, conn, code, as, machine)
 
 	case "via":
 		name, alpn, _ := strings.Cut(rest, " ")
-		return takeVia(ctx, held, conn, name, alpn)
+		return takeVia(ctx, h.held, conn, name, alpn)
 
 	case "held":
-		return takeHeld(held, conn)
+		return takeHeld(h.held, conn)
+
+	case "arrivals":
+		return takeArrivals(ctx, h.rung, conn)
 	}
 	return fmt.Errorf("a local connection asked for %q, which is nothing", what)
 }

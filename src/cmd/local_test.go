@@ -252,7 +252,7 @@ func TestLocalRequestSurvivesDeadlineResetFailure(t *testing.T) {
 		answered <- err
 	}()
 
-	if err := takeLocal(t.Context(), nil, nil, nil, nil, nil, resetFailConn{client}); err != nil {
+	if err := takeLocal(t.Context(), hosts{}, resetFailConn{client}); err != nil {
 		t.Fatalf("a complete local request was discarded: %v", err)
 	}
 	if err := <-answered; err != nil {

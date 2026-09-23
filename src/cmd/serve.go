@@ -152,8 +152,12 @@ func runServe(parent context.Context, quiet bool) error {
 	// held up for as long as the command that asked for it is connected.
 	put := newMountHost(cfg.Mounts, known)
 	offers := newPairHost(n)
+	// And an interface open beside this hears what lands here, so its screen keeps up.
+	rung := newBell()
+	doing.noticed = rung.ring
 	go func() {
-		if err := hostLocal(ctx, local, casts, shares, put, offers, held); err != nil {
+		h := hosts{casts: casts, shares: shares, put: put, offers: offers, held: held, rung: rung}
+		if err := hostLocal(ctx, local, h); err != nil {
 			fmt.Fprintf(os.Stderr, "drop: local control unavailable: %v\n", err)
 		}
 	}()

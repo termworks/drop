@@ -156,6 +156,11 @@ func runTUI(parent context.Context) error {
 
 	go holding(ctx, pinned, held)
 
+	// With the daemon holding the address, what arrives lands there rather than here.
+	if !n.Own() {
+		go hearDaemon(ctx, arriving)
+	}
+
 	program := tea.NewProgram(
 		tui.New(&running{node: n, lan: lan, ears: ears, arriving: arriving, held: held, known: known}),
 		tea.WithAltScreen(),
