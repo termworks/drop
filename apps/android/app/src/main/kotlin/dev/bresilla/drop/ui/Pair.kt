@@ -239,7 +239,7 @@ private fun TakeCode(given: String?, paired: (String) -> Unit) {
         }
         Spacer(Modifier.height(20.dp))
         Text(
-            "On the computer run drop peer pair, or open Show my code on the other phone, then scan what it shows.",
+            "On the computer run drop peer pair, or open My code on the other phone, then scan what it shows.",
             style = MaterialTheme.typography.bodyLarge,
             textAlign = TextAlign.Center,
         )
