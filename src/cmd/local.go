@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -757,7 +758,9 @@ func hostLocal(ctx context.Context, server *localServer, h hosts) error {
 		accepted := conn
 		if !startBounded(connections, func() {
 			defer func() { _ = accepted.Close() }()
-			if err := takeLocal(ctx, h, accepted); err != nil {
+			// Whoever asked going away before the answer is theirs to worry about, not an error here:
+			// a command interrupted with ctrl-c is the ordinary way one of these ends.
+			if err := takeLocal(ctx, h, accepted); err != nil && !errors.Is(err, syscall.EPIPE) && !errors.Is(err, syscall.ECONNRESET) {
 				fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 			}
 		}) {
