@@ -50,6 +50,12 @@ func newPeerListCmd() *cobra.Command {
 				fmt.Println("nothing known yet: run `drop peer pair` to link a machine")
 				return nil
 			}
+			// As wide as the longest name, so one a phone chose for itself does not push its row
+			// out of line with the rest.
+			names, people := 12, 12
+			for _, e := range entries {
+				names, people = max(names, len(e.Name)), max(people, len(e.Person))
+			}
 			for _, e := range entries {
 				state := "known"
 				if e.Paired() {
@@ -58,7 +64,7 @@ func newPeerListCmd() *cobra.Command {
 				if e.Trusted {
 					state += ", trusted"
 				}
-				fmt.Printf("  %-16s %-16s %-12s %s\n", e.Name, state, e.Person, e.ID)
+				fmt.Printf("  %-*s  %-15s  %-*s  %s\n", names, e.Name, state, people, e.Person, e.ID)
 			}
 			return nil
 		},
