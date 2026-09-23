@@ -178,13 +178,13 @@ type pairHost struct {
 	as   string
 	// node is this daemon's endpoint, so a code being shown can publish where to find it.
 	node   *node.Node
-	paired chan proto.Pairing
+	paired chan pairAttempt
 }
 
 func newPairHost(n *node.Node) *pairHost { return &pairHost{node: n} }
 
 // open puts a code up for answering, and hands back what to wait on.
-func (h *pairHost) open(code, as string) (<-chan proto.Pairing, error) {
+func (h *pairHost) open(code, as string) (<-chan pairAttempt, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -193,7 +193,7 @@ func (h *pairHost) open(code, as string) (<-chan proto.Pairing, error) {
 	}
 
 	h.code, h.as = code, as
-	h.paired = make(chan proto.Pairing, 1)
+	h.paired = make(chan pairAttempt, 1)
 	return h.paired, nil
 }
 
@@ -212,18 +212,35 @@ func (h *pairHost) asking() (string, string) {
 	return h.code, h.as
 }
 
-// answered says somebody completed the pairing.
-func (h *pairHost) answered(p proto.Pairing) {
+// answered hands a pairing to whoever is showing the code, and waits until it is written down: the
+// far end is answered only after that, so what it opens next is met by somebody who knows it.
+func (h *pairHost) answered(p proto.Pairing) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	waiting := h.paired
+	h.mu.Unlock()
 
-	if h.paired == nil {
-		return
+	if waiting == nil {
+		return errors.New("no code is being shown")
 	}
+	attempt := pairAttempt{pairing: p, filed: make(chan error, 1)}
 	select {
-	case h.paired <- p:
+	case waiting <- attempt:
 	default:
+		return errors.New("another device is pairing with this code")
 	}
+
+	select {
+	case err := <-attempt.filed:
+		return err
+	case <-time.After(localHelloWithin):
+		return errors.New("the pairing was not written down in time")
+	}
+}
+
+// pairAttempt is a pairing on its way to the address book, and how its answerer hears it landed.
+type pairAttempt struct {
+	pairing proto.Pairing
+	filed   chan error
 }
 
 // castHost is the terminal being cast through this node, if any.
@@ -966,12 +983,14 @@ func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as st
 		return nil
 	case <-gone:
 		return nil
-	case p := <-waiting:
-		if err := record(p, as, machine); err != nil {
+	case at := <-waiting:
+		err := record(at.pairing, as, machine)
+		at.filed <- err
+		if err != nil {
 			_ = writeLocal(conn, "failed %v\n", err)
 			return err
 		}
-		return writeLocal(conn, "paired %s %s\n", nameOf(p, as), p.Peer)
+		return writeLocal(conn, "paired %s %s\n", nameOf(at.pairing, as), at.pairing.Peer)
 	}
 }
 

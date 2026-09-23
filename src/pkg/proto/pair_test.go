@@ -2,8 +2,11 @@ package proto
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -139,7 +142,7 @@ func TestAPeerClaimingSomebodyElsesIdIsRefused(t *testing.T) {
 		_, _, _ = conn.ReadFrame()
 	}()
 
-	if _, err := AnswerPairing(ours, host, caller, "host", nil); err == nil {
+	if _, err := AnswerPairing(ours, host, caller, "host", nil, nil); err == nil {
 		t.Fatal("a device paired under an id it does not hold")
 	}
 }
@@ -159,7 +162,7 @@ func TestPairingKeepsTheIdTheTransportProved(t *testing.T) {
 	}
 	answered := make(chan answer, 1)
 	go func() {
-		p, err := AnswerPairing(two, b, a, "host", nil)
+		p, err := AnswerPairing(two, b, a, "host", nil, nil)
 		answered <- answer{p, err}
 	}()
 
@@ -235,7 +238,7 @@ func TestAPairingRequestThatSaysNothingIsNotHeldForever(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := AnswerPairing(silent, host, caller, "host", nil)
+		_, err := AnswerPairing(silent, host, caller, "host", nil, nil)
 		done <- err
 	}()
 
@@ -281,7 +284,7 @@ func TestAPairingAnswerThatCannotBeWrittenIsNotHeldForever(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := AnswerPairing(blocked, host, caller, "host", nil)
+		_, err := AnswerPairing(blocked, host, caller, "host", nil, nil)
 		done <- err
 	}()
 
@@ -292,5 +295,60 @@ func TestAPairingAnswerThatCannotBeWrittenIsNotHeldForever(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("AnswerPairing is still writing to a peer that reads nothing")
+	}
+}
+
+// A pairing the offering side refuses has to fail on the joining side as well. Answering first and
+// deciding afterwards left the joiner with an address book entry for somebody who had thrown the
+// attempt away, and every message it sent after that was refused as a stranger's.
+func TestARefusedPairingFailsOnBothSides(t *testing.T) {
+	a, b := testEndpointID(t, 1), testEndpointID(t, 2)
+
+	one, two := net.Pipe()
+	defer func() { _ = one.Close() }()
+	defer func() { _ = two.Close() }()
+
+	refused := make(chan error, 1)
+	go func() {
+		_, err := AnswerPairing(two, b, a, "host", nil, func(Pairing) error {
+			return errors.New("that is not the code being shown")
+		})
+		refused <- err
+	}()
+
+	_, err := Pair(one, a, b, "laptop", []byte("wrong"), nil)
+	if err == nil || !strings.Contains(err.Error(), "not the code being shown") {
+		t.Fatalf("the joining side was not told it was refused: %v", err)
+	}
+	if err := <-refused; err == nil {
+		t.Fatal("the offering side reported a refused pairing as a success")
+	}
+}
+
+// What the offering side accepts is handed over before the far end hears it paired, so it can be
+// written down first.
+func TestAcceptSeesThePairingBeforeTheFarEndDoes(t *testing.T) {
+	a, b := testEndpointID(t, 1), testEndpointID(t, 2)
+
+	one, two := net.Pipe()
+	defer func() { _ = one.Close() }()
+	defer func() { _ = two.Close() }()
+
+	var accepted atomic.Bool
+	go func() {
+		_, _ = AnswerPairing(two, b, a, "host", nil, func(p Pairing) error {
+			if p.Peer != a {
+				return fmt.Errorf("accepting a pairing with %s", p.Peer)
+			}
+			accepted.Store(true)
+			return nil
+		})
+	}()
+
+	if _, err := Pair(one, a, b, "laptop", []byte("proof"), nil); err != nil {
+		t.Fatalf("Pair(): %v", err)
+	}
+	if !accepted.Load() {
+		t.Fatal("the joining side finished before the offering side had accepted")
 	}
 }

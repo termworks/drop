@@ -217,15 +217,13 @@ func runServe(parent context.Context, quiet bool) error {
 				return
 			}
 
-			p, err := proto.AnswerPairing(s, n.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(n)))
-			if err != nil {
-				return
-			}
-			if !hmac.Equal(p.Proof, codeProof(code, from, n.ID())) {
-				fmt.Fprintf(os.Stderr, "drop: %s tried to pair without the code\n", node.Brief(from))
-				return
-			}
-			offers.answered(p)
+			_, _ = proto.AnswerPairing(s, n.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(n)), func(p proto.Pairing) error {
+				if !hmac.Equal(p.Proof, codeProof(code, from, n.ID())) {
+					fmt.Fprintf(os.Stderr, "drop: %s tried to pair without the code\n", node.Brief(from))
+					return errNotTheCode
+				}
+				return offers.answered(p)
+			})
 		},
 	}
 

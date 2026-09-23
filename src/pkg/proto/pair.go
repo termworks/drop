@@ -166,18 +166,24 @@ func deriveSecret(self, other node.ID, selfNonce, otherNonce []byte) ([]byte, er
 //
 // from is the id the transport authenticated for the far end. It is the id that is paired with;
 // what the message says about itself is only checked against it.
-func AnswerPairing(s Stream, self, from node.ID, name string, addrs []string) (Pairing, error) {
+//
+// accept is handed the outcome before the far end hears anything, and the far end is answered only
+// if it returns nil. That order is the point: what it accepts is written down here before the other
+// device learns it paired, so whatever that device opens next is met by somebody who knows it — and
+// what it refuses is refused to the other device too, rather than the other device believing it
+// paired with somebody who threw the attempt away.
+func AnswerPairing(s Stream, self, from node.ID, name string, addrs []string, accept func(Pairing) error) (Pairing, error) {
 	var out Pairing
 	conn := wire.NewConn(s)
 	err := conn.WithIdle(settleIn, func() error {
 		var err error
-		out, err = answerPairing(conn, self, from, name, addrs)
+		out, err = answerPairing(conn, self, from, name, addrs, accept)
 		return err
 	})
 	return out, err
 }
 
-func answerPairing(conn *wire.Conn, self, from node.ID, name string, addrs []string) (Pairing, error) {
+func answerPairing(conn *wire.Conn, self, from node.ID, name string, addrs []string, accept func(Pairing) error) (Pairing, error) {
 	var out Pairing
 	theirs, err := readPairMsg(conn)
 	if err != nil {
@@ -192,11 +198,21 @@ func answerPairing(conn *wire.Conn, self, from node.ID, name string, addrs []str
 	if _, err := rand.Read(mine.Nonce); err != nil {
 		return out, err
 	}
+
+	out, err = finishPairing(self, from, theirs, mine)
+	if err != nil {
+		return out, err
+	}
+	if accept != nil {
+		if err := accept(out); err != nil {
+			_ = conn.WriteFrame(wire.KindReject, wire.Reject{Reason: err.Error()}.Encode())
+			return out, err
+		}
+	}
 	if err := conn.WriteFrame(wire.KindOpen, mine.encode()); err != nil {
 		return out, err
 	}
-
-	return finishPairing(self, from, theirs, mine)
+	return out, nil
 }
 
 // Pair runs the exchange from the initiating side. from is the id the transport authenticated for
@@ -238,6 +254,13 @@ func readPairMsg(conn *wire.Conn) (pairMsg, error) {
 	kind, body, err := conn.ReadFrame()
 	if err != nil {
 		return pairMsg{}, err
+	}
+	if kind == wire.KindReject {
+		reject, err := wire.DecodeReject(body)
+		if err != nil {
+			return pairMsg{}, err
+		}
+		return pairMsg{}, fmt.Errorf("the other device refused: %s", reject.Reason)
 	}
 	if kind != wire.KindOpen {
 		return pairMsg{}, fmt.Errorf("expected frame kind %d, got %d", wire.KindOpen, kind)

@@ -36,133 +36,19 @@ import (
 )
 
 func runTUI(parent context.Context) error {
-	pinned, err := book.Load()
-	if err != nil {
-		return err
-	}
-
-	doing := &doings{
-		pinned:  pinned,
-		trouble: func(text string) { fmt.Fprintf(os.Stderr, "drop: %s\n", text) },
-	}
-	known := doing.serving()
-	defer doing.stop()
-
-	cfg, err := conf.Load(known)
-	if err != nil {
-		return err
-	}
-	defer cfg.Close()
-	if _, err := cfg.Grants(); err != nil {
-		return err
-	}
-	if err := unlock(cfg); err != nil {
-		return err
-	}
-	cfg.Apply()
-
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	n, err := node.Start(ctx)
+	back, down, err := Interface(ctx, Hooks{
+		Trouble: func(text string) { fmt.Fprintf(os.Stderr, "drop: %s\n", text) },
+	})
 	if err != nil {
 		return err
 	}
-	defer func() { _ = n.Close() }()
-
-	lan, _ := discovery.StartLAN(ctx, n)
-	startRendezvous(ctx, n)
-
-	// Depth one, and a full channel is left alone: the signal carries nothing, so one pending
-	// knock means the same as ten, and a device that says a great deal at once still redraws once.
-	arriving := make(chan struct{}, 1)
-
-	// What arrives while the interface is open belongs in the conversation the same way it would
-	// with the daemon running, and the screen is nudged so it is drawn as it happens.
-	doing.cfg = cfg
-	doing.noticed = func() { knock(arriving) }
-
-	// One connection per device, kept for as long as the interface is open.
-	held := dial.Hold(n, lan, finder(n))
-	defer held.Close()
-
-	// The interface serves while it is open, so a device that pairs with it can reach it — and
-	// so what arrives lands in a conversation rather than being refused.
-	answer := map[string]func(node.ID, *iroh.Stream){
-		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
-			defer func() { _ = s.Close() }()
-
-			// Re-read before answering, the way the daemon does. Pairing happens while this is
-			// open — from this very interface — and without it a device that just paired stays a
-			// stranger until the interface is restarted, which looks exactly like pairing failing.
-			if err := pinned.Refresh(); err != nil {
-				return
-			}
-
-			_ = proto.Handle(ctx, s, from, proto.Policy{
-				Mounts:     cfg.Mounts,
-				Archetypes: known,
-				Allow:      accepting(pinned, false),
-				Who:        whoIs(pinned),
-				Moved:      moving(pinned, func(string) {}),
-				Refused:    noting(pinned),
-				Asked:      taking(),
-			})
-		},
-		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
-			defer func() { _ = s.Close() }()
-			if err := pinned.Refresh(); err != nil {
-				return
-			}
-
-			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
-				return greeting(pinned, cfg.Mounts, known, from, badge)
-			}, moving(pinned, func(string) {}))
-		},
-	}
-
-	// The same as the daemon: answer whatever a device opens on a connection we made, keep the
-	// ones it opens to us, and push what is waiting the moment it appears. Without this the
-	// interface is only reachable by devices that can be dialled, and every message it sends costs
-	// a handshake instead of a stream.
-	//
-	// A snapshot of its own, never the map the listener is given: the listener adds and removes
-	// protocols while this reads, and a map being written to while it is read takes the program
-	// down. What a connection we dialled carries is a session or a hello, both of which are here.
-	dialled := make(map[string]func(node.ID, *iroh.Stream), len(answer))
-	for alpn, handle := range answer {
-		dialled[alpn] = handle
-	}
-
-	held.Serving(ctx, func(from node.ID, alpn string, s *iroh.Stream) {
-		if handle, ok := dialled[alpn]; ok {
-			handle(from, s)
-		}
-	})
-
-	ears := listenKeeping(ctx, n, answer, held, func(from node.ID) {
-		if err := pinned.Refresh(); err != nil {
-			return
-		}
-
-		entry, known := pinned.ByID(from)
-		if !known || !entry.Paired() {
-			return
-		}
-		if _, err := deliverOver(ctx, onlyHeld{held: held}, entry, "/chat", "chat"); err == nil {
-			knock(arriving)
-		}
-	})
-
-	go holding(ctx, pinned, held)
-
-	// With the daemon holding the address, what arrives lands there rather than here.
-	if !n.Own() {
-		go hearDaemon(ctx, arriving)
-	}
+	defer down()
 
 	program := tea.NewProgram(
-		tui.New(&running{node: n, lan: lan, ears: ears, arriving: arriving, held: held, known: known}),
+		tui.New(back),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 		tea.WithContext(ctx),
@@ -491,6 +377,28 @@ func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
 	invite := ticketFor(l.node.ID(), code)
 	done := make(chan string, 1)
 
+	// Whoever takes the code dials this identity, and the daemon is what answers it. A code this
+	// process answered for itself would be one nobody could ever reach.
+	if !l.node.Own() {
+		said, closeOffer, err := offerAtDaemon(ctx, code, "", false)
+		if err != nil {
+			return "", nil, err
+		}
+		go func() {
+			defer closeOffer()
+			select {
+			case <-ctx.Done():
+			case line, ok := <-said:
+				what, rest, _ := strings.Cut(line, " ")
+				if ok && what == "paired" {
+					name, _, _ := strings.Cut(rest, " ")
+					done <- name
+				}
+			}
+		}()
+		return invite, done, nil
+	}
+
 	// Findable by whoever holds the ticket, for as long as it is being offered. The rendezvous
 	// cannot help: it publishes under a key derived from a shared secret, and pairing is what
 	// makes one. Without this a code only ever reaches the same wire.
@@ -503,27 +411,27 @@ func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
 	l.ears.Handle(node.ALPNPair, func(from node.ID, s *iroh.Stream) {
 		defer func() { _ = s.Close() }()
 
-		p, err := proto.AnswerPairing(s, l.node.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(l.node)))
-		if err != nil {
-			return
-		}
-		// The far end has to prove it was given the code, not merely the address.
-		if !hmac.Equal(p.Proof, codeProof(code, from, l.node.ID())) {
-			return
-		}
+		_, _ = proto.AnswerPairing(s, l.node.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(l.node)), func(p proto.Pairing) error {
+			// The far end has to prove it was given the code, not merely the address.
+			if !hmac.Equal(p.Proof, codeProof(code, from, l.node.ID())) {
+				return errNotTheCode
+			}
 
-		// Written down the one way every pairing is written down. A name that is already somebody
-		// else's is refused here as it is on the command line, rather than handed, with every rule
-		// that mentions it, to whoever paired last.
-		name, err := filed(p, "", false)
-		if err != nil {
-			return
-		}
+			// Written down the one way every pairing is written down, and before the far end is
+			// answered. A name that is already somebody else's is refused here as it is on the
+			// command line, rather than handed, with every rule that mentions it, to whoever paired
+			// last.
+			name, err := filed(p, "", false)
+			if err != nil {
+				return err
+			}
 
-		select {
-		case done <- name:
-		default:
-		}
+			select {
+			case done <- name:
+			default:
+			}
+			return nil
+		})
 	})
 
 	go func() {

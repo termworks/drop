@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -115,6 +116,9 @@ func asAddrs(written []string) ([]netip.AddrPort, error) {
 	return out, nil
 }
 
+// errNotTheCode is what a device that did not hold the code is told.
+var errNotTheCode = errors.New("that is not the code being shown")
+
 // codeProof binds an attempt to the code, so a device that was not invited cannot complete one.
 func codeProof(code string, initiator, responder node.ID) []byte {
 	mac := hmac.New(sha256.New, []byte(code))
@@ -167,32 +171,48 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, m
 
 	showTicket(invite, wait)
 
-	paired := make(chan proto.Pairing, 1)
+	// One pairing per code. The first that proves it holds the code is written down, and only then
+	// answered, so whatever it opens straight afterwards is met by somebody who knows it.
+	type filedAs struct {
+		p    proto.Pairing
+		name string
+	}
+	var once sync.Mutex
+	taken := false
+	paired := make(chan filedAs, 1)
 	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){
 		node.ALPNPair: func(from node.ID, s *iroh.Stream) {
 			defer func() { _ = s.Close() }()
 
-			p, err := proto.AnswerPairing(s, n.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(n)))
-			if err != nil {
-				return
-			}
-			// The far end has to prove it was given the code, not merely the address.
-			if !hmac.Equal(p.Proof, codeProof(code, from, n.ID())) {
-				fmt.Fprintf(os.Stderr, "drop: %s tried to pair without the code\n", node.Brief(from))
-				return
-			}
-			select {
-			case paired <- p:
-			default:
-			}
+			_, _ = proto.AnswerPairing(s, n.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(n)), func(p proto.Pairing) error {
+				// The far end has to prove it was given the code, not merely the address.
+				if !hmac.Equal(p.Proof, codeProof(code, from, n.ID())) {
+					fmt.Fprintf(os.Stderr, "drop: %s tried to pair without the code\n", node.Brief(from))
+					return errNotTheCode
+				}
+
+				once.Lock()
+				defer once.Unlock()
+				if taken {
+					return errors.New("that code has already been used")
+				}
+				name, err := filed(p, as, machine)
+				if err != nil {
+					return err
+				}
+				taken = true
+				paired <- filedAs{p: p, name: name}
+				return nil
+			})
 		},
 	})
 
 	select {
 	case <-ctx.Done():
 		return fmt.Errorf("nobody paired within %s", wait)
-	case p := <-paired:
-		return record(p, as, machine)
+	case at := <-paired:
+		announce(at.p, at.name, machine)
+		return nil
 	}
 }
 
@@ -370,51 +390,17 @@ func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as stri
 
 // offerThroughDaemon asks the running node to show a code, and waits for somebody to take it.
 func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration, machine bool) error {
-	path, err := castSocket()
+	said, done, err := offerAtDaemon(ctx, code, as, machine)
 	if err != nil {
-		return errNoDaemon
+		return err
 	}
-
-	conn, err := dialLocal(ctx, path)
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return errNoDaemon
-	}
-	defer func() { _ = conn.Close() }()
+	defer done()
 
 	id, err := node.LocalID()
 	if err != nil {
 		return err
 	}
-
-	// A dash for a name that was not given, and always a kind, so the line is three fields.
-	name := as
-	if name == "" {
-		name = "-"
-	}
-	kind := "person"
-	if machine {
-		kind = "machine"
-	}
-	if err := writeLocal(conn, "pair %s %s %s\n", code, name, kind); err != nil {
-		return err
-	}
-
 	showTicket(ticketFor(id, code), wait)
-
-	// The daemon answers with one line: who paired, or why nobody did. Closing this connection is
-	// what takes the code back down, so a cancelled command does not leave one live.
-	said := make(chan string, 1)
-	go func() {
-		line, err := readLocalLine(bufio.NewReader(conn))
-		if err != nil {
-			close(said)
-			return
-		}
-		said <- strings.TrimSpace(line)
-	}()
 
 	select {
 	case <-ctx.Done():
@@ -453,4 +439,47 @@ func showTicket(invite string, wait time.Duration) {
 	fmt.Printf("\n  ticket:  %s\n", invite)
 	fmt.Printf("  link:    %s\n\n", tickets.Link(invite))
 	fmt.Printf("run this on the other machine, within %s:\n\n  drop peer pair %s\n\nwaiting...\n", wait, invite)
+}
+
+// offerAtDaemon asks the running node to show a code, and yields the one line it answers with: who
+// paired, or why nobody did. What it hands back closes the connection, which is what takes the code
+// back down, so an offer that is abandoned does not leave one live.
+func offerAtDaemon(ctx context.Context, code, as string, machine bool) (<-chan string, func(), error) {
+	path, err := castSocket()
+	if err != nil {
+		return nil, nil, errNoDaemon
+	}
+
+	conn, err := dialLocal(ctx, path)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+		return nil, nil, errNoDaemon
+	}
+
+	// A dash for a name that was not given, and always a kind, so the line is three fields.
+	name := as
+	if name == "" {
+		name = "-"
+	}
+	kind := "person"
+	if machine {
+		kind = "machine"
+	}
+	if err := writeLocal(conn, "pair %s %s %s\n", code, name, kind); err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+
+	said := make(chan string, 1)
+	go func() {
+		line, err := readLocalLine(bufio.NewReader(conn))
+		if err != nil {
+			close(said)
+			return
+		}
+		said <- strings.TrimSpace(line)
+	}()
+	return said, func() { _ = conn.Close() }, nil
 }
