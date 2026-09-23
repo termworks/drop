@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -153,6 +154,10 @@ func acceptLent(conn net.Conn, name string) (*lent, error) {
 	said, err := readLocalReply(conn, reading)
 	if err != nil {
 		_ = conn.Close()
+		// The node is still trying, and the device is what has not answered.
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return nil, fmt.Errorf("%s did not answer", name)
+		}
 		return nil, fmt.Errorf("asking this node to reach %s: %w", name, err)
 	}
 

@@ -181,7 +181,7 @@ func sendMessage(parent context.Context, o opening, archetype string, kind byte,
 	if err != nil {
 		// Queued is not lost. A device that is off is the normal case, so this says where the
 		// message is rather than only what went wrong.
-		fmt.Printf("queued for %s: %v\n", o.entry.Name, err)
+		fmt.Printf("queued, and sent when %s is reachable (%v)\n", o.entry.Name, err)
 		return nil
 	}
 	if sent > 0 {
