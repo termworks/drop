@@ -45,11 +45,18 @@ func Start(configDir, dataDir, name string, events Events) (*Node, error) {
 		}
 	}
 
-	os.Setenv("XDG_CONFIG_HOME", configDir)
-	os.Setenv("XDG_DATA_HOME", dataDir)
-	os.Setenv("HOME", filepath.Dir(configDir))
+	where := map[string]string{
+		"XDG_CONFIG_HOME": configDir,
+		"XDG_DATA_HOME":   dataDir,
+		"HOME":            filepath.Dir(configDir),
+	}
 	if name != "" {
-		os.Setenv("DROP_NAME", name)
+		where["DROP_NAME"] = name
+	}
+	for key, value := range where {
+		if err := os.Setenv(key, value); err != nil {
+			return nil, fmt.Errorf("setting %s: %w", key, err)
+		}
 	}
 
 	ctx, stop := context.WithCancel(context.Background())

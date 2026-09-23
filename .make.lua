@@ -267,14 +267,14 @@ make.recipe{
 make.recipe{
   name = "fmt",
   desc = "format the source",
-  run = function() sh.gofmt("-w", "-s", "src") end,
+  run = function() sh.gofmt("-w", "-s", "src", "apps") end,
 }
 
 make.recipe{
   name = "fmt-check",
   desc = "fail if anything is unformatted",
   run = function()
-    local listed = oslo.run{ "gofmt", "-l", "-s", "src", capture = true }
+    local listed = oslo.run{ "gofmt", "-l", "-s", "src", "apps", capture = true }
     assert(listed.ok, "gofmt could not read the source")
     local unformatted = (listed.out or ""):gsub("%s+$", "")
     assert(unformatted == "", "gofmt needed on: " .. unformatted:gsub("\n", " "))
