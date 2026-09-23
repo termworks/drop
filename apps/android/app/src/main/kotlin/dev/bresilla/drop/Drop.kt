@@ -88,6 +88,11 @@ object Drop {
         _trouble.value = null
     }
 
+    /** Says the node itself could not be brought up, which every screen should show rather than wait on. */
+    fun failed(text: String) {
+        _trouble.value = text
+    }
+
     /**
      * The public Downloads folder where the platform lets an app write there by path, and the app's
      * own corner of shared storage where it does not. Go puts a drop/ folder under whichever it is.

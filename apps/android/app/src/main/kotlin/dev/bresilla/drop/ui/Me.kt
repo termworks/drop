@@ -1,5 +1,8 @@
 package dev.bresilla.drop.ui
 
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -14,6 +17,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -27,6 +31,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,6 +44,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import dev.bresilla.drop.Drop
 import dev.bresilla.drop.Me
 import dev.bresilla.drop.Settings
@@ -102,6 +109,7 @@ fun MeScreen(back: () -> Unit) {
                     }
                 }
             }
+            item { Awake() }
             item { Section("Identity") }
             items(
                 listOfNotNull(
@@ -131,4 +139,49 @@ fun MeScreen(back: () -> Unit) {
             }
         }
     }
+}
+
+/**
+ * Whether the phone lets drop keep its connections with the screen off. Left to itself, Android puts
+ * an app to sleep after a while, and a node that is asleep is one nobody can reach.
+ */
+@Composable
+private fun Awake() {
+    val context = LocalContext.current
+    val power = context.getSystemService(PowerManager::class.java)
+    var awake by remember { mutableStateOf(power.isIgnoringBatteryOptimizations(context.packageName)) }
+
+    // Asked again whenever this screen comes back, because the answer is given in the system's own.
+    val owner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(owner) {
+        val watching = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) awake = power.isIgnoringBatteryOptimizations(context.packageName)
+        }
+        owner.lifecycle.addObserver(watching)
+        onDispose { owner.lifecycle.removeObserver(watching) }
+    }
+
+    Section("Staying reachable")
+    ListItem(
+        modifier = Modifier
+            .padding(horizontal = 12.dp, vertical = 3.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(enabled = !awake) {
+                val ask = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                    .setData(Uri.parse("package:${context.packageName}"))
+                runCatching { context.startActivity(ask) }
+            },
+        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        headlineContent = { Text(if (awake) "Reachable with the screen off" else "May be put to sleep") },
+        supportingContent = {
+            Text(
+                if (awake) {
+                    "Android lets drop keep its connections while the phone is idle."
+                } else {
+                    "Tap to let drop stay connected while the phone is idle, so messages and files arrive when they are sent."
+                },
+            )
+        },
+        trailingContent = { if (awake) Icon(Icons.Filled.CheckCircle, null, tint = MaterialTheme.colorScheme.tertiary) },
+    )
 }

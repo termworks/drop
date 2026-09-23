@@ -33,8 +33,8 @@ class NodeService : Service() {
             .setOngoing(true)
             .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(ONGOING, running, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(ONGOING, running, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
             startForeground(ONGOING, running)
         }
@@ -42,7 +42,9 @@ class NodeService : Service() {
         Drop.onSaid = { from, text -> tell(this, from, text) }
         // Off the main thread: starting a node reads keys and binds sockets, which is long enough for
         // Android to call the app frozen.
-        thread(name = "drop-start") { runCatching { Drop.start(applicationContext) } }
+        thread(name = "drop-start") {
+            runCatching { Drop.start(applicationContext) }.onFailure { Drop.failed("drop could not start: ${it.message}") }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY

@@ -8,9 +8,12 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
-    <!-- Staying reachable while the app is not in front, and saying when something arrives. -->
+    <!-- Staying reachable while the app is not in front, across a restart, and saying when
+         something arrives. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Reading a pairing code off another screen. -->
@@ -62,10 +65,26 @@
             android:screenOrientation="fullSensor"
             tools:replace="android:screenOrientation" />
 
+        <!-- Special use, not data sync: Android 15 stops a data sync service after six hours a
+             day, and a node is supposed to be reachable all of them. -->
         <service
             android:name=".NodeService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="a peer-to-peer node that stays reachable to the devices paired with it" />
+        </service>
+
+        <!-- Back up after the phone restarts, without anybody opening the app. -->
+        <receiver
+            android:name=".Boot"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- What arrives, opened in whatever app handles it. -->
         <provider
