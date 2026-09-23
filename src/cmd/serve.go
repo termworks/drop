@@ -156,7 +156,7 @@ func runServe(parent context.Context, quiet bool) error {
 	rung := newBell()
 	doing.noticed = rung.ring
 	go func() {
-		h := hosts{casts: casts, shares: shares, put: put, offers: offers, held: held, rung: rung}
+		h := hosts{casts: casts, shares: shares, put: put, offers: offers, held: held, rung: rung, lan: lan}
 		if err := hostLocal(ctx, local, h); err != nil {
 			fmt.Fprintf(os.Stderr, "drop: local control unavailable: %v\n", err)
 		}

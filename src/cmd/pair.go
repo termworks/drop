@@ -222,6 +222,21 @@ func joinPairing(parent context.Context, ticket, as string, wait time.Duration, 
 	ctx, cancel := context.WithTimeout(parent, wait)
 	defer cancel()
 
+	// Through the daemon when one is running: it is the node the other device will reach from now
+	// on, so it is the one whose address the pairing has to carry.
+	name, id, called, err := joinThroughDaemon(ctx, ticket, as, machine, at)
+	if err == nil {
+		fmt.Printf("\npaired with %s\n  %s\n", name, id)
+		if called != "" && !machine {
+			fmt.Printf("  a machine of theirs, called %q\n", called)
+		}
+		fmt.Printf("\neither device can now reach the other by name.\n")
+		return nil
+	}
+	if !errors.Is(err, errNoDaemon) {
+		return err
+	}
+
 	trace("node.Start")
 	n, err := node.Start(ctx)
 	if err != nil {

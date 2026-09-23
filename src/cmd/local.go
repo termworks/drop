@@ -24,6 +24,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/cast"
 	"github.com/bresilla/drop/src/pkg/dial"
+	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/made"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
@@ -49,6 +50,96 @@ type hosts struct {
 	offers *pairHost
 	held   *dial.Kept
 	rung   *bell
+	lan    *discovery.LAN
+}
+
+// joinWithin bounds how long this node spends taking somebody's ticket.
+const joinWithin = 2 * time.Minute
+
+// takeJoin takes a ticket as this node: "join <ticket> <as> <person|machine> [host:port,…]".
+//
+// A command that took it with a node of its own would pair from that node's address, which is gone
+// the moment the command exits, and the far end would go on dialling somewhere nobody answers.
+func takeJoin(ctx context.Context, h hosts, conn net.Conn, rest string) error {
+	fields := strings.Fields(rest)
+	if len(fields) < 3 {
+		return writeLocal(conn, "failed a join needs a ticket, a name and a kind\n")
+	}
+	if h.offers == nil || h.offers.node == nil {
+		return writeLocal(conn, "failed this node does not pair\n")
+	}
+	ticket, as, machine := fields[0], fields[1], fields[2] == "machine"
+	if as == "-" {
+		as = ""
+	}
+	var at []string
+	if len(fields) > 3 {
+		at = strings.Split(fields[3], ",")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, joinWithin)
+	defer cancel()
+
+	p, name, err := join(ctx, h.offers.node, h.lan, ticket, as, machine, at)
+	if err != nil {
+		return writeLocal(conn, "failed %s\n", strings.ReplaceAll(err.Error(), "\n", " "))
+	}
+	fmt.Printf("  paired with %s\n", name)
+	return writeLocal(conn, "paired %s %s %s\n", name, p.Peer, p.Machine)
+}
+
+// joinThroughDaemon asks the running node to take a ticket, and says who it paired with, their id,
+// and what they call the machine of theirs that answered.
+func joinThroughDaemon(ctx context.Context, ticket, as string, machine bool, at []string) (string, string, string, error) {
+	path, err := castSocket()
+	if err != nil {
+		return "", "", "", errNoDaemon
+	}
+	conn, err := dialLocal(ctx, path)
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", "", "", ctx.Err()
+		}
+		return "", "", "", errNoDaemon
+	}
+	defer func() { _ = conn.Close() }()
+	defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
+
+	name := as
+	if name == "" {
+		name = "-"
+	}
+	kind := "person"
+	if machine {
+		kind = "machine"
+	}
+	line := fmt.Sprintf("join %s %s %s", strings.TrimSpace(ticket), name, kind)
+	if len(at) > 0 {
+		line += " " + strings.Join(at, ",")
+	}
+	if err := writeLocal(conn, "%s\n", line); err != nil {
+		return "", "", "", err
+	}
+
+	said, err := readLocalLine(bufio.NewReader(conn))
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", "", "", ctx.Err()
+		}
+		return "", "", "", fmt.Errorf("the node stopped answering: %w", err)
+	}
+	what, rest, _ := strings.Cut(strings.TrimSpace(said), " ")
+	switch what {
+	case "paired":
+		parts := strings.SplitN(rest, " ", 3)
+		for len(parts) < 3 {
+			parts = append(parts, "")
+		}
+		return parts[0], parts[1], parts[2], nil
+	case "failed":
+		return "", "", "", errors.New(rest)
+	}
+	return "", "", "", fmt.Errorf("the node said %q", said)
 }
 
 // bell tells whoever on this machine is listening that something landed.
@@ -750,6 +841,9 @@ func takeLocal(ctx context.Context, h hosts, conn net.Conn) error {
 
 	case "arrivals":
 		return takeArrivals(ctx, h.rung, conn)
+
+	case "join":
+		return takeJoin(ctx, h, conn, rest)
 	}
 	return fmt.Errorf("a local connection asked for %q, which is nothing", what)
 }

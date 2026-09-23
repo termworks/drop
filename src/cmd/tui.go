@@ -448,6 +448,11 @@ func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
 // second implementation: when it was one, the two drifted and pairing worked from one and not the
 // other.
 func (l *running) Join(ctx context.Context, ticket string) (string, error) {
+	// The daemon, when it holds the address, is what the other device reaches afterwards.
+	if !l.node.Own() {
+		name, _, _, err := joinThroughDaemon(ctx, ticket, "", false, nil)
+		return name, err
+	}
 	_, name, err := join(ctx, l.node, l.lan, ticket, "", false, nil)
 	return name, err
 }
