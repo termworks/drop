@@ -178,3 +178,18 @@ func TestAFailureNamesWhatWasTriedAndNoMore(t *testing.T) {
 		t.Errorf("%d addresses named, want %d:\n%s", n, mostNamed, said)
 	}
 }
+
+// With a relay in the set, the relay is dialled first, so a lone nearby address gets a try of its
+// own ahead of it: a device on the same wire should not be reached through a third party.
+func TestALoneNearbyAddressGoesAheadOfTheRelay(t *testing.T) {
+	relay, err := netaddr.ParseRelayURL("https://relay.example.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := advertising(14, "10.0.0.1:47777").WithRelayURL(relay)
+
+	got := worthTrying(at, entryFor(14))
+	if len(got) != 1 || got[0] != netip.MustParseAddrPort("10.0.0.1:47777") {
+		t.Fatalf("tried %v on its own, want the one nearby address", got)
+	}
+}

@@ -95,6 +95,14 @@ func Start(ctx context.Context) (*Node, error) {
 	if rendezvous {
 		opts = append(opts, iroh.WithRelayMode(mode), iroh.WithNetReport())
 
+		// The relay first, when a dial is handed both. The transport tries its targets one after
+		// another and gives each address the whole handshake timeout, so a public address that
+		// never answers — our own NAT's, for a phone behind it — cost five seconds before the relay
+		// was tried at all. The direct addresses stay candidates, and the connection moves onto
+		// one as soon as it answers. A machine on the same wire is still reached without a relay:
+		// the dial gives its nearby addresses a head start of their own.
+		opts = append(opts, iroh.WithRelayFirstDial())
+
 		// Being able to turn somebody else's id into an address. Costs them nothing and is what
 		// lets a ticket be pasted between two machines that are not on the same wire.
 		if lookup, err := resolving(); err == nil {
