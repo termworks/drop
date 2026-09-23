@@ -107,10 +107,17 @@ jobs:
         with:
           name: nix-community
 
-      - name: Build the APK
-        run: nix develop .#android --command bash -c 'gomobile init && gradle --project-dir apps/android --no-daemon -PdropVersion="$(sed -n "s/.*version[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" src/main.go)" assembleRelease'
+      # The same flags as `make aar`; the runner has no oslo to run that recipe.
+      - name: Bind the Go core
+        run: |
+          mkdir -p apps/android/libs
+          nix develop .#android --command bash -c 'gomobile init && gomobile bind -target android/arm64,android/arm,android/amd64 -androidapi 26 -trimpath -ldflags "-s -w" -o apps/android/libs/mobile.aar ./apps/android/mobile'
         env:
           CGO_ENABLED: '1'
+          GOFLAGS: -buildvcs=false
+
+      - name: Build the APK
+        run: nix develop .#android --command bash -c 'gradle --project-dir apps/android --no-daemon -PdropVersion="$(sed -n "s/.*version[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" src/main.go)" assembleRelease'
 
       - name: Name it
         id: apk
