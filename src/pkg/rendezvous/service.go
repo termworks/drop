@@ -100,6 +100,12 @@ func (s *Service) Run(ctx context.Context) {
 
 	moved := node.Moved(ctx, s.node)
 
+	// Somebody paired a moment ago, from this process or from another one, has nothing to find this
+	// device under until a record is published for the two of them. Waiting for the slow round
+	// would leave a new pairing unable to reach it for minutes.
+	pinned, _ := book.Load()
+	pairs := pairedIn(pinned)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -107,11 +113,31 @@ func (s *Service) Run(ctx context.Context) {
 		case <-moved:
 			say(false)
 		case <-watch.C:
+			if pinned != nil && pinned.Refresh() == nil {
+				if now := pairedIn(pinned); now != pairs {
+					pairs = now
+					say(true)
+					continue
+				}
+			}
 			say(false)
 		case <-slow.C:
 			say(true)
 		}
 	}
+}
+
+// pairedIn is who a book holds a pair secret for, as something comparable.
+func pairedIn(b *book.Book) string {
+	if b == nil {
+		return ""
+	}
+	var ids []string
+	for _, entry := range b.Paired() {
+		ids = append(ids, entry.ID.String())
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ",")
 }
 
 // whereNow is an address as something comparable, so a change can be noticed.
