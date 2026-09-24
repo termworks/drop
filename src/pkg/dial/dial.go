@@ -11,9 +11,9 @@ import (
 	"errors"
 	"net/netip"
 	"reflect"
+	"strings"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/netaddr"
 
@@ -206,7 +206,7 @@ func openFresh(ctx context.Context, n *node.Node, at netaddr.EndpointAddr, alpn 
 
 	for range spentTickets {
 		conn, s, err = open(ctx, n, at, alpn)
-		if !errors.Is(err, quic.Err0RTTRejected) {
+		if !refusedEarly(err) {
 			return conn, s, err
 		}
 	}
@@ -334,11 +334,25 @@ func open(ctx context.Context, n *node.Node, at netaddr.EndpointAddr, alpn strin
 
 	s, err := conn.OpenStreamSync(ctx)
 	if err != nil {
+		if refusedEarly(err) {
+			// The far end restarted since its ticket was cached, and refused it. The handshake goes
+			// on regardless and ends with a fresh ticket; closing at once threw that away, so the
+			// next attempt presented the same stale one and was refused the same way, every time,
+			// until this process restarted.
+			select {
+			case <-time.After(freshTicket):
+			case <-ctx.Done():
+			}
+		}
 		_ = conn.Close()
 		return nil, nil, err
 	}
 	return conn, s, nil
 }
+
+// freshTicket is how long a refused connection is kept for the ticket that replaces the refused
+// one: a round trip, with room for one through a relay.
+const freshTicket = 750 * time.Millisecond
 
 // Addrs reads the addresses a book wrote down, dropping any it cannot make sense of rather than
 // refusing the lot.
@@ -368,4 +382,12 @@ func usable(f Finder) bool {
 		return !at.IsNil()
 	}
 	return true
+}
+
+// refusedEarly says the far end refused a resumed session, which is how a device that restarted
+// answers a ticket from before. The transport's own error for it lives in a package of its own that
+// nothing outside may import, and it is not handed on, so it is known by what it says: matched as a
+// value, it never matched at all, and the retry this exists for never happened.
+func refusedEarly(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "0-RTT rejected")
 }

@@ -2,6 +2,7 @@ package dial
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"strings"
@@ -191,5 +192,17 @@ func TestALoneNearbyAddressGoesAheadOfTheRelay(t *testing.T) {
 	got := worthTrying(at, entryFor(14))
 	if len(got) != 1 || got[0] != netip.MustParseAddrPort("10.0.0.1:47777") {
 		t.Fatalf("tried %v on its own, want the one nearby address", got)
+	}
+}
+
+// The transport's refusal of a resumed session has to be recognised however it is wrapped, or a
+// device that restarted is unreachable from here until this process restarts too.
+func TestARefusedResumptionIsRecognised(t *testing.T) {
+	refused := fmt.Errorf("connecting to peer: %w", errors.New("0-RTT rejected"))
+	if !refusedEarly(refused) {
+		t.Fatal("a refused resumption was taken for some other failure")
+	}
+	if refusedEarly(errors.New("timeout: no recent network activity")) || refusedEarly(nil) {
+		t.Fatal("something else was taken for a refused resumption")
 	}
 }
