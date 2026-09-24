@@ -75,13 +75,20 @@ fun AddMachineScreen(go: (Screen) -> Unit, back: () -> Unit) {
 
     LaunchedEffect(Unit) { me = Drop.self() }
 
+    // One scan for both steps: a pairing code pairs, and a code from vouch or export makes this phone theirs.
     val take: (String) -> Unit = { code ->
         taking = true
         failed = null
         scope.launch {
-            Drop.take(context.applicationContext, code)
-                .onSuccess { told = it; me = Drop.self() }
-                .onFailure { failed = it.message }
+            if (Drop.owning(code)) {
+                Drop.take(context.applicationContext, code)
+                    .onSuccess { told = it; me = Drop.self() }
+                    .onFailure { failed = it.message }
+            } else {
+                Drop.call { it.join(code.trim()) }
+                    .onSuccess { told = "Paired with $it. Now run the vouch command there, and scan what it shows." }
+                    .onFailure { failed = it.message }
+            }
             taking = false
         }
     }
@@ -109,10 +116,11 @@ fun AddMachineScreen(go: (Screen) -> Unit, back: () -> Unit) {
             item {
                 WayIn(
                     title = "Make this phone one of your machines",
-                    says = "On a computer that has your key, run one of these and take the code it shows:",
+                    says = "On a computer that has your key, pair with this phone, then have it vouch for it. Scan each code it shows:",
                     commands = listOf(
+                        "drop peer pair" to "first, unless it knows this phone already",
                         "drop me user vouch $phone" to "your key stays on the computer",
-                        "drop me user export" to "copies your key onto this phone",
+                        "drop me user export" to "or instead: copies your key onto this phone",
                     ),
                 ) {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -153,9 +161,9 @@ fun AddMachineScreen(go: (Screen) -> Unit, back: () -> Unit) {
         AlertDialog(
             onDismissRequest = { pasting = false },
             title = { Text("Paste the code") },
-            text = { OutlinedTextField(pasted, { pasted = it }, placeholder = { Text("drop://badge/…") }, textStyle = Mono) },
+            text = { OutlinedTextField(pasted, { pasted = it }, placeholder = { Text("a pairing ticket, or drop://badge/…") }, textStyle = Mono) },
             confirmButton = {
-                TextButton(enabled = Drop.owning(pasted), onClick = { pasting = false; take(pasted) }) { Text("Take it") }
+                TextButton(enabled = pasted.isNotBlank(), onClick = { pasting = false; take(pasted) }) { Text("Take it") }
             },
             dismissButton = { TextButton(onClick = { pasting = false }) { Text("Cancel") } },
         )

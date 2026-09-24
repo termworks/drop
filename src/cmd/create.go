@@ -81,7 +81,7 @@ func newCreateCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&text, "set", nil, "key=value, a setting read as text")
 	cmd.Flags().StringArrayVar(&on, "flag", nil, "key[=false], a setting read as on or off")
 	cmd.Flags().StringArrayVar(&lists, "list", nil, "key=a,b, a setting read as a list of names")
-	cmd.Flags().StringVar(&access, "access", "", "paired, trusted, anyone, or a comma-separated list of names")
+	cmd.Flags().StringVar(&access, "access", "", "me (the default), trusted, paired, anyone, or a comma-separated list of names")
 	cmd.Flags().StringVar(&visible, "visible", "", "who may see it without being able to open it")
 	cmd.Flags().IntVar(&version, "version", 0, "which revision of the type answers; the newest by default")
 	cmd.Flags().BoolVar(&sharing, "share", false, "several machines hold it, and whoever the rule names may join it")
@@ -377,10 +377,10 @@ func admitting(access, visible string) (made.Access, error) {
 	var out made.Access
 
 	switch access {
-	case "":
-		// Refused rather than defaulted. A setting may name a command to run, so a namespace put
-		// up without saying who may reach it is one anybody paired could run.
-		return out, errors.New("this needs --access: paired, trusted, anyone, or who may reach it by name")
+	case "", ns.LevelMe:
+		// Your own machines, unless it says otherwise. A setting may name a command to run, so a
+		// namespace put up without saying who may reach it is one nobody else can.
+		out.Named = []string{ns.LevelMe}
 	case "paired":
 		out.Paired = true
 	case "trusted":

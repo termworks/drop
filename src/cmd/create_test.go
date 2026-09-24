@@ -58,9 +58,13 @@ func TestRemovingADeclaredPathIsRefusedAndNamesTheConfig(t *testing.T) {
 
 // A namespace put up without saying who may reach it is one anybody paired could open, and a
 // setting may name a command to run.
-func TestCreatingWithNoAccessIsRefused(t *testing.T) {
-	if _, err := admitting("", ""); err == nil {
-		t.Fatal("a namespace was created open to whoever the default is")
+func TestCreatingWithNoAccessIsYoursAlone(t *testing.T) {
+	got, err := admitting("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Paired || got.Trusted || got.Anyone || len(got.Named) != 1 || got.Named[0] != ns.LevelMe {
+		t.Fatalf("a namespace created without --access is open to %+v, want only me", got)
 	}
 }
 

@@ -269,9 +269,10 @@ func (l *running) Mine() ([]proto.Served, error) {
 	}
 	defer cfg.Close()
 
-	// Described as they would be to somebody paired, which is what the list is for: seeing what a
-	// device you have paired with would be offered.
-	return proto.Describe(cfg.Mounts, l.known, ns.Caller{ID: l.id.String(), Paired: true}), nil
+	// Described as they are to you, from any machine of yours: this machine's own list and the one
+	// another machine of yours is handed are the same list.
+	me := ns.Caller{ID: l.id.String(), UserName: ns.LevelMe, Paired: true, Trusted: true}
+	return proto.Describe(cfg.Mounts, l.known, me), nil
 }
 
 // Send copies files to a path on the far device.

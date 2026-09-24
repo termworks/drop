@@ -184,3 +184,28 @@ func TestACarriedKeyMakesTheSameUser(t *testing.T) {
 		t.Fatal("a machine holding the key does not sign quietly")
 	}
 }
+
+func TestAMachineThatChangesHandsTwiceLeavesToItsOwnKey(t *testing.T) {
+	aMachine(t)
+	own, err := Public()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for _, owner := range []ssh.Signer{somebody(t), somebody(t)} {
+		signed, sig, err := Sign(owner, deviceID(), "phone", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := Wear(signed, sig, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Leave(); err != nil {
+		t.Fatalf("Leave(): %v", err)
+	}
+	back, err := Public()
+	if err != nil || !same(back, own) {
+		t.Fatalf("left to %v, %v; want the key it started with", back, err)
+	}
+}

@@ -107,7 +107,7 @@ Most of the time what somebody wants to say is one step on a ladder, not a rule:
 
 | step | who opens it |
 |---|---|
-| `me` | your own machines, and nobody else |
+| `me` | your own machines, and nobody else — the default for what drop serves itself |
 | `trusted` | you, and the people you trust |
 | `paired` | everybody you paired with |
 | `anyone` | whoever knows this machine's id |

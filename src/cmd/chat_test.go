@@ -21,12 +21,15 @@ import (
 
 // A chat serves one namespace while it is open, and a namespace with no rule on it is one nobody
 // can ever reach. Without a rule every line sent to a device running `drop chat` is refused.
-func TestAChatNamespaceTakesAPairedDevice(t *testing.T) {
+func TestAChatNamespaceTakesYourOwnMachines(t *testing.T) {
 	table := chatMounts((&doings{}).talking())
 
-	who := ns.Caller{ID: idFor(1).String(), Name: "bo", Paired: true}
-	if ok, why := table.Admits("/chat", who); !ok {
-		t.Fatalf("a paired device was refused the chat: %s", why)
+	mine := ns.Caller{ID: idFor(1).String(), Name: "laptop", UserName: ns.LevelMe, Paired: true, Trusted: true}
+	if ok, why := table.Admits("/chat", mine); !ok {
+		t.Fatalf("a machine of yours was refused the chat: %s", why)
+	}
+	if ok, _ := table.Admits("/chat", ns.Caller{ID: idFor(4).String(), Name: "bo", UserName: "bo", Paired: true}); ok {
+		t.Error("somebody merely paired was let into the chat before being let in")
 	}
 	if ok, _ := table.Admits("/chat", ns.Caller{ID: idFor(2).String()}); ok {
 		t.Error("a stranger was let into the chat")

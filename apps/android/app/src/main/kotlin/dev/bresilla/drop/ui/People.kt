@@ -211,13 +211,13 @@ private fun Nobody(go: (Screen) -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = { go(Screen.Pair()) }) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = { go(Screen.Pair()) }, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Filled.QrCode2, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Show my code")
                 }
-                FilledTonalButton(onClick = { go(Screen.Pair(scan = true)) }) {
+                FilledTonalButton(onClick = { go(Screen.Pair(scan = true)) }, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Filled.QrCodeScanner, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Scan theirs")

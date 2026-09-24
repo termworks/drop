@@ -64,11 +64,10 @@ type Config struct {
 // talk, and somewhere to hand a link. Nothing that walks a directory, runs a command or shares a
 // terminal, because those are decisions.
 //
-// Open to anyone paired, because a default that serves nobody is not a default — it is a node
-// that appears broken until its owner finds out a rule was needed. Pairing is already the
-// deliberate act: nothing reaches these without one.
+// Open to your own machines and nobody else. Somebody paired is somebody recognised, not somebody
+// let in: opening a path to them is a step taken for that path, from the interface or the config.
 func Default(known *arch.Registry) *Config {
-	open := ns.Access{AnyPaired: true}
+	open := ns.Access{Named: []string{ns.LevelMe}}
 
 	cfg := &Config{Mounts: ns.NewTable(), known: known}
 	// A share rather than a files: something may be put in the inbox, and nothing taken out of it.

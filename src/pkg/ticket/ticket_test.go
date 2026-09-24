@@ -1,6 +1,7 @@
 package ticket
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -129,29 +130,41 @@ func TestWideKeepsItsQuietZone(t *testing.T) {
 	}
 }
 
-// Painted must say the same thing as Render, in colours the terminal's theme cannot turn around.
+// Painted must say the same thing as Render, cell for cell, in colours no theme can repaint.
 func TestPaintedIsRenderInFixedColours(t *testing.T) {
 	code, err := Code(sample)
 	if err != nil {
 		t.Fatalf("encoding: %v", err)
 	}
 
+	// What each painted cell stands for in Render.
+	means := map[string]string{
+		"\x1b[48;2;0;0;0m ":                       "\u2588",
+		"\x1b[48;2;255;255;255m ":                 " ",
+		"\x1b[38;2;0;0;0;48;2;255;255;255m\u2580": "\u2580",
+		"\x1b[38;2;255;255;255;48;2;0;0;0m\u2580": "\u2584",
+	}
+	cell := regexp.MustCompile("\x1b\\[[0-9;]*m.")
+
 	plain := strings.Split(strings.TrimRight(Render(code), "\n"), "\n")
 	painted := strings.Split(strings.TrimRight(Painted(code), "\n"), "\n")
 	if len(painted) != len(plain) {
 		t.Fatalf("%d painted lines, %d plain", len(painted), len(plain))
 	}
-
 	for i, line := range painted {
-		inner, found := strings.CutPrefix(line, "\x1b[38;5;16;48;5;231m")
-		if !found {
-			t.Fatalf("line %d does not start by fixing its colours: %q", i, line)
-		}
-		inner, found = strings.CutSuffix(inner, "\x1b[0m")
+		inner, found := strings.CutSuffix(line, "\x1b[0m")
 		if !found {
 			t.Fatalf("line %d leaves its colours on: %q", i, line)
 		}
-		if inner != plain[i] {
+		var said strings.Builder
+		for _, one := range cell.FindAllString(inner, -1) {
+			as, ok := means[one]
+			if !ok {
+				t.Fatalf("line %d paints a cell in something other than exact black and white: %q", i, one)
+			}
+			said.WriteString(as)
+		}
+		if said.String() != plain[i] {
 			t.Fatalf("line %d says something else than Render does", i)
 		}
 	}
