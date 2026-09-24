@@ -121,7 +121,7 @@ func runServe(parent context.Context, quiet bool) error {
 	defer held.Close()
 
 	go keepConnected(ctx, held, pinned)
-	go keepBadged(ctx, held)
+	go keepMine(ctx, held)
 	go backlog(ctx, pinned, held, cfg.Mounts)
 
 	// What an archetype calls when something in one of its namespaces moves. Set here rather than

@@ -400,6 +400,9 @@ func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as stri
 	}
 
 	name, err := filed(p, as, machine)
+	if err == nil {
+		nudgeMine()
+	}
 	return p, name, err
 }
 
