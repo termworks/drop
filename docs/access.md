@@ -101,6 +101,29 @@ admitted the moment it presented a badge naming a person you knew — which it d
 connection — while the interface still drew it as refused. Admitting matches a bare name only for a
 caller with no person, which is right for letting somebody in and wrong for keeping them out.
 
+## Steps
+
+Most of the time what somebody wants to say is one step on a ladder, not a rule:
+
+| step | who opens it |
+|---|---|
+| `me` | your own machines, and nobody else |
+| `trusted` | you, and the people you trust |
+| `paired` | everybody you paired with |
+| `anyone` | whoever knows this machine's id |
+
+```console
+drop path level /term me          # only my machines
+drop path level /term config      # back to what the config says
+drop path level /term             # which step it stands on
+```
+
+A step is kept with the grants, so it takes effect on the next connection, and it replaces what the
+config says about who — the config's own names included; the names granted and revoked still count.
+The phone sets the same steps, on its own paths and on every machine of yours: a machine answers a
+request to read or change its steps only from a machine whose badge carries its own user's key.
+Whether others may see a path and ask for it is set beside the step.
+
 ## What a rule cannot be satisfied by
 
 **What machine somebody is sitting at.** A [plate](identity.md) says which hardware a caller's drop

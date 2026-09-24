@@ -28,10 +28,10 @@ slices and interfaces, so a list crosses as JSON and a callback is an interface 
 
 | | |
 |---|---|
-| **Chats, People, This phone** | three tabs: every conversation newest first with what is unread, everybody paired, and what the phone itself serves |
+| **Chats, People, Mine, Settings** | four tabs: every conversation newest first with what is unread; the people you paired with; this phone and your other machines; and the phone itself — its name, whose it is, its folder |
 | **People, then machines, then paths** | the same arrangement as the terminal interface: who, which of their machines, and what it shares with you |
 | **Pairing** | *My code* shows a QR the other device scans; *Scan* reads one off a computer's `drop peer pair` or another phone. A `drop://pair/…` link opens the same way |
-| **One of your machines** | *This phone → Whose phone this is* takes the code `drop me user vouch <phone>` or `drop me user export` shows on your computer, and the phone is filed under *me* from then on. See [pairing](../../docs/pairing.md#making-a-machine-yours) |
+| **One of your machines** | *Mine → Add a machine* takes the code `drop me user vouch <phone>` or `drop me user export` shows on your computer, and the phone is filed under *me* from then on. See [pairing](../../docs/pairing.md#making-a-machine-yours) |
 | **Chat** | a conversation per machine, kept on both devices. A message for a machine that is off waits and goes when it is back; a message that arrives while the app is closed is a notification |
 | **Files** | walk a `files` namespace, download with a tap, upload into one that is writable; long press to rename or delete, and make folders in it |
 | **Notes** | read a `note` where it is held, or keep a copy on the phone and write in it. The copy is kept level with every other machine holding it, and what two people type at once is merged |
@@ -39,9 +39,9 @@ slices and interfaces, so a list crosses as JSON and a callback is an interface 
 | **Handing things over** | *Send files* to a machine's share, or share from any app on the phone and pick who it goes to. A file that arrives is a notification that opens it |
 | **Terminals and streams** | a `tty` or a `stream` drawn live, in colour. One you may type into is resized for the phone, with the keys a phone keyboard lacks |
 | **Links** | send one to a machine's `link` namespace and it opens over there |
-| **Access** | ask to be let into a path you can see but not open. On the phone's own paths: who may reach each, let in or keep out, answer who asked, and see who knocked without being paired |
-| **A person** | trust them, see and undo what the phone let them into or kept them out of, or forget them |
-| **The phone's folder** | let paired devices browse `Download/drop/`, and put things in it when that is on too |
+| **Who may open what** | every path on this phone and on each of your machines stands on a step — only me, trusted, paired, public — changed from the phone and applied on that machine at once, with people let in or kept out by name, answers to who asked, and whether others may see it and ask. On somebody else's machine, ask to be let into what you can see but not open |
+| **People and machines** | add a person by code, trust them, rename how they are filed, or remove them with all their machines; rename or remove one machine; make this phone one of yours, or leave |
+| **The phone's folder** | share `Download/drop/` as a path called phone, whose step is chosen like any other, and let them put things in it when that is on too |
 
 What arrives lands in `Download/drop/`, where the phone's own file manager finds it.
 

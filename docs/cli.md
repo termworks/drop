@@ -64,6 +64,7 @@ drop path rm <path>            take one off
 drop path join <address>       hold a namespace somebody else holds
 drop path grant <path> <who>   let somebody reach it
 drop path revoke <path> <who>  stop them
+drop path level <path> [step]   only me, trusted, paired, anyone, or back to the config
 drop path ask <address>        ask to be let into a path you can see and cannot open
 drop path requests             who has asked
 drop path share <address>      take a file from somebody, once

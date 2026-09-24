@@ -89,7 +89,7 @@ make it one of yours, and both end in a code the other machine takes:
 ```console
 drop me user vouch phone      # your key stays here; the phone wears a badge this signs
 drop me user export           # the key itself, carried over; the phone signs its own
-drop me user take <code>      # on the other machine, or This phone → Whose phone this is
+drop me user take <code>      # on the other machine, or Mine → Add a machine on the phone
 ```
 
 | | |
