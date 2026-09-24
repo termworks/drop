@@ -111,6 +111,20 @@ func KeepHandle(h Handle) error {
 	if err != nil {
 		return err
 	}
+	return KeepHandleFor(pub, h)
+}
+
+// HardwareKey is the public key of a credential in a security key, as OpenSSH writes one: what a
+// phone that read the credential off a YubiKey knows, which is its application and its key.
+func HardwareKey(application string, key []byte) (ssh.PublicKey, error) {
+	if len(key) != 32 || application == "" {
+		return nil, errors.New("that is not an ed25519 credential")
+	}
+	return ssh.ParsePublicKey(ssh.Marshal(skKey{Type: ssh.KeyAlgoSKED25519, Key: key, Application: application}))
+}
+
+// KeepHandleFor writes down the handle of a key held in a security key, when it is that key's.
+func KeepHandleFor(pub ssh.PublicKey, h Handle) error {
 	sk, ok := skOf(pub)
 	if !ok || sk.Application != h.Application || len(h.Handle) == 0 {
 		return nil
