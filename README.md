@@ -2,30 +2,34 @@
 
 Peer-to-peer file transfer, chat, folders and terminals. No account, no server holding your data.
 
-Every device is added the same way, whoever's it is. After that either can reach the other from
-anywhere — across NATs, across networks, through address changes.
+Three things, and one verb for each: **people**, the **machines** each of them has, and the
+**topics** on each machine — a chat, a folder, an inbox, a note, a terminal.
 
 ```console
-drop add                     # on one device: prints a code, and a QR of it
-drop add qxwo-e62y-k3fa      # on the other: the two are added to each other
-
-drop promote laptop          # make a device you added one of your machines
-drop join laptop             # or make this machine one of its
+drop person add              # show your code; they take it with `drop person add <code>`
+drop machine add             # show a code a new machine of yours takes the same way
+drop topic add work folder   # a folder called work on this machine; --on adds it to another
 ```
 
-Promoting and joining are asked of the other device, whose person says yes with the same number on
-both screens. A device on the same network needs no code at all: `drop nearby` lists it, and the
-phone shows it under *Nearby*. Your machines keep one address book between them — whatever you add,
-rename, trust or remove on one of them happens on all of them.
+A machine becomes yours because your key signs it, and only a machine holding that key can add one.
+The key is an SSH key you already have, or one in a YubiKey — `drop me key use ~/.ssh/id_ed25519` —
+and `drop me key` says which one you are. After that either device can reach the other from
+anywhere: across NATs, across networks, through address changes.
 
-The [Android app](apps/android/README.md) is the same node, with chat, files, and a live view of a
-terminal on the machine it is connected to.
+A device on the same network needs no code at all: `drop nearby` lists it, the phone shows it under
+*Nearby*, and its person says yes with the same number on both screens. Your machines keep one
+address book between them — whatever you add, rename, trust or remove on one of them happens on all
+of them.
+
+The [Android app](apps/android/README.md) is the same node and the same three screens, with chat,
+files, and a live view of a terminal on the machine it is connected to.
 
 ---
 
 ## A path is a thing, and what it is is up to you
 
-A machine serves **namespaces**: paths, each with a rule about who may reach it. What opening one
+A machine serves **namespaces** — the topics every screen shows: paths, each with a rule about who
+may reach it. What opening one
 *does* is its **archetype** — and the two are kept apart on purpose.
 
 ```lua
@@ -98,10 +102,10 @@ machines of different architectures.
 | [What names a machine](docs/identity.md) | identity from the hardware, several people on one machine, moving to another |
 | [Namespaces and archetypes](docs/namespaces.md) | an instance, a meaning, and the rule that keeps them apart |
 | [The wire](docs/wire.md) | frames, the opening, and the shape each archetype speaks afterwards |
-| [The command line](docs/cli.md) | one noun per group, and an address that reads right to left |
+| [The command line](docs/cli.md) | people, machines and topics, and an address that reads right to left |
 | [The archetypes](docs/archetypes.md) | share, files, chat, note, link, stream, tty — what each is for |
 | [Sharing a terminal](docs/terminal.md) | one shell and many watchers, the screen rather than a replay |
-| [The interface](docs/interface.md) | people, then machines, then paths — and managing somebody |
+| [The interface](docs/interface.md) | people, then machines, then topics — and managing somebody |
 | [One thing, several machines](docs/shared.md) | signed changes, merging, and how a history stays small |
 | [An archetype in Lua](docs/lua.md) | a plugin both ends load, and the sandbox it runs in |
 | [Access rules](docs/access.md) | the vocabulary, how it inherits, and what a refusal means |
@@ -137,8 +141,8 @@ systemctl --user enable --now drop
 **Use.**
 
 ```console
-drop                            the interface: a person, a machine, a path
-drop path ls bob:laptop         what they share with you
+drop                            the interface: a person, a machine, a topic
+drop topic ls bob:laptop        what they share with you
 drop connect bob:laptop:/chat   open whatever is there
 drop file get bob:laptop:/papers/thesis.pdf
 ```

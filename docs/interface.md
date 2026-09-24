@@ -4,18 +4,18 @@
 as the command line — everything one can do, the other can.
 
 ```console
-drop path ls beta     the command line: what beta shares with you
-drop                  the interface: pick a person, then a machine, then a path
+drop topic ls beta    the command line: what beta shares with you
+drop                  the interface: pick a person, then a machine, then a topic
 ```
 
-## People, then machines, then paths
+## People, then machines, then topics
 
-The first screen is **users**, not devices. A user is what everything else is written against:
+The first screen is **people**, not devices. A person is what everything else is written against:
 access rules name people, trust belongs to people, and a machine somebody buys next week is already
 covered by a rule that names them.
 
 ```
-╭─ users ──────────────────────────────────────────────────────────╮
+╭─ people ─────────────────────────────────────────────────────────╮
 │   ◈ me                                                2 machines │
 │   you — every machine your user key has signed                   │
 │   access = { "me" }   ·   2 reachable                            │
@@ -31,7 +31,7 @@ You are a user like any other: `me` holds this machine and every other one your 
 A device paired with `--machine` belongs to nobody, and nobody is a user called **anon** — so the
 screen stays one kind of thing rather than three.
 
-Enter a user to see their machines, enter a machine to see what it shares. Each path is drawn by its
+Enter a person to see their machines, enter a machine to see its topics. Each one is drawn by its
 archetype's own glyph and description, which is what `Note` in [namespaces](namespaces.md) is for: a
 namespace of a kind this build has never heard of still gets a row.
 
@@ -40,13 +40,16 @@ namespace of a kind this build has never heard of still gets a row.
 Every screen says along its bottom line what can be done on it, and **space** lays every action out
 as a menu to pick from — so nothing here has to be known to be found.
 
+The keys are the same on every level: **`a` adds what the screen lists**, `n` renames it, `x`
+removes it.
+
 | where | what you can do |
 |---|---|
-| users | `a` add a device (shows a code), `t` take the code another device shows, `m` manage somebody — or, on your own row, leave or start over — `n` rename them, `x` remove them |
+| people | `a` add a person (shows your code), `t` take the code somebody shows, `m` manage somebody — or, on your own row, your key, using your SSH key or YubiKey, leaving or starting over — `n` rename them, `x` remove them |
 | nearby | a device on this network: `enter` adds it, `o` makes it one of your machines, `i` makes this one one of its; its person says yes |
-| your machines | `n` rename one, `x` take it out of your machines, `a` add a device |
+| your machines | `a` add a machine (shows a code, and which key signs it), `n` rename one, `x` take it out of your machines |
 | somebody's machines | `o` make it one of your machines, `i` make this one one of its, `n` rename, `x` forget, `t` trust them, `m` manage them |
-| paths on a machine of yours | `w` who may open it — this machine or any other of yours |
+| topics on a machine of yours | `a` add a topic (a name, then its kind), `x` remove it, `w` who may open it — this machine or any other of yours |
 
 A device asking this one to connect is asked along the bottom line, wherever the interface is
 standing, with the number its screen shows too: `y` says yes, `n` says no.

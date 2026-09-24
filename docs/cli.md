@@ -1,13 +1,16 @@
 # The command line
 
-One noun per group. `me` is this machine, `peer` is the machines it knows, `path` is what it serves
-and who may reach it, `file` is what is inside a directory somebody shares. `connect` opens whatever
-is at an address, and `serve` stays up.
+Three things, and the same three words everywhere: **people**, the **machines** each of them has,
+and the **topics** on each machine — a chat, a folder, an inbox, a note, a terminal. Each is added,
+listed, renamed and removed the same way.
 
 ```console
-drop                    a full-screen interface: pick a device, then a path
-drop path ls beta       the same thing from the command line
+drop person add                show your code, for somebody to take
+drop machine add               show a code a new machine of yours takes
+drop topic add work folder     put a folder called work on this machine
 ```
+
+`drop` with nothing after it opens the full-screen interface, which is the same three levels.
 
 ## An address
 
@@ -27,34 +30,70 @@ a name. See [pairing](pairing.md).
 
 ## The groups
 
-**Adding a device**, whoever's it is, and then deciding what it is to you.
+**`drop person`** — you, and everybody you added.
 
 ```console
-drop add                       show a code and a QR for the other device
-drop add <code>                take the code another device shows
-drop promote <name>            make a device you added one of your machines
-drop join <name>               make this machine one of its machines
+drop person                    everybody, each with their machines; you first
+drop person add                show your code and a QR for them to take
+drop person add <code>         take the code they show
+drop person add <name>         ask a device on this network; its person says yes
+drop person trust <name>       the second, deliberate step: topics open to trusted open to them
+drop person rename <n> <new>   call somebody something else, on every machine of yours
+drop person rm <name>          remove them and every machine of theirs, everywhere
+```
+
+**`drop machine`** — your own machines.
+
+```console
+drop machine                   every machine of yours this one knows
+drop machine add               show a code; only a machine holding your key can
+drop machine add <code>        on the new machine: take it, and become yours
+drop machine add <name>        ask a device you know, or one on this network, to become yours
+drop machine add --key         hand the new machine your key, rather than a badge
+drop machine rename <n> <new>  call one of them something else
+drop machine rm <name>         take one out of yours, on every one of them
+drop machine renew             sign fresh badges for those running low, with a key in hardware
+```
+
+The code screen says which key signs the new machine, and the new machine says which key it now
+belongs to. A machine that only wears a badge cannot add another: `drop machine add` there says so,
+and points at a machine that holds the key.
+
+**`drop topic`** — what a machine offers.
+
+```console
+drop topic                     the topics on this machine
+drop topic ls <machine>        the topics on another one, yours or somebody's
+drop topic add <name> <kind>   add one here; --on <machine> adds it to another of yours
+drop topic rm <name>           take one away (--on works here too)
+drop topic who <name> [step]   who may open it: me, trusted, paired or anyone
+drop topic kinds               chat, inbox, folder, note, terminal, links, stream
+```
+
+A folder, inbox or note lives under `~/drop` on the machine it is added to, so adding one from a
+phone never needs the laptop's paths. A stream takes `--command`. A new topic opens only for you
+until `drop topic who` says otherwise.
+
+**`drop me key`** — who you are.
+
+```console
+drop me key                    your key: its fingerprint, and where it signs from
+drop me key use <file> --yes   be the SSH key at a file, or the YubiKey whose .pub it is
+```
+
+drop makes a key of its own on first run, so it works with nothing set up; `drop me key` says when
+that is the one in use. Being another key is a new you: your machines are added again under it.
+
+**`drop nearby`** — devices on this network nobody here has added yet.
+
+```console
 drop nearby                    devices on this network, and devices asking this one
 drop nearby pair <name>        add one without a code; its person says yes
 drop nearby mine <name>        make one of them yours, the same way
 drop nearby yes <name>         say yes to one asking this machine, or no
 ```
 
-Promoting and joining are asked of the other device; its person says yes, with the same number on
-both screens. A machine that wears a badge cannot sign one for another, so it has one of your
-machines that holds your key do the asking.
-
-**`drop machine`** — your own machines.
-
-```console
-drop machine add               show a code another machine joins you with
-drop machine add --key         and hand it your key, rather than a badge
-drop machine join <code>       on that machine: become yours
-drop machine ls                every machine of yours this one knows
-drop machine rename <n> <new>  call one of them something else here
-drop machine rm <name>         take one out of yours, on every one of them
-drop machine renew             sign fresh badges for those running low, with a key in hardware
-```
+Asking is answered on the other device, with the same number on both screens.
 
 **`drop me`** — this machine, and who it belongs to.
 
@@ -64,10 +103,6 @@ drop me machine                what names it, and what would change it
 drop me machine rebind         stop using a written-down key, be named by the hardware
 drop me machine migrate <id>   say this machine became another one
 drop me machine took <line>    on the new machine: take that statement up
-drop me user                   who this machine belongs to
-drop me user vouch <machine>   make a machine yours, keeping your key here
-drop me user export            your key as a code, to carry to another machine
-drop me user take <code>       on that machine: become yours from the code
 drop me vault                  whether what is kept on this disk is encrypted
 drop me leave                  take this machine back out of your machines
 drop me reset --yes            delete everything drop knows here, and start over
@@ -75,32 +110,8 @@ drop me passwd                 hash a password, to guard a path with
 drop me log [name]             a conversation, or all of them
 ```
 
-**`drop peer`** — the machines this one knows.
-
-```console
-drop peer pair                 print a code, to pair with somebody
-drop peer pair <code>          take one
-drop peer ls                   everything in the address book
-drop peer whois <name>         what this machine knows about another
-drop peer trust <name>         the second, deliberate step after pairing
-drop peer forget <name>        stop recognising it, immediately, and tell nobody
-```
-
-**`drop path`** — what this machine serves, and who may reach it.
-
-```console
-drop path ls [address]         what a machine serves — this one, or somebody else
-drop path create <path> <type> put a namespace up
-drop path rm <path>            take one off
-drop path join <address>       hold a namespace somebody else holds
-drop path grant <path> <who>   let somebody reach it
-drop path revoke <path> <who>  stop them
-drop path level <path> [step]   only me, trusted, paired, anyone, or back to the config
-drop path ask <address>        ask to be let into a path you can see and cannot open
-drop path requests             who has asked
-drop path share <address>      take a file from somebody, once
-drop path cast <address>       serve a terminal read from stdin as asciicast
-```
+The older spellings — `drop add`, `drop promote`, `drop join`, `drop peer …`, `drop path …`,
+`drop me user …` — still answer, and are left out of the help.
 
 **`drop file`** — what is inside a `files` namespace somebody shares.
 
