@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tmc/go-iroh/key"
 
 	"github.com/bresilla/drop/src/pkg/book"
@@ -2143,5 +2144,41 @@ func TestEscClearsAFilterBeforeGoingBack(t *testing.T) {
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.at == levelPaths {
 		t.Fatal("esc with nothing to clear did not go back")
+	}
+}
+
+// A far terminal wider than this window is cut at the edge, never wrapped: a wrapped row is one row
+// of somebody's program drawn across two, and nothing under it lines up after that.
+func TestAWideTerminalIsCutNotWrapped(t *testing.T) {
+	m := New(&fake{})
+	m.width, m.height = 104, 30
+
+	wide := strings.Repeat("x", 150)
+	drawn := m.canvas(wide+"\n"+wide+"\n"+wide, 150, 3, true)
+
+	rows := strings.Split(drawn, "\n")
+	if len(rows) != 3 {
+		t.Fatalf("three rows of a 150-wide terminal came out as %d lines", len(rows))
+	}
+	for i, row := range rows {
+		if got := ansi.StringWidth(row); got != m.viewWidth() {
+			t.Fatalf("row %d is %d wide in a %d-wide view", i, got, m.viewWidth())
+		}
+	}
+}
+
+// One narrower than this window is drawn at its own width, so where it ends can be seen.
+func TestANarrowTerminalIsDrawnAtItsOwnWidth(t *testing.T) {
+	m := New(&fake{})
+	m.width, m.height = 104, 30
+
+	rows := strings.Split(m.canvas("prompt$", 40, 5, true), "\n")
+	if len(rows) != 5 {
+		t.Fatalf("a 40x5 terminal came out as %d lines", len(rows))
+	}
+	for i, row := range rows {
+		if got := ansi.StringWidth(row); got != 40 {
+			t.Fatalf("row %d of a 40-wide terminal is %d wide", i, got)
+		}
 	}
 }

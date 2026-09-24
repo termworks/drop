@@ -19,9 +19,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.list.SetSize(m.listWidth(), m.listHeight())
 
 		if m.screen != nil {
-			m.screen.Resize(m.viewWidth(), m.viewHeight())
+			// A terminal's shape is the far end's to say, and it may be held to somebody else's
+			// smaller window: this one is only asked for. Resizing the copy here to this window
+			// drew the far end's rows into a grid of another width, and they wrapped. What has no
+			// terminal behind it — a command's output — is drawn at whatever size there is room for.
+			if _, _, sized := m.screen.Shape(); !sized {
+				m.screen.Resize(m.viewWidth(), m.viewHeight())
+			}
 
-			// The far end draws for the window it is being watched in, whether or not it takes
+			// The far end draws for the windows it is being watched in, whether or not they take
 			// keys. Its shape is not something it has to be trusted with.
 			if m.typingAt != nil {
 				_ = m.typingAt.Resize(m.viewWidth(), m.viewHeight())

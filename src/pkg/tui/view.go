@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/bresilla/drop/src/pkg/convo"
 )
@@ -298,9 +299,11 @@ func (m Model) openView() string {
 	title := at.Path
 	switch {
 	case m.atKeyboard:
-		title = at.Path + " · typing"
+		title = at.Path + " · typing" + m.terminalSays()
+	case m.live && at.Writable:
+		title = at.Path + " · live" + m.terminalSays()
 	case m.live:
-		title = at.Path + " · live"
+		title = at.Path + " · watching" + m.terminalSays()
 	}
 
 	return panel(title, m.width, m.bodyHeight(), m.inside(at))
@@ -317,7 +320,8 @@ func (m Model) inside(at proto.Served) string {
 		if m.screen == nil {
 			return faintStyle.Render("not watching.")
 		}
-		return m.canvas(lines(m.screen.Draw(), m.viewHeight()))
+		cols, rows, sized := m.screen.Shape()
+		return m.canvas(m.screen.Draw(), cols, rows, sized)
 
 	case showsPut:
 		return m.putView(at)
@@ -934,25 +938,37 @@ func (m Model) pairingView() string {
 // Black, whatever this terminal's own background is. What arrives is a screen somebody else's
 // programs painted, with their own idea of what the background should be, and letting this page
 // show through the gaps makes two screens out of one.
-func (m Model) canvas(drawn string) string {
-	ground := lipgloss.NewStyle().Background(lipgloss.Color("0")).Width(m.viewWidth())
+//
+// At the far end's own shape, and no wider: a terminal held to somebody's smaller window is drawn
+// that size, with the pane around it left as it is, so where it ends is where it is seen to end.
+// One wider than this window is cut at the edge rather than wrapped — a wrapped row is a row of
+// somebody else's program drawn across two, and nothing on that screen reads right after it.
+func (m Model) canvas(drawn string, cols, rows int, sized bool) string {
+	width, height := m.viewWidth(), m.viewHeight()
+	if sized {
+		width, height = min(cols, width), min(rows, height)
+	}
 
 	// The far end's own escapes reset the background to whatever this terminal calls default, so
 	// the black has to be asserted again after each one. Without this the canvas is black only up
 	// to the first colour the other machine chose.
 	drawn = strings.ReplaceAll(drawn, "\x1b[0m", "\x1b[0m\x1b[40m")
 
-	rows := strings.Split(drawn, "\n")
-	for i, row := range rows {
-		rows[i] = ground.Render(row)
+	lines := strings.Split(drawn, "\n")
+	if len(lines) > height {
+		lines = lines[len(lines)-height:]
+	}
+	// Filled to the terminal's last row, so it is a rectangle rather than a ragged edge where the
+	// far end happened to stop writing.
+	for len(lines) < height {
+		lines = append(lines, "")
 	}
 
-	// Filled to the bottom, so the canvas is a rectangle rather than a ragged edge where the far
-	// end happened to stop writing.
-	for len(rows) < m.viewHeight() {
-		rows = append(rows, ground.Render(""))
+	for i, line := range lines {
+		line = ansi.Truncate(line, width, "")
+		lines[i] = "\x1b[40m" + line + strings.Repeat(" ", max(width-ansi.StringWidth(line), 0)) + "\x1b[0m"
 	}
-	return strings.Join(rows, "\n")
+	return strings.Join(lines, "\n")
 }
 
 // walkKeys is what a directory offers, which is what the far end said it will take.
@@ -991,3 +1007,38 @@ func bytesOf(n int64) string {
 // MaxSaid is how much of one message the interface draws. A message is what somebody wanted to say,
 // so it is generous; it is still somebody else's screen, so it is bounded.
 const MaxSaid = 2000
+
+// terminalSays is what a live terminal is, for the line above it: who else is on it, and its shape —
+// with why it is not this window's, when it is not.
+func (m Model) terminalSays() string {
+	if m.screen == nil {
+		return ""
+	}
+
+	var parts []string
+	if watching, own, known := m.screen.Company(); known {
+		switch {
+		case own:
+			parts = append(parts, "your own shell")
+		case watching > 1:
+			parts = append(parts, fmt.Sprintf("shared, %d watching", watching))
+		default:
+			parts = append(parts, "shared, only you")
+		}
+	}
+	if cols, rows, sized := m.screen.Shape(); sized {
+		shape := fmt.Sprintf("%d×%d", cols, rows)
+		switch {
+		case cols > m.viewWidth() || rows > m.viewHeight():
+			shape += ", cut to this window"
+		case cols < m.viewWidth() || rows < m.viewHeight():
+			shape += ", held to a smaller window"
+		}
+		parts = append(parts, shape)
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return " · " + strings.Join(parts, " · ")
+}

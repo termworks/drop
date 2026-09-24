@@ -353,6 +353,9 @@ func (l *running) Watch(ctx context.Context, w tui.Watching) error {
 	}
 	d := live.New(conn, s)
 	d.OnResize = func(cols, rows uint16) { w.Sized(int(cols), int(rows)) }
+	if w.Told != nil {
+		d.OnCompany = func(c live.Company) { w.Told(c.Watching, c.Own) }
+	}
 
 	// The write side stays open. Closing it here used to be how a viewer was kept from typing, but
 	// it also threw away the only way to say how big the window is — and what may be typed is the

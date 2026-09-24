@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -330,14 +329,6 @@ func (m *Model) stop() {
 	m.screen = nil
 }
 
-func lines(text string, n int) string {
-	got := strings.Split(text, "\n")
-	if len(got) <= n {
-		return text
-	}
-	return strings.Join(got[len(got)-n:], "\n")
-}
-
 // say puts a message on the wire.
 // say writes a message down. It does not send it: that happens next, and takes as long as somebody
 // else's network takes, which is not how long a person should watch an empty screen.
@@ -371,6 +362,7 @@ func watch(back Backend, on book.Entry, at proto.Served, into *screen, ctx conte
 			Archetype: at.Archetype,
 			Into:      into,
 			Sized:     into.Resize,
+			Told:      into.Tell,
 			Ready:     ready,
 		})
 		into.Finish()
@@ -472,6 +464,9 @@ type Watching struct {
 	Into io.Writer
 	// Sized is called when the far end reports the shape of its terminal.
 	Sized func(cols, rows int)
+	// Told is called when the far end says who is on it: how many are watching, and whether the
+	// shell is this watcher's alone.
+	Told func(watching int, own bool)
 	// Ready hands back a way to speak to it, once there is one.
 	Ready func(Talk)
 }
