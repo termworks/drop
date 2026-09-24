@@ -39,7 +39,29 @@ type pairMsg struct {
 	// than only with the device in front of you.
 	Badge  []byte
 	Signed []byte
+	// Wants, from the device taking a code, asks to become one of the showing machine's own. Grant,
+	// from the machine showing it, is what makes it one: a badge for it, or the key itself.
+	Wants bool
+	Grant Grant
 }
+
+// What a Grant carries.
+const (
+	GrantNone byte = iota
+	// GrantBadge is a badge signed for the taking device, packed.
+	GrantBadge
+	// GrantKey is the user key itself, as the seed it is made from.
+	GrantKey
+)
+
+// Grant is what makes the device taking a code one of the showing machine's user's.
+type Grant struct {
+	Kind byte
+	Body []byte
+}
+
+// maxGrant bounds a grant: a packed badge is a few hundred bytes and a key thirty-two.
+const maxGrant = 4096
 
 func (m pairMsg) encode() []byte {
 	w := wire.NewWriter()
@@ -57,6 +79,9 @@ func (m pairMsg) encode() []byte {
 	w.Bytes(m.Nonce)
 	w.Bytes(m.Badge)
 	w.Bytes(m.Signed)
+	w.Bool(m.Wants)
+	w.Uint(uint64(m.Grant.Kind))
+	w.Bytes(m.Grant.Body)
 	return w.Body()
 }
 
@@ -109,6 +134,21 @@ func decodePairMsg(body []byte) (pairMsg, error) {
 		return out, err
 	}
 	out.Badge, out.Signed = badge, signed
+	if out.Wants, err = r.Bool(); err != nil {
+		return out, err
+	}
+	kind, err := r.Uint()
+	if err != nil {
+		return out, err
+	}
+	if kind > uint64(GrantKey) {
+		return out, fmt.Errorf("a pairing message grants something of kind %d", kind)
+	}
+	grant, err := r.Bytes(maxGrant)
+	if err != nil {
+		return out, err
+	}
+	out.Grant = Grant{Kind: byte(kind), Body: append([]byte(nil), grant...)}
 	if !r.Done() {
 		return out, fmt.Errorf("a pairing message has trailing bytes")
 	}
@@ -128,6 +168,10 @@ type Pairing struct {
 	User string
 	// Machine is what they call this machine of theirs.
 	Machine string
+	// Wants says the device that took the code asked to become one of this machine's user's, and
+	// Grant is what the showing machine sent back to make it one.
+	Wants bool
+	Grant Grant
 }
 
 // NewCode generates a one-time pairing code: 60 bits, which is far past guessing when the only way
@@ -172,7 +216,7 @@ func deriveSecret(self, other node.ID, selfNonce, otherNonce []byte) ([]byte, er
 // device learns it paired, so whatever that device opens next is met by somebody who knows it — and
 // what it refuses is refused to the other device too, rather than the other device believing it
 // paired with somebody who threw the attempt away.
-func AnswerPairing(s Stream, self, from node.ID, name string, addrs []string, accept func(Pairing) error) (Pairing, error) {
+func AnswerPairing(s Stream, self, from node.ID, name string, addrs []string, accept func(Pairing) (Grant, error)) (Pairing, error) {
 	var out Pairing
 	conn := wire.NewConn(s)
 	err := conn.WithIdle(settleIn, func() error {
@@ -183,7 +227,7 @@ func AnswerPairing(s Stream, self, from node.ID, name string, addrs []string, ac
 	return out, err
 }
 
-func answerPairing(conn *wire.Conn, self, from node.ID, name string, addrs []string, accept func(Pairing) error) (Pairing, error) {
+func answerPairing(conn *wire.Conn, self, from node.ID, name string, addrs []string, accept func(Pairing) (Grant, error)) (Pairing, error) {
 	var out Pairing
 	theirs, err := readPairMsg(conn)
 	if err != nil {
@@ -204,10 +248,12 @@ func answerPairing(conn *wire.Conn, self, from node.ID, name string, addrs []str
 		return out, err
 	}
 	if accept != nil {
-		if err := accept(out); err != nil {
+		grant, err := accept(out)
+		if err != nil {
 			_ = conn.WriteFrame(wire.KindReject, wire.Reject{Reason: err.Error()}.Encode())
 			return out, err
 		}
+		mine.Grant = grant
 	}
 	if err := conn.WriteFrame(wire.KindOpen, mine.encode()); err != nil {
 		return out, err
@@ -216,21 +262,21 @@ func answerPairing(conn *wire.Conn, self, from node.ID, name string, addrs []str
 }
 
 // Pair runs the exchange from the initiating side. from is the id the transport authenticated for
-// the device whose ticket is being answered.
-func Pair(s Stream, self, from node.ID, name string, proof []byte, addrs []string) (Pairing, error) {
+// the device whose ticket is being answered. wants asks to become one of that machine's user's.
+func Pair(s Stream, self, from node.ID, name string, proof []byte, addrs []string, wants bool) (Pairing, error) {
 	var out Pairing
 	conn := wire.NewConn(s)
 	err := conn.WithIdle(settleIn, func() error {
 		var err error
-		out, err = pair(conn, self, from, name, proof, addrs)
+		out, err = pair(conn, self, from, name, proof, addrs, wants)
 		return err
 	})
 	return out, err
 }
 
-func pair(conn *wire.Conn, self, from node.ID, name string, proof []byte, addrs []string) (Pairing, error) {
+func pair(conn *wire.Conn, self, from node.ID, name string, proof []byte, addrs []string, wants bool) (Pairing, error) {
 	var out Pairing
-	mine := pairMsg{From: self.String(), Name: name, Proof: proof, Addrs: addrs, Nonce: make([]byte, nonceBytes)}
+	mine := pairMsg{From: self.String(), Name: name, Proof: proof, Addrs: addrs, Nonce: make([]byte, nonceBytes), Wants: wants}
 	mine.Badge, mine.Signed = carried()
 	if _, err := rand.Read(mine.Nonce); err != nil {
 		return out, fmt.Errorf("generating a nonce: %w", err)
@@ -289,7 +335,10 @@ func finishPairing(self, from node.ID, theirs, mine pairMsg) (Pairing, error) {
 	if err != nil {
 		return out, err
 	}
-	out = Pairing{Peer: from, Name: bookName(theirs.Name), Secret: secret, Proof: theirs.Proof, Addrs: theirs.Addrs}
+	out = Pairing{
+		Peer: from, Name: bookName(theirs.Name), Secret: secret, Proof: theirs.Proof, Addrs: theirs.Addrs,
+		Wants: theirs.Wants, Grant: theirs.Grant,
+	}
 
 	// The badge is checked against the id the transport proved, so a message claiming somebody
 	// else's badge is worth exactly nothing.

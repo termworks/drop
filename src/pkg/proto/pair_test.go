@@ -166,7 +166,7 @@ func TestPairingKeepsTheIdTheTransportProved(t *testing.T) {
 		answered <- answer{p, err}
 	}()
 
-	joined, err := Pair(one, a, b, "laptop", []byte("proof"), nil)
+	joined, err := Pair(one, a, b, "laptop", []byte("proof"), nil, false)
 	if err != nil {
 		t.Fatalf("Pair(): %v", err)
 	}
@@ -175,6 +175,9 @@ func TestPairingKeepsTheIdTheTransportProved(t *testing.T) {
 		t.Fatalf("AnswerPairing(): %v", got.err)
 	}
 
+	if got.p.Wants || joined.Grant.Kind != GrantNone {
+		t.Errorf("an ordinary pairing asked for %v and was granted %d", got.p.Wants, joined.Grant.Kind)
+	}
 	if joined.Peer != b {
 		t.Errorf("the joining side paired with %s, want %s", joined.Peer, b)
 	}
@@ -186,6 +189,35 @@ func TestPairingKeepsTheIdTheTransportProved(t *testing.T) {
 	}
 	if got.p.Name != "laptop" {
 		t.Errorf("the far end came out called %q", got.p.Name)
+	}
+}
+
+// A device asking to become one of the showing machine's own says so, and is handed whatever the
+// showing machine decided to grant it.
+func TestAMachineJoiningIsGrantedWhatTheShowerDecides(t *testing.T) {
+	a, b := testEndpointID(t, 1), testEndpointID(t, 2)
+
+	one, two := net.Pipe()
+	defer func() { _ = one.Close() }()
+	defer func() { _ = two.Close() }()
+
+	asked := make(chan bool, 1)
+	go func() {
+		_, _ = AnswerPairing(two, b, a, "host", nil, func(p Pairing) (Grant, error) {
+			asked <- p.Wants
+			return Grant{Kind: GrantBadge, Body: []byte("a badge")}, nil
+		})
+	}()
+
+	joined, err := Pair(one, a, b, "laptop", []byte("proof"), nil, true)
+	if err != nil {
+		t.Fatalf("Pair(): %v", err)
+	}
+	if !<-asked {
+		t.Error("the showing machine never heard the device wanted to join")
+	}
+	if joined.Grant.Kind != GrantBadge || string(joined.Grant.Body) != "a badge" {
+		t.Errorf("the joining device was granted %d %q", joined.Grant.Kind, joined.Grant.Body)
 	}
 }
 
@@ -258,7 +290,7 @@ func TestAPairingResponseThatSaysNothingIsNotHeldForever(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := Pair(silent, caller, host, "caller", nil, nil)
+		_, err := Pair(silent, caller, host, "caller", nil, nil, false)
 		done <- err
 	}()
 
@@ -310,13 +342,13 @@ func TestARefusedPairingFailsOnBothSides(t *testing.T) {
 
 	refused := make(chan error, 1)
 	go func() {
-		_, err := AnswerPairing(two, b, a, "host", nil, func(Pairing) error {
-			return errors.New("that is not the code being shown")
+		_, err := AnswerPairing(two, b, a, "host", nil, func(Pairing) (Grant, error) {
+			return Grant{}, errors.New("that is not the code being shown")
 		})
 		refused <- err
 	}()
 
-	_, err := Pair(one, a, b, "laptop", []byte("wrong"), nil)
+	_, err := Pair(one, a, b, "laptop", []byte("wrong"), nil, false)
 	if err == nil || !strings.Contains(err.Error(), "not the code being shown") {
 		t.Fatalf("the joining side was not told it was refused: %v", err)
 	}
@@ -336,16 +368,16 @@ func TestAcceptSeesThePairingBeforeTheFarEndDoes(t *testing.T) {
 
 	var accepted atomic.Bool
 	go func() {
-		_, _ = AnswerPairing(two, b, a, "host", nil, func(p Pairing) error {
+		_, _ = AnswerPairing(two, b, a, "host", nil, func(p Pairing) (Grant, error) {
 			if p.Peer != a {
-				return fmt.Errorf("accepting a pairing with %s", p.Peer)
+				return Grant{}, fmt.Errorf("accepting a pairing with %s", p.Peer)
 			}
 			accepted.Store(true)
-			return nil
+			return Grant{}, nil
 		})
 	}()
 
-	if _, err := Pair(one, a, b, "laptop", []byte("proof"), nil); err != nil {
+	if _, err := Pair(one, a, b, "laptop", []byte("proof"), nil, false); err != nil {
 		t.Fatalf("Pair(): %v", err)
 	}
 	if !accepted.Load() {
