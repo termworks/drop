@@ -299,9 +299,9 @@ func (m Model) openView() string {
 	title := at.Path
 	switch {
 	case m.atKeyboard:
-		title = at.Path + " · typing" + m.terminalSays()
+		title = at.Path + " · typing, ctrl+] to stop" + m.terminalSays()
 	case m.live && at.Writable:
-		title = at.Path + " · live" + m.terminalSays()
+		title = at.Path + " · live, i to type" + m.terminalSays()
 	case m.live:
 		title = at.Path + " · watching" + m.terminalSays()
 	}
