@@ -51,6 +51,8 @@ func Execute(v string, exit func(int), args []string) {
 		newConnectCmd(),
 		newServeCmd(),
 		newFileCmd(),
+		newTakeCodeCmd(),
+		newNearbyCmd(),
 		newMineCmd(),
 		newPeerCmd(),
 		newPathCmd(),

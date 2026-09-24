@@ -396,3 +396,58 @@ func TestEveryActionIsOnTheScreen(t *testing.T) {
 		t.Error("picking an action from the menu did not do it")
 	}
 }
+
+// nearFake is what the fake says is nearby and asking, and what it was asked to do about them.
+type nearFake struct {
+	near    []Near
+	asking  []Invited
+	invited []string
+	decided []string
+	left    bool
+	over    bool
+}
+
+func (f *fake) Nearby() ([]Near, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nearby.near, nil
+}
+
+func (f *fake) Invite(ctx context.Context, id, kind string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nearby.invited = append(f.nearby.invited, kind+":"+id)
+	return "box-x", nil
+}
+
+func (f *fake) Invited() ([]Invited, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nearby.asking, nil
+}
+
+func (f *fake) Decide(id string, yes bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	answer := "no"
+	if yes {
+		answer = "yes"
+	}
+	f.nearby.decided = append(f.nearby.decided, id+":"+answer)
+	f.nearby.asking = nil
+	return nil
+}
+
+func (f *fake) Leave(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nearby.left = true
+	return nil
+}
+
+func (f *fake) StartOver(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nearby.over = true
+	return nil
+}

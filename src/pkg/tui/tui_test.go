@@ -54,6 +54,7 @@ type fake struct {
 	self      Identity
 	details   map[string]PathDetail
 	admin     adminFake
+	nearby    nearFake
 	// remembered is what a device said last time, handed back when it cannot be reached.
 	remembered   map[string][]proto.Served
 	refuseServes error

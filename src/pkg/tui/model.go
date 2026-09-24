@@ -64,6 +64,18 @@ type Backend interface {
 	// one: either way the other becomes one of this user's machines.
 	OfferMachine(ctx context.Context) (ticket string, done <-chan string, err error)
 	JoinMachine(ctx context.Context, code string) (with string, err error)
+	// Nearby is every device on this network nobody here has connected with yet.
+	Nearby() ([]Near, error)
+	// Invite asks one of them to connect — to become one of this user's machines, to pair, or to
+	// have this one join theirs — and waits for their yes.
+	Invite(ctx context.Context, id, kind string) (with string, err error)
+	// Invited is every device waiting for a yes from here, and Decide gives one.
+	Invited() ([]Invited, error)
+	Decide(id string, yes bool) error
+	// Leave takes this machine back out of its user's machines, and StartOver deletes everything
+	// drop knows here. Both tell the rest of this user's machines first.
+	Leave(ctx context.Context) error
+	StartOver(ctx context.Context) error
 	// History is a conversation as it stands.
 	History(with book.Entry) ([]convo.Message, error)
 	// Compose writes a message into the conversation without sending it. It returns as fast as a

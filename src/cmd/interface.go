@@ -182,6 +182,15 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 		node.ALPNSync:   syncing(pinned),
 	}
 
+	// Asked by a device nearby to connect, and asking them: the code an invite hands over is shown
+	// by this interface's own endpoint, which is set up below.
+	var self *running
+	invites := &inviting{node: n, lan: lan, box: newInbox(func() { knock(arriving) })}
+	invites.offer = func(ctx context.Context, code string, kind offerKind) (<-chan string, error) {
+		return self.offerCode(ctx, code, kind)
+	}
+	answer[node.ALPNInvite] = invites.answering(pinned)
+
 	// The same as the daemon: answer whatever a device opens on a connection we made, keep the
 	// ones it opens to us, and push what is waiting the moment it appears. Without this the
 	// interface is only reachable by devices that can be dialled, and every message it sends costs
@@ -222,7 +231,8 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 		go hearDaemon(ctx, arriving)
 	}
 
-	return &running{node: n, id: n.ID(), lan: lan, ears: ears, arriving: arriving, held: held, known: known, put: put}, down, nil
+	self = &running{node: n, id: n.ID(), lan: lan, ears: ears, arriving: arriving, held: held, known: known, put: put, invites: invites}
+	return self, down, nil
 }
 
 // Entry finds somebody in the address book by the name they are filed under, or by their id.

@@ -52,6 +52,8 @@ type hosts struct {
 	held   *dial.Kept
 	rung   *bell
 	lan    *discovery.LAN
+	// invites asks devices nearby to connect and holds their asks for whoever answers here.
+	invites *inviting
 }
 
 // joinWithin bounds how long this node spends taking somebody's ticket.
@@ -328,6 +330,29 @@ func (h *pairHost) answered(p proto.Pairing) error {
 	case <-time.After(localHelloWithin):
 		return errors.New("the pairing was not written down in time")
 	}
+}
+
+// offering shows a code for as long as ctx lasts, and yields the name whoever took it was filed
+// under. It is how an invite shows the code it hands over.
+func (h *pairHost) offering(ctx context.Context, code string, kind offerKind) (<-chan string, error) {
+	waiting, err := h.open(code, "", kind)
+	if err != nil {
+		return nil, err
+	}
+	taken := make(chan string, 1)
+	go func() {
+		defer h.close()
+		select {
+		case <-ctx.Done():
+		case at := <-waiting:
+			name, err := record(at.pairing, "", kind)
+			at.filed <- err
+			if err == nil {
+				taken <- name
+			}
+		}
+	}()
+	return taken, nil
 }
 
 // pairAttempt is a pairing on its way to the address book, and how its answerer hears it landed.
@@ -856,6 +881,9 @@ func takeLocal(ctx context.Context, h hosts, conn net.Conn) error {
 	case "arrivals":
 		return takeArrivals(ctx, h.rung, conn)
 
+	case "nearby", "invited", "invite", "decide":
+		return takeInviting(ctx, h.invites, conn, what, rest)
+
 	case "join":
 		return takeJoin(ctx, h, conn, rest)
 	}
@@ -1074,7 +1102,7 @@ func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as st
 	if err := node.Findable(shown, offers.node); err != nil {
 		fmt.Fprintf(os.Stderr, "drop: cannot publish where this device is: %v\n", err)
 	}
-	publishCode(shown, code, offers.node.ID())
+	publishCode(shown, code, offers.node.ID(), kind)
 
 	fmt.Println("  showing a pairing code")
 	defer fmt.Println("  the pairing code is no longer being shown")

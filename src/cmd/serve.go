@@ -156,8 +156,10 @@ func runServe(parent context.Context, quiet bool) error {
 	// And an interface open beside this hears what lands here, so its screen keeps up.
 	rung := newBell()
 	doing.noticed = rung.ring
+	// A device nearby asking to connect waits here for whoever is looking at this machine to answer.
+	invites := &inviting{node: n, lan: lan, offer: offers.offering, box: newInbox(rung.ring)}
 	go func() {
-		h := hosts{casts: casts, shares: shares, put: put, offers: offers, held: held, rung: rung, lan: lan}
+		h := hosts{casts: casts, shares: shares, put: put, offers: offers, held: held, rung: rung, lan: lan, invites: invites}
 		if err := hostLocal(ctx, local, h); err != nil {
 			fmt.Fprintf(os.Stderr, "drop: local control unavailable: %v\n", err)
 		}
@@ -210,6 +212,7 @@ func runServe(parent context.Context, quiet bool) error {
 		},
 		node.ALPNManage: managing(pinned, known),
 		node.ALPNSync:   syncing(pinned),
+		node.ALPNInvite: invites.answering(pinned),
 		// Pairing is answered by whoever holds the address, which is this. A separate `drop peer pair`
 		// process on this machine asks for a code to be shown; it cannot answer for the node.
 		node.ALPNPair: func(from node.ID, s *iroh.Stream) {

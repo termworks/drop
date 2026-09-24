@@ -86,6 +86,8 @@ type running struct {
 	// daemon says the daemon holds it, and this has no endpoint of its own: everything that
 	// reaches another device is the daemon reaching it, over the connections it keeps.
 	daemon bool
+	// invites asks devices nearby to connect and answers theirs; nil while the daemon does.
+	invites *inviting
 }
 
 // open is a stream to a device, and what hands it back once the caller is done with it.
@@ -447,8 +449,15 @@ func (l *running) offer(ctx context.Context, kind offerKind) (string, <-chan str
 	if err != nil {
 		return "", nil, err
 	}
+	done, err := l.offerCode(ctx, code, kind)
+	if err != nil {
+		return "", nil, err
+	}
+	return ticketFor(l.id, code), done, nil
+}
 
-	invite := ticketFor(l.id, code)
+// offerCode shows a given code until ctx ends or somebody takes it, and yields who that was.
+func (l *running) offerCode(ctx context.Context, code string, kind offerKind) (<-chan string, error) {
 	done := make(chan string, 1)
 
 	// Whoever takes the code dials this identity, and the daemon is what answers it. A code this
@@ -456,7 +465,7 @@ func (l *running) offer(ctx context.Context, kind offerKind) (string, <-chan str
 	if l.daemon {
 		said, closeOffer, err := offerAtDaemon(ctx, code, "", kind)
 		if err != nil {
-			return "", nil, err
+			return nil, err
 		}
 		go func() {
 			defer closeOffer()
@@ -470,16 +479,16 @@ func (l *running) offer(ctx context.Context, kind offerKind) (string, <-chan str
 				}
 			}
 		}()
-		return invite, done, nil
+		return done, nil
 	}
 
 	// Findable by whoever holds the ticket, for as long as it is being offered. The rendezvous
 	// cannot help: it publishes under a key derived from a shared secret, and pairing is what
 	// makes one. Without this a code only ever reaches the same wire.
 	if err := node.Findable(ctx, l.node); err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	publishCode(ctx, code, l.node.ID())
+	publishCode(ctx, code, l.node.ID(), kind)
 
 	// Registered on the interface's own listener rather than starting a second one. Two accept
 	// loops on one endpoint race, and the loser hangs up on a connection it does not know.
@@ -519,7 +528,7 @@ func (l *running) offer(ctx context.Context, kind offerKind) (string, <-chan str
 		l.ears.Handle(node.ALPNPair, nil)
 	}()
 
-	return invite, done, nil
+	return done, nil
 }
 
 // Join takes a ticket another device is showing.
@@ -528,7 +537,7 @@ func (l *running) offer(ctx context.Context, kind offerKind) (string, <-chan str
 // second implementation: when it was one, the two drifted and pairing worked from one and not the
 // other.
 func (l *running) Join(ctx context.Context, ticket string) (string, error) {
-	return l.join(ctx, ticket, offerPerson)
+	return l.join(ctx, ticket, offerAny)
 }
 
 // JoinMachine makes this device one of its user's machines, from the code or ticket another of

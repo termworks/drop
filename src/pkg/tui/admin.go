@@ -88,6 +88,26 @@ type Reachable struct {
 	Err string `json:"err,omitempty"`
 }
 
+// Near is a device on this network that nobody here has connected with yet: what it calls itself,
+// and whose it says it is when its badge is one this machine knows.
+type Near struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Whose is who it belongs to as the address book knows them, empty for a stranger.
+	Whose string `json:"whose"`
+}
+
+// Invited is a device asking this one to connect, waiting for a yes: what it asks, and the number
+// both screens show.
+type Invited struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Whose string `json:"whose"`
+	Kind  string `json:"kind"`
+	Check string `json:"check"`
+	When  int64  `json:"when"`
+}
+
 // A step on the ladder, as both interfaces name it.
 type ladderStep struct{ level, title, says string }
 
