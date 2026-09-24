@@ -24,12 +24,14 @@ import (
 	"github.com/bresilla/drop/src/pkg/asciicast"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/cast"
+	"github.com/bresilla/drop/src/pkg/conf"
 	"github.com/bresilla/drop/src/pkg/dial"
 	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/made"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
+	"github.com/bresilla/drop/src/pkg/user"
 )
 
 // Anything that needs to *be* this node goes through the node that is already running.
@@ -900,6 +902,21 @@ func takeLocal(ctx context.Context, h hosts, conn net.Conn) error {
 
 	case "join":
 		return takeJoin(ctx, h, conn, rest)
+
+	case "rekey":
+		// The key was chosen from another process: which one the config names now, and the badge
+		// it signed there, which is already written down.
+		if err := conf.ApplySettings((&doings{}).serving()); err != nil {
+			return writeLocal(conn, "failed %s\n", strings.ReplaceAll(err.Error(), "\n", " "))
+		}
+		badge, signed, err := user.Mine(time.Now())
+		if err != nil && !errors.Is(err, user.ErrStale) {
+			return writeLocal(conn, "failed %s\n", strings.ReplaceAll(err.Error(), "\n", " "))
+		}
+		wear(badge, signed)
+		nudgeDoorbell()
+		nudgeMine()
+		return writeLocal(conn, "rekeyed\n")
 	}
 	return fmt.Errorf("a local connection asked for %q, which is nothing", what)
 }

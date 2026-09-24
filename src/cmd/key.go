@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -92,7 +93,7 @@ func newKeyCmd() *cobra.Command {
 			"This is a new you: every machine of yours is added again under it, with\n" +
 			"`drop machine add` on each. It asks nothing: pass --yes.",
 		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			at, err := filepath.Abs(expandHome(args[0]))
 			if err != nil {
 				return err
@@ -112,9 +113,12 @@ func newKeyCmd() *cobra.Command {
 				fmt.Printf("you are %s, and drop reads it from %s now\n", user.Fingerprint(pub), at)
 				return nil
 			}
-			fmt.Printf("you are %s now\n  %s\n", user.Fingerprint(pub), at)
-			fmt.Println("\n  add your other machines again: `drop machine add` here, and the code on each")
-			restartDaemon()
+			fmt.Printf("you are %s now\n  %s\n\n", user.Fingerprint(pub), at)
+			fmt.Println("  every other machine of yours that uses this key finds this one within a")
+			fmt.Println("  minute or two, and it them. One without it takes a code: `drop machine add` here.")
+			if said := rekeyDaemon(cmd.Context()); said != "" {
+				fmt.Println("  " + said)
+			}
 			return nil
 		},
 	}
@@ -163,7 +167,11 @@ func becomeKey(at string, pub ssh.PublicKey) (bool, error) {
 		}
 		wear(badge, signed)
 	}
-	return !same, writeUserKey(at)
+	if err := writeUserKey(at); err != nil {
+		return false, err
+	}
+	nudgeDoorbell()
+	return !same, nil
 }
 
 // userKeyLine is the config line that names the user key.
@@ -229,7 +237,22 @@ func (l *running) UseKey(at string) (string, error) {
 		return "", err
 	}
 	if changed && l.daemon {
-		_ = againDaemon()
+		_ = rekeyDaemon(context.Background())
 	}
 	return user.Fingerprint(pub), nil
+}
+
+// rekeyDaemon has the running drop take up the key the config names now, and says so; nothing when
+// no drop is running, which reads the config when it starts.
+func rekeyDaemon(ctx context.Context) string {
+	said, err := atDaemon(ctx, "rekey")
+	switch {
+	case errors.Is(err, errNoDaemon):
+		return ""
+	case err != nil:
+		return "the running drop did not answer: restart it, so it takes up the key"
+	case strings.HasPrefix(said, "failed "):
+		return "the running drop could not take up the key: " + strings.TrimPrefix(said, "failed ")
+	}
+	return "the running drop took it up"
 }

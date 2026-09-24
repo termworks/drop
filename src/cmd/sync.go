@@ -34,6 +34,9 @@ type synced struct {
 	Marks   map[string]user.Mark `json:"marks"`
 	// Handle names the user key in a security key, for a machine that reaches the key itself.
 	Handle *user.Handle `json:"handle,omitempty"`
+	// Circle is the secret this user's machines share, so two that met by ringing settle on one
+	// in the same exchange rather than waiting on a hello neither can yet find the other for.
+	Circle []byte `json:"circle,omitempty"`
 }
 
 // syncedEntry is one machine as the book holds it. The secret goes only for somebody else's
@@ -57,6 +60,9 @@ func bookToHand(pinned *book.Book) synced {
 	}
 	if h, ok := user.KnownHandle(); ok {
 		out.Handle = &h
+	}
+	if circle, err := user.Circle(); err == nil {
+		out.Circle = circle
 	}
 	for _, e := range pinned.All() {
 		one := syncedEntry{Name: e.Name, ID: e.ID.String(), Addrs: e.Addrs, User: e.User, Person: e.Person, Trusted: e.Trusted, At: e.At}
@@ -86,6 +92,7 @@ func takeState(pinned *book.Book, theirs synced) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	recircled, _ := user.AdoptCircle(theirs.Circle)
 	circle, _ := user.Circle()
 
 	var renamed []renamedHere
@@ -93,6 +100,14 @@ func takeState(pinned *book.Book, theirs synced) (bool, error) {
 	err = pinned.Change(func() (bool, error) {
 		wrote := false
 		defer func() { wroteAny = wrote }()
+		if recircled && len(circle) > 0 {
+			for _, entry := range pinned.All() {
+				if entry.Circle {
+					pinned.Resecret(entry.Name, user.PairSecret(circle, self.String(), entry.ID.String()))
+					wrote = true
+				}
+			}
+		}
 		for _, at := range gone {
 			if id, err := node.ParseID(at); err == nil {
 				if entry, ok := pinned.ByID(id); ok {
@@ -200,16 +215,24 @@ func syncing(pinned *book.Book) func(node.ID, *iroh.Stream) {
 			return
 		}
 		_ = proto.AnswerSync(s, from, func(badge proto.Badged, raw []byte) ([]byte, error) {
-			if who := whoIs(pinned)(from, badge, proto.Stood{}); who.UserName != ns.LevelMe {
+			who := whoIs(pinned)(from, badge, proto.Stood{})
+			if who.UserName != ns.LevelMe {
 				return nil, errNotMine
 			}
 			var theirs synced
 			if err := json.Unmarshal(raw, &theirs); err != nil {
 				return nil, err
 			}
-			if changed, err := takeState(pinned, theirs); err != nil {
+			changed, err := takeState(pinned, theirs)
+			if err != nil {
 				return nil, err
-			} else if changed {
+			}
+			// A machine of this user's never met, which found this one by its ringing: its badge
+			// says whose it is, and from now on it is found and talked to like any other.
+			if fileMine(pinned, from, who.Label) != "" {
+				changed = true
+			}
+			if changed {
 				nudgeMine()
 			}
 			return json.Marshal(bookToHand(pinned))
