@@ -150,7 +150,7 @@ func admitted(p *proto.Pairing, kind offerKind) (proto.Grant, error) {
 	case kind.mine() && !p.Wants:
 		return proto.Grant{}, errors.New("this code adds a machine of mine: take it with `drop machine add <code>`")
 	case !kind.mine() && p.Wants:
-		return proto.Grant{}, errors.New("this code pairs with a person rather than adding a machine: take it with `drop peer pair`")
+		return proto.Grant{}, errors.New("this code pairs with a person rather than adding a machine: take it with `drop person add <code>`")
 	case !kind.mine():
 		return proto.Grant{}, nil
 	case p.User != "" && p.User == myKey():

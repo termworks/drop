@@ -96,7 +96,7 @@ func askAdded(ctx context.Context, name, kind string) error {
 	}
 	entry, known := pinned.Lookup(name)
 	if !known {
-		return fmt.Errorf("no device here is called %q: add it first, with `drop add`", name)
+		return fmt.Errorf("no device here is called %q: add it first, with `drop person add`", name)
 	}
 	if entry.User != "" && entry.User == myKey() {
 		return fmt.Errorf("%s is one of your machines already", name)
