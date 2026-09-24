@@ -95,6 +95,9 @@ func newTakeCmd() *cobra.Command {
 // and says what it now is. It is worn from the next start.
 func TakeCode(code string) (string, error) {
 	kind, body := tickets.Kind(code)
+	if kind != tickets.KindBadge && kind != tickets.KindKey {
+		return "", errors.New("that is a pairing code, not one that makes a machine yours: pair with it instead")
+	}
 	raw, err := base64.RawURLEncoding.DecodeString(body)
 	if err != nil {
 		return "", fmt.Errorf("that code is unreadable: %w", err)
@@ -122,7 +125,7 @@ func TakeCode(code string) (string, error) {
 		}
 		return fmt.Sprintf("this machine holds %s's key, and signs its own badge", user.Fingerprint(pub)), nil
 	}
-	return "", errors.New("that is a pairing code: pair with it instead")
+	return "", fmt.Errorf("%s is no kind of code this knows", kind)
 }
 
 func showCode(code string) {
