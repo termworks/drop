@@ -86,3 +86,80 @@ func filled(b byte, n int) []byte {
 	}
 	return out
 }
+
+// A machine of mine taken out is marked, forgotten, and turned away as a stranger, whatever badge
+// it still wears.
+func TestAMachineOfMineTakenOutIsAStranger(t *testing.T) {
+	tron := asMe(t, "ssh-ed25519 mine")
+
+	if err := forgetKnown("tron", true); err != nil {
+		t.Fatal(err)
+	}
+	if !user.Removed(tron.ID.String()) {
+		t.Fatal("taking a machine out left no mark")
+	}
+	pinned, err := book.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pinned.ByID(tron.ID); ok {
+		t.Fatal("a machine taken out is still in the book")
+	}
+	who := whoIs(pinned)(tron.ID, proto.Badged{Key: "ssh-ed25519 mine", As: "tron"}, proto.Stood{})
+	if who.UserName != "" || who.Paired || who.Trusted {
+		t.Fatalf("a machine taken out was still taken for %+v", who)
+	}
+}
+
+// A machine another of mine took out is forgotten here too, and not written back in by the next
+// machine that still names it.
+func TestAMarkFromAnotherMachineOfMineTakesItOutHere(t *testing.T) {
+	tron := asMe(t, "ssh-ed25519 mine")
+	circle := filled(9, user.CircleSize)
+	phone := idFor(2)
+
+	joinCircle(tron, proto.Hello{Circle: circle, Mine: []proto.Member{{ID: phone.String(), Name: "phone"}}})
+	joinCircle(tron, proto.Hello{Circle: circle, Gone: []proto.Mark{{ID: phone.String(), At: 100, Gone: true}}})
+
+	pinned, err := book.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pinned.ByID(phone); ok {
+		t.Fatal("a machine another of mine took out is still here")
+	}
+
+	joinCircle(tron, proto.Hello{Circle: circle, Mine: []proto.Member{{ID: phone.String(), Name: "phone"}}})
+	if err := pinned.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pinned.ByID(phone); ok {
+		t.Fatal("a machine taken out was written back in by one that still named it")
+	}
+}
+
+// Your own machines are never taken for a person, whatever the first of them was called: forgetting
+// one must not forget the rest.
+func TestForgettingOneMachineOfMineLeavesTheRest(t *testing.T) {
+	asMe(t, "ssh-ed25519 mine")
+	pinned, err := book.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pinned.Change(func() (bool, error) {
+		pinned.Pair("phone", idFor(2), filled(2, book.SecretBytes))
+		pinned.Belongs("phone", "ssh-ed25519 mine")
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := forgetKnown("tron", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := pinned.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pinned.Lookup("phone"); !ok {
+		t.Fatal("forgetting one machine of mine forgot another")
+	}
+}

@@ -317,3 +317,27 @@ func TestHelloCutsALongNamespaceListRatherThanBecomingUnreadable(t *testing.T) {
 		t.Fatalf("%d namespaces came back, want %d", len(got.Serves), MaxServed)
 	}
 }
+
+// Marks travel, and a hello with none is written exactly as one from before marks existed, so a
+// machine that predates them still reads it.
+func TestAHelloCarriesMarksOnlyWhenThereAreSome(t *testing.T) {
+	plain := Hello{Name: "tron", Version: "0.5.1", Circle: []byte("c"), Mine: []Member{{ID: "a", Name: "phone"}}}
+	marked := plain
+	marked.Gone = []Mark{{ID: "a", At: 1700000000, Gone: true}, {ID: "b", At: 5}}
+
+	got, err := decodeHello(marked.encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Gone) != 2 || got.Gone[0] != marked.Gone[0] || got.Gone[1] != marked.Gone[1] {
+		t.Fatalf("marks came back as %+v", got.Gone)
+	}
+
+	before := plain.encode()
+	if back, err := decodeHello(before); err != nil || len(back.Gone) != 0 {
+		t.Fatalf("a hello without marks read as %+v (%v)", back.Gone, err)
+	}
+	if len(before) >= len(marked.encode()) {
+		t.Fatal("a hello without marks is not the shorter one")
+	}
+}

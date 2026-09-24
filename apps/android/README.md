@@ -30,7 +30,7 @@ slices and interfaces, so a list crosses as JSON and a callback is an interface 
 |---|---|
 | **You first** | the app opens on one list: *Me* first, holding this phone and every other machine of yours, then everybody you paired with, each showing what they sent that you have not read. Settings — the phone's name, whose it is, its folder — are under the ⋮ menu |
 | **People, then machines, then paths** | the same arrangement as the terminal interface: who, which of their machines, and what it shares with you |
-| **Pairing** | *My code* shows a QR the other device scans; *Scan* reads one off a computer's `drop peer pair` or another phone. A `drop://pair/…` link opens the same way |
+| **Pairing** | *My code* shows a QR and a short code the other device scans or types; *Scan theirs* reads one off a computer's `drop peer pair` or another phone, or takes the code typed in. A `drop://pair/…` link opens the same way |
 | **One of your machines** | run `drop machine add` on a computer of yours, then *Add a machine → Scan* here, or type its short code: the phone is yours from then on, and every other machine of yours hears of it. A phone holding your key can show a code instead, for `drop machine join <code>` on a computer. See [pairing](../../docs/pairing.md#making-a-machine-yours) |
 | **Chat** | a conversation per machine, kept on both devices. A message for a machine that is off waits and goes when it is back; a message that arrives while the app is closed is a notification |
 | **Files** | walk a `files` namespace, download with a tap, upload into one that is writable; long press to rename or delete, and make folders in it |
@@ -40,7 +40,7 @@ slices and interfaces, so a list crosses as JSON and a callback is an interface 
 | **Terminals and streams** | a `tty` or a `stream` drawn live, in colour, cell by cell on the phone's own grid — which is the size the far end is told, again when the keyboard opens, the phone turns or the text is pinched. Typing goes straight into the terminal, as in Termux, with its two rows of extra keys: ESC, TAB, sticky CTRL and ALT, arrows, HOME, END, page up and down |
 | **Links** | send one to a machine's `link` namespace and it opens over there |
 | **Who may open what** | every path on this phone and on each of your machines stands on a step — only me, trusted, paired, public — changed from the phone and applied on that machine at once, with people let in or kept out by name, answers to who asked, and whether others may see it and ask. On somebody else's machine, ask to be let into what you can see but not open |
-| **People and machines** | add a person by code, trust them, rename how they are filed, or remove them with all their machines; rename or remove one machine; make this phone one of yours, or leave |
+| **Managing people and machines** | each of your machines has a ⋮ on its row to rename it or take it out of your machines — taken out on every one of them, not only here. Somebody else has *Rename*, *Remove* and *Trusted* on their screen, and *What they can open*: every path on this phone and each machine of yours, with a switch that lets them in or keeps them out there. The phone itself can leave your machines from Settings |
 | **The phone's folder** | share `Download/drop/` as a path called phone, whose step is chosen like any other, and let them put things in it when that is on too |
 
 What arrives lands in `Download/drop/`, where the phone's own file manager finds it.

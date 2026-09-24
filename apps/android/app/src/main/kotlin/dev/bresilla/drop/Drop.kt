@@ -210,8 +210,6 @@ object Drop {
 
     suspend fun managed(name: String): Result<Managed> = call { Managed.from(JSONObject(it.managed(name))) }
 
-    suspend fun access(path: String): Result<Rule> = call { Rule.from(JSONObject(it.access(path))) }
-
     suspend fun knocked(): Result<List<Knock>> = call { node ->
         val all = JSONArray(node.knocked())
         List(all.length()) { Knock.from(all.getJSONObject(it)) }
@@ -238,6 +236,28 @@ object Drop {
         shown: Boolean = false,
     ): Result<PathDetail> = call { node ->
         PathDetail.from(JSONObject(node.manage(machine, op, path, who, level, shown)))
+    }
+
+    /** What somebody may open on this phone and on every other machine of yours, machine by machine. */
+    suspend fun reachable(name: String): Result<List<Reachable>> = call { node ->
+        val all = JSONArray(node.reachable(name))
+        List(all.length()) { Reachable.from(all.getJSONObject(it)) }
+    }
+
+    /**
+     * Opens a path to somebody, or shuts it, with as few names let in or kept out as that takes: a
+     * name that was the only thing in the way is taken off, and only when the step still disagrees
+     * is one written.
+     */
+    suspend fun open(machine: String, path: String, who: String, open: Boolean, at: String, name: String): Result<List<Reachable>> {
+        val undo = if (open) at == "refused" else at == "allowed"
+        if (undo) {
+            manage(machine, "unset", path, who).onFailure { return Result.failure(it) }
+            val now = reachable(name).getOrNull()?.firstOrNull { it.machine == machine }?.paths?.firstOrNull { it.path == path }
+            if (now != null && now.opens == open) return reachable(name)
+        }
+        manage(machine, if (open) "allow" else "deny", path, who).onFailure { return Result.failure(it) }
+        return reachable(name)
     }
 
     /** Takes this phone back out of your machines, and starts it again as its own. */
@@ -433,38 +453,35 @@ data class Managed(
     }
 }
 
-/** Somebody and how they stand with one of this phone's paths: "allowed", "refused", or "". */
-data class Standing(val name: String, val person: Boolean, val machines: Int, val at: String, val inConfig: Boolean)
-
 data class Asking(val who: String, val why: String, val `when`: String)
 
-data class Rule(
-    val path: String,
-    val anyone: Boolean,
-    val paired: Boolean,
-    val password: Boolean,
-    val who: List<Standing>,
-    val asked: List<Asking>,
-) {
+/** What one person may open on one machine of yours, the empty machine being this phone. */
+data class Reachable(val machine: String, val called: String, val known: Boolean, val paths: List<PathOpen>, val err: String) {
     companion object {
-        fun from(o: JSONObject): Rule {
-            val who = o.optJSONArray("who") ?: JSONArray()
-            val asked = o.optJSONArray("asked") ?: JSONArray()
-            return Rule(
-                o.optString("path"),
-                o.optBoolean("anyone"),
-                o.optBoolean("paired"),
-                o.optBoolean("password"),
-                List(who.length()) {
-                    val w = who.getJSONObject(it)
-                    Standing(w.optString("name"), w.optBoolean("person"), w.optInt("machines"), w.optString("at"), w.optBoolean("config"))
-                },
-                List(asked.length()) {
-                    val a = asked.getJSONObject(it)
-                    Asking(a.optString("who"), a.optString("why"), a.optString("when"))
-                },
+        fun from(o: JSONObject): Reachable {
+            val paths = o.optJSONArray("paths") ?: JSONArray()
+            return Reachable(
+                o.optString("machine"),
+                o.optString("called"),
+                o.optBoolean("known"),
+                List(paths.length()) { PathOpen.from(paths.getJSONObject(it)) },
+                o.optString("err"),
             )
         }
+    }
+}
+
+/** One path as one person stands with it: whether it opens for them, and whether a name decides. */
+data class PathOpen(val path: String, val archetype: String, val about: String, val level: String, val opens: Boolean, val at: String) {
+    companion object {
+        fun from(o: JSONObject) = PathOpen(
+            o.optString("path"),
+            o.optString("archetype"),
+            o.optString("about"),
+            o.optString("level"),
+            o.optBoolean("opens"),
+            o.optString("at"),
+        )
     }
 }
 

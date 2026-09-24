@@ -68,6 +68,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case managed:
+		m.loading = false
 		if msg.err != nil {
 			m.trouble = msg.err.Error()
 			return m, nil
@@ -76,8 +77,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.at, m.trouble = levelUsers, ""
 			return m, loadPeers(m.back)
 		}
-		// Read back rather than believed, the same as a grant.
-		return m, loadManaged(m.back, msg.name)
+		// Read back rather than believed: trust changes what the steps let them open, too. From
+		// a machines screen, the list is what shows it.
+		if m.at != levelManage {
+			return m, loadPeers(m.back)
+		}
+		m.askingReach = true
+		return m, tea.Batch(loadManaged(m.back, msg.name), loadReach(m.back, msg.name), loadPeers(m.back))
+
+	case reachLoaded:
+		m.askingReach = false
+		if msg.who != m.managed.Name {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.trouble = msg.err.Error()
+		} else {
+			m.opens, m.trouble = msg.reach, ""
+		}
+		if m.at == levelManage {
+			m.showManage()
+		}
+		return m, nil
+
+	case detailLoaded:
+		m.loading = false
+		if m.at != levelAccess || msg.machine != m.onMachine {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.trouble = msg.err.Error()
+			return m, nil
+		}
+		m.detail, m.trouble = msg.detail, ""
+		m.showAccess()
+		return m, nil
+
+	case adminDone:
+		m.loading = false
+		if msg.err != nil {
+			m.trouble, m.said = msg.err.Error(), ""
+			return m, nil
+		}
+		m.trouble, m.said = "", msg.said
+		// What was renamed or removed may have been what the screen stood for.
+		if msg.gone && m.at == levelManage {
+			m.at = levelUsers
+		}
+		return m, tea.Batch(loadPeers(m.back), loadSelf(m.back))
 
 	case rang:
 		m.said = ""
@@ -87,25 +134,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.trouble, m.said = "", "asked for "+msg.path+" — somebody there decides"
 		return m, nil
-
-	case ruleLoaded:
-		m.loading = false
-		if msg.err != nil {
-			m.trouble = msg.err.Error()
-			return m, nil
-		}
-		m.rule, m.trouble = msg.rule, ""
-		m.showAccess()
-		return m, nil
-
-	case changed:
-		if msg.err != nil {
-			m.trouble = msg.err.Error()
-			return m, nil
-		}
-		// Read back rather than believed: what is on screen has to be what a caller will be
-		// judged against, and that is on disk.
-		return m, loadRule(m.back, msg.path)
 
 	case pairStarted:
 		if msg.err != nil {
@@ -182,8 +210,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.peers, m.reaching, m.knocked, m.trouble = msg.peers, msg.reaching, msg.knocked, ""
-		if m.at == levelUsers {
+		switch m.at {
+		case levelUsers:
 			m.showUsers()
+		case levelMachines:
+			// A machine renamed or taken out is one the screen has to lose, and a user left with
+			// none is a screen with nothing on it to go back from.
+			m.rows = group(m.me, m.peers, m.reaching, m.knocked)
+			if _, still := m.rows.row[m.atUser]; !still {
+				m.at, m.atUser = levelUsers, ""
+				m.showUsers()
+				break
+			}
+			m.showMachines()
 		}
 		return m, nil
 
@@ -362,6 +401,23 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// A question waits for a yes, and anything else leaves things as they are.
+	if m.confirm != nil {
+		asked := m.confirm
+		m.confirm = nil
+		if msg.String() != "y" {
+			return m, nil
+		}
+		m.loading = true
+		return m, asked.yes
+	}
+	if m.prompt != nil {
+		return m.promptKey(msg)
+	}
+	if m.menu != nil {
+		return m.menuKey(msg)
+	}
+
 	// A removal on another machine waits for a yes. Every other key here acts on one keystroke,
 	// which is no way to take somebody's file off their disk.
 	if m.removing != "" {
@@ -425,10 +481,20 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if next, cmd, did := m.adminKey(msg.String()); did {
+		return next, cmd
+	}
+
 	switch msg.String() {
 	case "?":
 		m.helping = true
 		return m, nil
+
+	case " ":
+		if m.at == levelOpen {
+			return m, nil
+		}
+		return m.openMenu()
 
 	case "ctrl+c":
 		m.stop()
@@ -497,10 +563,7 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "t":
-		// Take a code on the device list; on the management screen it is what changes trust.
-		if m.at == levelManage {
-			return m, trusting(m.back, m.managed.Name, !m.managed.Trusted)
-		}
+		// Take somebody's code. Everywhere trust can be changed, it was handled before this.
 		if m.at == levelUsers && m.linking == nil {
 			m.joining, m.typing, m.trouble = true, "", ""
 		}
@@ -517,49 +580,6 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, loadPeers(m.back)
-
-	case "m":
-		// Managing somebody, as against reaching them. Trust and grants belong to a user, so this
-		// is a user's screen — except under anon, where there is no person and the machine is the
-		// only thing there is to manage.
-		var who string
-		switch {
-		case m.at == levelUsers:
-			if it, ok := m.list.SelectedItem().(userItem); ok && !it.anon {
-				who = it.name
-			}
-		case m.at == levelMachines && m.atUser == Anon:
-			if it, ok := m.list.SelectedItem().(deviceItem); ok && !it.self {
-				who = it.entry.Name
-			}
-		case m.at == levelMachines:
-			who = m.atUser
-		}
-		if who == "" || who == Me {
-			return m, nil
-		}
-
-		m.at, m.loading, m.trouble = levelManage, true, ""
-		m.managed = Managed{Name: who}
-		m.showManage()
-		return m, loadManaged(m.back, who)
-
-	case "f":
-		if m.at != levelManage {
-			return m, nil
-		}
-		return m, forgetting(m.back, m.managed.Name)
-
-	case "w":
-		// Who may reach it. Only for your own paths: what somebody else shares and with whom is
-		// their business, and nothing here could change it anyway.
-		if at, ok := m.path(); ok && m.at == levelPaths && m.onSelf {
-			m.at, m.loading, m.trouble = levelAccess, true, ""
-			m.rule = Rule{Path: at.Path}
-			m.showAccess()
-			return m, loadRule(m.back, at.Path)
-		}
-		return m, nil
 
 	case "a", "x", "d":
 		// In a directory, x is what takes something off the far machine. On somebody else's locked
@@ -580,41 +600,8 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.trouble, m.said = "", "asking for "+at+"…"
 				return m, ringFor(m.back, with, at)
 			}
-			return m, nil
 		}
-
-		if m.at == levelManage {
-			row, ok := m.onManaged()
-			if !ok || row.path == "" {
-				return m, nil
-			}
-
-			to := Allowed
-			switch msg.String() {
-			case "x":
-				to = Refused
-			case "d":
-				to = NotNamed
-			}
-			return m, changeThen(m.back, row.path, m.managed.Name, to, m.managed.Name)
-		}
-
-		if m.at != levelAccess {
-			return m, nil
-		}
-		it, ok := m.standingOf()
-		if !ok {
-			return m, nil
-		}
-
-		to := Allowed
-		switch msg.String() {
-		case "x":
-			to = Refused
-		case "d":
-			to = NotNamed
-		}
-		return m, change(m.back, m.rule.Path, it.who.Name, to)
+		return m, nil
 	}
 
 	if m.at != levelOpen {

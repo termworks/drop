@@ -261,6 +261,11 @@ func managedEntries(pinned *book.Book, name string, personFirst bool) ([]book.En
 		var theirs []book.Entry
 		owner, foundOwner := "", false
 		for _, entry := range pinned.All() {
+			// Your own machines are "me", whatever the first of them happened to be called: a
+			// person's name matching one of them would take in every one.
+			if entry.User != "" && entry.User == myKey() {
+				continue
+			}
 			if entry.Person == name {
 				if foundOwner && entry.User != owner {
 					return nil, false, fmt.Errorf("%q names more than one person in the address book", name)

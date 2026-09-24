@@ -23,6 +23,9 @@ const (
 	ManageAllow = "allow"
 	ManageDeny  = "deny"
 	ManageUnset = "unset"
+	// ManageFor asks what one person may open, with Who their user key, or the id of a machine
+	// that belongs to nobody.
+	ManageFor = "for"
 )
 
 // Manage is one ask. Level is the step to put the path on, empty to hand it back to its config;

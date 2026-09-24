@@ -35,27 +35,59 @@ Enter a user to see their machines, enter a machine to see what it shares. Each 
 archetype's own glyph and description, which is what `Note` in [namespaces](namespaces.md) is for: a
 namespace of a kind this build has never heard of still gets a row.
 
-## Managing somebody
+## Managing people, machines, and who opens what
 
-`m` on somebody in the users list opens the screen for them — who they are, whether they are
-trusted, and every path you have granted or refused them.
+Every screen says along its bottom line what can be done on it, and **space** lays every action out
+as a menu to pick from — so nothing here has to be known to be found.
+
+| where | what you can do |
+|---|---|
+| users | `a` add a machine of yours (shows a code), `c` join your machines with a code, `p` pair with somebody, `t` take their code, `m` manage somebody, `n` rename them, `x` remove them |
+| your machines | `n` rename one, `x` take it out of your machines, `a` add one |
+| somebody's machines | `n` rename one, `x` forget it, `t` trust them, `m` manage them |
+| paths on a machine of yours | `w` who may open it — this machine or any other of yours |
+
+Taking a machine out of yours is a mark every machine of yours takes from the others: from then on
+all of them turn it away as a stranger, whatever badge it still wears, and `drop machine add` puts
+it back.
+
+**Who may open a path** is the same ladder the phone shows — *Only me*, *Trusted*, *Paired*,
+*Public* — and whether others may see the path and ask for it, then everybody who asked and
+everybody who can be let in or kept out by name:
 
 ```
-╭─ bob  ·  who they are, and what you have given them ─────────────────╮
-│ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ WHO THEY ARE ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ │
-│   · bob                                                              │
-│   a person, with 2 machines                                          │
+╭─ /work on this machine  ·  who may open it ──────────────────────────╮
+│ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ WHO MAY OPEN IT ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ │
+│   · Only me                                                          │
+│   ✓ Trusted                                                          │
+│   · Paired                                                           │
+│   · Public                                                           │
+│   · Others may see it and ask                                        │
+│ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ BY NAME ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ │
+│   ✓ bob                                                              │
+│   let in by name                                                     │
+╰──────────────────────────────────────────────────────────────────────╯
+ enter choose · a let bob in · x keep bob out · d leave to the step
+```
+
+**Managing somebody** is who they are, whether you trust them, and what they may open on *every*
+machine of yours, each asked and answering for itself — changed from the same screen with `a`, `x`
+and `d`:
+
+```
+╭─ bob  ·  who they are, and what they may open ───────────────────────╮
 │ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ TRUST ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ │
 │   ✓ trusted                                                          │
-│ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ WHAT THEY MAY REACH ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ │
+│ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ WHAT THEY MAY OPEN ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ │
+│ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ON THIS MACHINE ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ │
 │   ✓ /work                                                            │
+│   opens · Trusted                                                    │
+│ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ON LAPTOP ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ │
+│   ✗ /keys                                                            │
+│   shut · kept out by name                                            │
 ╰──────────────────────────────────────────────────────────────────────╯
-  t  trust   x  revoke   f  forget   esc  back
+ t stop trusting them · a let in, on laptop · x keep out · d leave to the step
 ```
-
-It is a separate screen on purpose. The list answers *what can I open*, which you ask constantly;
-this answers *who is this and what have I given them*, which you ask rarely. Putting both in one
-list made neither readable.
 
 ## Listings are filtered, not refused
 
@@ -65,8 +97,8 @@ is in no listing at all, because nobody offers a secret to ask what exists.
 
 ## Keys
 
-`?` shows them. There is no permanent shortcut line and no box around the interface — the screen is
-for what you are looking at.
+The line along the bottom shows as many of the keys as fit, `?` shows all of them, and **space** lays
+the actions out to pick from.
 
 The one worth knowing here is what happens with a terminal: `i` gives it the keyboard and **ctrl+]**
 takes it back. While it has the keyboard it gets *every* key there is, `esc` and `q` included,

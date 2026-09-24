@@ -64,7 +64,11 @@ func newPeerListCmd() *cobra.Command {
 				if e.Trusted {
 					state += ", trusted"
 				}
-				fmt.Printf("  %-*s  %-15s  %-*s  %s\n", names, e.Name, state, people, e.Person, e.ID)
+				person := e.Person
+				if e.User != "" && e.User == myKey() {
+					person = "me"
+				}
+				fmt.Printf("  %-*s  %-15s  %-*s  %s\n", names, e.Name, state, people, person, e.ID)
 			}
 			return nil
 		},
@@ -143,6 +147,12 @@ func forgetKnown(name string, personFirst bool) error {
 			return false, fmt.Errorf("%q is not known", name)
 		}
 		for _, entry := range targets {
+			// A machine of mine is taken out of mine, or it comes straight back.
+			if entry.User != "" && entry.User == myKey() {
+				if err := removeMine(entry); err != nil {
+					return false, err
+				}
+			}
 			if err := shares.Forget(entry.ID); err != nil {
 				return false, fmt.Errorf("forgetting what %s shared: %w", entry.Name, err)
 			}

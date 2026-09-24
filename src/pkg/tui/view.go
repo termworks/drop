@@ -23,11 +23,11 @@ func (m Model) View() string {
 	return m.frame(m.body())
 }
 
-// frame is the shape of every screen: a line saying where you are, and the screen itself.
+// frame is the shape of every screen: a line saying where you are, the screen itself, and a line of
+// what can be done on it.
 //
-// The body is given exactly the room that is left and no more, so a notice sits on the last line of
-// the terminal rather than wherever the content happened to stop. What the keys are is behind ?,
-// which the header says.
+// The body is given exactly the room that is left and no more, so a notice sits just above the keys
+// rather than wherever the content happened to stop.
 func (m Model) frame(body string) string {
 	head, said := m.header(), m.notice()
 
@@ -38,12 +38,12 @@ func (m Model) frame(body string) string {
 	if said != "" {
 		out += "\n" + said
 	}
-	return out
+	return out + "\n" + m.footer()
 }
 
-// bodyHeight is the room a screen has: everything the header and any notice leave.
+// bodyHeight is the room a screen has: everything the header, the keys and any notice leave.
 func (m Model) bodyHeight() int {
-	room := m.height - 2
+	room := m.height - 3
 	if m.notice() != "" {
 		room--
 	}
@@ -59,6 +59,8 @@ func (m Model) bodyHeight() int {
 // given, so anything written after it falls off the bottom and is never seen.
 func (m Model) notice() string {
 	switch {
+	case m.confirm != nil:
+		return " " + peachStyle.Render("? ") + fit(m.confirm.ask+" — y does it, anything else leaves it", m.width-4)
 	case m.removing != "":
 		return " " + peachStyle.Render("? ") + fit("remove "+m.removing+" over there? y takes it off, anything else leaves it", m.width-4)
 	case m.offering != nil && m.at == levelBrowse:
@@ -87,6 +89,12 @@ func (m Model) body() string {
 	switch {
 	case m.helping:
 		return panel("keys", m.width, m.bodyHeight(), m.keysView())
+
+	case m.menu != nil:
+		return m.menuView()
+
+	case m.prompt != nil:
+		return m.promptView()
 
 	case m.joining:
 		return m.joiningView()
@@ -139,10 +147,10 @@ func (m Model) emptyList() string {
 // listTitle names what is being listed, in the panel's top edge.
 func (m Model) listTitle() string {
 	if m.at == levelManage {
-		return m.managed.Name + "  ·  who they are, and what you have given them"
+		return m.managed.Name + "  ·  who they are, and what they may open"
 	}
 	if m.at == levelAccess {
-		return m.rule.Path + "  ·  who may reach it"
+		return m.detail.Path + " on " + machineOr(m.onMachine) + "  ·  who may open it"
 	}
 	if m.at == levelUsers {
 		return "users"
@@ -537,6 +545,15 @@ type hint struct{ key, does string }
 func (m Model) keys() []hint {
 	var keys []hint
 	switch {
+	case m.confirm != nil:
+		keys = []hint{{"y", "do it"}, {"any key", "leave it"}}
+
+	case m.prompt != nil:
+		keys = []hint{{"enter", "go ahead"}, {"esc", "back"}}
+
+	case m.menu != nil:
+		keys = []hint{{"↑↓", "pick"}, {"enter", "do it"}, {"esc", "close"}}
+
 	case m.removing != "":
 		keys = []hint{{"y", "take it off"}, {"any key", "leave it"}}
 
@@ -550,28 +567,62 @@ func (m Model) keys() []hint {
 		keys = []hint{{"esc", "cancel"}}
 
 	case m.at == levelUsers:
-		keys = []hint{{"p", "show code"}, {"t", "take code"}, {"m", "manage"}, {"enter", "machines"}, {"q", "quit"}}
+		keys = []hint{{"enter", "machines"}, {"a", "add a machine"}, {"p", "pair with somebody"}, {"t", "take a code"},
+			{"c", "join your machines"}}
+		if it, ok := m.list.SelectedItem().(userItem); ok && !it.mine {
+			keys = append(keys, hint{"m", "manage " + it.name})
+			if !it.anon {
+				keys = append(keys, hint{"n", "rename"}, hint{"x", "remove"})
+			}
+		}
+		keys = append(keys, hint{"r", "reload"}, hint{"q", "quit"})
 
 	case m.at == levelMachines:
-		keys = []hint{{"↑↓", "move"}, {"enter", "open"}, {"m", "manage"}, {"esc", "users"}, {"r", "reload"}}
+		keys = []hint{{"enter", "open"}}
+		if it, ok := m.list.SelectedItem().(deviceItem); ok && !it.self {
+			keys = append(keys, hint{"n", "rename"})
+			if m.atUser == Me {
+				keys = append(keys, hint{"x", "remove from your machines"})
+			} else {
+				keys = append(keys, hint{"x", "forget"})
+			}
+		}
+		if m.atUser == Me {
+			keys = append(keys, hint{"a", "add a machine"})
+		} else {
+			keys = append(keys, hint{"m", "manage"}, hint{"t", "trust, or stop"})
+		}
+		keys = append(keys, hint{"r", "reload"}, hint{"esc", "back"})
 
 	case m.at == levelPaths:
-		keys = []hint{{"↑↓", "move"}, {"enter", "open"}, {"esc", "devices"}, {"r", "reload"}}
-		if m.onSelf {
-			keys = append([]hint{{"w", "who may reach it"}}, keys...)
+		keys = []hint{{"enter", "open"}}
+		if m.mineOpen() {
+			keys = append(keys, hint{"w", "who may open it"})
 		}
-		if row, ok := m.list.SelectedItem().(pathItem); ok && !m.onSelf && row.step.served.Locked {
-			keys = append([]hint{{"a", "ask for it"}}, keys...)
+		if row, ok := m.list.SelectedItem().(pathItem); ok && !m.mineOpen() && row.step.served.Locked {
+			keys = append(keys, hint{"a", "ask for it"})
 		}
+		keys = append(keys, hint{"r", "reload"}, hint{"esc", "back"})
 
 	case m.at == levelBrowse:
 		keys = m.walkKeys()
 
 	case m.at == levelAccess:
-		keys = []hint{{"↑↓", "move"}, {"a", "allow"}, {"x", "refuse"}, {"d", "config decides"}, {"esc", "back"}}
+		keys = []hint{{"enter", "choose"}}
+		if row, ok := m.onManaged(); ok && (row.act == actWho || row.act == actAsking) {
+			keys = append(keys, hint{"a", "let " + row.who + " in"}, hint{"x", "keep " + row.who + " out"})
+			if row.act == actWho {
+				keys = append(keys, hint{"d", "leave to the step"})
+			}
+		}
+		keys = append(keys, hint{"r", "reload"}, hint{"esc", "back"})
 
 	case m.at == levelManage:
-		keys = []hint{{"t", "trust"}, {"x", "revoke"}, {"f", "forget"}, {"esc", "back"}}
+		keys = []hint{{"t", trustKey(m.managed.Trusted)}}
+		if row, ok := m.onManaged(); ok && row.act == actOpen {
+			keys = append(keys, hint{"a", "let in, on " + machineOr(row.machine)}, hint{"x", "keep out"}, hint{"d", "leave to the step"})
+		}
+		keys = append(keys, hint{"n", "rename"}, hint{"f", "remove them"}, hint{"r", "reload"}, hint{"esc", "back"})
 
 	case m.atKeyboard:
 		keys = []hint{{"ctrl+]", "give the keyboard back"}}
@@ -596,6 +647,14 @@ func (m Model) keys() []hint {
 	}
 
 	return keys
+}
+
+// trustKey is what t does to somebody, as it reads.
+func trustKey(trusted bool) string {
+	if trusted {
+		return "stop trusting them"
+	}
+	return "trust them"
 }
 
 // keysView is the keys, one to a line, for as long as ? is held open.
@@ -913,11 +972,15 @@ func (m Model) pairingView() string {
 	if _, code, found := strings.Cut(typed, "#"); found {
 		typed = code
 	}
-	folded := fold("drop peer pair "+typed, width-4)
+	command, title := "drop peer pair ", "pair with somebody"
+	if m.linking.machine {
+		command, title = "drop machine join ", "add a machine of yours"
+	}
+	folded := fold(command+typed, width-4)
 
 	// What the panel has room for: the body, less its own two edges, less the line that says what
 	// to do with the code, the ticket under it, and the line saying we are waiting.
-	spare := (m.height - 3) - 2 - len(folded) - 2
+	spare := (m.height - 4) - 2 - len(folded) - 2
 
 	drawn := strings.Split(strings.TrimRight(m.linking.code, "\n"), "\n")
 	switch {
@@ -936,7 +999,7 @@ func (m Model) pairingView() string {
 	}
 	out.WriteString(goodStyle.Render("◐ waiting for it to answer…"))
 
-	return m.middle(panel("show a code", width, 0, out.String()))
+	return m.middle(panel(title, width, 0, out.String()))
 }
 
 // canvas is what a terminal from another machine is drawn on.

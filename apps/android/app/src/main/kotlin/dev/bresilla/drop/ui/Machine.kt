@@ -318,7 +318,7 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
             text = {
                 Text(
                     if (mine) {
-                        "This phone stops knowing it. Your other machines still do until you remove it there too; once none of them knows it, a badge they vouched for it with runs out."
+                        "Every machine of yours turns it away from now on, whatever badge it still wears. Run drop machine add to bring it back."
                     } else {
                         "It arrives as a stranger from then on, and you would have to pair again to reach it."
                     },

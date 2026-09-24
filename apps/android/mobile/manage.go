@@ -48,3 +48,17 @@ func (n *Node) Rename(old, name string) error {
 
 // Leave takes this phone back out of whoever's machines it became. It is its own from the next start.
 func Leave() error { return cmd.Leave() }
+
+// Reachable is what somebody — a person, or a machine that belongs to nobody — may open on this
+// phone and on every other machine of its owner's, as JSON: one entry per machine, the empty one
+// being this phone, each with what that machine calls them and every one of its paths.
+func (n *Node) Reachable(name string) (string, error) {
+	ctx, cancel := context.WithTimeout(n.ctx, reachWithin)
+	defer cancel()
+
+	out, err := n.back.Reachable(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	return encode(out), nil
+}

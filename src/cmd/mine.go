@@ -35,8 +35,56 @@ func newMineCmd() *cobra.Command {
 		Short: "Every machine of yours this one knows",
 		Args:  cobra.NoArgs,
 		RunE:  func(*cobra.Command, []string) error { return listMine() },
+	}, &cobra.Command{
+		Use:   "rm <name>",
+		Short: "Take a machine out of yours, on every one of them",
+		Long: "The machine is forgotten here and marked as taken out, and your other machines take the\n" +
+			"mark from this one within a few minutes: from then on every one of them turns it away as a\n" +
+			"stranger, whatever badge it still wears. `drop machine add` puts it back.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if err := forgetMine(args[0]); err != nil {
+				return err
+			}
+			fmt.Printf("%s is no longer one of your machines; the rest of them hear within a few minutes\n", args[0])
+			return nil
+		},
+	}, &cobra.Command{
+		Use:   "rename <name> <new>",
+		Short: "Call one of your machines something else here",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if _, err := mineNamed(args[0]); err != nil {
+				return err
+			}
+			return renameKnown(args[0], args[1])
+		},
 	})
 	return cmd
+}
+
+// mineNamed is the machine of this user's filed under a name.
+func mineNamed(name string) (book.Entry, error) {
+	pinned, err := book.Load()
+	if err != nil {
+		return book.Entry{}, err
+	}
+	entry, ok := pinned.Lookup(name)
+	if !ok {
+		return book.Entry{}, fmt.Errorf("no machine here is called %q: `drop machine ls` lists yours", name)
+	}
+	if entry.User == "" || entry.User != myKey() {
+		return book.Entry{}, fmt.Errorf("%s is not one of your machines: `drop peer forget %s` forgets it", name, name)
+	}
+	return entry, nil
+}
+
+// forgetMine takes one of this user's machines out of theirs.
+func forgetMine(name string) error {
+	if _, err := mineNamed(name); err != nil {
+		return err
+	}
+	return forgetKnown(name, false)
 }
 
 func newMineAddCmd() *cobra.Command {

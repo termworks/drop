@@ -154,8 +154,12 @@ func admitted(p *proto.Pairing, kind offerKind) (proto.Grant, error) {
 	case !kind.mine():
 		return proto.Grant{}, nil
 	case p.User != "" && p.User == myKey():
-		// Already this user's, by a key of its own or a badge: nothing to hand it.
-		return proto.Grant{}, nil
+		// Already this user's, by a key of its own or a badge: nothing to hand it, though one taken
+		// out before is put back.
+		return proto.Grant{}, user.Restore(p.Peer.String(), time.Now())
+	}
+	if err := user.Restore(p.Peer.String(), time.Now()); err != nil {
+		return proto.Grant{}, err
 	}
 
 	if kind == offerMineKey {
@@ -563,6 +567,11 @@ func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as stri
 	if kind.mine() && !already {
 		if err := wearGrant(p.Grant); err != nil {
 			return proto.Pairing{}, "", fmt.Errorf("becoming one of your machines: %w", err)
+		}
+	}
+	if kind.mine() {
+		if err := user.Restore(id.String(), time.Now()); err != nil {
+			return proto.Pairing{}, "", err
 		}
 	}
 

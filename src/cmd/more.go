@@ -222,7 +222,11 @@ func created(cfg *conf.Config) error {
 
 // Rename files somebody under another name here: a person, every machine of theirs with them, or one
 // machine. What was granted against the old name, and what was taken up naming it, follows.
-func (l *running) Rename(old, name string) error {
+func (l *running) Rename(old, name string) error { return renameKnown(old, name) }
+
+// renameKnown files a person or a machine under another name here, and carries the name into every
+// grant and holding that named them.
+func renameKnown(old, name string) error {
 	if name == "" || strings.ContainsAny(name, "@/: \t\n") {
 		return fmt.Errorf("%q cannot be a name: it takes no spaces, @, / or colon", name)
 	}
