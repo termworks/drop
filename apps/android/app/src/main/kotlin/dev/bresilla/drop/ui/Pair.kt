@@ -196,14 +196,24 @@ private fun TakeCode(given: String?, paired: (String) -> Unit) {
     var text by remember { mutableStateOf(given ?: "") }
     var joining by remember { mutableStateOf(false) }
     var failed by remember { mutableStateOf<String?>(null) }
+    var took by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
 
+    // A code from drop me user vouch or export makes this phone somebody's instead of pairing it.
     val join: (String) -> Unit = { ticket ->
         joining = true
         failed = null
+        took = null
         scope.launch {
-            Drop.call { it.join(ticket.trim()) }
-                .onSuccess { paired(it) }
-                .onFailure { failed = it.message }
+            if (Drop.owning(ticket)) {
+                Drop.take(context.applicationContext, ticket)
+                    .onSuccess { took = it }
+                    .onFailure { failed = it.message }
+            } else {
+                Drop.call { it.join(ticket.trim()) }
+                    .onSuccess { paired(it) }
+                    .onFailure { failed = it.message }
+            }
             joining = false
         }
     }
@@ -260,7 +270,7 @@ private fun TakeCode(given: String?, paired: (String) -> Unit) {
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(12.dp))
-        OutlinedButton(onClick = { join(text) }, enabled = !joining && text.contains('#'), modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { join(text) }, enabled = !joining && (text.contains('#') || Drop.owning(text)), modifier = Modifier.fillMaxWidth()) {
             Text("Pair")
         }
         Spacer(Modifier.height(20.dp))
@@ -271,6 +281,7 @@ private fun TakeCode(given: String?, paired: (String) -> Unit) {
                 Text("Reaching the other device…")
             }
             failed != null -> Banner(failed ?: "", error = true)
+            took != null -> Banner(took ?: "")
         }
     }
 }

@@ -92,6 +92,14 @@ object Drop {
         start(context)
     }
 
+    /** Whether a code makes this phone somebody's, rather than pairing it with somebody. */
+    fun owning(code: String): Boolean = code.trim().let { it.startsWith("drop://badge/") || it.startsWith("drop://key/") }
+
+    /** Makes this phone one of somebody's machines from a code their computer showed, and starts the node again wearing it. */
+    suspend fun take(context: Context, code: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching { Mobile.take(code.trim()) }.onSuccess { restart(context) }
+    }
+
     fun bump() {
         _tick.value = _tick.value + 1
     }
@@ -198,9 +206,29 @@ data class Moving(val name: String, val done: Long, val size: Long) {
     val fraction: Float get() = if (size > 0) done.toFloat() / size else 0f
 }
 
-data class Me(val name: String, val id: String, val brief: String, val user: String) {
+/**
+ * This device. Owner is whose it is, as a key fingerprint; signs says it holds that key, and when it
+ * does not a machine that does vouched for it, until then.
+ */
+data class Me(
+    val name: String,
+    val id: String,
+    val brief: String,
+    val user: String,
+    val owner: String,
+    val signs: Boolean,
+    val until: Long,
+) {
     companion object {
-        fun from(o: JSONObject) = Me(o.optString("name"), o.optString("id"), o.optString("brief"), o.optString("user"))
+        fun from(o: JSONObject) = Me(
+            o.optString("name"),
+            o.optString("id"),
+            o.optString("brief"),
+            o.optString("user"),
+            o.optString("owner"),
+            o.optBoolean("signs"),
+            o.optLong("until"),
+        )
     }
 }
 

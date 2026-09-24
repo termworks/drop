@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/bresilla/drop/src/cmd"
 	tickets "github.com/bresilla/drop/src/pkg/ticket"
 )
 
@@ -77,3 +78,8 @@ func Code(ticket string, scale int) ([]byte, error) {
 	code.Scale = scale
 	return code.PNG(), nil
 }
+
+// Take makes this phone one of somebody's machines, from a code a computer of theirs showed —
+// `drop me user vouch` or `drop me user export` — and says what it now is. The node wears it from
+// its next start.
+func Take(code string) (string, error) { return cmd.TakeCode(code) }

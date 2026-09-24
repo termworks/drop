@@ -8,17 +8,20 @@ package mobile
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/bresilla/drop/src/cmd"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/tui"
+	"github.com/bresilla/drop/src/pkg/user"
 )
 
 // Events is what the app implements to hear from the node.
@@ -139,6 +142,11 @@ type self struct {
 	ID    string `json:"id"`
 	Brief string `json:"brief"`
 	User  string `json:"user"`
+	// Owner is the user key as a person recognises it, and Signs whether this device holds it: one
+	// that does not was vouched for by a machine that does, and wears a badge that runs out Until.
+	Owner string `json:"owner"`
+	Signs bool   `json:"signs"`
+	Until int64  `json:"until"`
 }
 
 // Self is this device: what it is called and who it is.
@@ -147,7 +155,15 @@ func (n *Node) Self() string {
 	if err != nil {
 		return "{}"
 	}
-	return encode(self{Name: me.Name, ID: me.ID, Brief: brief(me.ID), User: me.User})
+	out := self{Name: me.Name, ID: me.ID, Brief: brief(me.ID), User: me.User}
+	if pub, err := user.Public(); err == nil {
+		out.Owner = user.Fingerprint(pub)
+	}
+	_, out.Signs = user.Quiet()
+	if badge, _, err := user.Mine(time.Now()); err == nil || errors.Is(err, user.ErrStale) {
+		out.Until = badge.Until.UnixMilli()
+	}
+	return encode(out)
 }
 
 type machine struct {

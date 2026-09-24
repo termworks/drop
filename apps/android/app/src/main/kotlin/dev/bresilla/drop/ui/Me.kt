@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -19,16 +21,21 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -46,10 +53,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.activity.compose.rememberLauncherForActivityResult
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import dev.bresilla.drop.Drop
 import dev.bresilla.drop.Me
 import dev.bresilla.drop.Settings
 import java.io.File
+import java.text.DateFormat
+import java.util.Date
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -129,6 +141,7 @@ fun MeScreen(back: () -> Unit) {
                     trailingContent = { Icon(Icons.Filled.ContentCopy, "Copy") },
                 )
             }
+            me?.let { m -> item { Owner(m) { me = it } } }
             item {
                 Text(
                     "The device key was made on this phone and never leaves it. Uninstalling drop takes it, and everybody would have to pair with this phone again.",
@@ -184,4 +197,87 @@ private fun Awake() {
         },
         trailingContent = { if (awake) Icon(Icons.Filled.CheckCircle, null, tint = MaterialTheme.colorScheme.tertiary) },
     )
+}
+
+/**
+ * Whose phone this is. A phone pairs as a person of its own; a computer of yours makes it one of
+ * your machines, by vouching for it or by handing it your key, and shows a code for it to take.
+ */
+@Composable
+private fun Owner(m: Me, changed: (Me?) -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var taking by remember { mutableStateOf(false) }
+    var told by remember { mutableStateOf<String?>(null) }
+    var failed by remember { mutableStateOf<String?>(null) }
+    var pasting by remember { mutableStateOf(false) }
+    var pasted by remember { mutableStateOf("") }
+
+    val take: (String) -> Unit = { code ->
+        taking = true
+        failed = null
+        scope.launch {
+            Drop.take(context.applicationContext, code)
+                .onSuccess { told = it; changed(Drop.self()) }
+                .onFailure { failed = it.message }
+            taking = false
+        }
+    }
+    val camera = rememberLauncherForActivityResult(ScanContract()) { result -> result.contents?.let(take) }
+
+    Section("Whose phone this is")
+    ListItem(
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 3.dp).clip(RoundedCornerShape(18.dp)),
+        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        overlineContent = { Text(m.owner, style = Mono) },
+        headlineContent = { Text(if (m.signs) "It holds its owner's key" else "Vouched for by its owner's computer") },
+        supportingContent = {
+            Text(
+                if (m.signs) {
+                    "It signs its own badge. A key it made itself is a person of its own; take a code from your computer to be one of your machines."
+                } else {
+                    "Until ${DateFormat.getDateInstance().format(Date(m.until))}, and signed again whenever it reaches one of your machines."
+                },
+            )
+        },
+    )
+    Text(
+        "On your computer, drop me user vouch ${m.name} keeps your key there; drop me user export hands this phone the key itself. Then take the code it shows.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+    )
+    Row(Modifier.padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Button(enabled = !taking, onClick = {
+            camera.launch(
+                ScanOptions()
+                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    .setPrompt("Point at the code drop is showing")
+                    .setBeepEnabled(false)
+                    .setOrientationLocked(false),
+            )
+        }) {
+            Icon(Icons.Filled.QrCodeScanner, null)
+            Spacer(Modifier.width(8.dp))
+            Text("Scan the code")
+        }
+        OutlinedButton(enabled = !taking, onClick = { pasting = true }) { Text("Paste it") }
+        if (taking) CircularProgressIndicator(Modifier.size(24.dp).align(Alignment.CenterVertically), strokeWidth = 2.dp)
+    }
+    told?.let { Banner(it) }
+    failed?.let { Banner(it, error = true) }
+
+    if (pasting) {
+        AlertDialog(
+            onDismissRequest = { pasting = false },
+            title = { Text("Paste the code") },
+            text = {
+                OutlinedTextField(pasted, { pasted = it }, placeholder = { Text("drop://badge/…") }, textStyle = Mono)
+            },
+            confirmButton = {
+                TextButton(enabled = Drop.owning(pasted), onClick = { pasting = false; take(pasted) }) { Text("Take it") }
+            },
+            dismissButton = { TextButton(onClick = { pasting = false }) { Text("Cancel") } },
+        )
+    }
 }
