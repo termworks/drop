@@ -273,10 +273,10 @@ func Share(configDir, downloads string, folder, writable bool) error {
 	lua := fmt.Sprintf(`-- Written by the drop app, from what its settings say this phone shares. Changed there, not here.
 local drop = require("drop")
 
-drop.mount("/inbox", { type = "share", dir = [==[%s]==], access = "paired" })
-drop.mount("/chat", { type = "chat", access = "paired" })
-drop.mount("/open", { type = "link", access = "paired" })
-drop.mount("/phone", { type = "files", dir = [==[%s]==], writable = %t, access = "paired" })
+drop.mount("/inbox", { type = "share", dir = [==[%s]==], access = "me" })
+drop.mount("/chat", { type = "chat", access = "me" })
+drop.mount("/open", { type = "link", access = "me" })
+drop.mount("/phone", { type = "files", dir = [==[%s]==], writable = %t, access = "me" })
 `, arrived, arrived, writable)
 
 	staging := file + ".new"

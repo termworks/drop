@@ -78,13 +78,17 @@ func TestRendezvousCanBeTurnedOff(t *testing.T) {
 
 // A node with no config should be usable by a device you paired with. Anything else is a program
 // that looks broken until its owner learns that a rule was needed.
-func TestTheDefaultsAreOpenToAPairedDevice(t *testing.T) {
-	paired := ns.Caller{ID: "aaaa", Name: "laptop", Paired: true}
+func TestTheDefaultsAreOpenToYourOwnMachinesAlone(t *testing.T) {
+	mine := ns.Caller{ID: "aaaa", Name: "laptop", UserName: ns.LevelMe, Paired: true, Trusted: true}
+	paired := ns.Caller{ID: "bbbb", Name: "bob", UserName: "bob", Paired: true}
 	stranger := ns.Caller{ID: "zzzz"}
 
 	for _, path := range []string{"/inbox", "/chat", "/open"} {
-		if ok, why := Default(known()).Mounts.Admits(path, paired); !ok {
-			t.Fatalf("%s is closed to a paired device: %s", path, why)
+		if ok, why := Default(known()).Mounts.Admits(path, mine); !ok {
+			t.Fatalf("%s is closed to a machine of yours: %s", path, why)
+		}
+		if ok, _ := Default(known()).Mounts.Admits(path, paired); ok {
+			t.Fatalf("%s is open to somebody merely paired", path)
 		}
 		if ok, _ := Default(known()).Mounts.Admits(path, stranger); ok {
 			t.Fatalf("%s is open to a stranger", path)
