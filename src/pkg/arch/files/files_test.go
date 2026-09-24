@@ -524,17 +524,15 @@ func TestAClosedSessionIsNotAnError(t *testing.T) {
 	}
 }
 
-// A namespace pointed at a directory that is not there is refused where it is opened, and the
-// caller is told rather than left waiting.
+// A namespace pointed at a directory that is not there and cannot be made is refused where it is
+// opened, and the caller is told rather than left waiting. So is one pointed at a file.
 func TestANamespaceWithNoDirectoryIsRefused(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "not here")
-	if _, err := Browse(serving(t, missing, true, Into{})); err == nil {
-		t.Fatal("Browse() walked a namespace whose directory does not exist")
-	}
-
 	file := filepath.Join(t.TempDir(), "a file")
 	if err := os.WriteFile(file, []byte("."), 0o600); err != nil {
 		t.Fatalf("writing the file: %v", err)
+	}
+	if _, err := Browse(serving(t, filepath.Join(file, "inside"), true, Into{})); err == nil {
+		t.Fatal("Browse() walked a namespace whose directory cannot be made")
 	}
 	if _, err := Browse(serving(t, file, true, Into{})); err == nil {
 		t.Fatal("Browse() walked a namespace pointed at a file")
@@ -1519,5 +1517,21 @@ func TestAFreeLandingHasCompleteBytesAtItsCommit(t *testing.T) {
 	}
 	if got := read(t, filepath.Join(dir, final)); !bytes.Equal(got, body) {
 		t.Fatalf("removing the part changed the destination to %q", got)
+	}
+}
+
+// A directory the config names and nothing has made yet is served as an empty one.
+func TestADirectoryNotMadeYetIsServedEmpty(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "not", "yet")
+
+	entries, err := opened(t, dir, false, Into{}).List("")
+	if err != nil {
+		t.Fatalf("listing a directory nothing has made yet: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("a new directory holds %v", entries)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("the directory was not made: %v", err)
 	}
 }

@@ -153,6 +153,7 @@ fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
                         IconButton(onClick = { making = true }) { Icon(Icons.Filled.CreateNewFolder, "New folder") }
                     }
                     IconButton(onClick = { again++ }) { Icon(Icons.Filled.Refresh, "Reload") }
+                    TopicMenu()
                 },
             )
         },

@@ -21,9 +21,10 @@ type Config struct {
 
 // Into is what the process running a link namespace hands it.
 type Into struct {
-	// Store puts one arriving link away. Returning an error means it was not stored, and the
-	// sender will send it again.
-	Store func(from node.ID, m convo.Message) error
+	// Store puts one arriving link away, with the action of the namespace it arrived at — empty
+	// when it is only to be recorded. Returning an error means it was not stored, and the sender
+	// will send it again.
+	Store func(from node.ID, m convo.Message, action string) error
 }
 
 // Link serves links.
@@ -57,7 +58,13 @@ func (l *Link) Note(c arch.Config) arch.Note {
 	}
 }
 
-// Serve takes a batch of links.
+// Serve takes a batch of links, each handed on with what this namespace says to do with it.
 func (l *Link) Serve(ctx context.Context, at arch.Session) error {
-	return chat.Take(at.Conn, at.From, l.into.Store)
+	if l.into.Store == nil {
+		return chat.Take(at.Conn, at.From, nil)
+	}
+	cfg, _ := at.Config.(Config)
+	return chat.Take(at.Conn, at.From, func(from node.ID, m convo.Message) error {
+		return l.into.Store(from, m, cfg.Action)
+	})
 }

@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.2] - 2026-09-24
+
+### <!-- 0 -->⛰️  Features
+
+- Share text, links and files to anyone
+- A menu on every path, text size
+- Open the links that arrive
+- Start the login shell when SHELL is unset
+- Type straight into the terminal
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Open a link with its path's action
+- Read a bare access word as one name
+- Close the keyboard when leaving a terminal
+- Make a named folder that is not there yet
+- Draw command output at the phone's size
+
+### <!-- 6 -->🧪 Testing
+
+- Refuse a folder that cannot be made
+
 ## [0.4.1] - 2026-09-24
 
 ### <!-- 0 -->⛰️  Features

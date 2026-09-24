@@ -18,6 +18,7 @@ package files
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -134,6 +135,12 @@ func (f *Files) Serve(ctx context.Context, at arch.Session) error {
 	// Every name this session is given is resolved through the open directory, one component at a
 	// time, and leaves it for nothing: no link out, no dot-dot, and nothing that appears between the
 	// check and the open.
+	//
+	// A directory the config names and nothing has made yet is an empty one, the same as an inbox
+	// before anything arrives: made on first use rather than refused.
+	if _, err := os.Stat(cfg.Dir); errors.Is(err, os.ErrNotExist) {
+		_ = os.MkdirAll(cfg.Dir, 0o700)
+	}
 	dir, err := os.OpenRoot(cfg.Dir)
 	if err != nil {
 		reject := wire.Reject{Reason: "this namespace's directory cannot be opened"}

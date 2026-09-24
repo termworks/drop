@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -320,5 +321,19 @@ func TestAPrivateTerminalIsEachWatchersOwn(t *testing.T) {
 	defer terminals.mu.Unlock()
 	if len(terminals.open) != 0 {
 		t.Fatalf("a private terminal was kept for the next watcher: %v", terminals.open)
+	}
+}
+
+// A process started without $SHELL still starts the shell its account logs in with.
+func TestTheLoginShellIsFoundWithoutShellSet(t *testing.T) {
+	raw, err := os.ReadFile("/etc/passwd")
+	if err != nil {
+		t.Skip("no /etc/passwd here")
+	}
+	if !strings.Contains(string(raw), ":"+strconv.Itoa(os.Getuid())+":") {
+		t.Skip("this account is not in /etc/passwd")
+	}
+	if got := loginShell(); got == "" {
+		t.Fatal("no login shell found for an account /etc/passwd lists")
 	}
 }

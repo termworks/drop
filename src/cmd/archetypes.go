@@ -75,7 +75,7 @@ func (d *doings) serving() *arch.Registry {
 	known.Register(share.New(share.Into{Progress: d.moving, Landed: d.dropped, Completed: d.completedShare}))
 	known.Register(d.filing())
 	known.Register(chat.New(chat.Into{Store: d.store}))
-	known.Register(link.New(link.Into{Store: d.store}))
+	known.Register(link.New(link.Into{Store: d.storeWith}))
 	known.Register(stream.New(stream.Into{Opened: d.opened}))
 	known.Register(d.terminals())
 	known.Register(d.noting())
@@ -212,10 +212,17 @@ func (d *doings) completedShare(from node.ID, path string, config share.Config) 
 }
 
 // store puts an arriving message away, and acts on the kinds that ask for it.
-func (d *doings) store(from node.ID, m convo.Message) error {
-	openLinks := d.cfg != nil && d.cfg.OpenLinks
+func (d *doings) store(from node.ID, m convo.Message) error { return d.storeWith(from, m, "") }
 
-	return receiving(d.pinned, openLinks, func(from node.ID, m convo.Message) {
+// storeWith is store for a link namespace: a link is opened with the namespace's own action when it
+// names one, and with the opener when the config opens links everywhere.
+func (d *doings) storeWith(from node.ID, m convo.Message, action string) error {
+	opener := action
+	if opener == "" && d.cfg != nil && d.cfg.OpenLinks {
+		opener = defaultOpener()
+	}
+
+	return receiving(d.pinned, opener, func(from node.ID, m convo.Message) {
 		if d.said != nil {
 			d.said(from, m)
 		}

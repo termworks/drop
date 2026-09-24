@@ -37,6 +37,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        Drop.visible = true
+    }
+
+    override fun onPause() {
+        Drop.visible = false
+        super.onPause()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         arrival.value = arrivalOf(intent)
@@ -48,8 +58,12 @@ class MainActivity : ComponentActivity() {
 
         return when (intent.action) {
             Intent.ACTION_VIEW -> intent.dataString?.let { Arrival.Join(it) }
-            Intent.ACTION_SEND ->
-                IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.let { Arrival.Send(listOf(it)) }
+            // A file, some text — a link is text too — or both: a picture with a caption.
+            Intent.ACTION_SEND -> {
+                val file = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.isNotBlank() }
+                if (file == null && text == null) null else Arrival.Send(listOfNotNull(file), text)
+            }
             Intent.ACTION_SEND_MULTIPLE ->
                 IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
                     ?.takeIf { it.isNotEmpty() }

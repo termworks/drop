@@ -109,6 +109,7 @@ private fun Reading(at: Screen.Note, back: () -> Unit) {
                 actions = {
                     body?.let { text -> IconButton(onClick = { copy(context, at.path, text) }) { Icon(Icons.Filled.ContentCopy, "Copy") } }
                     IconButton(onClick = { again++ }) { Icon(Icons.Filled.Refresh, "Read again") }
+                    TopicMenu()
                 },
             )
         },

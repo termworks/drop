@@ -35,7 +35,10 @@ type Live struct {
 	talk   tui.Talk
 	// wantCols and wantRows are the size last asked for, kept for a far end that was not ready.
 	wantCols, wantRows int
-	nudge              chan struct{}
+	// farSized says the far end has said what shape it is. Until it does — and a command's output
+	// never does — the screen is drawn at whatever size this phone has room for.
+	farSized bool
+	nudge    chan struct{}
 }
 
 // Watch opens a live path on a machine and draws it into screen until Stop. cols and rows are the
@@ -93,6 +96,7 @@ func (l *Live) sized(cols, rows int) {
 		return
 	}
 	l.mu.Lock()
+	l.farSized = true
 	l.screen.Resize(cols, rows)
 	l.mu.Unlock()
 }
@@ -151,12 +155,24 @@ func (l *Live) Type(text string) error {
 }
 
 // Resize asks the far end for another size, which a shared terminal may refuse. Asked before the
-// far end is ready, it is remembered and asked for as soon as it is.
+// far end is ready, it is remembered and asked for as soon as it is. What has no terminal behind it
+// is drawn at this size straight away.
 func (l *Live) Resize(cols, rows int) error {
+	if cols < 1 || rows < 1 {
+		return nil
+	}
 	l.mu.Lock()
 	l.wantCols, l.wantRows = cols, rows
 	talk := l.talk
+	if !l.farSized {
+		l.screen.Resize(cols, rows)
+	}
 	l.mu.Unlock()
+
+	select {
+	case l.nudge <- struct{}{}:
+	default:
+	}
 
 	if talk == nil {
 		return nil

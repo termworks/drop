@@ -137,6 +137,7 @@ fun ChatScreen(machine: String, go: (Screen) -> Unit, back: () -> Unit) {
                     }
                 },
                 navigationIcon = { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                actions = { TopicMenu() },
             )
         },
         bottomBar = {
