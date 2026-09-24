@@ -632,3 +632,43 @@ func (b *Book) reload() error {
 	b.mu.Unlock()
 	return nil
 }
+
+// Rename files a machine under another name. Its person, trust and secret go with it.
+func (b *Book) Rename(old, name string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	entry, ok := b.entries[old]
+	if !ok {
+		return fmt.Errorf("%s is not in the address book", old)
+	}
+	if _, taken := b.entries[name]; taken && name != old {
+		return fmt.Errorf("%s is a name already taken here", name)
+	}
+	delete(b.entries, old)
+	entry.Name = name
+	if entry.Person == old {
+		entry.Person = name
+	}
+	b.entries[name] = entry
+	return nil
+}
+
+// RenamePerson calls a person something else here, on every machine of theirs.
+func (b *Book) RenamePerson(old, name string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	found := false
+	for at, entry := range b.entries {
+		if entry.User == "" || entry.Person != old {
+			continue
+		}
+		entry.Person, found = name, true
+		b.entries[at] = entry
+	}
+	if !found {
+		return fmt.Errorf("%s is nobody in the address book", old)
+	}
+	return nil
+}
