@@ -430,6 +430,19 @@ func (l *running) Self() (tui.Identity, error) {
 // The interface shows the ticket and the code while this waits, which is the whole point: a device
 // with nothing paired is a dead end, and reaching for a second terminal to fix that is not a design.
 func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
+	return l.offer(ctx, offerPerson)
+}
+
+// OfferMachine puts this device up for another machine of this user's to join, and hands back the
+// ticket whose code the other machine types.
+func (l *running) OfferMachine(ctx context.Context) (string, <-chan string, error) {
+	return l.offer(ctx, offerMine)
+}
+
+func (l *running) offer(ctx context.Context, kind offerKind) (string, <-chan string, error) {
+	if err := canAdd(kind); err != nil {
+		return "", nil, err
+	}
 	code, err := proto.NewCode()
 	if err != nil {
 		return "", nil, err
@@ -441,7 +454,7 @@ func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
 	// Whoever takes the code dials this identity, and the daemon is what answers it. A code this
 	// process answered for itself would be one nobody could ever reach.
 	if l.daemon {
-		said, closeOffer, err := offerAtDaemon(ctx, code, "", false)
+		said, closeOffer, err := offerAtDaemon(ctx, code, "", kind)
 		if err != nil {
 			return "", nil, err
 		}
@@ -466,32 +479,38 @@ func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
 	if err := node.Findable(ctx, l.node); err != nil {
 		return "", nil, err
 	}
+	publishCode(ctx, code, l.node.ID())
 
 	// Registered on the interface's own listener rather than starting a second one. Two accept
 	// loops on one endpoint race, and the loser hangs up on a connection it does not know.
 	l.ears.Handle(node.ALPNPair, func(from node.ID, s *iroh.Stream) {
 		defer func() { _ = s.Close() }()
 
-		_, _ = proto.AnswerPairing(s, l.node.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(l.node)), func(p proto.Pairing) error {
+		_, _ = proto.AnswerPairing(s, l.node.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(l.node)), func(p proto.Pairing) (proto.Grant, error) {
 			// The far end has to prove it was given the code, not merely the address.
 			if !hmac.Equal(p.Proof, codeProof(code, from, l.node.ID())) {
-				return errNotTheCode
+				return proto.Grant{}, errNotTheCode
+			}
+			grant, err := admitted(&p, kind)
+			if err != nil {
+				return proto.Grant{}, err
 			}
 
 			// Written down the one way every pairing is written down, and before the far end is
 			// answered. A name that is already somebody else's is refused here as it is on the
 			// command line, rather than handed, with every rule that mentions it, to whoever paired
 			// last.
-			name, err := filed(p, "", false)
+			name, err := filed(p, "", kind == offerMachine)
 			if err != nil {
-				return err
+				return proto.Grant{}, err
 			}
+			nudgeMine()
 
 			select {
 			case done <- name:
 			default:
 			}
-			return nil
+			return grant, nil
 		})
 	})
 
@@ -509,12 +528,22 @@ func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
 // second implementation: when it was one, the two drifted and pairing worked from one and not the
 // other.
 func (l *running) Join(ctx context.Context, ticket string) (string, error) {
+	return l.join(ctx, ticket, offerPerson)
+}
+
+// JoinMachine makes this device one of its user's machines, from the code or ticket another of
+// them is showing.
+func (l *running) JoinMachine(ctx context.Context, code string) (string, error) {
+	return l.join(ctx, code, offerMine)
+}
+
+func (l *running) join(ctx context.Context, ticket string, kind offerKind) (string, error) {
 	// The daemon, when it holds the address, is what the other device reaches afterwards.
 	if l.daemon {
-		name, _, _, err := joinThroughDaemon(ctx, ticket, "", false, nil)
+		name, _, _, err := joinThroughDaemon(ctx, ticket, "", kind, nil)
 		return name, err
 	}
-	_, name, err := join(ctx, l.node, l.lan, ticket, "", false, nil)
+	_, name, err := join(ctx, l.node, l.lan, ticket, "", kind, nil)
 	return name, err
 }
 

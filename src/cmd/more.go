@@ -38,6 +38,10 @@ type More interface {
 	Manage(ctx context.Context, on *book.Entry, m proto.Manage) ([]byte, error)
 	// Rename files a person or a machine under another name here.
 	Rename(old, name string) error
+	// OfferMachine shows a code for another machine of this user's to join with, and JoinMachine
+	// takes one: either way the other becomes one of this user's machines.
+	OfferMachine(ctx context.Context) (ticket string, done <-chan string, err error)
+	JoinMachine(ctx context.Context, code string) (with string, err error)
 }
 
 var _ More = (*running)(nil)

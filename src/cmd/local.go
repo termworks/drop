@@ -57,7 +57,7 @@ type hosts struct {
 // joinWithin bounds how long this node spends taking somebody's ticket.
 const joinWithin = 2 * time.Minute
 
-// takeJoin takes a ticket as this node: "join <ticket> <as> <person|machine> [host:port,…]".
+// takeJoin takes a ticket as this node: "join <ticket> <as> <kind> [host:port,…]".
 //
 // A command that took it with a node of its own would pair from that node's address, which is gone
 // the moment the command exits, and the far end would go on dialling somewhere nobody answers.
@@ -69,7 +69,7 @@ func takeJoin(ctx context.Context, h hosts, conn net.Conn, rest string) error {
 	if h.offers == nil || h.offers.node == nil {
 		return writeLocal(conn, "failed this node does not pair\n")
 	}
-	ticket, as, machine := fields[0], fields[1], fields[2] == "machine"
+	ticket, as, kind := fields[0], fields[1], offerKind(fields[2])
 	if as == "-" {
 		as = ""
 	}
@@ -81,7 +81,7 @@ func takeJoin(ctx context.Context, h hosts, conn net.Conn, rest string) error {
 	ctx, cancel := context.WithTimeout(ctx, joinWithin)
 	defer cancel()
 
-	p, name, err := join(ctx, h.offers.node, h.lan, ticket, as, machine, at)
+	p, name, err := join(ctx, h.offers.node, h.lan, ticket, as, kind, at)
 	if err != nil {
 		return writeLocal(conn, "failed %s\n", strings.ReplaceAll(err.Error(), "\n", " "))
 	}
@@ -91,7 +91,7 @@ func takeJoin(ctx context.Context, h hosts, conn net.Conn, rest string) error {
 
 // joinThroughDaemon asks the running node to take a ticket, and says who it paired with, their id,
 // and what they call the machine of theirs that answered.
-func joinThroughDaemon(ctx context.Context, ticket, as string, machine bool, at []string) (string, string, string, error) {
+func joinThroughDaemon(ctx context.Context, ticket, as string, kind offerKind, at []string) (string, string, string, error) {
 	path, err := castSocket()
 	if err != nil {
 		return "", "", "", errNoDaemon
@@ -109,10 +109,6 @@ func joinThroughDaemon(ctx context.Context, ticket, as string, machine bool, at 
 	name := as
 	if name == "" {
 		name = "-"
-	}
-	kind := "person"
-	if machine {
-		kind = "machine"
 	}
 	line := fmt.Sprintf("join %s %s %s", strings.TrimSpace(ticket), name, kind)
 	if len(at) > 0 {
@@ -268,6 +264,7 @@ type pairHost struct {
 	mu   sync.Mutex
 	code string
 	as   string
+	kind offerKind
 	// node is this daemon's endpoint, so a code being shown can publish where to find it.
 	node   *node.Node
 	paired chan pairAttempt
@@ -276,7 +273,7 @@ type pairHost struct {
 func newPairHost(n *node.Node) *pairHost { return &pairHost{node: n} }
 
 // open puts a code up for answering, and hands back what to wait on.
-func (h *pairHost) open(code, as string) (<-chan pairAttempt, error) {
+func (h *pairHost) open(code, as string, kind offerKind) (<-chan pairAttempt, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -284,7 +281,7 @@ func (h *pairHost) open(code, as string) (<-chan pairAttempt, error) {
 		return nil, errors.New("this device is already showing a code")
 	}
 
-	h.code, h.as = code, as
+	h.code, h.as, h.kind = code, as, kind
 	h.paired = make(chan pairAttempt, 1)
 	return h.paired, nil
 }
@@ -293,15 +290,15 @@ func (h *pairHost) close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	h.code, h.as, h.paired = "", "", nil
+	h.code, h.as, h.kind, h.paired = "", "", "", nil
 }
 
-// asking is the code being offered, and empty when none is.
-func (h *pairHost) asking() (string, string) {
+// asking is the code being offered and what it is for, and empty when none is.
+func (h *pairHost) asking() (string, offerKind) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	return h.code, h.as
+	return h.code, h.kind
 }
 
 // answered hands a pairing to whoever is showing the code, and waits until it is written down: the
@@ -843,11 +840,11 @@ func takeLocal(ctx context.Context, h hosts, conn net.Conn) error {
 		return takeUnmount(h.put, conn, rest)
 
 	case "pair":
-		code, as, machine, err := offerAsked(rest)
+		code, as, kind, err := offerAsked(rest)
 		if err != nil {
 			return err
 		}
-		return takeOffer(ctx, h.offers, conn, code, as, machine)
+		return takeOffer(ctx, h.offers, conn, code, as, kind)
 
 	case "via":
 		name, alpn, _ := strings.Cut(rest, " ")
@@ -1036,30 +1033,30 @@ func takeUnmount(host *mountHost, conn net.Conn, rest string) error {
 }
 
 // offerAsked reads what a local `drop pair` asked for: a code, a name to file the far end under,
-// and whether to keep the device alone rather than the person who owns it.
+// and what the code is for.
 //
 // A dash stands for a name that was not given, so the third field cannot be mistaken for one. Both
 // ends of this socket are the same binary, so the line is exactly three fields or it is malformed.
-func offerAsked(rest string) (code, as string, machine bool, err error) {
+func offerAsked(rest string) (code, as string, kind offerKind, err error) {
 	parts := strings.SplitN(strings.TrimSpace(rest), " ", 3)
 	if len(parts) != 3 {
-		return "", "", false, fmt.Errorf("a pairing offer asked for %q, which is not a code, a name and a kind", rest)
+		return "", "", "", fmt.Errorf("a pairing offer asked for %q, which is not a code, a name and a kind", rest)
 	}
 
-	code, machine = parts[0], strings.TrimSpace(parts[2]) == "machine"
+	code, kind = parts[0], offerKind(strings.TrimSpace(parts[2]))
 	if parts[1] != "-" {
 		as = parts[1]
 	}
-	return code, as, machine, nil
+	return code, as, kind, nil
 }
 
 // takeOffer holds a pairing offer open for as long as whoever asked for it stays connected.
-func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as string, machine bool) error {
+func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as string, kind offerKind) error {
 	if code == "" {
 		return errors.New("a pairing offer with no code")
 	}
 
-	waiting, err := offers.open(code, as)
+	waiting, err := offers.open(code, as, kind)
 	if err != nil {
 		return writeLocal(conn, "busy %v\n", err)
 	}
@@ -1077,6 +1074,7 @@ func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as st
 	if err := node.Findable(shown, offers.node); err != nil {
 		fmt.Fprintf(os.Stderr, "drop: cannot publish where this device is: %v\n", err)
 	}
+	publishCode(shown, code, offers.node.ID())
 
 	fmt.Println("  showing a pairing code")
 	defer fmt.Println("  the pairing code is no longer being shown")
@@ -1095,25 +1093,14 @@ func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as st
 	case <-gone:
 		return nil
 	case at := <-waiting:
-		err := record(at.pairing, as, machine)
+		name, err := record(at.pairing, as, kind)
 		at.filed <- err
 		if err != nil {
 			_ = writeLocal(conn, "failed %v\n", err)
 			return err
 		}
-		return writeLocal(conn, "paired %s %s\n", nameOf(at.pairing, as), at.pairing.Peer)
+		return writeLocal(conn, "paired %s %s\n", name, at.pairing.Peer)
 	}
-}
-
-// nameOf is what the far device will be filed under.
-func nameOf(p proto.Pairing, as string) string {
-	if as != "" {
-		return as
-	}
-	if p.Name != "" {
-		return p.Name
-	}
-	return node.Brief(p.Peer)
 }
 
 // takeVia lends a command this node's connection to a device.

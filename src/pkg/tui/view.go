@@ -893,6 +893,7 @@ func (m Model) nothingPaired() string {
 		keyStyle.Render("t") + sayStyle.Render("  take a code the other device is showing"),
 		"",
 		faintStyle.Render("or run ") + kindStyle.Render("drop peer pair") + faintStyle.Render(" on both, from a terminal"),
+		faintStyle.Render("a machine of your own: ") + kindStyle.Render("drop machine add"),
 		"",
 	}, "\n")
 
@@ -906,8 +907,13 @@ func (m Model) nothingPaired() string {
 func (m Model) pairingView() string {
 	var out strings.Builder
 
+	// The code alone is what anybody types: it is looked up, so the id never has to be.
 	width := m.panelWidth()
-	folded := fold("drop peer pair "+m.linking.ticket, width-4)
+	typed := m.linking.ticket
+	if _, code, found := strings.Cut(typed, "#"); found {
+		typed = code
+	}
+	folded := fold("drop peer pair "+typed, width-4)
 
 	// What the panel has room for: the body, less its own two edges, less the line that says what
 	// to do with the code, the ticket under it, and the line saying we are waiting.

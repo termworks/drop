@@ -4,9 +4,12 @@ import (
 	stdbytes "bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/book"
+	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/proto"
+	"github.com/bresilla/drop/src/pkg/user"
 )
 
 const (
@@ -91,6 +94,20 @@ func TestOneEndpointCannotBeFiledUnderTwoNames(t *testing.T) {
 	}
 	if _, ok := b.Lookup("desktop"); ok {
 		t.Fatal("the second name was written despite the refusal")
+	}
+}
+
+// A device paired again, calling itself something new, keeps the name it is known by here.
+func TestADevicePairedAgainKeepsItsName(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	peer := idFor(43)
+
+	if _, err := filed(proto.Pairing{Peer: peer, Secret: pairSecret(5), Name: "phone"}, "", false); err != nil {
+		t.Fatal(err)
+	}
+	name, err := filed(proto.Pairing{Peer: peer, Secret: pairSecret(6), Name: "renamed"}, "", false)
+	if err != nil || name != "phone" {
+		t.Fatalf("pairing again filed it as %q (%v)", name, err)
 	}
 }
 
@@ -186,5 +203,51 @@ func TestPersonCanReuseTheirOwnName(t *testing.T) {
 
 	if _, err := filed(proto.Pairing{Peer: idFor(52), Secret: pairSecret(15), User: aliceKey}, "alice", false); err != nil {
 		t.Fatalf("reusing alice for the same person: %v", err)
+	}
+}
+
+// A code for one kind of joining is refused to a device that came for the other, so nobody becomes
+// somebody's machine by pairing with them, and nobody pairing is made one by mistake.
+func TestACodeIsOnlyTakenForWhatItWasShownFor(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	if _, err := admitted(&proto.Pairing{Peer: idFor(3), Wants: true}, offerPerson); err == nil {
+		t.Error("a device asking to become mine took a code shown for pairing")
+	}
+	if _, err := admitted(&proto.Pairing{Peer: idFor(3)}, offerMine); err == nil {
+		t.Error("a device pairing took a code shown for adding a machine")
+	}
+	if grant, err := admitted(&proto.Pairing{Peer: idFor(3)}, offerPerson); err != nil || grant.Kind != proto.GrantNone {
+		t.Errorf("an ordinary pairing was granted %d (%v)", grant.Kind, err)
+	}
+}
+
+// A machine joined as mine is handed a badge it can wear, and filed as this user's.
+func TestAMachineJoinedAsMineIsGrantedABadge(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	if err := wearBadge(); err != nil {
+		t.Fatal(err)
+	}
+	self, err := node.LocalID()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := proto.Pairing{Peer: self, Name: "phone", Wants: true}
+	grant, err := admitted(&p, offerMine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.Kind != proto.GrantBadge || p.User != myKey() {
+		t.Fatalf("granted %d, filed under %q", grant.Kind, p.User)
+	}
+	badge, _, err := user.Unpack(grant.Body, time.Now())
+	if err != nil {
+		t.Fatalf("the badge granted does not read: %v", err)
+	}
+	if user.Text(badge.User) != myKey() || badge.Name != "phone" {
+		t.Errorf("the badge says %q is %q", user.Text(badge.User), badge.Name)
 	}
 }
