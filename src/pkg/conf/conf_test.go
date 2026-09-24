@@ -898,3 +898,25 @@ func TestDirectCanBeTurnedOff(t *testing.T) {
 	}
 	node.SetDirect(true)
 }
+
+// A bare word that is none of the three shorthands is one name, the same as a list of one: "me"
+// written as a string was a path nobody at all could open.
+func TestABareNameIsOneName(t *testing.T) {
+	cfg := load(t, `
+		local drop = require("drop")
+		drop.mount("/mine", { type = "chat", access = "me" })
+		drop.mount("/bobs", { type = "chat", access = "bob" })
+	`)
+
+	mine := ns.Caller{ID: "a", Name: "laptop", UserName: "me", Paired: true, Trusted: true}
+	bob := ns.Caller{ID: "b", Name: "bob", UserName: "bob", Paired: true}
+	if ok, why := cfg.Mounts.Admits("/mine", mine); !ok {
+		t.Fatalf("access = \"me\" refused a machine of mine: %s", why)
+	}
+	if ok, _ := cfg.Mounts.Admits("/mine", bob); ok {
+		t.Fatal("access = \"me\" let somebody else in")
+	}
+	if ok, why := cfg.Mounts.Admits("/bobs", bob); !ok {
+		t.Fatalf("access = \"bob\" refused bob: %s", why)
+	}
+}
