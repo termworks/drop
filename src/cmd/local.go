@@ -323,6 +323,10 @@ func (h *pairHost) answered(p proto.Pairing) error {
 
 	select {
 	case err := <-attempt.filed:
+		// A machine that just paired may be one of this user's, with the rest of them to hear about.
+		if err == nil {
+			nudgeMine()
+		}
 		return err
 	case <-time.After(localHelloWithin):
 		return errors.New("the pairing was not written down in time")

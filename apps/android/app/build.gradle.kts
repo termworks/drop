@@ -4,6 +4,19 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val dropVersion = project.findProperty("dropVersion")?.toString() ?: "0.0.0"
+
+// A version as the number Android compares: each release must be a larger one to install over the
+// last, so 0.4.3 is 403 and 1.2.0 is 10200.
+fun codeOf(version: String): Int {
+    val parts = version.split(".").map { part -> part.takeWhile { it.isDigit() }.toIntOrNull() ?: 0 } + listOf(0, 0, 0)
+    return maxOf(1, parts[0] * 10000 + parts[1] * 100 + parts[2])
+}
+
+// The key every release is signed with, when one is given. The same key on every build is what lets
+// an installed app take the next one as an update; without one it is this machine's debug key.
+val releaseKey: String? = System.getenv("DROP_KEYSTORE")?.takeIf { it.isNotBlank() && file(it).exists() }
+
 android {
     namespace = "dev.bresilla.drop"
     compileSdk = 35
@@ -16,8 +29,19 @@ android {
         applicationId = "dev.bresilla.drop"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = project.findProperty("dropVersion")?.toString() ?: "0.0.0"
+        versionCode = codeOf(dropVersion)
+        versionName = dropVersion
+    }
+
+    signingConfigs {
+        if (releaseKey != null) {
+            create("release") {
+                storeFile = file(releaseKey)
+                storePassword = System.getenv("DROP_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("DROP_KEY_ALIAS") ?: "drop"
+                keyPassword = System.getenv("DROP_KEY_PASSWORD") ?: System.getenv("DROP_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     sourceSets {
@@ -33,9 +57,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Signed with the debug key unless a release key is given, so CI produces something
-            // installable rather than an unsigned artifact nobody can use.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (releaseKey != null) "release" else "debug")
         }
     }
 

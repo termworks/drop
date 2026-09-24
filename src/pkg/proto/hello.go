@@ -60,6 +60,11 @@ type Hello struct {
 	// Renewed is a fresh badge for the caller, signed by its own user's key: sent to a machine of
 	// this user's whose badge is running low and that cannot sign one itself. Empty otherwise.
 	Renewed []byte
+	// Circle and Mine go only to a machine of this machine's own user: the secret all of that user's
+	// machines share, and every one of them this machine knows of, so the caller can find the ones it
+	// has never met.
+	Circle []byte
+	Mine   []Member
 }
 
 // encode writes what this node says it offers, cut to what the far end will read.
@@ -99,6 +104,16 @@ func (h Hello) encode() []byte {
 		}
 	}
 	w.Bytes(h.Renewed)
+	w.Bytes(h.Circle)
+	mine := h.Mine
+	if len(mine) > MaxMembers {
+		mine = mine[:MaxMembers]
+	}
+	w.Uint(uint64(len(mine)))
+	for _, m := range mine {
+		w.String(m.ID)
+		w.String(m.Name)
+	}
 	return w.Body()
 }
 
@@ -184,6 +199,27 @@ func decodeHello(body []byte) (Hello, error) {
 		return out, err
 	}
 	out.Renewed = renewed
+	if out.Circle, err = r.Bytes(64); err != nil {
+		return out, err
+	}
+	members, err := r.Uint()
+	if err != nil {
+		return out, err
+	}
+	if members > MaxMembers {
+		return out, fmt.Errorf("a node named %d machines, which is more than %d", members, MaxMembers)
+	}
+	for range members {
+		id, err := r.String(128)
+		if err != nil {
+			return out, err
+		}
+		name, err := r.String(256)
+		if err != nil {
+			return out, err
+		}
+		out.Mine = append(out.Mine, Member{ID: id, Name: plain.Line(name)})
+	}
 	if !r.Done() {
 		return out, fmt.Errorf("a hello has trailing bytes")
 	}
@@ -377,3 +413,12 @@ const MaxPathShown = 256
 // authorized_keys writes one is a few hundred bytes; the general string limit is sixty-four
 // kilobytes of somebody else's choosing, times however many they claim.
 const MaxHolder = 1024
+
+// Member is one machine of a user's, as another of theirs names it: its id, and what it is called.
+type Member struct {
+	ID   string
+	Name string
+}
+
+// MaxMembers bounds how many machines one user's machine names to another.
+const MaxMembers = 256

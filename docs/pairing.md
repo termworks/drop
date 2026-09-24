@@ -101,6 +101,19 @@ Either way the key the machine had is set aside beside the new one, and every ma
 files it under *me* the first time it shows your badge. A vouched machine whose badge runs out
 before it meets one of yours still starts, wearing the stale badge, which proves nothing to anyone.
 
+### All of them, through any one
+
+Pair a machine with one of yours and it is one of yours to all of them — but it only knows the one
+it met. So your machines tell each other the rest. Every few minutes, and the moment a pairing
+lands, each says hello to the others it knows, and one of yours answering one of yours adds two
+things: every machine of yours it knows of, and the secret all your machines share. A machine it
+had not heard of is written down, and the two find each other under a secret each works out from
+that one — the same way a paired machine is found, from anywhere, without the two ever pairing.
+
+The shared secret is made by the first of your machines asked for it and handed to the rest. Two
+made apart before they met settle on the lower of the two, and every pair's secret moves with it.
+Only a machine already known to be yours is believed about which machines are yours.
+
 ## Being found without being findable
 
 A device that moved cannot be found at the address its peers wrote down. So drop publishes where it

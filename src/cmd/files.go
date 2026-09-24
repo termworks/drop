@@ -124,7 +124,11 @@ func serving(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.E
 	defer func() { _ = s.Close() }()
 	defer stopStreamOnDone(ctx, s)()
 
-	return proto.AskHello(s)
+	hello, err := proto.AskHello(s)
+	if err == nil {
+		joinCircle(entry, hello)
+	}
+	return hello, err
 }
 
 // insideFiles finds the directory namespace a path lands in: the deepest one that covers it, and

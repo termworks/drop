@@ -116,7 +116,20 @@ jobs:
           CGO_ENABLED: '1'
           GOFLAGS: -buildvcs=false
 
+      # One key for every release, so an installed app takes the next one as an update. Without the
+      # secret — a fork, say — the build falls back to a debug key, and still installs.
+      - name: Unpack the signing key
+        env:
+          KEYSTORE: ${{ secrets.DROP_KEYSTORE }}
+        run: |
+          if [ -n "${KEYSTORE}" ]; then
+            printf %s "${KEYSTORE}" | base64 -d > "${RUNNER_TEMP}/drop.keystore"
+            echo "DROP_KEYSTORE=${RUNNER_TEMP}/drop.keystore" >> "${GITHUB_ENV}"
+          fi
+
       - name: Build the APK
+        env:
+          DROP_KEYSTORE_PASSWORD: ${{ secrets.DROP_KEYSTORE_PASSWORD }}
         run: nix develop .#android --command bash -c 'gradle --project-dir apps/android --no-daemon -PdropVersion="$(sed -n "s/.*version[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" src/main.go)" assembleRelease'
 
       - name: Name it

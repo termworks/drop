@@ -214,7 +214,7 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 	})
 
 	go holding(ctx, pinned, held)
-	go keepBadged(ctx, held)
+	go keepMine(ctx, held)
 
 	// With the daemon holding the address, what arrives lands there rather than here.
 	if !n.Own() {

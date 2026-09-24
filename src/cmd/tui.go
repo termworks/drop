@@ -217,6 +217,7 @@ func (l *running) askShares(ctx context.Context, with book.Entry) ([]proto.Serve
 	if err != nil {
 		return nil, err
 	}
+	joinCircle(with, hello)
 	return hello.Serves, nil
 }
 

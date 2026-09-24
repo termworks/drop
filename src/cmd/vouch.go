@@ -12,7 +12,6 @@ import (
 	"golang.org/x/term"
 
 	"github.com/bresilla/drop/src/pkg/book"
-	"github.com/bresilla/drop/src/pkg/dial"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/proto"
 	tickets "github.com/bresilla/drop/src/pkg/ticket"
@@ -183,59 +182,20 @@ func learnMine(pinned *book.Book, from node.ID) {
 	}
 }
 
-// keepBadged asks this user's other machines for a fresh badge while this one's is running low and
-// it cannot sign one itself. Asking what one of them serves is enough: whichever can sign answers
-// with one.
-func keepBadged(ctx context.Context, held *dial.Kept) {
-	tick := time.NewTicker(time.Hour)
-	defer tick.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Minute):
-		}
-		if due() {
-			if pinned, err := book.Load(); err == nil {
-				for _, entry := range pinned.Paired() {
-					if entry.User != myKey() || !due() {
-						continue
-					}
-					askedHello(ctx, kept{held: held}, entry)
-				}
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-		}
-	}
-}
-
-// due reports whether this machine's badge wants signing again by somebody else.
-func due() bool {
-	if _, quiet := user.Quiet(); quiet {
-		return false
-	}
-	mine.Lock()
-	until := mine.until
-	mine.Unlock()
-	return user.Due(until, time.Now())
-}
-
-func askedHello(ctx context.Context, over reaches, entry book.Entry) {
+// askedHello asks one machine what it is. Asking is also how a fresh badge and the rest of this
+// user's machines come back, when the machine asked is one of theirs.
+func askedHello(ctx context.Context, over reaches, entry book.Entry) (proto.Hello, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	done, s, err := over.To(ctx, entry, node.ALPNHello)
 	if err != nil {
-		return
+		return proto.Hello{}, false
 	}
 	defer func() { _ = done.Close() }()
 	defer func() { _ = s.Close() }()
 	defer stopStreamOnDone(ctx, s)()
 
-	_, _ = proto.AskHello(s)
+	hello, err := proto.AskHello(s)
+	return hello, err == nil
 }

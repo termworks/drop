@@ -91,7 +91,11 @@ func greeting(pinned *book.Book, mounts *ns.Table, known *arch.Registry, from no
 		}
 	}
 
-	return proto.Hello{Name: node.DisplayName(), Version: version, Serves: serves, Renewed: renewalFor(pinned, from, badge)}
+	hello := proto.Hello{Name: node.DisplayName(), Version: version, Serves: serves, Renewed: renewalFor(pinned, from, badge)}
+	if who.UserName == ns.LevelMe {
+		hello.Circle, hello.Mine = circleFor(pinned, from)
+	}
+	return hello
 }
 
 // whoIs turns a caller into what the address book knows about it, for the access rules to judge.
