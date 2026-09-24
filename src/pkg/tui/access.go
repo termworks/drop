@@ -209,7 +209,7 @@ func change(back Backend, path, who string, to Standing) tea.Cmd {
 
 // showAccess puts a rule in the list.
 func (m *Model) showAccess() {
-	m.list.SetItems(accessRows(m.rule))
+	m.fill("access\x00"+m.rule.Path, accessRows(m.rule))
 	m.list.SetSize(m.listWidth(), m.listHeight())
 }
 

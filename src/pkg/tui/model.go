@@ -127,6 +127,9 @@ type Model struct {
 	width  int
 	height int
 
+	// listed is which screen the list holds, so a filter typed over one is not carried to the next.
+	listed string
+
 	// me is this device, shown in the header: two of these side by side are two machines.
 	me Identity
 

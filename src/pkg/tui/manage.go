@@ -165,7 +165,7 @@ func loadManaged(back Backend, name string) tea.Cmd {
 
 // showManage puts somebody in the list.
 func (m *Model) showManage() {
-	m.list.SetItems(manageRows(m.managed))
+	m.fill("manage", manageRows(m.managed))
 	m.list.SetSize(m.listWidth(), m.listHeight())
 }
 

@@ -2069,3 +2069,30 @@ func TestAReadOnlyTerminalIsNotTypedInto(t *testing.T) {
 		t.Error("a read-only terminal took the keyboard")
 	}
 }
+
+// A filter narrows the screen it was typed over. The list is every screen in turn, and one carried
+// from the users screen into a machine's paths hid every path, which read as a device sharing
+// nothing.
+func TestAFilterStaysOnTheScreenItWasTypedOver(t *testing.T) {
+	m := start(t, withOne())
+
+	keys := []tea.Msg{tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}}
+	for _, r := range "anon" {
+		keys = append(keys, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = settle(t, m, keys...)
+	if got := len(m.list.VisibleItems()); got == 0 || got == len(m.list.Items()) {
+		t.Fatalf("the filter did not narrow the users screen: %d of %d shown", got, len(m.list.Items()))
+	}
+
+	// Taken, then entered, twice: into the person and into their machine.
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter}, tea.KeyMsg{Type: tea.KeyEnter})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.at != levelPaths {
+		t.Fatalf("ended at level %d, not a machine's paths", m.at)
+	}
+	if shown, all := len(m.list.VisibleItems()), len(m.list.Items()); shown != all || all == 0 {
+		t.Fatalf("the paths screen shows %d of its %d paths", shown, all)
+	}
+}

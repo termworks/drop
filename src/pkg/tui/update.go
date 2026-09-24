@@ -322,6 +322,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, loadHistory(m.back, at)
 		}
 		return m, nil
+
+	default:
+		// What the list sends itself has to reach it: the matches for a filter being typed come
+		// back as a message of their own, and dropping them left a filter prompt that never
+		// narrowed anything.
+		if m.at != levelOpen {
+			var cmd tea.Cmd
+			m.list, cmd = m.list.Update(msg)
+			return m, cmd
+		}
 	}
 	return m, nil
 }
@@ -779,14 +789,14 @@ func (m *Model) showMachines() {
 	items, from := machinesOf(m.me, m.peers, m.rows.under[m.atUser], m.atUser, m.reaching)
 
 	m.ofUser = from
-	m.list.SetItems(items)
+	m.fill("machines\x00"+m.atUser, items)
 	m.list.Select(m.rowFor(m.atPeer))
 	m.list.SetSize(m.listWidth(), m.listHeight())
 }
 
 func (m *Model) showUsers() {
 	m.rows = group(m.me, m.peers, m.reaching, m.knocked)
-	m.list.SetItems(m.rows.items)
+	m.fill("users", m.rows.items)
 	m.list.Select(m.rowFor(m.atPeer))
 	m.list.SetSize(m.listWidth(), m.listHeight())
 }
@@ -804,7 +814,7 @@ func (m *Model) showPaths() {
 	for _, at := range m.steps {
 		items = append(items, pathItem{step: at, on: with.Name})
 	}
-	m.list.SetItems(items)
+	m.fill("paths\x00"+with.Name, items)
 	m.list.Select(m.atPath)
 	m.list.SetSize(m.listWidth(), m.listHeight())
 }
@@ -1019,4 +1029,14 @@ func (m Model) peerFor(row int) int {
 		return m.atPeer
 	}
 	return m.ofUser[row]
+}
+
+// fill puts one screen's rows in the list. The one list is every screen in turn, and a filter typed
+// over one of them, carried to the next, hides everything on it; a screen drawn again keeps it.
+func (m *Model) fill(screen string, items []list.Item) {
+	if screen != m.listed {
+		m.list.ResetFilter()
+		m.listed = screen
+	}
+	m.list.SetItems(items)
 }
