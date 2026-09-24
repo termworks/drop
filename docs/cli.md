@@ -34,6 +34,8 @@ drop machine add               show a code another machine joins you with
 drop machine add --key         and hand it your key, rather than a badge
 drop machine join <code>       on that machine: become yours
 drop machine ls                every machine of yours this one knows
+drop machine rename <n> <new>  call one of them something else here
+drop machine rm <name>         take one out of yours, on every one of them
 ```
 
 **`drop me`** — this machine, and who it belongs to.

@@ -113,6 +113,20 @@ Either way the key the machine had is set aside beside the new one. A machine wh
 before it meets one of yours still starts, wearing the stale badge, which proves nothing to anyone.
 A machine wearing a badge cannot sign one, so `drop machine add` is run on one that holds the key.
 
+### Taking one out
+
+A machine of yours is recognised by the badge it wears, so forgetting it on one machine would
+change nothing: it still shows your badge everywhere, and the machines that still know it would
+name it to this one again. `drop machine rm <name>` — or *Remove from my machines* on the phone, or
+`x` in the interface — writes a mark instead, and your machines hand marks to each other on every
+hello, the way they hand each other the rest of your machines. From then on every one of them turns
+that machine away as a stranger, whatever badge it still wears, and none of them names it to
+another. `drop machine add` puts it back: the later of two marks for one machine is the one that
+stands.
+
+A machine that was handed the key itself (`--key`) can still sign for itself; taking it out keeps
+it from being taken for yours, and the key it holds is still yours.
+
 The same, a step at a time, for a machine that is already paired:
 
 ```console
