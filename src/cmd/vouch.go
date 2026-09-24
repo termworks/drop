@@ -28,7 +28,7 @@ func newVouchCmd() *cobra.Command {
 		Use:   "vouch <machine>",
 		Short: "Make a machine you paired with one of yours, without handing it your key",
 		Long: "Signs a badge saying the machine is yours, and shows it as a code to scan there — on a\n" +
-			"phone, This phone → Whose phone this is. Your key stays here. The badge is signed again\n" +
+			"phone, Mine → Add a machine. Your key stays here. The badge is signed again\n" +
 			"whenever that machine reaches one of yours that can sign without a touch, so it lasts as\n" +
 			"long as the two keep meeting; `drop peer forget` it on those machines, and it runs out.",
 		Args: cobra.ExactArgs(1),
@@ -164,13 +164,19 @@ func renewalFor(pinned *book.Book, from node.ID, badge proto.Badged) []byte {
 // learnMine files a machine under this user the first time it shows this user's badge. It was
 // paired as whoever it was then; a phone that became one of mine since is mine from then on.
 func learnMine(pinned *book.Book, from node.ID) {
-	entry, ok := pinned.ByID(from)
-	if !ok || entry.User == myKey() {
+	if entry, ok := pinned.ByID(from); !ok || entry.User == myKey() {
 		return
 	}
-	pinned.Belongs(entry.Name, myKey())
-	if err := pinned.Save(); err != nil {
-		trace(fmt.Sprintf("filing %s under me: %v", entry.Name, err))
+	err := pinned.Change(func() (bool, error) {
+		entry, ok := pinned.ByID(from)
+		if !ok || entry.User == myKey() {
+			return false, nil
+		}
+		pinned.Belongs(entry.Name, myKey())
+		return true, nil
+	})
+	if err != nil {
+		trace(fmt.Sprintf("filing %s under me: %v", node.Brief(from), err))
 	}
 }
 

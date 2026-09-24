@@ -208,6 +208,7 @@ func runServe(parent context.Context, quiet bool) error {
 				return greeting(pinned, cfg.Mounts, known, from, badge)
 			}, moving(pinned, func(said string) { log.Printf("%s", said) }))
 		},
+		node.ALPNManage: managing(pinned, known),
 		// Pairing is answered by whoever holds the address, which is this. A separate `drop peer pair`
 		// process on this machine asks for a code to be shown; it cannot answer for the node.
 		node.ALPNPair: func(from node.ID, s *iroh.Stream) {

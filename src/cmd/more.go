@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/bresilla/drop/src/pkg/arch/note"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/conf"
+	"github.com/bresilla/drop/src/pkg/grant"
 	"github.com/bresilla/drop/src/pkg/made"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
+	"github.com/bresilla/drop/src/pkg/user"
 )
 
 // More is what an interface can do beyond what the full-screen one draws. A phone has room for more
@@ -30,6 +33,11 @@ type More interface {
 	Release(at string) error
 	// Kept is every namespace taken up here, by path.
 	Kept() (map[string]made.Entry, error)
+	// Manage asks who may reach a path on another machine of this user's, or on this one when on
+	// is nil, and changes it.
+	Manage(ctx context.Context, on *book.Entry, m proto.Manage) ([]byte, error)
+	// Rename files a person or a machine under another name here.
+	Rename(old, name string) error
 }
 
 var _ More = (*running)(nil)
@@ -95,6 +103,11 @@ func (l *running) Hold(ctx context.Context, on book.Entry, path string, settings
 		return "", err
 	}
 
+	// Taken up from a machine of this user's own, it is held among this user's machines.
+	owner := personOf(on)
+	if on.User != "" && on.User == myKey() {
+		owner = ns.LevelMe
+	}
 	line := made.Line{
 		Path: served.Path,
 		Keep: true,
@@ -102,7 +115,7 @@ func (l *running) Hold(ctx context.Context, on book.Entry, path string, settings
 			Archetype: served.Archetype,
 			Version:   served.Version,
 			Settings:  settings,
-			Access:    made.Access{Named: []string{personOf(on)}},
+			Access:    made.Access{Named: []string{owner}},
 			Shared:    served.Shared,
 		},
 	}
@@ -202,3 +215,72 @@ func created(cfg *conf.Config) error {
 	_, err = cfg.Created(store)
 	return err
 }
+
+// Rename files somebody under another name here: a person, every machine of theirs with them, or one
+// machine. What was granted against the old name, and what was taken up naming it, follows.
+func (l *running) Rename(old, name string) error {
+	if name == "" || strings.ContainsAny(name, "@/: \t\n") {
+		return fmt.Errorf("%q cannot be a name: it takes no spaces, @, / or colon", name)
+	}
+	pinned, err := book.Load()
+	if err != nil {
+		return err
+	}
+
+	person := false
+	err = pinned.Change(func() (bool, error) {
+		entries, isPerson, err := managedEntries(pinned, old, true)
+		if err != nil {
+			return false, err
+		}
+		if len(entries) == 0 {
+			return false, fmt.Errorf("%s is not in the address book", old)
+		}
+		person = isPerson
+		if person {
+			return true, pinned.RenamePerson(old, name)
+		}
+		return true, pinned.Rename(old, name)
+	})
+	if err != nil {
+		return err
+	}
+
+	store, err := grant.Load()
+	if err != nil {
+		return err
+	}
+	if err := store.Rename(old, name, !person); err != nil {
+		return err
+	}
+	return renameHolders(old, name)
+}
+
+// renameHolders carries a person's new name into what was taken up from them.
+func renameHolders(old, name string) error {
+	store, err := made.Load()
+	if err != nil {
+		return err
+	}
+	for _, at := range store.Paths() {
+		e, ok := store.Get(at)
+		if !ok {
+			continue
+		}
+		changed := false
+		for i, who := range e.Access.Named {
+			if who == old {
+				e.Access.Named[i], changed = name, true
+			}
+		}
+		if changed {
+			if err := store.Add(at, e); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Leave takes this machine back out of whoever's it became, from its next start.
+func Leave() error { return user.Leave() }

@@ -36,6 +36,7 @@ func newPathCmd() *cobra.Command {
 		newGrantCmd(),
 		newRevokeCmd(),
 		newGrantsCmd(),
+		newLevelCmd(),
 		newRequestsCmd(),
 		newAskCmd(),
 		newShareCmd(),
