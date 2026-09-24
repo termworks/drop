@@ -112,7 +112,7 @@ fun PeopleScreen(go: (Screen) -> Unit) {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(text = { Text("Show my code") }, onClick = { menu = false; go(Screen.Pair()) })
-                        DropdownMenuItem(text = { Text("Add a machine of mine") }, onClick = { menu = false; go(Screen.AddMachine) })
+                        DropdownMenuItem(text = { Text("Add a machine of mine") }, onClick = { menu = false; go(Screen.AddMachine()) })
                         DropdownMenuItem(text = { Text("Settings") }, onClick = { menu = false; go(Screen.Settings) })
                     }
                 },
@@ -307,7 +307,7 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
                     IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         if (itsMe) {
-                            DropdownMenuItem(text = { Text("Add a machine") }, onClick = { menu = false; go(Screen.AddMachine) })
+                            DropdownMenuItem(text = { Text("Add a machine") }, onClick = { menu = false; go(Screen.AddMachine()) })
                             DropdownMenuItem(text = { Text("Settings") }, onClick = { menu = false; go(Screen.Settings) })
                         } else {
                             DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; renaming = true })
@@ -370,7 +370,7 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
             }
             if (itsMe) {
                 item {
-                    TextButton(onClick = { go(Screen.AddMachine) }, modifier = Modifier.padding(horizontal = 12.dp)) {
+                    TextButton(onClick = { go(Screen.AddMachine()) }, modifier = Modifier.padding(horizontal = 12.dp)) {
                         Icon(Icons.Filled.Add, null)
                         Spacer(Modifier.width(6.dp))
                         Text("Add a machine")

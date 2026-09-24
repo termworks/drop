@@ -205,8 +205,8 @@ private fun TakeCode(given: String?, paired: (String) -> Unit) {
         failed = null
         took = null
         scope.launch {
-            if (Drop.owning(ticket)) {
-                Drop.take(context.applicationContext, ticket)
+            if (Drop.owning(ticket) || Drop.machining(ticket)) {
+                Drop.joinMachine(context.applicationContext, ticket)
                     .onSuccess { took = it }
                     .onFailure { failed = it.message }
             } else {

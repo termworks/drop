@@ -15,6 +15,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import dev.bresilla.drop.Drop
 
 /** Where somebody is. Entering rather than tabbing: what a path is depends on the machine it is on. */
 sealed interface Screen {
@@ -38,7 +39,7 @@ sealed interface Screen {
     data class Note(val machine: String, val path: String, val shared: String = "") : Screen
     /** Who may open a path: on this phone when machine is empty, or on a machine of yours. */
     data class Access(val machine: String, val path: String) : Screen
-    data object AddMachine : Screen
+    data class AddMachine(val code: String? = null) : Screen
     data object Settings : Screen
 }
 
@@ -62,7 +63,7 @@ fun App(arrival: Arrival?, taken: () -> Unit) {
 
     LaunchedEffect(arrival) {
         when (arrival) {
-            is Arrival.Join -> stack = listOf(Screen.Home, Screen.Pair(arrival.ticket))
+            is Arrival.Join -> stack = listOf(Screen.Home, if (Drop.machining(arrival.ticket)) Screen.AddMachine(arrival.ticket) else Screen.Pair(arrival.ticket))
             is Arrival.Open -> stack = listOf(Screen.Home, Screen.Chat(arrival.machine))
             is Arrival.Send -> stack = listOf(Screen.Home, Screen.Sending(arrival.uris, arrival.text))
             null -> return@LaunchedEffect
@@ -93,7 +94,7 @@ fun App(arrival: Arrival?, taken: () -> Unit) {
             is Screen.Sending -> SendingScreen(screen.uris, screen.text, back, done = { instead(Screen.Chat(it)) })
             is Screen.Note -> NoteScreen(screen, back)
             is Screen.Access -> AccessScreen(screen.machine, screen.path, back)
-            Screen.AddMachine -> AddMachineScreen(go, back)
+            is Screen.AddMachine -> AddMachineScreen(screen.code, back)
             Screen.Settings -> SettingsScreen(go, back)
         }
     }
