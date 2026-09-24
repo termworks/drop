@@ -13,6 +13,7 @@ import android.text.format.Formatter
 import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -234,4 +235,28 @@ fun Pulse(every: Long = 5_000) {
             Drop.bump()
         }
     }
+}
+
+/** How many of a conversation's messages arrived since it was last looked at. */
+fun unreadIn(context: Context, chat: dev.bresilla.drop.Chat): Int {
+    val seen = dev.bresilla.drop.Settings.seen(context, chat.machine)
+    return chat.arrivals.count { it > seen }
+}
+
+/** What has not been read yet, by the machine it was said with. */
+suspend fun unreadBy(context: Context): Map<String, Int> =
+    Drop.conversations().getOrNull()?.associate { it.machine to unreadIn(context, it) }?.filterValues { it > 0 } ?: emptyMap()
+
+@Composable
+fun Toggle(title: String, says: String, on: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
+    androidx.compose.material3.ListItem(
+        modifier = Modifier
+            .padding(horizontal = 12.dp, vertical = 3.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(enabled = enabled) { onChange(!on) },
+        colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        headlineContent = { Text(title) },
+        supportingContent = { Text(says, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+        trailingContent = { androidx.compose.material3.Switch(checked = on, onCheckedChange = onChange, enabled = enabled) },
+    )
 }

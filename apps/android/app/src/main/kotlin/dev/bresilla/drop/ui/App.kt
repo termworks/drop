@@ -12,10 +12,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 
 /** Where somebody is. Entering rather than tabbing: what a path is depends on the machine it is on. */
@@ -41,6 +39,7 @@ sealed interface Screen {
     /** Who may open a path: on this phone when machine is empty, or on a machine of yours. */
     data class Access(val machine: String, val path: String) : Screen
     data object AddMachine : Screen
+    data object Settings : Screen
 }
 
 /** Something the activity was handed from outside: a link, a notification, another app's share. */
@@ -54,7 +53,6 @@ sealed interface Arrival {
 fun App(arrival: Arrival?, taken: () -> Unit) {
     var stack by remember { mutableStateOf(listOf<Screen>(Screen.Home)) }
     var forward by remember { mutableStateOf(true) }
-    var tab by rememberSaveable { mutableIntStateOf(0) }
 
     val go: (Screen) -> Unit = { forward = true; stack = stack + it }
     val back: () -> Unit = { if (stack.size > 1) { forward = false; stack = stack.dropLast(1) } }
@@ -85,7 +83,7 @@ fun App(arrival: Arrival?, taken: () -> Unit) {
         label = "screens",
     ) { screen ->
         when (screen) {
-            Screen.Home -> HomeScreen(tab, onTab = { tab = it }, go = go)
+            Screen.Home -> PeopleScreen(go)
             is Screen.Person -> PersonScreen(screen.name, go, back, home)
             is Screen.Machine -> MachineScreen(screen.name, go, back, home)
             is Screen.Chat -> ChatScreen(screen.machine, go, back)
@@ -96,6 +94,7 @@ fun App(arrival: Arrival?, taken: () -> Unit) {
             is Screen.Note -> NoteScreen(screen, back)
             is Screen.Access -> AccessScreen(screen.machine, screen.path, back)
             Screen.AddMachine -> AddMachineScreen(go, back)
+            Screen.Settings -> SettingsScreen(go, back)
         }
     }
 }
