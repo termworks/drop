@@ -80,6 +80,7 @@ fun AddMachineScreen(given: String?, back: () -> Unit) {
     var failed by remember { mutableStateOf<String?>(null) }
     var typing by remember { mutableStateOf(false) }
     var showing by remember { mutableStateOf(false) }
+    var choosingKey by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { me = Drop.self() }
     LaunchedEffect(Unit) {
@@ -140,12 +141,22 @@ fun AddMachineScreen(given: String?, back: () -> Unit) {
                     failed?.let { Banner(it, Modifier.padding(top = 8.dp), error = true) }
                 }
             }
+            item {
+                WayIn(
+                    title = "Or use your key",
+                    says = "With your YubiKey, or an SSH key file your computers use too, this phone is yours by itself, and finds the machines holding the same key.",
+                    command = null,
+                    after = "",
+                ) {
+                    FilledTonalButton(onClick = { choosingKey = true }) { Text("Use my key") }
+                }
+            }
             if (me?.signs == true) {
                 item {
                     WayIn(
                         title = "Add a computer to this phone",
                         says = "Show a code here, and on the computer run",
-                        command = "drop add <code>",
+                        command = "drop machine add <code>",
                         after = "It becomes one of your machines, signed for by this phone.",
                     ) {
                         if (showing) MachineCode() else FilledTonalButton(onClick = { showing = true }) { Text("Show a code") }
@@ -153,6 +164,10 @@ fun AddMachineScreen(given: String?, back: () -> Unit) {
                 }
             }
         }
+    }
+
+    if (choosingKey) {
+        ChooseKey(done = { choosingKey = false }) { text -> told = text }
     }
 
     if (typing) {
@@ -223,7 +238,7 @@ internal fun MachineCode() {
 
 /** One way of adding a machine: what it does, the command it takes, and what to press here. */
 @Composable
-private fun WayIn(title: String, says: String, command: String, after: String, actions: @Composable () -> Unit) {
+private fun WayIn(title: String, says: String, command: String?, after: String, actions: @Composable () -> Unit) {
     Card(
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -233,12 +248,16 @@ private fun WayIn(title: String, says: String, command: String, after: String, a
             Text(title, style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(8.dp))
             Text(says, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(6.dp))
-            Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                Text(command, style = Mono, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(12.dp))
+            if (command != null) {
+                Spacer(Modifier.height(6.dp))
+                Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+                    Text(command, style = Mono, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(12.dp))
+                }
             }
-            Spacer(Modifier.height(6.dp))
-            Text(after, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (after.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(after, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             Spacer(Modifier.height(14.dp))
             actions()
         }

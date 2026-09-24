@@ -365,7 +365,9 @@ fun AskDialog(id: String, name: String, kind: String, title: String, says: Strin
 @Composable
 fun YubiKeyPrompt() {
     val ask by dev.bresilla.drop.YubiKey.asking.collectAsState()
-    val current = ask ?: return
+    val read by dev.bresilla.drop.YubiKey.reading.collectAsState()
+    val current: Any = read ?: ask ?: return
+    val reading = read != null
     val context = LocalContext.current
     val activity = context.findActivity()
 
@@ -383,7 +385,15 @@ fun YubiKeyPrompt() {
         onDismissRequest = {},
         icon = { Icon(Icons.Filled.Key, null) },
         title = { Text("Hold your YubiKey to the phone") },
-        text = { Text("Touch it to the back of the phone, or plug it in and touch it. It signs here, and your key never leaves it.") },
+        text = {
+            Text(
+                if (reading) {
+                    "Touch it to the back of the phone, or plug it in. The phone reads which key is yours; the key itself never leaves it."
+                } else {
+                    "Touch it to the back of the phone, or plug it in and touch it. It signs here, and your key never leaves it."
+                },
+            )
+        },
         confirmButton = {},
         dismissButton = { TextButton(onClick = { dev.bresilla.drop.YubiKey.cancel() }) { Text("Cancel") } },
     )

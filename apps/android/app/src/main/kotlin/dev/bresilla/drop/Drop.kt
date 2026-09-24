@@ -240,6 +240,18 @@ object Drop {
         PathDetail.from(JSONObject(node.manage(machine, op, path, who, level, shown)))
     }
 
+    /** Makes an SSH private key who you are: the phone keeps it, and your machines holding it find the phone by themselves. */
+    suspend fun useKeyFile(name: String, raw: ByteArray): Result<String> =
+        call { it.useKeyFile(name, raw) }.onSuccess { bump() }
+
+    /** Makes the key in your YubiKey who you are: read off it with its PIN, then held once more to sign this phone's badge. */
+    suspend fun useYubiKey(pin: CharArray): Result<String> = withContext(Dispatchers.IO) {
+        runCatching { YubiKey.read(pin) }.mapCatching { held ->
+            val at = node ?: throw IllegalStateException("drop is not running")
+            at.useYubiKey(held.application, held.key, held.handle)
+        }.onSuccess { bump() }
+    }
+
     /** Every kind a topic can be, in the order they are offered. */
     suspend fun kinds(): List<Kind> = call { node ->
         val all = JSONArray(node.kinds())

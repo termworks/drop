@@ -292,6 +292,7 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
     var busy by remember { mutableStateOf<String?>(null) }
     var askAgain by remember { mutableStateOf(0) }
     var promoting by remember { mutableStateOf<Pair<Machine, String>?>(null) }
+    var choosingKey by remember { mutableStateOf(false) }
 
     Pulse()
     LaunchedEffect(tick) {
@@ -354,13 +355,17 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
                 me?.key?.takeIf { it.isNotEmpty() }?.let { key ->
                     item {
                         ListItem(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 3.dp).clip(RoundedCornerShape(20.dp)),
+                            modifier = Modifier
+                                .padding(horizontal = 12.dp, vertical = 3.dp)
+                                .clip(RoundedCornerShape(20.dp))
+                                .clickable { choosingKey = true },
                             colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
                             overlineContent = { Text("Your key") },
                             headlineContent = { Text(key.substringBefore("  "), style = Mono, maxLines = 1) },
                             supportingContent = {
                                 Text(key.substringAfter("  ", ""), color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
                             },
+                            trailingContent = { TextButton(onClick = { choosingKey = true }) { Text("Change") } },
                         )
                     }
                 }
@@ -485,6 +490,10 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
                     .onFailure { said.showSnackbar(it.message ?: "Could not rename") }
             }
         }
+    }
+
+    if (choosingKey) {
+        ChooseKey(done = { choosingKey = false }) { text -> scope.launch { said.showSnackbar(text) } }
     }
 
     promoting?.let { (m, kind) ->
