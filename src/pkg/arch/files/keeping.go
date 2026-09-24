@@ -448,7 +448,7 @@ func (k *keeper) dressed(root *os.Root, path string, h Held, sum [32]byte) error
 	if h.Exec {
 		mode = 0o700
 	}
-	if err := root.Chmod(path, mode); err != nil {
+	if err := chmodOpen(root, path, mode); err != nil {
 		return fmt.Errorf("setting the mode of %s: %w", path, err)
 	}
 	if h.At > 0 {
@@ -462,6 +462,17 @@ func (k *keeper) dressed(root *os.Root, path string, h Held, sum [32]byte) error
 	}
 	k.held[path] = mark{Sum: sum, Size: stat.Size(), At: stat.ModTime().UnixNano(), Exec: h.Exec, File: stat}
 	return nil
+}
+
+// chmodOpen sets a mode through the file opened, and not by its name. By name, inside a root, is
+// fchmodat2 — and Android's seccomp filter answers that by killing the process.
+func chmodOpen(root *os.Root, path string, mode os.FileMode) error {
+	file, err := root.OpenFile(path, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	return file.Chmod(mode)
 }
 
 // settled reports whether a path already holds what the changes say it holds.
