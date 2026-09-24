@@ -82,17 +82,38 @@ func Render(code *qr.Code) string {
 // Painted is Render with its colours fixed: black modules on a white ground.
 //
 // Left to the terminal, a module is drawn in whatever the foreground is, and on a dark theme that
-// is a light code on a dark ground — inverted, which plenty of cameras will not read. The colours
-// are from the 256-colour cube rather than the first sixteen, because themes repaint those.
+// is a light code on a dark ground — inverted, which plenty of cameras will not read. Colours from a
+// palette are no better, because a theme repaints those too and black comes out grey. So each cell
+// says both of its colours exactly, and a cell that is all one colour is painted as ground rather
+// than drawn as a glyph: a block character is the font's to draw, with its seams, and a camera
+// reads those as grey.
 func Painted(code *qr.Code) string {
 	const (
-		ink   = "\x1b[38;5;16;48;5;231m"
-		reset = "\x1b[0m"
+		quiet    = 2
+		allInk   = "\x1b[48;2;0;0;0m "
+		allPaper = "\x1b[48;2;255;255;255m "
+		inkAbove = "\x1b[38;2;0;0;0;48;2;255;255;255m\u2580"
+		inkBelow = "\x1b[38;2;255;255;255;48;2;0;0;0m\u2580"
+		reset    = "\x1b[0m"
 	)
 
+	size := code.Size
 	var out strings.Builder
-	for _, line := range strings.Split(strings.TrimRight(Render(code), "\n"), "\n") {
-		out.WriteString(ink + line + reset + "\n")
+	for y := -quiet; y < size+quiet; y += 2 {
+		for x := -quiet; x < size+quiet; x++ {
+			top, bottom := black(code, x, y), black(code, x, y+1)
+			switch {
+			case top && bottom:
+				out.WriteString(allInk)
+			case top:
+				out.WriteString(inkAbove)
+			case bottom:
+				out.WriteString(inkBelow)
+			default:
+				out.WriteString(allPaper)
+			}
+		}
+		out.WriteString(reset + "\n")
 	}
 	return out.String()
 }
