@@ -37,6 +37,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        Drop.visible = true
+    }
+
+    override fun onPause() {
+        Drop.visible = false
+        super.onPause()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         arrival.value = arrivalOf(intent)

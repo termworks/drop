@@ -253,16 +253,19 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
     }
 
     linking?.let { s ->
-        var link by remember { mutableStateOf("https://") }
+        // Started with the scheme and the cursor after it, so what is typed is the rest of the address.
+        var link by remember { mutableStateOf(TextFieldValue("https://", TextRange(8))) }
+        val focus = remember { FocusRequester() }
+        LaunchedEffect(Unit) { focus.requestFocus() }
         AlertDialog(
             onDismissRequest = { linking = null },
             title = { Text("Open a link on $name") },
-            text = { OutlinedTextField(link, { link = it }, singleLine = true, label = { Text("Link") }) },
+            text = { OutlinedTextField(link, { link = it }, singleLine = true, label = { Text("Link") }, modifier = Modifier.focusRequester(focus)) },
             confirmButton = {
                 TextButton(onClick = {
                     linking = null
                     scope.launch {
-                        Drop.call { it.post(name, s.path, s.archetype, link.trim()) }
+                        Drop.call { it.post(name, s.path, s.archetype, link.text.trim()) }
                             .onSuccess { said.showSnackbar("Sent to $name") }
                             .onFailure { said.showSnackbar(it.message ?: "Could not send") }
                     }

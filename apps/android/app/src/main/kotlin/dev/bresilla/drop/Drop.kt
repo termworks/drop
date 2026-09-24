@@ -58,6 +58,13 @@ object Drop {
     /** Told about a file that arrived: who from, what it is called, and where it is now. */
     var onLanded: ((from: String, name: String, at: File) -> Unit)? = null
 
+    /** Told about a link somebody handed this phone to open. */
+    var onLinked: ((from: String, url: String) -> Unit)? = null
+
+    /** Whether the app is on screen, which is when Android lets a link be opened without asking. */
+    @Volatile
+    var visible = false
+
     @Synchronized
     fun start(context: Context): Node {
         node?.let { return it }
@@ -149,6 +156,11 @@ object Drop {
 
         override fun landed(from: String, name: String, at: String) {
             onLanded?.invoke(from, name, File(at))
+            bump()
+        }
+
+        override fun linked(from: String, url: String) {
+            onLinked?.invoke(from, url)
             bump()
         }
     }

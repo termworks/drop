@@ -44,6 +44,7 @@ class NodeService : Service() {
 
         Drop.onSaid = { from, text -> tell(this, from, text) }
         Drop.onLanded = { from, name, at -> handed(this, from, name, at) }
+        Drop.onLinked = { from, url -> linked(this, from, url) }
         // Off the main thread: starting a node reads keys and binds sockets, which is long enough for
         // Android to call the app frozen.
         thread(name = "drop-start") {
@@ -56,6 +57,7 @@ class NodeService : Service() {
     override fun onDestroy() {
         Drop.onSaid = null
         Drop.onLanded = null
+        Drop.onLinked = null
         Drop.stop()
         super.onDestroy()
     }
@@ -108,6 +110,28 @@ class NodeService : Service() {
                 .setCategory(Notification.CATEGORY_MESSAGE)
                 .build()
             context.getSystemService(NotificationManager::class.java).notify(from.hashCode(), said)
+        }
+
+        /**
+         * Opens a link somebody handed this phone. With the app on screen it opens at once; Android
+         * lets nothing in the background start a browser, so otherwise it is a notification that
+         * opens it when tapped. Only a web link: anything else would be a way to start apps.
+         */
+        private fun linked(context: Context, from: String, url: String) {
+            if (!url.startsWith("https://") && !url.startsWith("http://")) return
+            val view = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (Drop.visible && runCatching { context.startActivity(view) }.isSuccess) return
+
+            val pending = PendingIntent.getActivity(context, url.hashCode(), view, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val said = Notification.Builder(context, LOUD)
+                .setSmallIcon(R.drawable.ic_stat_drop)
+                .setContentTitle("$from sent a link")
+                .setContentText(url)
+                .setContentIntent(pending)
+                .setAutoCancel(true)
+                .setCategory(Notification.CATEGORY_MESSAGE)
+                .build()
+            context.getSystemService(NotificationManager::class.java).notify(url.hashCode(), said)
         }
 
         /** Says a file arrived: tapping it opens the conversation, and Open opens the file. */

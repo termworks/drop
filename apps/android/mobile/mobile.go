@@ -38,6 +38,8 @@ type Events interface {
 	Moving(name string, done, size int64)
 	// Landed is a file that has just arrived: who sent it, what it is called, and where it is now.
 	Landed(from, name, at string)
+	// Linked is a link somebody handed this phone to open.
+	Linked(from, url string)
 }
 
 // Node is a running drop node.
@@ -89,7 +91,11 @@ func Start(configDir, dataDir, downloads, name string, events Events) (*Node, er
 	back, down, err := cmd.Interface(ctx, cmd.Hooks{
 		Trouble: func(text string) { trouble(events, text) },
 		Said: func(from string, m convo.Message) {
-			if events != nil && (m.Kind == convo.KindText || m.Kind == convo.KindLink) {
+			switch {
+			case events == nil:
+			case m.Kind == convo.KindLink:
+				events.Linked(from, m.Body)
+			case m.Kind == convo.KindText:
 				events.Said(from, m.Body)
 			}
 		},
