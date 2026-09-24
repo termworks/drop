@@ -222,37 +222,54 @@ func wearGrant(g proto.Grant) error {
 
 // publishCode puts a code up for finding by itself: whoever types just the code looks it up and gets
 // this machine's id, so nobody has to type sixty-four characters of it.
-func publishCode(ctx context.Context, code string, id node.ID) {
+func publishCode(ctx context.Context, code string, id node.ID, kind offerKind) {
 	if !node.Rendezvous() {
 		return
 	}
-	if err := rendezvous.PublishCode(ctx, code, id); err != nil {
+	if err := rendezvous.PublishCode(ctx, code, id, kindSaid(kind)); err != nil {
 		fmt.Fprintf(os.Stderr, "drop: the code cannot be looked up by itself: %v\n", err)
 	}
 }
 
-// whoShows is the machine a ticket or a bare code names, and the code: a ticket says it outright,
-// and a code is looked up.
-func whoShows(ctx context.Context, text string) (node.ID, string, error) {
+// kindSaid is what a code is for, as its record and its link say it: the one thing whoever takes it
+// needs to know to take it the right way.
+func kindSaid(kind offerKind) string {
+	if kind.mine() {
+		return string(offerMine)
+	}
+	return string(offerPerson)
+}
+
+// whoShows is the machine a ticket or a bare code names, the code, and what it is for when that is
+// said — a link says it, and so does the record a code is looked up by.
+func whoShows(ctx context.Context, text string) (node.ID, string, offerKind, error) {
+	said := offerKind("")
+	switch kind, _ := tickets.Kind(text); {
+	case kind == tickets.KindMachine:
+		said = offerMine
+	case strings.HasPrefix(strings.TrimSpace(text), tickets.Link("")):
+		said = offerPerson
+	}
 	text = strings.TrimSpace(tickets.FromLink(text))
 	if strings.Contains(text, "#") {
-		return readTicket(text)
+		id, code, err := readTicket(text)
+		return id, code, said, err
 	}
 	code := rendezvous.NormalCode(text)
 	if code == "" {
-		return node.ID{}, "", errors.New("that is not a code")
+		return node.ID{}, "", "", errors.New("that is not a code")
 	}
 	found, err := rendezvous.Open()
 	if err != nil {
-		return node.ID{}, "", err
+		return node.ID{}, "", "", err
 	}
 	look, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	id, ok := found.FindCode(look, code)
+	id, kind, ok := found.FindCode(look, code)
 	if !ok {
-		return node.ID{}, "", fmt.Errorf("nothing is showing %s: check it, and that the other machine is still waiting", code)
+		return node.ID{}, "", "", fmt.Errorf("nothing is showing %s: check it, and that the other machine is still waiting", code)
 	}
-	return id, code, nil
+	return id, code, offerKind(kind), nil
 }
 
 // codeProof binds an attempt to the code, so a device that was not invited cannot complete one.
@@ -309,7 +326,7 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, k
 	}
 
 	invite := ticketFor(n.ID(), code)
-	publishCode(ctx, code, n.ID())
+	publishCode(ctx, code, n.ID(), kind)
 
 	showTicket(invite, code, wait, kind)
 
@@ -479,6 +496,10 @@ func filed(p proto.Pairing, as string, machine bool) (string, error) {
 
 // announce says who was paired with, for the interfaces that print rather than draw.
 func announce(name, id, called string, kind offerKind) {
+	if kind == offerAny {
+		fmt.Printf("\nconnected with %s\n  %s\n", name, id)
+		return
+	}
 	if kind.mine() {
 		fmt.Printf("\n%s is one of your machines now\n  %s\n", name, id)
 		fmt.Printf("\nthe rest of your machines hear about it within a few minutes, and it about them.\n")
@@ -531,7 +552,7 @@ func written(addrs []netip.AddrPort) []string {
 // wire and the other did not, so pairing worked from one and failed from the other with an error
 // that said nothing about why.
 func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as string, kind offerKind, at []string) (proto.Pairing, string, error) {
-	id, code, err := whoShows(ctx, ticket)
+	id, code, said, err := whoShows(ctx, ticket)
 	if err != nil {
 		return proto.Pairing{}, "", err
 	}
@@ -539,6 +560,27 @@ func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as stri
 		return proto.Pairing{}, "", fmt.Errorf("that is this device's own ticket")
 	}
 
+	// Taken the way the code says it is meant, when whoever joins left it to the code. A code from a
+	// drop that does not say is tried as pairing, and as joining when that is what it turns out to be.
+	if kind == offerAny {
+		kind = said
+		if kind == "" {
+			p, name, err := joinTo(ctx, n, lan, id, code, as, offerPerson, at)
+			if err != nil && strings.Contains(err.Error(), "adds a machine of mine") {
+				return joinTo(ctx, n, lan, id, code, as, offerMine, at)
+			}
+			return p, name, err
+		}
+	}
+	return joinTo(ctx, n, lan, id, code, as, kind, at)
+}
+
+// offerAny is joining with whatever a code is for: pairing with somebody, or becoming one of their
+// machines.
+const offerAny offerKind = "any"
+
+// joinTo takes the code a machine is showing, one way.
+func joinTo(ctx context.Context, n *node.Node, lan *discovery.LAN, id node.ID, code, as string, kind offerKind, at []string) (proto.Pairing, string, error) {
 	where, err := asAddrs(at)
 	if err != nil {
 		return proto.Pairing{}, "", err

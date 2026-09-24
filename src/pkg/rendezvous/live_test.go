@@ -119,16 +119,16 @@ func TestLiveCodeRoundTrip(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	if err := PublishCode(ctx, code, id); err != nil {
+	if err := PublishCode(ctx, code, id, "mine"); err != nil {
 		t.Fatalf("PublishCode(): %v", err)
 	}
 	o, err := Open()
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, ok := o.FindCode(ctx, "  "+strings.ToUpper(code)+" ")
-	if !ok || got != id {
-		t.Fatalf("FindCode() = %v, %v; want %v", got, ok, id)
+	got, kind, ok := o.FindCode(ctx, "  "+strings.ToUpper(code)+" ")
+	if !ok || got != id || kind != "mine" {
+		t.Fatalf("FindCode() = %v, %q, %v; want %v, mine", got, kind, ok, id)
 	}
 }
 
