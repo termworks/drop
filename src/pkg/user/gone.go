@@ -90,6 +90,14 @@ func readMarks(at string) (map[string]Mark, error) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, err
 	}
+	// Marks were once kept in seconds, and a second is a nanosecond to everything that reads them
+	// now: a mark that old would lose to any decision made since.
+	for id, m := range out {
+		if m.At > 0 && m.At < 1e12 {
+			m.At *= 1e9
+			out[id] = m
+		}
+	}
 	return out, nil
 }
 

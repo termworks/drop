@@ -136,13 +136,12 @@ func joinCircle(from book.Entry, hello proto.Hello) {
 
 	_ = pinned.Change(func() (bool, error) {
 		wrote := false
-		// A circle that changed under its machines changes every pair's secret with it.
-		if changed {
-			for _, entry := range pinned.All() {
-				if entry.Circle {
-					pinned.Resecret(entry.Name, user.PairSecret(circle, self.String(), entry.ID.String()))
-					wrote = true
-				}
+		// A circle that changed under its machines changes every pair's secret with it, and one
+		// heard of before this machine had the circle gets its secret now.
+		for _, entry := range pinned.All() {
+			if entry.Circle && (changed || !entry.Paired()) {
+				pinned.Resecret(entry.Name, user.PairSecret(circle, self.String(), entry.ID.String()))
+				wrote = true
 			}
 		}
 		for _, m := range hello.Mine {
