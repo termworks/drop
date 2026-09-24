@@ -313,3 +313,49 @@ func signFor(device, name string, now time.Time) (Badge, []byte, error) {
 	}
 	return Sign(by, device, name, now)
 }
+
+// Leave takes this machine back out of whoever's it became: the key it had before is put back, or
+// when there was none, the next start makes one. Its badge goes with the user it named.
+func Leave() error {
+	where, err := ownKey()
+	if err != nil {
+		return err
+	}
+	err = keep.While(where, func() error {
+		for _, file := range []string{where, where + ".pub"} {
+			if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+		if _, err := os.Stat(where + ".before"); err == nil {
+			if err := os.Rename(where+".before", where); err != nil {
+				return err
+			}
+			_ = os.Rename(where+".before.pub", where+".pub")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	at, err := badgeAt()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(at); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	_, _, err = Mine(time.Now())
+	return err
+}
+
+// Took reports whether this machine set a key of its own aside to become somebody's, which is what
+// leaving puts back.
+func Took() bool {
+	where, err := Where()
+	if err != nil || Named() {
+		return false
+	}
+	_, err = os.Stat(where + ".before")
+	return err == nil
+}
