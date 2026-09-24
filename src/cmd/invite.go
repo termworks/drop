@@ -20,6 +20,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"github.com/bresilla/drop/src/pkg/tui"
+	"github.com/bresilla/drop/src/pkg/user"
 )
 
 // Connecting to a device on the same network without typing anything.
@@ -35,6 +36,8 @@ import (
 type inviting struct {
 	node *node.Node
 	lan  *discovery.LAN
+	// held is the connections this machine keeps, which reach somebody already paired with.
+	held *dial.Kept
 	// offer shows a code for a moment, and yields the name whoever took it was filed under.
 	offer func(ctx context.Context, code string, kind offerKind) (<-chan string, error)
 	box   *inbox
@@ -74,6 +77,10 @@ func (h *inviting) send(ctx context.Context, to node.ID, kind string) (string, e
 			as = offerMine
 		}
 		if err := canAdd(as); err != nil {
+			// A machine wearing a badge has one that holds the key do it.
+			if kind == proto.InviteMine {
+				return h.throughMine(ctx, to, kind)
+			}
 			return "", err
 		}
 		fresh, err := proto.NewCode()
@@ -89,13 +96,12 @@ func (h *inviting) send(ctx context.Context, to node.ID, kind string) (string, e
 		return "", fmt.Errorf("%q is nothing a device can be asked", kind)
 	}
 
-	conn, s, err := dial.At(ctx, h.node, h.lan, nil, book.Entry{Name: node.Brief(to), ID: to}, node.ALPNInvite, nil)
+	s, done, err := h.reach(ctx, to)
 	if err != nil {
 		return "", fmt.Errorf("reaching it: %w", err)
 	}
 	reply, err := proto.SendInvite(s, proto.Invite{Kind: kind, Code: code, Name: node.DisplayName()})
-	_ = s.Close()
-	_ = conn.Close()
+	done()
 	if err != nil {
 		return "", err
 	}
@@ -118,6 +124,25 @@ func (h *inviting) send(ctx context.Context, to node.ID, kind string) (string, e
 	}
 }
 
+// reach is a stream to a device for an invite: over the connections this machine keeps when it is
+// somebody already paired with, which finds them wherever they are, and on this wire otherwise.
+func (h *inviting) reach(ctx context.Context, to node.ID) (proto.Stream, func(), error) {
+	if pinned, err := book.Load(); err == nil && h.held != nil {
+		if entry, known := pinned.ByID(to); known && entry.Paired() {
+			closer, s, err := kept{held: h.held}.To(ctx, entry, node.ALPNInvite)
+			if err != nil {
+				return nil, nil, err
+			}
+			return s, func() { _ = s.Close(); _ = closer.Close() }, nil
+		}
+	}
+	conn, s, err := dial.At(ctx, h.node, h.lan, nil, book.Entry{Name: node.Brief(to), ID: to}, node.ALPNInvite, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s, func() { _ = s.Close(); _ = conn.Close() }, nil
+}
+
 // answering holds each ask until this machine's person answers it, then does what they said.
 func (h *inviting) answering(pinned *book.Book) func(node.ID, *iroh.Stream) {
 	return func(from node.ID, s *iroh.Stream) {
@@ -133,9 +158,13 @@ func (h *inviting) answering(pinned *book.Book) func(node.ID, *iroh.Stream) {
 					whose = owner.Person
 				}
 			}
+			asking := from.String()
+			if badge.Shown() {
+				asking = badge.Key
+			}
 			yes, err := h.box.wait(tui.Invited{
 				ID: from.String(), Name: ask.Name, Whose: whose, Kind: ask.Kind,
-				Check: proto.Check(from, h.node.ID()), When: time.Now().Unix(),
+				Check: proto.Check(h.node.ID().String(), asking), When: time.Now().Unix(),
 			})
 			if err != nil {
 				return proto.Reply{Why: err.Error()}
@@ -387,4 +416,37 @@ func (l *running) Decide(id string, yes bool) error {
 	}
 	_, err := atDaemon(context.Background(), "decide "+id+" "+answer)
 	return err
+}
+
+// throughMine has a machine of this user's that holds the key ask a device to become one of theirs,
+// for this one, which wears a badge and cannot sign one for anybody.
+func (h *inviting) throughMine(ctx context.Context, to node.ID, kind string) (string, error) {
+	pinned, err := book.Load()
+	if err != nil {
+		return "", err
+	}
+	last := errors.New("none of your machines that holds your key can be reached")
+	for _, entry := range pinned.All() {
+		if entry.User == "" || entry.User != myKey() || user.Removed(entry.ID.String()) || h.held == nil {
+			continue
+		}
+		closer, s, err := kept{held: h.held}.To(ctx, entry, node.ALPNManage)
+		if err != nil {
+			last = err
+			continue
+		}
+		raw, err := proto.AskManageWithin(s, proto.Manage{Op: proto.ManageInvite, Who: to.String(), Level: kind}, proto.DecideWithin+time.Minute)
+		_ = s.Close()
+		_ = closer.Close()
+		if err != nil {
+			last = err
+			continue
+		}
+		var with string
+		if err := json.Unmarshal(raw, &with); err != nil {
+			return "", err
+		}
+		return with, nil
+	}
+	return "", last
 }

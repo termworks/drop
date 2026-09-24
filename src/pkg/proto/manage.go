@@ -3,6 +3,7 @@ package proto
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/wire"
@@ -26,6 +27,9 @@ const (
 	// ManageFor asks what one person may open, with Who their user key, or the id of a machine
 	// that belongs to nobody.
 	ManageFor = "for"
+	// ManageInvite asks the machine to invite a device, Who its id and Level what to ask, for a
+	// machine of the same user's that cannot do it itself.
+	ManageInvite = "invite"
 )
 
 // Manage is one ask. Level is the step to put the path on, empty to hand it back to its config;
@@ -76,10 +80,13 @@ func decodeManage(from node.ID, body []byte) (Badged, Manage, error) {
 }
 
 // AskManage asks, and hands back the answer as the far end wrote it.
-func AskManage(s Stream, m Manage) ([]byte, error) {
+func AskManage(s Stream, m Manage) ([]byte, error) { return AskManageWithin(s, m, settleIn) }
+
+// AskManageWithin asks, waiting as long as within for the answer: an invite is answered by a person.
+func AskManageWithin(s Stream, m Manage, within time.Duration) ([]byte, error) {
 	var out []byte
 	c := wire.NewConn(s)
-	err := c.WithIdle(settleIn, func() error {
+	err := c.WithIdle(within, func() error {
 		if err := c.WriteFrame(wire.KindPing, m.encode()); err != nil {
 			return fmt.Errorf("asking: %w", err)
 		}

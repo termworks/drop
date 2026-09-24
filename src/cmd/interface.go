@@ -146,6 +146,8 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 
 	// The interface serves while it is open, so a device that pairs with it can reach it — and
 	// so what arrives lands in a conversation rather than being refused.
+	// Built below, and reached through the handlers before it is: nothing is answered until then.
+	var invites *inviting
 	answer := map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
 			defer func() { _ = s.Close() }()
@@ -178,14 +180,14 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 				return greeting(pinned, cfg.Mounts, known, from, badge)
 			}, moving(pinned, func(string) {}))
 		},
-		node.ALPNManage: managing(pinned, known),
+		node.ALPNManage: managing(pinned, known, func() *inviting { return invites }),
 		node.ALPNSync:   syncing(pinned),
 	}
 
 	// Asked by a device nearby to connect, and asking them: the code an invite hands over is shown
 	// by this interface's own endpoint, which is set up below.
 	var self *running
-	invites := &inviting{node: n, lan: lan, box: newInbox(func() { knock(arriving) })}
+	invites = &inviting{node: n, lan: lan, held: held, box: newInbox(func() { knock(arriving) })}
 	invites.offer = func(ctx context.Context, code string, kind offerKind) (<-chan string, error) {
 		return self.offerCode(ctx, code, kind)
 	}

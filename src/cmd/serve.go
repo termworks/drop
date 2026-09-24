@@ -157,7 +157,7 @@ func runServe(parent context.Context, quiet bool) error {
 	rung := newBell()
 	doing.noticed = rung.ring
 	// A device nearby asking to connect waits here for whoever is looking at this machine to answer.
-	invites := &inviting{node: n, lan: lan, offer: offers.offering, box: newInbox(rung.ring)}
+	invites := &inviting{node: n, lan: lan, held: held, offer: offers.offering, box: newInbox(rung.ring)}
 	go func() {
 		h := hosts{casts: casts, shares: shares, put: put, offers: offers, held: held, rung: rung, lan: lan, invites: invites}
 		if err := hostLocal(ctx, local, h); err != nil {
@@ -210,7 +210,7 @@ func runServe(parent context.Context, quiet bool) error {
 				return greeting(pinned, cfg.Mounts, known, from, badge)
 			}, moving(pinned, func(said string) { log.Printf("%s", said) }))
 		},
-		node.ALPNManage: managing(pinned, known),
+		node.ALPNManage: managing(pinned, known, func() *inviting { return invites }),
 		node.ALPNSync:   syncing(pinned),
 		node.ALPNInvite: invites.answering(pinned),
 		// Pairing is answered by whoever holds the address, which is this. A separate `drop peer pair`

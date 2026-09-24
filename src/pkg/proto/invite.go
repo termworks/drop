@@ -52,10 +52,11 @@ type Reply struct {
 // DecideWithin is how long an ask waits for a person on the far end.
 const DecideWithin = 2 * time.Minute
 
-// Check is the number both screens show for an invite between two devices: the same whichever of
-// them works it out, and different for any other pair.
-func Check(a, b node.ID) string {
-	lo, hi := a.String(), b.String()
+// Check is the number both screens show for an invite: worked out from the device asked and from
+// who is asking — their user key, so it is the same on every machine of theirs whichever of them
+// does the asking, or the asking device when it wears no badge.
+func Check(a, b string) string {
+	lo, hi := a, b
 	if hi < lo {
 		lo, hi = hi, lo
 	}

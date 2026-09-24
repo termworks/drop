@@ -339,6 +339,10 @@ func (h *pairHost) offering(ctx context.Context, code string, kind offerKind) (<
 	if err != nil {
 		return nil, err
 	}
+	// Findable while it is shown, so a device on another network can come and take it.
+	if err := node.Findable(ctx, h.node); err != nil {
+		fmt.Fprintf(os.Stderr, "drop: cannot publish where this device is: %v\n", err)
+	}
 	taken := make(chan string, 1)
 	go func() {
 		defer h.close()

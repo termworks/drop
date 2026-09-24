@@ -166,15 +166,23 @@ func decideNearby(ctx context.Context, name string, yes bool) error {
 	return fmt.Errorf("nothing called %q is asking: `drop nearby` lists who is", name)
 }
 
-// checkWith is the number this machine's screen shows for an ask to or from one device.
+// checkWith is the number this machine's screen shows when it asks one device something: worked out
+// from that device and this machine's user, the same one any other machine of theirs shows.
 func checkWith(id string) (string, error) {
-	self, err := node.LocalID()
-	if err != nil {
-		return "", err
-	}
 	to, err := node.ParseID(id)
 	if err != nil {
 		return "", err
 	}
-	return proto.Check(self, to), nil
+	asking := myKey()
+	if asking == "" {
+		self, err := node.LocalID()
+		if err != nil {
+			return "", err
+		}
+		asking = self.String()
+	}
+	return proto.Check(to.String(), asking), nil
 }
+
+// CheckWith is checkWith, for the phone's screens.
+func CheckWith(id string) (string, error) { return checkWith(id) }
