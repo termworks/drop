@@ -22,10 +22,11 @@ const (
 	ALPNSession = "drop/session/1"
 	ALPNHello   = "drop/hello/1"
 	ALPNPair    = "drop/pair/1"
+	ALPNManage  = "drop/manage/1"
 )
 
 // ALPNs is every protocol this node answers.
-var ALPNs = []string{ALPNSession, ALPNHello, ALPNPair}
+var ALPNs = []string{ALPNSession, ALPNHello, ALPNPair, ALPNManage}
 
 // Node is this machine on the drop network.
 type Node struct {
