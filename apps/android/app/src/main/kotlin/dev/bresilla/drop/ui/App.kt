@@ -33,7 +33,7 @@ sealed interface Screen {
     ) : Screen
     data class Live(val machine: String, val path: String, val archetype: String, val typing: Boolean) : Screen
     data class Pair(val ticket: String? = null, val scan: Boolean = false) : Screen
-    data class Sending(val uris: List<Uri>) : Screen
+    data class Sending(val uris: List<Uri>, val text: String? = null) : Screen
     /** A note: on another machine, or with machine empty, the copy this phone keeps at path. */
     data class Note(val machine: String, val path: String, val shared: String = "") : Screen
     /** Who may open a path: on this phone when machine is empty, or on a machine of yours. */
@@ -46,7 +46,7 @@ sealed interface Screen {
 sealed interface Arrival {
     data class Join(val ticket: String) : Arrival
     data class Open(val machine: String) : Arrival
-    data class Send(val uris: List<Uri>) : Arrival
+    data class Send(val uris: List<Uri>, val text: String? = null) : Arrival
 }
 
 @Composable
@@ -64,7 +64,7 @@ fun App(arrival: Arrival?, taken: () -> Unit) {
         when (arrival) {
             is Arrival.Join -> stack = listOf(Screen.Home, Screen.Pair(arrival.ticket))
             is Arrival.Open -> stack = listOf(Screen.Home, Screen.Chat(arrival.machine))
-            is Arrival.Send -> stack = listOf(Screen.Home, Screen.Sending(arrival.uris))
+            is Arrival.Send -> stack = listOf(Screen.Home, Screen.Sending(arrival.uris, arrival.text))
             null -> return@LaunchedEffect
         }
         taken()
@@ -90,7 +90,7 @@ fun App(arrival: Arrival?, taken: () -> Unit) {
             is Screen.Files -> FilesScreen(screen, go, back)
             is Screen.Live -> LiveScreen(screen, back)
             is Screen.Pair -> PairScreen(screen.ticket, screen.scan, back, paired = { instead(Screen.Machine(it)) })
-            is Screen.Sending -> SendingScreen(screen.uris, back, done = { instead(Screen.Chat(it)) })
+            is Screen.Sending -> SendingScreen(screen.uris, screen.text, back, done = { instead(Screen.Chat(it)) })
             is Screen.Note -> NoteScreen(screen, back)
             is Screen.Access -> AccessScreen(screen.machine, screen.path, back)
             Screen.AddMachine -> AddMachineScreen(go, back)
