@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.3] - 2026-09-24
+
+### <!-- 0 -->⛰️  Features
+
+- Call you by your name
+- Sign every release with one key
+- Your machines find each other
+- Name your machines on a hello
+- A secret all your machines share
+
+### <!-- 3 -->📚 Documentation
+
+- Install and update with Obtainium
+
 ## [0.4.2] - 2026-09-24
 
 ### <!-- 0 -->⛰️  Features
