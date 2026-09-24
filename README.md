@@ -11,10 +11,17 @@ drop machine add             # show a code a new machine of yours takes the same
 drop topic add work folder   # a folder called work on this machine; --on adds it to another
 ```
 
-A machine becomes yours because your key signs it, and only a machine holding that key can add one.
-The key is an SSH key you already have, or one in a YubiKey — `drop me key use ~/.ssh/id_ed25519` —
-and `drop me key` says which one you are. After that either device can reach the other from
-anywhere: across NATs, across networks, through address changes.
+A machine becomes yours because your key signs it. The key is an SSH key you already have, or the
+one in your YubiKey — `drop me key` lists what this machine has, and `u` in the interface picks one.
+A machine then joins you one of three ways:
+
+- **it holds your key** — the same SSH key, or your YubiKey held to it — and finds your other
+  machines by itself, within a minute or two, with no code;
+- **a one-time code** that a machine holding your key shows with `drop machine add`;
+- **one of yours asks it**, on this network or among the devices you added, and its person says yes.
+
+After that either device can reach the other from anywhere: across NATs, across networks, through
+address changes.
 
 A device on the same network needs no code at all: `drop nearby` lists it, the phone shows it under
 *Nearby*, and its person says yes with the same number on both screens. Your machines keep one

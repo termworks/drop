@@ -81,6 +81,28 @@ signed by `ssh-keygen -Y sign`, which every machine with SSH already has and whi
 key directly — no agent involved. A key drop was *pointed at* and cannot find is an error: it will
 not answer a typo by inventing a second identity.
 
+Choosing the key is `drop me key`, which lists every key the machine has — the SSH keys in `~/.ssh`,
+the YubiKey ones, and the one drop made — and `drop me key use <file> --yes` or `u` in the interface
+to be one of them. `drop me key yubikey` takes the handles of the keys a YubiKey holds, with its PIN
+and a touch, and becomes the one made for drop; `--new` makes one on it first. On a phone it is
+*Your key* → *Change*: hold the YubiKey to the phone, its PIN says which key is yours, or pick an SSH
+key file.
+
+## Three ways a machine becomes yours
+
+| | |
+|---|---|
+| **it holds your key** | give it the key — `drop me key use`, or the YubiKey held to the phone — and it is yours by itself: it signs its own badge and finds your other machines holding the same key within a minute or two. No code, and nothing to say yes to |
+| **a one-time code** | a machine holding your key shows one with `drop machine add`, and the new machine takes it with `drop machine add <code>`. It wears a badge the key signed, renewed whenever the two meet |
+| **one of yours asks it** | `drop machine add <name>` on a device you added or one on this network, and its person says yes, with the same number on both screens |
+
+The first is the doorbell. Two machines that have met find each other under a secret they made when
+they met; a machine that only holds the key has met nobody. So while it knows no other machine of
+yours it rings: it says where it is under an identity worked out from the public key, with its badge
+in a hundred and seventy bytes, and every machine of yours that chose the same key looks there once
+a minute, checks the badge, writes it down, and the hello and the shared address book do the rest.
+A key drop made for itself never rings: it is on one machine, and there is nobody to find with it.
+
 ## Adding a person, and adding a machine
 
 Somebody comes in by being added. On one device `drop person add` shows a code and a QR, and on the
@@ -217,6 +239,13 @@ entirely.
 The pair secret itself is derived during pairing over a stream QUIC has already encrypted and
 mutually authenticated, mixing both sides' nonces through HKDF, salted with both endpoint ids and
 ordered so the two ends compute the same value.
+
+The doorbell is the exception, and is weaker on purpose. Its identity is worked out from your public
+key, which is not a secret — it may be on GitHub — so whoever has it can read the record: where the
+ringing machine is, its id and its name. That is why a machine rings only while it knows no other
+machine of yours, and stops the moment it meets one. Anybody can write a record there too, and all
+it earns them is being ignored: a ring is believed only with a badge your key signed for the machine
+that rang, and an RSA key, whose signatures do not fit, never rings.
 
 ## Finding each other, cheapest first
 

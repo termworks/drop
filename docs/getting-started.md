@@ -208,12 +208,14 @@ never left it.
 
 ---
 
-## 6. Pair them
+## 6. Let them find each other
 
-Even with one identity, two machines still have to meet once — pairing establishes the shared secret
-that lets them find each other later without publishing anything anybody else can read.
+With the same key on all three, there is nothing to do: each rings for your other machines while it
+knows none of them, and within a minute or two `drop machine` on any of them lists all three. The
+first meeting is how they make the secret they find each other under from then on.
 
-On **core**:
+A machine that does *not* have the key — one you would rather not fetch the YubiKey's handle onto —
+takes a one-time code instead. On **core**:
 
 ```console
 $ drop machine add

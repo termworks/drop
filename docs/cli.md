@@ -77,12 +77,15 @@ until `drop topic who` says otherwise.
 **`drop me key`** — who you are.
 
 ```console
-drop me key                    your key: its fingerprint, and where it signs from
+drop me key                    your key, and every other key on this machine you could be
 drop me key use <file> --yes   be the SSH key at a file, or the YubiKey whose .pub it is
+drop me key yubikey            be the key in your YubiKey: its handles fetched, a PIN and a touch
+drop me key yubikey --new      make a key for drop on the YubiKey first
 ```
 
-drop makes a key of its own on first run, so it works with nothing set up; `drop me key` says when
-that is the one in use. Being another key is a new you: your machines are added again under it.
+drop makes a key of its own on first run, so it works with nothing set up. Choose your own and
+every machine of yours that holds the same one — the same SSH key, or the same YubiKey — finds the
+others by itself, with no code. A machine without it is added with `drop machine add`.
 
 **`drop nearby`** — devices on this network nobody here has added yet.
 

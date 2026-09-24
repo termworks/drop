@@ -45,7 +45,8 @@ removes it.
 
 | where | what you can do |
 |---|---|
-| people | `a` add a person (shows your code), `t` take the code somebody shows, `m` manage somebody — or, on your own row, your key, using your SSH key or YubiKey, leaving or starting over — `n` rename them, `x` remove them |
+| people | `a` add a person (shows your code), `t` take the code somebody shows, `m` manage somebody — or, on your own row, leaving or starting over — `n` rename them, `x` remove them |
+| anywhere | `u` your key: pick one of the SSH keys on this machine, take the key from your YubiKey, or make one on it; your machines holding the same key find each other by themselves |
 | nearby | a device on this network: `enter` adds it, `o` makes it one of your machines, `i` makes this one one of its; its person says yes |
 | your machines | `a` add a machine (shows a code, and which key signs it), `n` rename one, `x` take it out of your machines |
 | somebody's machines | `o` make it one of your machines, `i` make this one one of its, `n` rename, `x` forget, `t` trust them, `m` manage them |
