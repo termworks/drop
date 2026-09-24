@@ -52,13 +52,17 @@ func TestLinkStoresAndAcknowledgesAnArrival(t *testing.T) {
 
 	var out bytes.Buffer
 	var got convo.Message
-	l := New(Into{Store: func(_ node.ID, m convo.Message) error { got = m; return nil }})
-	at := arch.Session{Conn: wire.NewConn(readWriter{&in, &out})}
+	var action string
+	l := New(Into{Store: func(_ node.ID, m convo.Message, with string) error { got, action = m, with; return nil }})
+	at := arch.Session{Conn: wire.NewConn(readWriter{&in, &out}), Config: Config{Action: "xdg-open"}}
 	if err := l.Serve(t.Context(), at); err != nil {
 		t.Fatalf("Serve(): %v", err)
 	}
 	if got.ID != message.ID || got.Body != message.Body || got.Dir != convo.In {
 		t.Fatalf("stored %+v", got)
+	}
+	if action != "xdg-open" {
+		t.Fatalf("the link was handed on with action %q, want the namespace's own", action)
 	}
 
 	kind, body, err := wire.NewConn(readWriter{&out, io.Discard}).ReadFrame()

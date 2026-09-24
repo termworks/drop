@@ -94,7 +94,7 @@ func compose(entry book.Entry, kind byte, body, extra string) (convo.Message, er
 }
 
 // receiving stores an arriving message and acts on the kinds that ask for it.
-func receiving(pinned *book.Book, openLinks bool, show func(node.ID, convo.Message)) func(node.ID, convo.Message) error {
+func receiving(pinned *book.Book, opener string, show func(node.ID, convo.Message)) func(node.ID, convo.Message) error {
 	return func(from node.ID, m convo.Message) error {
 		store, err := convo.Open(from)
 		if err != nil {
@@ -113,20 +113,32 @@ func receiving(pinned *book.Book, openLinks bool, show func(node.ID, convo.Messa
 		if show != nil {
 			show(from, m)
 		}
-		if m.Kind == convo.KindLink && openLinks {
-			openInBrowser(m.Body)
+		if m.Kind == convo.KindLink && opener != "" {
+			openWith(opener, m.Body, browserOpeners)
 		}
 		return nil
 	}
 }
 
-// openInBrowser hands a link to the desktop. Detached, because drop is not the thing that should
-// die if a browser does.
-func openInBrowser(link string) bool {
-	return openWithBrowser(link, browserOpeners)
+// defaultOpener is what opens a link when nothing says what should: $DROP_OPENER, or the desktop's own.
+func defaultOpener() string {
+	if opener := os.Getenv("DROP_OPENER"); opener != "" {
+		return opener
+	}
+	return "xdg-open"
 }
 
 func openWithBrowser(link string, gate *browserGate) bool {
+	return openWith(defaultOpener(), link, gate)
+}
+
+// openWith hands a link to a command: the words of the command, then the link. Detached, because
+// drop is not the thing that should die if a browser does.
+func openWith(opener, link string, gate *browserGate) bool {
+	words := strings.Fields(opener)
+	if len(words) == 0 {
+		return false
+	}
 	if len(link) > maxOpenedLink || (!strings.HasPrefix(link, "http://") && !strings.HasPrefix(link, "https://")) {
 		return false
 	}
@@ -134,11 +146,7 @@ func openWithBrowser(link string, gate *browserGate) bool {
 		return false
 	}
 
-	opener := os.Getenv("DROP_OPENER")
-	if opener == "" {
-		opener = "xdg-open"
-	}
-	cmd := exec.Command(opener, link)
+	cmd := exec.Command(words[0], append(words[1:], link)...)
 	if err := cmd.Start(); err != nil {
 		gate.give()
 		fmt.Fprintf(os.Stderr, "drop: could not open %s: %v\n", plain.Text(link, MaxSaid), err)
