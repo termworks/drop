@@ -35,12 +35,12 @@ sealed interface Screen {
     ) : Screen
     data class Live(val machine: String, val path: String, val archetype: String, val typing: Boolean) : Screen
     data class Pair(val ticket: String? = null, val scan: Boolean = false) : Screen
-    data object Me : Screen
     data class Sending(val uris: List<Uri>) : Screen
     /** A note: on another machine, or with machine empty, the copy this phone keeps at path. */
     data class Note(val machine: String, val path: String, val shared: String = "") : Screen
-    data class Access(val path: String) : Screen
-    data class Manage(val name: String) : Screen
+    /** Who may open a path: on this phone when machine is empty, or on a machine of yours. */
+    data class Access(val machine: String, val path: String) : Screen
+    data object AddMachine : Screen
 }
 
 /** Something the activity was handed from outside: a link, a notification, another app's share. */
@@ -86,17 +86,16 @@ fun App(arrival: Arrival?, taken: () -> Unit) {
     ) { screen ->
         when (screen) {
             Screen.Home -> HomeScreen(tab, onTab = { tab = it }, go = go)
-            is Screen.Person -> PersonScreen(screen.name, go, back)
+            is Screen.Person -> PersonScreen(screen.name, go, back, home)
             is Screen.Machine -> MachineScreen(screen.name, go, back, home)
             is Screen.Chat -> ChatScreen(screen.machine, go, back)
             is Screen.Files -> FilesScreen(screen, go, back)
             is Screen.Live -> LiveScreen(screen, back)
             is Screen.Pair -> PairScreen(screen.ticket, screen.scan, back, paired = { instead(Screen.Machine(it)) })
-            Screen.Me -> MeScreen(back)
             is Screen.Sending -> SendingScreen(screen.uris, back, done = { instead(Screen.Chat(it)) })
             is Screen.Note -> NoteScreen(screen, back)
-            is Screen.Access -> AccessScreen(screen.path, back)
-            is Screen.Manage -> ManageScreen(screen.name, back, home)
+            is Screen.Access -> AccessScreen(screen.machine, screen.path, back)
+            Screen.AddMachine -> AddMachineScreen(go, back)
         }
     }
 }

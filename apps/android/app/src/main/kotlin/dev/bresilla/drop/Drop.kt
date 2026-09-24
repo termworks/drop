@@ -192,6 +192,29 @@ object Drop {
         List(all.length()) { Kept.from(all.getJSONObject(it)) }
     }
 
+    /** Every path on this phone (machine empty) or on a machine of yours, and who may reach each. */
+    suspend fun levels(machine: String): Result<List<PathState>> = call { node ->
+        val all = JSONArray(node.manage(machine, "list", "", "", "", false))
+        List(all.length()) { PathState.from(all.getJSONObject(it)) }
+    }
+
+    /** Reads one path's permissions, or changes them: op is read, level, shown, allow, deny or unset. */
+    suspend fun manage(
+        machine: String,
+        op: String,
+        path: String,
+        who: String = "",
+        level: String = "",
+        shown: Boolean = false,
+    ): Result<PathDetail> = call { node ->
+        PathDetail.from(JSONObject(node.manage(machine, op, path, who, level, shown)))
+    }
+
+    /** Takes this phone back out of your machines, and starts it again as its own. */
+    suspend fun leave(context: Context): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching { Mobile.leave() }.onSuccess { restart(context) }
+    }
+
     suspend fun list(machine: String, path: String, dir: String): Result<List<Held>> = call { node ->
         val all = JSONArray(node.list(machine, path, dir))
         List(all.length()) { Held.from(all.getJSONObject(it)) }.sortedWith(compareBy({ !it.dir }, { it.name.lowercase() }))
@@ -218,6 +241,7 @@ data class Me(
     val owner: String,
     val signs: Boolean,
     val until: Long,
+    val took: Boolean,
 ) {
     companion object {
         fun from(o: JSONObject) = Me(
@@ -228,6 +252,7 @@ data class Me(
             o.optString("owner"),
             o.optBoolean("signs"),
             o.optLong("until"),
+            o.optBoolean("took"),
         )
     }
 }
@@ -425,5 +450,62 @@ private fun strings(a: JSONArray?): List<String> = if (a == null) emptyList() el
 data class Kept(val path: String, val archetype: String, val shared: String, val where: String) {
     companion object {
         fun from(o: JSONObject) = Kept(o.optString("path"), o.optString("archetype"), o.optString("shared"), o.optString("where"))
+    }
+}
+
+/**
+ * One path and who may reach it: the step it stands on (me, trusted, paired, anyone, or custom for a
+ * rule the config wrote that is none of those), whether that was chosen here or by the config, and
+ * who is let in or kept out beyond the step.
+ */
+data class PathState(
+    val path: String,
+    val archetype: String,
+    val about: String,
+    val level: String,
+    val chosen: Boolean,
+    val config: String,
+    val shown: Boolean,
+    val password: Boolean,
+    val allowed: List<String>,
+    val refused: List<String>,
+    val asked: Int,
+) {
+    companion object {
+        fun from(o: JSONObject) = PathState(
+            o.optString("path"),
+            o.optString("archetype"),
+            o.optString("about"),
+            o.optString("level"),
+            o.optBoolean("chosen"),
+            o.optString("config"),
+            o.optBoolean("shown"),
+            o.optBoolean("password"),
+            strings(o.optJSONArray("allowed")),
+            strings(o.optJSONArray("refused")),
+            o.optInt("asked"),
+        )
+    }
+}
+
+/** A path's permissions with everybody who could be let in or kept out, and who is asking. */
+data class PathDetail(val state: PathState, val who: List<WhoState>, val asking: List<Asking>) {
+    companion object {
+        fun from(o: JSONObject): PathDetail {
+            val who = o.optJSONArray("who") ?: JSONArray()
+            val asking = o.optJSONArray("asking") ?: JSONArray()
+            return PathDetail(
+                PathState.from(o),
+                List(who.length()) { WhoState.from(who.getJSONObject(it)) },
+                List(asking.length()) { asking.getJSONObject(it).let { a -> Asking(a.optString("who"), a.optString("why"), a.optString("when")) } },
+            )
+        }
+    }
+}
+
+/** Somebody who could be let in or kept out: at is allowed, refused, or empty for left to the step. */
+data class WhoState(val name: String, val person: Boolean, val trusted: Boolean, val at: String, val inConfig: Boolean) {
+    companion object {
+        fun from(o: JSONObject) = WhoState(o.optString("name"), o.optBoolean("person"), o.optBoolean("trusted"), o.optString("at"), o.optBoolean("inConfig"))
     }
 }

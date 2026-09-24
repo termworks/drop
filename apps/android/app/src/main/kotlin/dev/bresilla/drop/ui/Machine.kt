@@ -21,11 +21,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MoveToInbox
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -54,14 +54,24 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import dev.bresilla.drop.Drop
+import dev.bresilla.drop.Kept
 import dev.bresilla.drop.Machine
+import dev.bresilla.drop.PathState
 import dev.bresilla.drop.Paths
 import dev.bresilla.drop.Served
 import kotlinx.coroutines.launch
 
+/**
+ * A machine and its paths. This phone when name is empty. On a machine of yours every path carries
+ * who may open it, to change from here; on somebody else's, what they let you reach.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () -> Unit) {
@@ -69,29 +79,51 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
     val scope = rememberCoroutineScope()
     val tick by Drop.tick.collectAsState()
     val said = remember { SnackbarHostState() }
+    val here = name.isEmpty()
 
+    var title by remember { mutableStateOf(name) }
     var machine by remember { mutableStateOf<Machine?>(null) }
+    var mine by remember { mutableStateOf(here) }
+    var person by remember { mutableStateOf<String?>(null) }
     var paths by remember { mutableStateOf<Paths?>(null) }
     var failed by remember { mutableStateOf<String?>(null) }
+    var levels by remember { mutableStateOf<List<PathState>?>(null) }
+    var unmanaged by remember { mutableStateOf<String?>(null) }
+    var kept by remember { mutableStateOf<List<Kept>>(emptyList()) }
     var asking by remember { mutableStateOf(true) }
     var menu by remember { mutableStateOf(false) }
     var forgetting by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
     var linking by remember { mutableStateOf<Served?>(null) }
     var sendingTo by remember { mutableStateOf<Served?>(null) }
     var ringing by remember { mutableStateOf<Served?>(null) }
 
     Pulse()
     LaunchedEffect(tick) {
-        machine = Drop.people().getOrNull()?.flatMap { it.machines }?.firstOrNull { it.name == name }
+        val people = Drop.people().getOrNull()
+        val owner = people?.firstOrNull { p -> p.machines.any { it.name == name } }
+        machine = owner?.machines?.firstOrNull { it.name == name }
+        mine = here || owner?.me == true
+        person = owner?.takeIf { !it.me && !it.anon && it.machines.size > 1 }?.name
+        if (here) {
+            title = Drop.self()?.name ?: "this phone"
+            kept = Drop.kept().getOrNull() ?: kept
+        }
     }
-    // Asked again as the screen refreshes: a machine that comes back, or one that was still writing
-    // down a pairing made a moment ago, answers differently the second time.
     LaunchedEffect(name, tick) {
+        if (here) return@LaunchedEffect
         if (paths == null) asking = true
         Drop.paths(name)
             .onSuccess { paths = it; failed = null }
             .onFailure { if (paths == null) failed = it.message }
         asking = false
+    }
+    LaunchedEffect(name, tick, mine) {
+        if (!mine) return@LaunchedEffect
+        Drop.levels(name)
+            .onSuccess { levels = it; unmanaged = null }
+            .onFailure { if (levels == null) unmanaged = it.message }
+        if (here) asking = false
     }
 
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris: List<Uri> ->
@@ -118,6 +150,15 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
             else -> scope.launch { said.showSnackbar("This build does not know how to open ${s.archetype}") }
         }
     }
+    // On this phone a path is not somewhere to go, except a copy kept here: that opens onto what is in it.
+    val openHere: (PathState) -> Unit = { p ->
+        val copy = kept.firstOrNull { it.path == p.path }
+        when (copy?.archetype) {
+            "note" -> go(Screen.Note("", copy.path, copy.shared))
+            "files" -> go(Screen.Files("", copy.path, "", true, copy.shared, copy.where))
+            else -> go(Screen.Access("", p.path))
+        }
+    }
 
     Scaffold(
         snackbarHost = { SnackbarHost(said) },
@@ -125,9 +166,16 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
             TopAppBar(
                 title = {
                     Column {
-                        Text(name)
+                        Text(title)
                         Text(
-                            (machine?.brief ?: "") + if (machine?.reaching == true) " · online" else "",
+                            when {
+                                here -> "this phone"
+                                else -> listOfNotNull(
+                                    machine?.brief,
+                                    if (mine) "yours" else person?.let { "$it's" },
+                                    if (machine?.reaching == true) "online" else null,
+                                ).joinToString(" · ")
+                            },
                             style = Mono,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -135,37 +183,69 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
                 },
                 navigationIcon = { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 actions = {
-                    IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        val trusted = machine?.trusted == true
-                        DropdownMenuItem(
-                            text = { Text(if (trusted) "Stop trusting" else "Trust") },
-                            onClick = {
-                                menu = false
-                                scope.launch {
-                                    Drop.call { it.trust(name, !trusted) }
-                                    Drop.bump()
-                                }
-                            },
-                        )
-                        DropdownMenuItem(text = { Text("Manage") }, onClick = { menu = false; go(Screen.Manage(name)) })
-                        DropdownMenuItem(text = { Text("Forget") }, onClick = { menu = false; forgetting = true })
+                    if (!here) {
+                        IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            if (!mine) {
+                                val trusted = machine?.trusted == true
+                                DropdownMenuItem(
+                                    text = { Text(if (trusted) "Stop trusting" else "Trust") },
+                                    onClick = {
+                                        menu = false
+                                        scope.launch { Drop.call { it.trust(name, !trusted) }; Drop.bump() }
+                                    },
+                                )
+                            }
+                            DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; renaming = true })
+                            DropdownMenuItem(
+                                text = { Text(if (mine) "Remove from my machines" else "Unpair") },
+                                onClick = { menu = false; forgetting = true },
+                            )
+                        }
                     }
                 },
             )
         },
     ) { pad ->
-        val all = paths?.paths ?: emptyList()
+        val served = paths?.paths ?: emptyList()
+        val byPath = served.associateBy { it.path }
         LazyColumn(contentPadding = PaddingValues(top = pad.calculateTopPadding(), bottom = 32.dp)) {
-            item { Header(name, machine, all, go, onSend = { s -> sendingTo = s; pick.launch("*/*") }) }
+            if (!here) item { Header(name, machine, served, go, onSend = { s -> sendingTo = s; pick.launch("*/*") }) }
             paths?.stale?.let { item { Banner("$name is not answering right now, so this is what it shared last time.") } }
             failed?.let { item { Banner("Could not ask $name what it shares: $it", error = true) } }
-            if (asking && paths == null) {
+            unmanaged?.let { item { Banner("Could not ask $name who may open its paths: $it", error = true) } }
+            if (asking && paths == null && levels == null) {
                 item { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
             }
-            if (all.isNotEmpty()) item { Section("Shared with you") }
-            items(all, key = { it.path }) { s -> PathRow(s) { open(s) } }
-            if (!asking && all.isEmpty() && failed == null) {
+
+            val stepped = levels
+            if (mine && stepped != null) {
+                item { Section(if (here) "What it shares" else "Its paths") }
+                items(stepped, key = { "l:" + it.path }) { p ->
+                    val s = byPath[p.path]
+                    PathRow(
+                        kind = s?.kind ?: p.archetype,
+                        path = p.path,
+                        about = p.about.ifEmpty { p.archetype },
+                        onClick = { if (here) openHere(p) else if (s != null) open(s) else go(Screen.Access(name, p.path)) },
+                        trailing = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (p.asked > 0) Badge { Text("${p.asked}") }
+                                Spacer(Modifier.width(4.dp))
+                                LevelChip(p.level) { go(Screen.Access(name, p.path)) }
+                            }
+                        },
+                    )
+                }
+            } else if (served.isNotEmpty()) {
+                item { Section("Shared with you") }
+                items(served, key = { "s:" + it.path }) { s ->
+                    PathRow(s.kind, s.path, s.about.ifEmpty { s.archetype }, onClick = { open(s) }) {
+                        if (s.locked) Icon(Icons.Filled.Lock, "locked — ask for it", tint = MaterialTheme.colorScheme.outline)
+                    }
+                }
+            }
+            if (!here && !asking && served.isEmpty() && failed == null && !mine) {
                 item { Banner("$name shares nothing with you yet. Messages still work: anything you say waits until it can be delivered.") }
             }
             item { Transfer() }
@@ -199,7 +279,7 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
             title = { Text("Ask for ${s.path.trimStart('/')}") },
             text = {
                 Column {
-                    Text("$name sees you can't open it yet. Asking lets them know, and they decide.")
+                    Text("You can see it but not open it. Asking tells $name, and they decide.")
                     Spacer(Modifier.height(12.dp))
                     OutlinedTextField(why, { why = it }, label = { Text("Why (optional)") }, singleLine = true)
                 }
@@ -218,11 +298,29 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
         )
     }
 
+    if (renaming) {
+        Renaming(name, done = { renaming = false }) { called ->
+            scope.launch {
+                Drop.call { it.rename(name, called) }
+                    .onSuccess { home() }
+                    .onFailure { said.showSnackbar(it.message ?: "Could not rename") }
+            }
+        }
+    }
+
     if (forgetting) {
         AlertDialog(
             onDismissRequest = { forgetting = false },
-            title = { Text("Forget $name?") },
-            text = { Text("It arrives as a stranger from then on, and you would have to pair again to reach it.") },
+            title = { Text(if (mine) "Remove $name from your machines?" else "Unpair $name?") },
+            text = {
+                Text(
+                    if (mine) {
+                        "This phone stops knowing it. Your other machines still do until you remove it there too; once none of them knows it, a badge they vouched for it with runs out."
+                    } else {
+                        "It arrives as a stranger from then on, and you would have to pair again to reach it."
+                    },
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     forgetting = false
@@ -230,7 +328,7 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
                         Drop.call { it.forget(name) }
                         home()
                     }
-                }) { Text("Forget") }
+                }) { Text(if (mine) "Remove" else "Unpair") }
             },
             dismissButton = { TextButton(onClick = { forgetting = false }) { Text("Cancel") } },
         )
@@ -242,39 +340,28 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
 private fun Header(name: String, machine: Machine?, all: List<Served>, go: (Screen) -> Unit, onSend: (Served) -> Unit) {
     Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Avatar(name, size = 64.dp, online = machine?.reaching)
+            Avatar(name, size = 56.dp, online = machine?.reaching)
             Spacer(Modifier.width(16.dp))
-            Column {
-                Text(name, style = MaterialTheme.typography.headlineSmall)
-                Text(
-                    when {
-                        machine == null -> ""
-                        machine.reaching -> "connected now"
-                        else -> "will get what you send when it is back"
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Text(
+                when {
+                    machine == null -> ""
+                    machine.reaching -> "Connected now"
+                    else -> "Not reachable now: what you send waits until it is back"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             val inbox = all.firstOrNull { it.kind == "share" && !it.locked }
-            FilledTonalButton(
-                onClick = { go(Screen.Chat(name)) },
-                contentPadding = PaddingValues(horizontal = 12.dp),
-                modifier = Modifier.weight(1f),
-            ) {
+            FilledTonalButton(onClick = { go(Screen.Chat(name)) }, contentPadding = PaddingValues(horizontal = 12.dp), modifier = Modifier.weight(1f)) {
                 Icon(Icons.AutoMirrored.Filled.Chat, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("Message", maxLines = 1)
             }
             if (inbox != null) {
-                FilledTonalButton(
-                    onClick = { onSend(inbox) },
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                    modifier = Modifier.weight(1f),
-                ) {
+                FilledTonalButton(onClick = { onSend(inbox) }, contentPadding = PaddingValues(horizontal = 12.dp), modifier = Modifier.weight(1f)) {
                     Icon(Icons.Filled.MoveToInbox, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Send files", maxLines = 1)
@@ -285,27 +372,40 @@ private fun Header(name: String, machine: Machine?, all: List<Served>, go: (Scre
 }
 
 @Composable
-private fun PathRow(s: Served, onClick: () -> Unit) {
+private fun PathRow(kind: String, path: String, about: String, onClick: () -> Unit, trailing: @Composable () -> Unit) {
     ListItem(
         modifier = Modifier
             .padding(horizontal = 12.dp, vertical = 3.dp)
             .clip(RoundedCornerShape(20.dp))
             .clickable(onClick = onClick),
         colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        leadingContent = { KindBadge(s.kind) },
-        headlineContent = { Text(s.path.trimStart('/').ifEmpty { "/" }, style = MaterialTheme.typography.titleMedium) },
-        supportingContent = {
-            Text(
-                s.about.ifEmpty { s.archetype },
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-            )
-        },
-        trailingContent = {
-            when {
-                s.locked -> Icon(Icons.Filled.Lock, "locked", tint = MaterialTheme.colorScheme.outline)
-                else -> Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, look(s.kind).verb, tint = MaterialTheme.colorScheme.outline)
+        leadingContent = { KindBadge(kind) },
+        headlineContent = { Text(path.trimStart('/').ifEmpty { "/" }, style = MaterialTheme.typography.titleMedium) },
+        supportingContent = { Text(about, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2) },
+        trailingContent = trailing,
+    )
+}
+
+/** A new name for somebody, as they are filed here. */
+@Composable
+fun Renaming(name: String, done: () -> Unit, use: (String) -> Unit) {
+    // The old name comes up chosen, so typing replaces it.
+    var field by remember { mutableStateOf(TextFieldValue(name, TextRange(0, name.length))) }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    val called = field.text.trim()
+    val fine = called.isNotBlank() && called != name && called.none { it in "@/: " }
+    AlertDialog(
+        onDismissRequest = done,
+        title = { Text("Rename $name") },
+        text = {
+            Column {
+                Text("How they are filed on this phone. Nobody else sees it.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(field, { field = it }, singleLine = true, label = { Text("Name") }, modifier = Modifier.focusRequester(focus))
             }
         },
+        confirmButton = { TextButton(enabled = fine, onClick = { done(); use(called) }) { Text("Rename") } },
+        dismissButton = { TextButton(onClick = done) { Text("Cancel") } },
     )
 }

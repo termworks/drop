@@ -23,7 +23,8 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Settings as SettingsIcon
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -74,7 +75,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** The three places everything starts from: who you have been talking to, who you know, and this phone. */
+/** The four places everything starts from: conversations, other people, your own machines, and this phone's settings. */
 @Composable
 fun HomeScreen(tab: Int, onTab: (Int) -> Unit, go: (Screen) -> Unit) {
     val context = LocalContext.current
@@ -108,8 +109,14 @@ fun HomeScreen(tab: Int, onTab: (Int) -> Unit, go: (Screen) -> Unit) {
                 NavigationBarItem(
                     selected = tab == 2,
                     onClick = { onTab(2) },
-                    icon = { Icon(Icons.Filled.PhoneAndroid, null) },
-                    label = { Text("This phone") },
+                    icon = { Icon(Icons.Filled.Devices, null) },
+                    label = { Text("Mine") },
+                )
+                NavigationBarItem(
+                    selected = tab == 3,
+                    onClick = { onTab(3) },
+                    icon = { Icon(Icons.Filled.SettingsIcon, null) },
+                    label = { Text("Settings") },
                 )
             }
         },
@@ -118,7 +125,8 @@ fun HomeScreen(tab: Int, onTab: (Int) -> Unit, go: (Screen) -> Unit) {
             when (tab) {
                 0 -> ChatsTab(go, onPeople = { onTab(1) })
                 1 -> PeopleTab(go)
-                else -> PhoneTab(go)
+                2 -> MineTab(go)
+                else -> SettingsTab(go)
             }
         }
     }
@@ -222,194 +230,6 @@ private fun Preview(c: Chat) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
-}
-
-/** This phone: what it serves and to whom, who wants in, and the few things it can be told. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun PhoneTab(go: (Screen) -> Unit) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val tick by Drop.tick.collectAsState()
-
-    var me by remember { mutableStateOf<Me?>(null) }
-    var mine by remember { mutableStateOf<List<Served>>(emptyList()) }
-    var rules by remember { mutableStateOf<Map<String, Rule>>(emptyMap()) }
-    var knocks by remember { mutableStateOf<List<Knock>>(emptyList()) }
-    var kept by remember { mutableStateOf<Map<String, Kept>>(emptyMap()) }
-    var folder by remember { mutableStateOf(Settings.sharesFolder(context)) }
-    var writable by remember { mutableStateOf(Settings.folderWritable(context)) }
-    var restarting by remember { mutableStateOf(false) }
-
-    LaunchedEffect(tick) {
-        me = Drop.self()
-        mine = Drop.paths("").getOrNull()?.paths ?: mine
-        rules = mine.mapNotNull { s -> Drop.access(s.path).getOrNull()?.let { s.path to it } }.toMap()
-        knocks = Drop.knocked().getOrNull() ?: knocks
-        kept = Drop.kept().getOrNull()?.associateBy { it.path } ?: kept
-    }
-
-    val reshare: (Boolean, Boolean) -> Unit = { f, w ->
-        folder = f
-        writable = w
-        Settings.share(context, f, w)
-        restarting = true
-        scope.launch {
-            withContext(Dispatchers.IO) { Drop.restart(context.applicationContext) }
-            restarting = false
-        }
-    }
-
-    Scaffold(
-        contentWindowInsets = WindowInsets(0),
-        topBar = { TopAppBar(title = { Text("This phone") }) },
-    ) { pad ->
-        LazyColumn(contentPadding = PaddingValues(top = pad.calculateTopPadding(), bottom = 32.dp)) {
-            item {
-                ListItem(
-                    modifier = Modifier
-                        .padding(horizontal = 12.dp, vertical = 4.dp)
-                        .clip(RoundedCornerShape(20.dp))
-                        .clickable { go(Screen.Me) },
-                    colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                    leadingContent = { Avatar(me?.name ?: "?", online = me != null) },
-                    headlineContent = { Text(me?.name ?: "starting…", style = MaterialTheme.typography.titleMedium) },
-                    supportingContent = { Text("name, identity, staying reachable", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                    trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null) },
-                )
-            }
-
-            val asked = rules.values.flatMap { r -> r.asked.map { r.path to it } }
-            if (asked.isNotEmpty()) {
-                item { Section("Asking to be let in") }
-                items(asked, key = { "a:" + it.first + it.second.who }) { (path, a) ->
-                    Asked(path, a.who, a.why, onAllow = {
-                        scope.launch { Drop.call { it.grant(path, a.who) } }
-                    }, onRefuse = {
-                        scope.launch { Drop.call { it.refuse(path, a.who) } }
-                    })
-                }
-            }
-
-            item { Section("What it shares") }
-            items(mine.filter { it.path !in kept }, key = { "p:" + it.path }) { s ->
-                ListItem(
-                    modifier = Modifier
-                        .padding(horizontal = 12.dp, vertical = 3.dp)
-                        .clip(RoundedCornerShape(20.dp))
-                        .clickable { go(Screen.Access(s.path)) },
-                    colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                    leadingContent = { KindBadge(s.kind) },
-                    headlineContent = { Text(s.path.trimStart('/'), style = MaterialTheme.typography.titleMedium) },
-                    supportingContent = { Text(rules[s.path]?.let { reach(it) } ?: s.about, color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                    trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null) },
-                )
-            }
-
-            // A copy opens onto what is in it, and who may reach it is the lock beside it.
-            if (kept.isNotEmpty()) {
-                item { Section("Copies kept level with others") }
-                items(kept.values.toList(), key = { "c:" + it.path }) { c ->
-                    val note = c.archetype == "note"
-                    ListItem(
-                        modifier = Modifier
-                            .padding(horizontal = 12.dp, vertical = 3.dp)
-                            .clip(RoundedCornerShape(20.dp))
-                            .clickable {
-                                go(if (note) Screen.Note("", c.path, c.shared) else Screen.Files("", c.path, "", true, c.shared, c.where))
-                            },
-                        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                        leadingContent = { KindBadge(c.archetype) },
-                        headlineContent = { Text(c.path.trimStart('/'), style = MaterialTheme.typography.titleMedium) },
-                        supportingContent = {
-                            Text(
-                                if (note) "a note, written in here" else c.where.substringAfter("/0/"),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        },
-                        trailingContent = {
-                            IconButton(onClick = { go(Screen.Access(c.path)) }) { Icon(Icons.Filled.Lock, "Who may reach it") }
-                        },
-                    )
-                }
-            }
-
-            item { Section("The folder things land in") }
-            item {
-                Toggle(
-                    title = "Let paired devices browse it",
-                    says = "Download/drop, as a folder they can walk and take things out of.",
-                    on = folder,
-                    enabled = !restarting,
-                ) { reshare(it, writable && it) }
-            }
-            if (folder) {
-                item {
-                    Toggle(
-                        title = "And put things in it",
-                        says = "Without this they can only take. Everything they put in is written down in the conversation.",
-                        on = writable,
-                        enabled = !restarting,
-                    ) { reshare(true, it) }
-                }
-            }
-
-            if (knocks.isNotEmpty()) {
-                item { Section("Tried to reach this phone") }
-                items(knocks, key = { "k:" + it.id }) { k ->
-                    ListItem(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 3.dp).clip(RoundedCornerShape(20.dp)),
-                        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                        headlineContent = { Text(k.brief, style = Mono) },
-                        supportingContent = {
-                            Text(
-                                listOfNotNull(k.asked.ifEmpty { null }, k.why.ifEmpty { null }, ago(k.at)).joinToString(" · "),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        },
-                        trailingContent = {
-                            if (k.asked.isNotEmpty()) {
-                                OutlinedButton(onClick = { scope.launch { Drop.call { it.grant(k.asked, k.id) } } }) { Text("Let in") }
-                            }
-                        },
-                    )
-                }
-            }
-        }
-    }
-}
-
-/** Who a rule lets in, in a line. */
-fun reach(r: Rule): String {
-    val allowed = r.who.count { it.at == "allowed" }
-    val refused = r.who.count { it.at == "refused" }
-    val base = when {
-        r.anyone -> "anybody who knows this phone"
-        r.paired -> "everybody paired"
-        allowed > 0 -> "$allowed let in by name"
-        else -> "nobody yet"
-    }
-    return base + if (refused > 0) ", $refused kept out" else ""
-}
-
-@Composable
-private fun Asked(path: String, who: String, why: String, onAllow: () -> Unit, onRefuse: () -> Unit) {
-    ListItem(
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 3.dp).clip(RoundedCornerShape(20.dp)),
-        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
-        leadingContent = { Avatar(who) },
-        headlineContent = { Text("$who wants $path", style = MaterialTheme.typography.titleSmall) },
-        supportingContent = {
-            Column {
-                if (why.isNotEmpty()) Text("“$why”")
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilledTonalButton(onClick = onAllow) { Text("Let in") }
-                    OutlinedButton(onClick = onRefuse) { Text("Keep out") }
-                }
-            }
-        },
-    )
 }
 
 @Composable

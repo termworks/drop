@@ -147,6 +147,8 @@ type self struct {
 	Owner string `json:"owner"`
 	Signs bool   `json:"signs"`
 	Until int64  `json:"until"`
+	// Took says it set a key of its own aside to become somebody's, and can leave.
+	Took bool `json:"took"`
 }
 
 // Self is this device: what it is called and who it is.
@@ -160,6 +162,7 @@ func (n *Node) Self() string {
 		out.Owner = user.Fingerprint(pub)
 	}
 	_, out.Signs = user.Quiet()
+	out.Took = user.Took()
 	if badge, _, err := user.Mine(time.Now()); err == nil || errors.Is(err, user.ErrStale) {
 		out.Until = badge.Until.UnixMilli()
 	}
