@@ -31,6 +31,16 @@ func merge(granting Granting, path string, rule Access, found bool) (Access, boo
 		return rule, found
 	}
 
+	if leveling, ok := granting.(Leveling); ok {
+		level, shown := leveling.Level(path)
+		if level != "" {
+			rule, found = leveled(rule, level), true
+		}
+		if shown != nil {
+			rule = shownAs(rule, *shown)
+		}
+	}
+
 	allow, deny := granting.For(path)
 	rule.Refused = deny
 
