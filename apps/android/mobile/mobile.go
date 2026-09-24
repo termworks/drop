@@ -33,6 +33,8 @@ type Events interface {
 	Trouble(text string)
 	// Moving is how far a transfer has got.
 	Moving(name string, done, size int64)
+	// Landed is a file that has just arrived: who sent it, what it is called, and where it is now.
+	Landed(from, name, at string)
 }
 
 // Node is a running drop node.
@@ -81,8 +83,13 @@ func Start(configDir, dataDir, downloads, name string, events Events) (*Node, er
 	back, down, err := cmd.Interface(ctx, cmd.Hooks{
 		Trouble: func(text string) { trouble(events, text) },
 		Said: func(from string, m convo.Message) {
-			if events != nil && m.Kind == convo.KindText {
+			if events != nil && (m.Kind == convo.KindText || m.Kind == convo.KindLink) {
 				events.Said(from, m.Body)
+			}
+		},
+		Landed: func(from, name string, size int64) {
+			if events != nil {
+				events.Landed(from, name, filepath.Join(downloads, "drop", filepath.Base(name)))
 			}
 		},
 	})
