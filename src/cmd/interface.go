@@ -22,6 +22,8 @@ type Hooks struct {
 	Trouble func(text string)
 	// Said is told about each message that lands, with the name its sender is filed under here.
 	Said func(from string, m convo.Message)
+	// Landed is told about each file that arrives, with who sent it and what it is called.
+	Landed func(from, name string, size int64)
 }
 
 // Interface brings up a node for somebody to look at: it serves for as long as it is up, keeps a
@@ -106,6 +108,9 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 	doing.noticed = func() { knock(arriving) }
 	if hooks.Said != nil {
 		doing.said = func(from node.ID, m convo.Message) { hooks.Said(nameFor(pinned, from), m) }
+	}
+	if hooks.Landed != nil {
+		doing.arrived = func(from node.ID, name string, size int64) { hooks.Landed(nameFor(pinned, from), name, size) }
 	}
 
 	// One connection per device, kept for as long as the interface is open.

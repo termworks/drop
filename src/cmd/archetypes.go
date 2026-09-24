@@ -38,6 +38,8 @@ type doings struct {
 	bar *progress
 	// said, when set, is told about a message that was stored.
 	said func(from node.ID, m convo.Message)
+	// arrived, when set, is told about a file that landed here.
+	arrived func(from node.ID, name string, size int64)
 	// noticed, when set, is nudged whenever anything lands, for an interface that redraws.
 	noticed func()
 	// changed, when set, is told that something in a namespace has moved, so that whoever else
@@ -191,6 +193,9 @@ func (d *doings) landed(from node.ID, name string, size int64) {
 	}
 	if d.cfg != nil {
 		d.cfg.FireFile(conf.File{From: nameFor(d.pinned, from), Name: name, Size: size})
+	}
+	if d.arrived != nil {
+		d.arrived(from, name, size)
 	}
 	d.knock()
 }
