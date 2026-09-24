@@ -259,9 +259,13 @@ func ownKey() (string, error) {
 }
 
 // setAside keeps the key a machine had beside the one it is given, so taking another user's key is
-// a step that can be walked back by hand.
+// a step that can be walked back by hand. Only the first: a machine that changes hands twice goes
+// back to its own key, not to whoever it belonged to in between.
 func setAside(where string) error {
 	if _, err := os.Stat(where); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if _, err := os.Stat(where + ".before"); err == nil {
 		return nil
 	}
 	if err := os.Rename(where, where+".before"); err != nil {
