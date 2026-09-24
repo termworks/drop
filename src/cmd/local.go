@@ -609,9 +609,19 @@ func castSocket() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	dir, err := localDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "cast-"+node.Brief(id)+".sock"), nil
+}
 
+// localDir is where this machine's drop processes find each other: the runtime directory, which
+// only this account can read, or the config directory where there is none.
+func localDir() (string, error) {
 	dir := os.Getenv("XDG_RUNTIME_DIR")
 	if dir == "" {
+		var err error
 		if dir, err = node.ConfigDir(); err != nil {
 			return "", err
 		}
@@ -622,7 +632,7 @@ func castSocket() (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "cast-"+node.Brief(id)+".sock"), nil
+	return dir, nil
 }
 
 const (

@@ -54,6 +54,7 @@ func Execute(v string, exit func(int), args []string) {
 		newPeerCmd(),
 		newPathCmd(),
 		newMeCmd(),
+		newTUICmd(),
 	)
 
 	if err := root.Execute(); err != nil {

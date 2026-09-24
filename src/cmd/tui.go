@@ -48,12 +48,21 @@ func runTUI(parent context.Context) error {
 	}
 	defer down()
 
+	model, shown := tui.Seen(tui.New(back))
 	program := tea.NewProgram(
-		tui.New(back),
+		model,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 		tea.WithContext(ctx),
 	)
+
+	// Drivable from another terminal, which is `drop tui`. An interface that cannot offer that
+	// still works, so a failure here is said and not fatal.
+	if stop, err := steer(ctx, program, shown); err == nil {
+		defer stop()
+	} else {
+		fmt.Fprintf(os.Stderr, "drop: this interface cannot be driven from elsewhere: %v\n", err)
+	}
 
 	_, err = program.Run()
 	return err
