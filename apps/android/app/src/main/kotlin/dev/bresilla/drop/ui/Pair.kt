@@ -154,7 +154,7 @@ private fun ShowCode() {
             Spacer(Modifier.width(10.dp))
             Text("Waiting for the other device", style = MaterialTheme.typography.labelLarge)
         }
-        ticket?.let { t ->
+        ticket?.substringAfter('#')?.let { t ->
             Spacer(Modifier.height(28.dp))
             Text("On a computer", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(6.dp))
@@ -167,7 +167,7 @@ private fun ShowCode() {
             }
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(onClick = { copy(context, "drop ticket", t) }) {
+                OutlinedButton(onClick = { copy(context, "drop code", "drop peer pair $t") }) {
                     Icon(Icons.Filled.ContentCopy, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Copy")
@@ -260,17 +260,18 @@ private fun TakeCode(given: String?, paired: (String) -> Unit) {
             Text("Open the camera")
         }
         Spacer(Modifier.height(28.dp))
-        Text("or paste the ticket", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("or type the code", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
             value = text,
             onValueChange = { text = it },
-            placeholder = { Text("9363f77d…#qxwo-e62y") },
+            placeholder = { Text("abcd-efgh-ijkl") },
+            singleLine = true,
             textStyle = Mono,
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(12.dp))
-        OutlinedButton(onClick = { join(text) }, enabled = !joining && (text.contains('#') || Drop.owning(text)), modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { join(text) }, enabled = !joining && text.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
             Text("Pair")
         }
         Spacer(Modifier.height(20.dp))

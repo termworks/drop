@@ -65,6 +65,8 @@ import androidx.compose.ui.unit.dp
 import dev.bresilla.drop.Drop
 import dev.bresilla.drop.Knock
 import dev.bresilla.drop.Machine
+import dev.bresilla.drop.PathOpen
+import dev.bresilla.drop.Reachable
 import dev.bresilla.drop.Me
 import dev.bresilla.drop.Person
 import dev.bresilla.drop.Settings
@@ -237,6 +239,7 @@ fun Entry(
     unread: Int = 0,
     avatar: String = title,
     highlight: Boolean = false,
+    actions: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     ListItem(
@@ -259,15 +262,19 @@ fun Entry(
         },
         supportingContent = { Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2) },
         trailingContent = {
-            if (unread > 0) Badge { Text(if (unread > 99) "99+" else "$unread") }
-            else Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (unread > 0) Badge { Text(if (unread > 99) "99+" else "$unread") }
+                if (actions != null) actions()
+                else if (unread == 0) Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null)
+            }
         },
     )
 }
 
 /**
- * Somebody and their machines. For you, that is this phone and every other machine of yours, and the
- * way to add one; for anybody else, whether you trust them and the name you file them under.
+ * Somebody and their machines. For you, that is this phone and every other machine of yours, each
+ * renamed or taken out from its row, and the way to add one. For anybody else: whether you trust
+ * them, what they may open on each machine of yours, and the name you file them under.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -282,8 +289,13 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
     var unread by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
     var asking by remember { mutableStateOf(0) }
     var menu by remember { mutableStateOf(false) }
-    var renaming by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf<String?>(null) }
     var removing by remember { mutableStateOf(false) }
+    var takingOut by remember { mutableStateOf<String?>(null) }
+    var reach by remember { mutableStateOf<List<Reachable>?>(null) }
+    var reachFailed by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf<String?>(null) }
+    var askAgain by remember { mutableStateOf(0) }
 
     Pulse()
     LaunchedEffect(tick) {
@@ -294,6 +306,13 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
             me = Drop.self() ?: me
             asking = Drop.levels("").getOrNull()?.sumOf { it.asked } ?: asking
         }
+    }
+    // Asked once and after each change rather than on every tick: it is a question to every machine of yours.
+    LaunchedEffect(name, askAgain) {
+        if (itsMe) return@LaunchedEffect
+        Drop.reachable(name)
+            .onSuccess { reach = it; reachFailed = null }
+            .onFailure { if (reach == null) reachFailed = it.message }
     }
 
     val machines: List<Machine> = person?.machines ?: emptyList()
@@ -310,7 +329,7 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
                             DropdownMenuItem(text = { Text("Add a machine") }, onClick = { menu = false; go(Screen.AddMachine()) })
                             DropdownMenuItem(text = { Text("Settings") }, onClick = { menu = false; go(Screen.Settings) })
                         } else {
-                            DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; renaming = true })
+                            DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; renaming = name })
                             DropdownMenuItem(text = { Text("Remove $name") }, onClick = { menu = false; removing = true })
                         }
                     }
@@ -336,14 +355,30 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
                 }
             }
 
-            if (!itsMe) {
+            if (itsMe) {
+                item {
+                    Row(Modifier.padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        FilledTonalButton(onClick = { go(Screen.AddMachine()) }) {
+                            Icon(Icons.Filled.Add, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Add a machine")
+                        }
+                    }
+                }
+            } else {
+                item {
+                    Row(Modifier.padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        FilledTonalButton(onClick = { renaming = name }) { Text("Rename") }
+                        OutlinedButton(onClick = { removing = true }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+                    }
+                }
                 person?.let { p ->
                     item {
                         Toggle(
                             title = "Trusted",
                             says = "Paths set to Trusted open for them. Pairing only recognises somebody; trusting them is the second step.",
                             on = p.trusted,
-                        ) { on -> scope.launch { Drop.call { it.trust(name, on) }; Drop.bump() } }
+                        ) { on -> scope.launch { Drop.call { it.trust(name, on) }; Drop.bump(); askAgain++ } }
                     }
                 }
             }
@@ -366,28 +401,86 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
                     m.reaching,
                     false,
                     unread = unread[m.name] ?: 0,
+                    actions = if (itsMe) {
+                        {
+                            MachineActions(
+                                rename = { renaming = m.name },
+                                remove = { takingOut = m.name },
+                            )
+                        }
+                    } else null,
                 ) { go(Screen.Machine(m.name)) }
             }
-            if (itsMe) {
-                item {
-                    TextButton(onClick = { go(Screen.AddMachine()) }, modifier = Modifier.padding(horizontal = 12.dp)) {
-                        Icon(Icons.Filled.Add, null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Add a machine")
+
+            if (!itsMe) {
+                item { Section("What they can open") }
+                reachFailed?.let { item { Banner("Could not ask your machines: $it", error = true) } }
+                if (reach == null && reachFailed == null) {
+                    item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
+                }
+                reach?.forEach { r ->
+                    item(key = "on:" + r.machine) {
+                        Text(
+                            if (r.machine.isEmpty()) "On this phone" else "On ${r.machine}",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(start = 24.dp, top = 12.dp, bottom = 4.dp),
+                        )
+                    }
+                    when {
+                        r.err.isNotEmpty() -> item(key = "err:" + r.machine) { Banner("Could not ask ${r.machine}: ${r.err}", error = true) }
+                        !r.known -> item(key = "unknown:" + r.machine) {
+                            Banner("${r.machine.ifEmpty { "This phone" }} has never met $name, so only what is Public opens for them there.")
+                        }
+                    }
+                    items(r.paths, key = { "p:" + r.machine + ":" + it.path }) { p ->
+                        Toggle(
+                            title = p.path,
+                            says = opensSays(p),
+                            on = p.opens,
+                            enabled = r.known && busy == null,
+                        ) { open ->
+                            busy = r.machine + p.path
+                            scope.launch {
+                                Drop.open(r.machine, p.path, r.called, open, p.at, name)
+                                    .onSuccess { reach = it }
+                                    .onFailure { said.showSnackbar(it.message ?: "Could not change it") }
+                                busy = null
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    if (renaming) {
-        Renaming(name, done = { renaming = false }) { called ->
+    renaming?.let { old ->
+        Renaming(old, done = { renaming = null }) { called ->
             scope.launch {
-                Drop.call { it.rename(name, called) }
-                    .onSuccess { home() }
+                Drop.call { it.rename(old, called) }
+                    .onSuccess { if (old == name) home() else Drop.bump() }
                     .onFailure { said.showSnackbar(it.message ?: "Could not rename") }
             }
         }
+    }
+
+    takingOut?.let { machine ->
+        AlertDialog(
+            onDismissRequest = { takingOut = null },
+            title = { Text("Remove $machine from your machines?") },
+            text = { Text("Every machine of yours turns it away from now on, whatever badge it still wears. Run drop machine add to bring it back.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    takingOut = null
+                    scope.launch {
+                        Drop.call { it.forget(machine) }
+                            .onSuccess { said.showSnackbar("$machine is no longer one of your machines") }
+                            .onFailure { said.showSnackbar(it.message ?: "Could not remove it") }
+                        Drop.bump()
+                    }
+                }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { takingOut = null }) { Text("Cancel") } },
+        )
     }
 
     if (removing) {
@@ -402,9 +495,32 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
                         Drop.call { it.forget(name) }
                         home()
                     }
-                }) { Text("Remove") }
+                }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { removing = false }) { Text("Cancel") } },
         )
+    }
+}
+
+/** What one path does for one person, in words: whether it opens, and what decides it. */
+private fun opensSays(p: PathOpen): String {
+    val by = when (p.at) {
+        "allowed" -> "let in by name"
+        "refused" -> "kept out by name"
+        else -> stepOf(p.level).title
+    }
+    return (if (p.opens) "Opens · " else "Shut · ") + by
+}
+
+/** The ⋮ on a machine of yours: rename it, or take it out of your machines. */
+@Composable
+private fun MachineActions(rename: () -> Unit, remove: () -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) { Icon(Icons.Filled.MoreVert, "Machine actions") }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(text = { Text("Rename") }, onClick = { open = false; rename() })
+            DropdownMenuItem(text = { Text("Remove from my machines") }, onClick = { open = false; remove() })
+        }
     }
 }

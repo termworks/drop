@@ -11,7 +11,6 @@ import (
 
 	"github.com/bresilla/drop/src/cmd"
 	"github.com/bresilla/drop/src/pkg/convo"
-	"github.com/bresilla/drop/src/pkg/tui"
 )
 
 // more is what the interface can do beyond what the full-screen one draws.
@@ -95,59 +94,6 @@ func (n *Node) Managed(name string) (string, error) {
 		Allowed: m.Allowed, Refused: m.Refused,
 	}), nil
 }
-
-type who struct {
-	Name     string `json:"name"`
-	Person   bool   `json:"person"`
-	Machines int    `json:"machines"`
-	// At is "allowed", "refused", or empty for somebody the path says nothing about.
-	At       string `json:"at"`
-	InConfig bool   `json:"config"`
-}
-
-type asking struct {
-	Who  string `json:"who"`
-	Why  string `json:"why"`
-	When string `json:"when"`
-}
-
-type rule struct {
-	Path     string   `json:"path"`
-	Anyone   bool     `json:"anyone"`
-	Paired   bool     `json:"paired"`
-	Password bool     `json:"password"`
-	Who      []who    `json:"who"`
-	Asked    []asking `json:"asked"`
-}
-
-// Access is who may reach one of this phone's paths, and who has asked to.
-func (n *Node) Access(path string) (string, error) {
-	r, err := n.back.Access(path)
-	if err != nil {
-		return "", err
-	}
-	out := rule{Path: r.Path, Anyone: r.Anyone, Paired: r.Paired, Password: r.Password}
-	for _, w := range r.Who {
-		at := ""
-		switch w.At {
-		case tui.Allowed:
-			at = "allowed"
-		case tui.Refused:
-			at = "refused"
-		}
-		out.Who = append(out.Who, who{Name: w.Name, Person: w.Person, Machines: w.Machines, At: at, InConfig: w.InConfig})
-	}
-	for _, a := range r.Asked {
-		out.Asked = append(out.Asked, asking{Who: a.Who, Why: a.Why, When: a.When})
-	}
-	return encode(out), nil
-}
-
-// Grant lets somebody reach one of this phone's paths, Refuse keeps them out whatever else says,
-// and Unset leaves them to whatever the path's own rule says.
-func (n *Node) Grant(path, who string) error  { return n.changed(n.back.Grant(path, who)) }
-func (n *Node) Refuse(path, who string) error { return n.changed(n.back.Refuse(path, who)) }
-func (n *Node) Unset(path, who string) error  { return n.changed(n.back.Unset(path, who)) }
 
 func (n *Node) changed(err error) error {
 	changed(n.events)
