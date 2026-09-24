@@ -28,10 +28,10 @@ slices and interfaces, so a list crosses as JSON and a callback is an interface 
 
 | | |
 |---|---|
-| **Chats, People, Mine, Settings** | four tabs: every conversation newest first with what is unread; the people you paired with; this phone and your other machines; and the phone itself — its name, whose it is, its folder |
+| **People, you first** | the app opens on people: *Me* first, holding this phone and every other machine of yours, then everybody you paired with, each showing what they sent that you have not read. Settings — the phone's name, whose it is, its folder — are under the ⋮ menu |
 | **People, then machines, then paths** | the same arrangement as the terminal interface: who, which of their machines, and what it shares with you |
 | **Pairing** | *My code* shows a QR the other device scans; *Scan* reads one off a computer's `drop peer pair` or another phone. A `drop://pair/…` link opens the same way |
-| **One of your machines** | *Mine → Add a machine* takes the code `drop me user vouch <phone>` or `drop me user export` shows on your computer, and the phone is filed under *me* from then on. See [pairing](../../docs/pairing.md#making-a-machine-yours) |
+| **One of your machines** | *Me → Add a machine* takes the code `drop me user vouch <phone>` or `drop me user export` shows on your computer, and the phone is filed under *me* from then on. See [pairing](../../docs/pairing.md#making-a-machine-yours) |
 | **Chat** | a conversation per machine, kept on both devices. A message for a machine that is off waits and goes when it is back; a message that arrives while the app is closed is a notification |
 | **Files** | walk a `files` namespace, download with a tap, upload into one that is writable; long press to rename or delete, and make folders in it |
 | **Notes** | read a `note` where it is held, or keep a copy on the phone and write in it. The copy is kept level with every other machine holding it, and what two people type at once is merged |

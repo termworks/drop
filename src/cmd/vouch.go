@@ -28,7 +28,7 @@ func newVouchCmd() *cobra.Command {
 		Use:   "vouch <machine>",
 		Short: "Make a machine you paired with one of yours, without handing it your key",
 		Long: "Signs a badge saying the machine is yours, and shows it as a code to scan there — on a\n" +
-			"phone, Mine → Add a machine. Your key stays here. The badge is signed again\n" +
+			"phone, Me → Add a machine. Your key stays here. The badge is signed again\n" +
 			"whenever that machine reaches one of yours that can sign without a touch, so it lasts as\n" +
 			"long as the two keep meeting; `drop peer forget` it on those machines, and it runs out.",
 		Args: cobra.ExactArgs(1),
