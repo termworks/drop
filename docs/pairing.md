@@ -131,6 +131,20 @@ blink and a touch otherwise, tried twice a day — and handed over at its next h
 renew` signs every one running low now, a touch each, and so does *renew* on your own screen in the
 interface.
 
+### A YubiKey on the phone
+
+A phone has no ssh-keygen, but it can talk to a YubiKey held to its back or plugged into it, and all a
+YubiKey is ever asked for is a FIDO assertion: a signature over the application's hash, a counter and
+a hash the caller chooses. That is exactly what an `sk-ssh-ed25519` signature is. So the phone asks
+the key for one assertion and builds the rest — the same OpenSSH signature `ssh-keygen -Y sign`
+would have written on a computer, which `ssh-keygen -Y verify` accepts as it is.
+
+The phone needs to know which credential on the key is yours, and that is the handle ssh-keygen keeps
+in the file beside the public half. It does nothing without the YubiKey, so the machine that has the
+file hands it to the rest of your machines with everything else they share, and a phone that is one
+of them signs with a tap and nothing to set up. Without it, the phone has a machine of yours that
+holds the key do the signing instead.
+
 ### One address book
 
 Your machines keep one address book between them. Somebody added from the phone is known to the
