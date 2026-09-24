@@ -28,7 +28,7 @@ slices and interfaces, so a list crosses as JSON and a callback is an interface 
 
 | | |
 |---|---|
-| **People, you first** | the app opens on people: *Me* first, holding this phone and every other machine of yours, then everybody you paired with, each showing what they sent that you have not read. Settings — the phone's name, whose it is, its folder — are under the ⋮ menu |
+| **Orbit, you first** | the app opens on Orbit: *Me* first, holding this phone and every other machine of yours, then everybody you paired with, each showing what they sent that you have not read. Settings — the phone's name, whose it is, its folder — are under the ⋮ menu |
 | **People, then machines, then paths** | the same arrangement as the terminal interface: who, which of their machines, and what it shares with you |
 | **Pairing** | *My code* shows a QR the other device scans; *Scan* reads one off a computer's `drop peer pair` or another phone. A `drop://pair/…` link opens the same way |
 | **One of your machines** | *Me → Add a machine* takes the code `drop me user vouch <phone>` or `drop me user export` shows on your computer, and the phone is filed under *me* from then on. See [pairing](../../docs/pairing.md#making-a-machine-yours) |

@@ -105,7 +105,7 @@ fun PeopleScreen(go: (Screen) -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("People") },
+                title = { Text("Orbit", style = MaterialTheme.typography.headlineSmall) },
                 actions = {
                     IconButton(onClick = { go(Screen.Pair(scan = true)) }) { Icon(Icons.Filled.QrCodeScanner, "Scan a code") }
                     IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
