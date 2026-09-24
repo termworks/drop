@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/bresilla/drop/src/pkg/book"
+	"github.com/bresilla/drop/src/pkg/made"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
@@ -214,7 +215,7 @@ func newTopicCmd() *cobra.Command {
 			"me (the default), trusted, paired or anyone.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			body, err := json.Marshal(topicAsked{Kind: args[1], Command: command})
+			body, err := json.Marshal(proto.TopicBody{Kind: args[1], Command: command})
 			if err != nil {
 				return err
 			}
@@ -296,7 +297,7 @@ func newTopicCmd() *cobra.Command {
 		Short: "Every kind a topic can be",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			for _, k := range topicKinds {
+			for _, k := range made.Kinds {
 				fmt.Printf("  %-10s %s\n", k.Name, k.About)
 			}
 			return nil

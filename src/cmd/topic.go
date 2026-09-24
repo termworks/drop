@@ -25,41 +25,6 @@ import (
 // runs is worked out on the machine the topic goes on, because that is where the home directory is,
 // and a phone adding a folder to a laptop has no business knowing the laptop's paths.
 
-// topicKind is one kind of topic as a person picks it, and the archetype that serves it.
-type topicKind struct {
-	Name      string `json:"name"`
-	Archetype string `json:"archetype"`
-	About     string `json:"about"`
-	// Command says the kind needs a command, which is the one thing a person has to type.
-	Command bool `json:"command,omitempty"`
-}
-
-// topicKinds is every kind a topic can be, in the order they are offered.
-var topicKinds = []topicKind{
-	{Name: "chat", Archetype: "chat", About: "a conversation"},
-	{Name: "inbox", Archetype: "share", About: "files handed over, landing in a folder"},
-	{Name: "folder", Archetype: "files", About: "a folder to walk through and put things in"},
-	{Name: "note", Archetype: "note", About: "a file several people write at once"},
-	{Name: "terminal", Archetype: "tty", About: "a shell on the machine, each watcher their own"},
-	{Name: "links", Archetype: "link", About: "links that open over there"},
-	{Name: "stream", Archetype: "stream", About: "what a command prints, as it comes", Command: true},
-}
-
-func kindNamed(name string) (topicKind, bool) {
-	for _, k := range topicKinds {
-		if k.Name == name || k.Archetype == name {
-			return k, true
-		}
-	}
-	return topicKind{}, false
-}
-
-// topicAsked is what adding a topic carries across: its kind, and the command when it takes one.
-type topicAsked struct {
-	Kind    string `json:"kind"`
-	Command string `json:"command,omitempty"`
-}
-
 // topicHome is where the folders and files topics keep live on this machine.
 func topicHome() string {
 	if home, err := os.UserHomeDir(); err == nil && home != "" && home != "/" {
@@ -74,7 +39,7 @@ func topicHome() string {
 // topicEntry is a topic of one kind, as this machine writes it down: the folder or file it keeps
 // worked out here, and made so the topic opens onto something.
 func topicEntry(at, kind, command, level string) (made.Entry, error) {
-	k, ok := kindNamed(kind)
+	k, ok := made.KindNamed(kind)
 	if !ok {
 		return made.Entry{}, fmt.Errorf("%q is no kind of topic: it is one of %s", kind, kindList())
 	}
@@ -126,8 +91,8 @@ func linkOpener() string {
 }
 
 func kindList() string {
-	names := make([]string, 0, len(topicKinds))
-	for _, k := range topicKinds {
+	names := make([]string, 0, len(made.Kinds))
+	for _, k := range made.Kinds {
 		names = append(names, k.Name)
 	}
 	return strings.Join(names, ", ")
@@ -231,7 +196,7 @@ func manageTopic(ctx context.Context, known *arch.Registry, put *mountHost, m pr
 		}
 		return json.Marshal(map[string]string{"removed": m.Path})
 	}
-	var asked topicAsked
+	var asked proto.TopicBody
 	if err := json.Unmarshal([]byte(m.Body), &asked); err != nil {
 		return nil, fmt.Errorf("what topic to add is unreadable: %w", err)
 	}

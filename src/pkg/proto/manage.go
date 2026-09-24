@@ -152,3 +152,9 @@ func AnswerManage(s Stream, from node.ID, do func(Badged, Manage) ([]byte, error
 		return c.WriteFrame(wire.KindOpen, answer)
 	})
 }
+
+// TopicBody is what adding a topic carries: its kind, and the command when the kind takes one.
+type TopicBody struct {
+	Kind    string `json:"kind"`
+	Command string `json:"command,omitempty"`
+}
