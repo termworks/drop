@@ -123,6 +123,14 @@ an ed25519 key drop can read can leave; one in hardware cannot, which is the poi
 Either way the key the machine had is set aside beside the new one. A machine whose badge runs out
 before it meets one of yours still starts, wearing the stale badge, which proves nothing to anyone.
 
+A badge lasts ninety days, and one with under sixty left is signed again the next time its machine
+says hello to one of yours that holds the key. With the key in a file that is the whole of it. With
+the key in a YubiKey a hello is no moment to wait for a touch, so the machine is written down, its
+badge signed the moment the key can — at once for a key made with `-O no-touch-required`, with a
+blink and a touch otherwise, tried twice a day — and handed over at its next hello. `drop machine
+renew` signs every one running low now, a touch each, and so does *renew* on your own screen in the
+interface.
+
 ### One address book
 
 Your machines keep one address book between them. Somebody added from the phone is known to the

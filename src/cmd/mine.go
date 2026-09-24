@@ -30,7 +30,7 @@ func newMineCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error { return listMine() },
 	}
 
-	cmd.AddCommand(newMineAddCmd(), newMineJoinCmd(), &cobra.Command{
+	cmd.AddCommand(newMineAddCmd(), newMineJoinCmd(), newRenewCmd(), &cobra.Command{
 		Use:   "ls",
 		Short: "Every machine of yours this one knows",
 		Args:  cobra.NoArgs,

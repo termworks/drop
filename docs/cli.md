@@ -53,6 +53,7 @@ drop machine join <code>       on that machine: become yours
 drop machine ls                every machine of yours this one knows
 drop machine rename <n> <new>  call one of them something else here
 drop machine rm <name>         take one out of yours, on every one of them
+drop machine renew             sign fresh badges for those running low, with a key in hardware
 ```
 
 **`drop me`** — this machine, and who it belongs to.

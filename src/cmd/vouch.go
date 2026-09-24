@@ -146,15 +146,21 @@ func showCode(code string) {
 // asked at a moment nobody chose.
 func renewalFor(pinned *book.Book, from node.ID, badge proto.Badged) []byte {
 	now := time.Now()
-	if !badge.Shown() || badge.Key != myKey() || !user.Due(badge.Until, now) {
+	if !badge.Shown() || badge.Key != myKey() {
+		return nil
+	}
+	if !user.Due(badge.Until, now) {
+		renewing.took(from)
 		return nil
 	}
 	if entry, ok := pinned.ByID(from); !ok || !entry.Paired() {
 		return nil
 	}
+	// A key that needs a person, or hardware that is not always here, signs when it can, and the
+	// badge goes over at the next hello.
 	by, ok := user.Quiet()
 	if !ok {
-		return nil
+		return renewing.ready(from, badge)
 	}
 	signed, sig, err := user.Sign(by, from.String(), badge.As, now)
 	if err != nil {

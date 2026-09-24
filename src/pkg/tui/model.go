@@ -76,6 +76,10 @@ type Backend interface {
 	// drop knows here. Both tell the rest of this user's machines first.
 	Leave(ctx context.Context) error
 	StartOver(ctx context.Context) error
+	// Renewing is how many of this user's machines have badges running low that wait for the key,
+	// and Renew signs them now, a touch each for a key that wants one.
+	Renewing() int
+	Renew(ctx context.Context) (int, error)
 	// History is a conversation as it stands.
 	History(with book.Entry) ([]convo.Message, error)
 	// Compose writes a message into the conversation without sending it. It returns as fast as a
@@ -180,6 +184,8 @@ type Model struct {
 	// waiting for a yes from here.
 	near  []Near
 	asked []Invited
+	// renewing is how many machines of yours wait for your key to sign them a fresh badge.
+	renewing int
 	// under is where in a device's paths the list is standing, "/" being the top.
 	under string
 	// steps is what is at that level: namespaces, and the ways further down.

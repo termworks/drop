@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"os"
@@ -174,11 +175,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case polled:
 		redraw := len(msg.near) != len(m.near)
-		m.near, m.asked = msg.near, msg.asked
+		account := msg.renewing != m.renewing
+		m.near, m.asked, m.renewing = msg.near, msg.asked, msg.renewing
 		if redraw && m.at == levelUsers && m.list.FilterState() == list.Unfiltered {
 			m.showUsers()
 		}
+		if account && m.at == levelManage && m.managed.Name == Me {
+			m.showManage()
+		}
 		return m, poll(m.back)
+
+	case renewed:
+		m.loading = false
+		if msg.err != nil {
+			m.trouble = msg.err.Error()
+		}
+		if msg.n > 0 {
+			m.said = fmt.Sprintf("signed %d fresh badges — each machine takes its own the next time it says hello", msg.n)
+		}
+		return m, nil
 
 	case invitedDone:
 		m.loading = false

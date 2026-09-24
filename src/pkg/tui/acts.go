@@ -246,6 +246,9 @@ func (m Model) manageKey(key string) (tea.Model, tea.Cmd, bool) {
 			return m, nil, key != "esc" && key != "q" && key != "?" && key != " " && key != "up" && key != "down" && key != "k" && key != "j"
 		}
 		switch row.act {
+		case actRenew:
+			m.loading, m.trouble, m.said = true, "", "touch your key when it blinks, once for each machine"
+			return m, renew(m.back), true
 		case actLeave:
 			m.confirm = &confirming{ask: "leave your machines? this machine goes back to its own", yes: leaving(m.back)}
 		case actStartOver:

@@ -888,6 +888,16 @@ func takeLocal(ctx context.Context, h hosts, conn net.Conn) error {
 	case "nearby", "invited", "invite", "decide":
 		return takeInviting(ctx, h.invites, conn, what, rest)
 
+	case "renewing":
+		return writeLocal(conn, "renewing %d\n", len(renewing.waiting()))
+
+	case "renew":
+		n, err := renewing.sign(time.Now(), true)
+		if err != nil && n == 0 {
+			return writeLocal(conn, "failed %s\n", strings.ReplaceAll(err.Error(), "\n", " "))
+		}
+		return writeLocal(conn, "renewed %d\n", n)
+
 	case "join":
 		return takeJoin(ctx, h, conn, rest)
 	}

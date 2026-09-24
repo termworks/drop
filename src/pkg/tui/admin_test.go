@@ -491,3 +491,7 @@ func TestEveryActionIsOnTheScreen(t *testing.T) {
 		t.Error("picking an action from the menu did not do it")
 	}
 }
+
+func (f *fake) Renewing() int { return 0 }
+
+func (f *fake) Renew(ctx context.Context) (int, error) { return 0, nil }

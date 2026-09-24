@@ -42,8 +42,9 @@ func nearRows(near []Near) []list.Item {
 
 // polled is the slow look at what is nearby and who is asking, for as long as the interface is open.
 type polled struct {
-	near  []Near
-	asked []Invited
+	near     []Near
+	asked    []Invited
+	renewing int
 }
 
 const pollEvery = 2 * time.Second
@@ -52,8 +53,23 @@ func poll(back Backend) tea.Cmd {
 	return tea.Tick(pollEvery, func(time.Time) tea.Msg {
 		near, _ := back.Nearby()
 		asked, _ := back.Invited()
-		return polled{near: near, asked: asked}
+		return polled{near: near, asked: asked, renewing: back.Renewing()}
 	})
+}
+
+// renewed is fresh badges signed for machines of yours, and how many.
+type renewed struct {
+	n   int
+	err error
+}
+
+func renew(back Backend) tea.Cmd {
+	return func() tea.Msg {
+		ctx, stop := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer stop()
+		n, err := back.Renew(ctx)
+		return renewed{n: n, err: err}
+	}
 }
 
 // invitedDone says a device asked came, or did not.
