@@ -79,6 +79,10 @@ type Backend interface {
 	// UseKey makes the key at a file who this user is — an SSH key, or the .pub of one in a
 	// YubiKey — and says what it is now.
 	UseKey(at string) (string, error)
+	// Keys is every key on this machine this user could be, the one in use first.
+	Keys() []KeyChoice
+	// Rekey takes up whichever key the config names now, after something else chose it.
+	Rekey() error
 	// Renewing is how many of this user's machines have badges running low that wait for the key,
 	// and Renew signs them now, a touch each for a key that wants one.
 	Renewing() int
@@ -673,4 +677,14 @@ func waitForTalk(said chan Talk, cols, rows int) tea.Cmd {
 
 		return talking{talk: talk}
 	}
+}
+
+// KeyChoice is one key a person could be: where it is, what it is, and why it cannot be used when
+// it cannot.
+type KeyChoice struct {
+	Path    string
+	Print   string
+	Kind    string
+	Note    string
+	Current bool
 }

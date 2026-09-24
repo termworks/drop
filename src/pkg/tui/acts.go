@@ -14,6 +14,10 @@ import (
 // adminKey is what a key does on the screens that manage rather than reach, and whether it did
 // anything: a key it leaves alone goes on to do whatever it does everywhere else.
 func (m Model) adminKey(key string) (tea.Model, tea.Cmd, bool) {
+	// Who you are is chosen from wherever the lists are, the same key on every one of them.
+	if key == "u" && m.at != levelOpen && m.at != levelBrowse {
+		return m.keyMenu(), nil, true
+	}
 	switch m.at {
 	case levelUsers:
 		return m.usersKey(key)
@@ -255,12 +259,7 @@ func (m Model) manageKey(key string) (tea.Model, tea.Cmd, bool) {
 		case actStartOver:
 			m.confirm = &confirming{ask: "delete everything drop knows on this machine? it cannot be brought back", yes: startingOver(m.back)}
 		case actUseKey:
-			m.prompt = &prompting{
-				title: "use your own key",
-				says: "The file: an SSH key like ~/.ssh/id_ed25519, or the .pub of a key in a YubiKey. " +
-					"You become that key, and every machine of yours is added again under it.",
-				done: func(at string) tea.Cmd { return usingKey(m.back, at) },
-			}
+			return m.keyMenu(), nil, true
 		}
 		return m, nil, true
 	}

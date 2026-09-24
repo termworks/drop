@@ -157,7 +157,7 @@ func accountRows(self Identity, renewing int) []list.Item {
 		dividerItem{label: "you"},
 		manageItem{what: "you", label: self.Name, note: "this machine, as the others see it"},
 		manageItem{what: "you", label: "your key", note: key},
-		manageItem{what: "you", label: "use your SSH key or YubiKey", note: "who you are becomes that key, and your machines are added again under it — enter", act: actUseKey},
+		manageItem{what: "you", label: "change your key", note: "your SSH key, the key in your YubiKey, or a file — enter, or u anywhere", act: actUseKey},
 		dividerItem{label: groupWhat},
 	}
 	if renewing > 0 {

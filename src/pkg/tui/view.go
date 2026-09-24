@@ -580,9 +580,9 @@ func (m Model) keys() []hint {
 				{"a", "show a code"}, {"t", "take a code"}, {"q", "quit"}}
 			break
 		}
-		keys = []hint{{"enter", "machines"}, {"a", "add a person"}, {"t", "take a code"}}
+		keys = []hint{{"enter", "machines"}, {"a", "add a person"}, {"t", "take a code"}, {"u", "your key"}}
 		if it, ok := m.list.SelectedItem().(userItem); ok && it.mine {
-			keys = append(keys, hint{"m", "you: your key, leave, start over"})
+			keys = append(keys, hint{"m", "you: leave, start over"})
 		}
 		if it, ok := m.list.SelectedItem().(userItem); ok && !it.mine {
 			keys = append(keys, hint{"m", "manage " + it.name})
@@ -973,7 +973,7 @@ func (m Model) nothingPaired() string {
 		keyStyle.Render("a") + sayStyle.Render("      add a person: show your code for them to scan or type in"),
 		keyStyle.Render("t") + sayStyle.Render("      take the code somebody shows you"),
 		keyStyle.Render("enter") + sayStyle.Render("  your machines: add one of yours, and topics on each"),
-		keyStyle.Render("m") + sayStyle.Render("      you: your key, and using your SSH key or YubiKey"),
+		keyStyle.Render("u") + sayStyle.Render("      your key: your SSH key or your YubiKey — machines holding it join by themselves"),
 		"",
 		faintStyle.Render("from a terminal: ") + kindStyle.Render("drop person add") + faintStyle.Render(", ") +
 			kindStyle.Render("drop machine add") + faintStyle.Render(", ") + kindStyle.Render("drop topic add"),

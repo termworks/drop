@@ -449,6 +449,6 @@ func usingKey(back Backend, at string) tea.Cmd {
 		if err != nil {
 			return adminDone{err: err}
 		}
-		return adminDone{said: "you are " + now + " — add your other machines again"}
+		return adminDone{said: "you are " + now + " — your machines holding it find this one by themselves"}
 	}
 }

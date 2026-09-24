@@ -124,6 +124,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case topicKind:
 		return m.addTopic(msg)
 
+	case keyPicked:
+		return m.pickKey(msg.id)
+
+	case keyFetched:
+		if msg.err != nil {
+			m.trouble, m.said = "no key came off the YubiKey: "+msg.err.Error(), ""
+			return m, nil
+		}
+		m.loading = true
+		return m, rekeying(m.back)
+
 	case topicDone:
 		m.loading = false
 		if msg.err != nil {

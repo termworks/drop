@@ -20,6 +20,7 @@ type adminFake struct {
 	joinedMachine  string
 	offeredMachine bool
 	topics         []string
+	usedKey        string
 }
 
 func (f *fake) Rename(old, name string) error {
@@ -499,7 +500,18 @@ func TestEveryActionIsOnTheScreen(t *testing.T) {
 
 func (f *fake) Renewing() int { return 0 }
 
-func (f *fake) UseKey(at string) (string, error) { return "SHA256:fake  your SSH key, " + at, nil }
+func (f *fake) UseKey(at string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.admin.usedKey = at
+	return "SHA256:fake", nil
+}
+
+func (f *fake) Keys() []KeyChoice {
+	return []KeyChoice{{Path: "/home/me/.ssh/id_ed25519", Print: "SHA256:theirs", Kind: "SSH key"}}
+}
+
+func (f *fake) Rekey() error { return nil }
 
 func (f *fake) Renew(ctx context.Context) (int, error) { return 0, nil }
 
@@ -551,5 +563,30 @@ func TestAddIsTheSameKeyForMachinesAndTopics(t *testing.T) {
 	}
 	if !strings.Contains(m.View(), "/chat is gone from this machine") {
 		t.Errorf("removing a topic does not say so:\n%s", m.View())
+	}
+}
+
+// u picks who you are from the keys this machine has, asking first, since it is a new you.
+func TestYourKeyIsPickedFromAList(t *testing.T) {
+	back := &fake{self: Identity{Name: "tron", User: "ssh-ed25519 MINE", Key: "SHA256:mine  a key drop made itself"}}
+
+	m := press(t, start(t, back), "u")
+	if m.menu == nil || m.menu.pick == nil {
+		t.Fatal("u did not offer the keys to be")
+	}
+	if shown := m.View(); !strings.Contains(shown, "SHA256:theirs") || !strings.Contains(shown, "YubiKey") {
+		t.Fatalf("the keys on offer are not the ones this machine has:\n%s", shown)
+	}
+
+	m = press(t, m, "enter")
+	if m.confirm == nil {
+		t.Fatal("picking a key did not ask first")
+	}
+	m = press(t, m, "y")
+	if back.admin.usedKey != "/home/me/.ssh/id_ed25519" {
+		t.Fatalf("picking the SSH key used %q", back.admin.usedKey)
+	}
+	if !strings.Contains(m.View(), "you are SHA256:fake") {
+		t.Errorf("becoming the key does not say so:\n%s", m.View())
 	}
 }

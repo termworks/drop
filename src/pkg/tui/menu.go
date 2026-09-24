@@ -21,6 +21,8 @@ type menuState struct {
 	// pick instead of being pressed.
 	title string
 	pick  func(key string) tea.Cmd
+	// ids, when set, is what each item hands pick in place of its key.
+	ids []string
 }
 
 // acting is what the menu offers: the keys that do something, not the ones that move about.
@@ -70,6 +72,9 @@ func (m Model) menuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		picked, pick := m.menu.items[m.menu.at].key, m.menu.pick
+		if m.menu.ids != nil {
+			picked = m.menu.ids[m.menu.at]
+		}
 		m.menu = nil
 		if pick != nil {
 			return m, pick(picked)
