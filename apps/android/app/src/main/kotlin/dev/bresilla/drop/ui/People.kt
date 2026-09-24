@@ -153,7 +153,7 @@ fun PeopleScreen(go: (Screen) -> Unit) {
                 Button(onClick = { go(Screen.Add) }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth().height(52.dp)) {
                     Icon(Icons.Filled.Add, null, Modifier.size(20.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("Add")
+                    Text("Add a person")
                 }
             }
 
@@ -341,7 +341,7 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
                         val count = machines.size + if (itsMe) 1 else 0
                         Text(
                             "$count machine" + (if (count == 1) "" else "s") +
-                                if (itsMe) me?.owner?.let { " · $it" } ?: "" else if ((person?.reaching ?: 0) > 0) " · ${person?.reaching} online" else "",
+                                if (itsMe) "" else if ((person?.reaching ?: 0) > 0) " · ${person?.reaching} online" else "",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                         )
@@ -350,8 +350,22 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
             }
 
             if (itsMe) {
+                // Who you are, as the key that makes a machine yours: nobody adds one without seeing it.
+                me?.key?.takeIf { it.isNotEmpty() }?.let { key ->
+                    item {
+                        ListItem(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 3.dp).clip(RoundedCornerShape(20.dp)),
+                            colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                            overlineContent = { Text("Your key") },
+                            headlineContent = { Text(key.substringBefore("  "), style = Mono, maxLines = 1) },
+                            supportingContent = {
+                                Text(key.substringAfter("  ", ""), color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                            },
+                        )
+                    }
+                }
                 item {
-                    Row(Modifier.padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         FilledTonalButton(onClick = { go(Screen.AddMachine()) }) {
                             Icon(Icons.Filled.Add, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
@@ -561,7 +575,7 @@ private fun Nobody() {
             Text("Nobody else yet", style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(8.dp))
             Text(
-                "A device on this network shows up under Nearby: tap it. Anywhere else, one of you shows a code and the other joins with it.",
+                "Tap Add a person. A device on this network shows up under Nearby; anywhere else, one of you shows a code and the other takes it.",
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
