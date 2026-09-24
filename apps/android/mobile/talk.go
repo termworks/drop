@@ -21,6 +21,8 @@ type served struct {
 	Writable  bool   `json:"writable"`
 	Locked    bool   `json:"locked"`
 	About     string `json:"about"`
+	// Shared is what every machine holding it calls it, empty for what one machine holds alone.
+	Shared string `json:"shared,omitempty"`
 }
 
 type listing struct {
@@ -63,10 +65,14 @@ func shown(all []proto.Served) []served {
 		if s.Archetype == "" {
 			continue
 		}
-		out = append(out, served{
+		one := served{
 			Path: s.Path, Archetype: s.Archetype, Shape: s.Shape,
 			Writable: s.Writable, Locked: s.Locked, About: s.About,
-		})
+		}
+		if s.Shared.Declared() {
+			one.Shared = s.Shared.ID()
+		}
+		out = append(out, one)
 	}
 	return out
 }

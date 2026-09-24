@@ -179,6 +179,11 @@ object Drop {
         List(all.length()) { Knock.from(all.getJSONObject(it)) }
     }
 
+    suspend fun kept(): Result<List<Kept>> = call { node ->
+        val all = JSONArray(node.kept())
+        List(all.length()) { Kept.from(all.getJSONObject(it)) }
+    }
+
     suspend fun list(machine: String, path: String, dir: String): Result<List<Held>> = call { node ->
         val all = JSONArray(node.list(machine, path, dir))
         List(all.length()) { Held.from(all.getJSONObject(it)) }.sortedWith(compareBy({ !it.dir }, { it.name.lowercase() }))
@@ -249,6 +254,8 @@ data class Served(
     val writable: Boolean,
     val locked: Boolean,
     val about: String,
+    /** What every machine holding it calls it; empty for what one machine holds alone. */
+    val shared: String,
 ) {
     /** What it behaves like: its own kind, or the kind it says it speaks like. */
     val kind: String get() = if (archetype in KNOWN) archetype else shape.ifEmpty { archetype }
@@ -263,6 +270,7 @@ data class Served(
             o.optBoolean("writable"),
             o.optBoolean("locked"),
             o.optString("about"),
+            o.optString("shared"),
         )
     }
 }
@@ -384,3 +392,10 @@ data class Knock(val id: String, val brief: String, val at: Long, val asked: Str
 }
 
 private fun strings(a: JSONArray?): List<String> = if (a == null) emptyList() else List(a.length()) { a.getString(it) }
+
+/** A copy this phone keeps of something several machines hold, and where on the phone it is. */
+data class Kept(val path: String, val archetype: String, val shared: String, val where: String) {
+    companion object {
+        fun from(o: JSONObject) = Kept(o.optString("path"), o.optString("archetype"), o.optString("shared"), o.optString("where"))
+    }
+}

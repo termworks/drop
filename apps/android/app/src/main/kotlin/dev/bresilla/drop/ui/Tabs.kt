@@ -22,6 +22,7 @@ import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.Badge
@@ -31,6 +32,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
@@ -59,6 +61,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.bresilla.drop.Chat
 import dev.bresilla.drop.Drop
+import dev.bresilla.drop.Kept
 import dev.bresilla.drop.Knock
 import dev.bresilla.drop.Me
 import dev.bresilla.drop.Rule
@@ -233,6 +236,7 @@ private fun PhoneTab(go: (Screen) -> Unit) {
     var mine by remember { mutableStateOf<List<Served>>(emptyList()) }
     var rules by remember { mutableStateOf<Map<String, Rule>>(emptyMap()) }
     var knocks by remember { mutableStateOf<List<Knock>>(emptyList()) }
+    var kept by remember { mutableStateOf<Map<String, Kept>>(emptyMap()) }
     var folder by remember { mutableStateOf(Settings.sharesFolder(context)) }
     var writable by remember { mutableStateOf(Settings.folderWritable(context)) }
     var restarting by remember { mutableStateOf(false) }
@@ -242,6 +246,7 @@ private fun PhoneTab(go: (Screen) -> Unit) {
         mine = Drop.paths("").getOrNull()?.paths ?: mine
         rules = mine.mapNotNull { s -> Drop.access(s.path).getOrNull()?.let { s.path to it } }.toMap()
         knocks = Drop.knocked().getOrNull() ?: knocks
+        kept = Drop.kept().getOrNull()?.associateBy { it.path } ?: kept
     }
 
     val reshare: (Boolean, Boolean) -> Unit = { f, w ->
@@ -287,7 +292,7 @@ private fun PhoneTab(go: (Screen) -> Unit) {
             }
 
             item { Section("What it shares") }
-            items(mine, key = { "p:" + it.path }) { s ->
+            items(mine.filter { it.path !in kept }, key = { "p:" + it.path }) { s ->
                 ListItem(
                     modifier = Modifier
                         .padding(horizontal = 12.dp, vertical = 3.dp)
@@ -299,6 +304,34 @@ private fun PhoneTab(go: (Screen) -> Unit) {
                     supportingContent = { Text(rules[s.path]?.let { reach(it) } ?: s.about, color = MaterialTheme.colorScheme.onSurfaceVariant) },
                     trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null) },
                 )
+            }
+
+            // A copy opens onto what is in it, and who may reach it is the lock beside it.
+            if (kept.isNotEmpty()) {
+                item { Section("Copies kept level with others") }
+                items(kept.values.toList(), key = { "c:" + it.path }) { c ->
+                    val note = c.archetype == "note"
+                    ListItem(
+                        modifier = Modifier
+                            .padding(horizontal = 12.dp, vertical = 3.dp)
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable {
+                                go(if (note) Screen.Note("", c.path, c.shared) else Screen.Files("", c.path, "", true, c.shared, c.where))
+                            },
+                        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                        leadingContent = { KindBadge(c.archetype) },
+                        headlineContent = { Text(c.path.trimStart('/'), style = MaterialTheme.typography.titleMedium) },
+                        supportingContent = {
+                            Text(
+                                if (note) "a note, written in here" else c.where.substringAfter("/0/"),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        },
+                        trailingContent = {
+                            IconButton(onClick = { go(Screen.Access(c.path)) }) { Icon(Icons.Filled.Lock, "Who may reach it") }
+                        },
+                    )
+                }
             }
 
             item { Section("The folder things land in") }

@@ -46,6 +46,9 @@ type Node struct {
 	down   func()
 	events Events
 	offer  context.CancelFunc
+	// data and downloads are where what this phone takes up is kept: a note in the one, a folder
+	// somebody can see in the other.
+	data, downloads string
 }
 
 // Start brings a node up with its state under the directories Android gave the app.
@@ -98,7 +101,7 @@ func Start(configDir, dataDir, downloads, name string, events Events) (*Node, er
 		return nil, fmt.Errorf("starting the node: %w", err)
 	}
 
-	n := &Node{ctx: ctx, stop: stop, back: back, down: down, events: events}
+	n := &Node{ctx: ctx, stop: stop, back: back, down: down, events: events, data: dataDir, downloads: downloads}
 	go n.listen()
 	return n, nil
 }

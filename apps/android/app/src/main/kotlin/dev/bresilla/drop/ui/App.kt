@@ -24,12 +24,21 @@ sealed interface Screen {
     data class Person(val name: String) : Screen
     data class Machine(val name: String) : Screen
     data class Chat(val machine: String) : Screen
-    data class Files(val machine: String, val path: String, val dir: String, val writable: Boolean) : Screen
+    /** A files namespace: on another machine, or with local set, this phone's own copy kept in that directory. */
+    data class Files(
+        val machine: String,
+        val path: String,
+        val dir: String,
+        val writable: Boolean,
+        val shared: String = "",
+        val local: String = "",
+    ) : Screen
     data class Live(val machine: String, val path: String, val archetype: String, val typing: Boolean) : Screen
     data class Pair(val ticket: String? = null, val scan: Boolean = false) : Screen
     data object Me : Screen
     data class Sending(val uris: List<Uri>) : Screen
-    data class Note(val machine: String, val path: String) : Screen
+    /** A note: on another machine, or with machine empty, the copy this phone keeps at path. */
+    data class Note(val machine: String, val path: String, val shared: String = "") : Screen
     data class Access(val path: String) : Screen
     data class Manage(val name: String) : Screen
 }
@@ -85,7 +94,7 @@ fun App(arrival: Arrival?, taken: () -> Unit) {
             is Screen.Pair -> PairScreen(screen.ticket, screen.scan, back, paired = { instead(Screen.Machine(it)) })
             Screen.Me -> MeScreen(back)
             is Screen.Sending -> SendingScreen(screen.uris, back, done = { instead(Screen.Chat(it)) })
-            is Screen.Note -> NoteScreen(screen.machine, screen.path, back)
+            is Screen.Note -> NoteScreen(screen, back)
             is Screen.Access -> AccessScreen(screen.path, back)
             is Screen.Manage -> ManageScreen(screen.name, back, home)
         }

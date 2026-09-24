@@ -110,11 +110,11 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
         when {
             s.locked -> ringing = s
             s.kind == "chat" -> go(Screen.Chat(name))
-            s.kind == "files" -> go(Screen.Files(name, s.path, "", s.writable))
+            s.kind == "files" -> go(Screen.Files(name, s.path, "", s.writable, s.shared))
             s.kind == "share" -> { sendingTo = s; pick.launch("*/*") }
             s.kind == "link" -> linking = s
             s.kind == "stream" || s.kind == "tty" -> go(Screen.Live(name, s.path, s.archetype, s.writable && s.kind == "tty"))
-            s.kind == "note" -> go(Screen.Note(name, s.path))
+            s.kind == "note" -> go(Screen.Note(name, s.path, s.shared))
             else -> scope.launch { said.showSnackbar("This build does not know how to open ${s.archetype}") }
         }
     }

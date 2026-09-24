@@ -18,9 +18,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.DownloadForOffline
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -40,6 +43,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -57,8 +61,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.bresilla.drop.Drop
 import dev.bresilla.drop.Held
+import dev.bresilla.drop.Kept
 import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -76,10 +83,24 @@ fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
     var acting by remember { mutableStateOf<Held?>(null) }
     var naming by remember { mutableStateOf<Held?>(null) }
     var making by remember { mutableStateOf(false) }
+    var taking by remember { mutableStateOf(false) }
+    var letting by remember { mutableStateOf(false) }
+
+    val tick by Drop.tick.collectAsState()
+    var kept by remember { mutableStateOf<List<Kept>>(emptyList()) }
+    LaunchedEffect(tick) { kept = Drop.kept().getOrNull() ?: kept }
+    val copied = kept.firstOrNull { at.shared.isNotEmpty() && it.shared == at.shared }
 
     LaunchedEffect(at, again) {
         failed = null
         Drop.list(at.machine, at.path, at.dir).onSuccess { held = it }.onFailure { failed = it.message }
+    }
+
+    // A copy this phone keeps is changed on its own disk, and the copy sends the change on from there.
+    val here = at.local.isNotEmpty()
+    fun inside(name: String) = File(File(at.local, at.dir), name)
+    suspend fun onDisk(what: () -> Boolean): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching { check(what()) { "this phone would not do that" } }
     }
 
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris: List<Uri> ->
@@ -87,7 +108,7 @@ fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
         scope.launch {
             val staged = stage(context, uris)
             for (file in staged) {
-                Drop.call { it.put(at.machine, at.path, at.dir, file.absolutePath) }
+                (if (here) onDisk { file.copyTo(inside(file.name)).exists() } else Drop.call { it.put(at.machine, at.path, at.dir, file.absolutePath) })
                     .onFailure { said.showSnackbar("${file.name}: ${it.message}") }
                 file.delete()
             }
@@ -96,6 +117,7 @@ fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
     }
 
     val where = (at.path.trimEnd('/') + "/" + at.dir).trimEnd('/').ifEmpty { "/" }
+    val on = at.machine.ifEmpty { "this phone" }
     Scaffold(
         snackbarHost = { SnackbarHost(said) },
         topBar = {
@@ -103,11 +125,30 @@ fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
                 title = {
                     Column {
                         Text(where.substringAfterLast('/').ifEmpty { at.path })
-                        Text("${at.machine}:$where", style = Mono, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(if (here) "the copy on this phone" else "${at.machine}:$where", style = Mono, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
                 navigationIcon = { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 actions = {
+                    when {
+                        here -> if (at.dir.isEmpty()) IconButton(onClick = { letting = true }) { Icon(Icons.Filled.LinkOff, "Stop keeping it level") }
+                        copied != null -> IconButton(onClick = { go(Screen.Files("", copied.path, "", true, copied.shared, copied.where)) }) {
+                            Icon(Icons.Filled.PhoneAndroid, "The copy on this phone")
+                        }
+                        at.shared.isNotEmpty() -> IconButton(enabled = !taking, onClick = {
+                            taking = true
+                            scope.launch {
+                                Drop.call { it.hold(at.machine, at.path, "files") }
+                                    .onSuccess { said.showSnackbar("Kept on this phone, in Download/drop-kept") }
+                                    .onFailure { said.showSnackbar(it.message ?: "Could not keep a copy") }
+                                Drop.bump()
+                                taking = false
+                            }
+                        }) {
+                            if (taking) CircularProgressIndicator(Modifier.padding(4.dp), strokeWidth = 2.dp)
+                            else Icon(Icons.Filled.DownloadForOffline, "Keep a copy on this phone")
+                        }
+                    }
                     if (at.writable) {
                         IconButton(onClick = { making = true }) { Icon(Icons.Filled.CreateNewFolder, "New folder") }
                     }
@@ -127,7 +168,7 @@ fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
     ) { pad ->
         LazyColumn(contentPadding = PaddingValues(top = pad.calculateTopPadding(), bottom = 96.dp)) {
             item { Transfer() }
-            failed?.let { item { Banner("Could not open $where on ${at.machine}: $it", error = true) } }
+            failed?.let { item { Banner("Could not open $where on $on: $it", error = true) } }
             val all = held
             when {
                 all == null && failed == null -> item {
@@ -147,6 +188,8 @@ fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
                             if (h.dir) {
                                 val inner = if (at.dir.isEmpty()) h.name else at.dir.trimEnd('/') + "/" + h.name
                                 go(at.copy(dir = inner))
+                            } else if (here) {
+                                open(context, inside(h.name))
                             } else {
                                 fetching = h.name
                                 scope.launch {
@@ -175,7 +218,7 @@ fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
                     trailingContent = {
                         when {
                             fetching == h.name -> CircularProgressIndicator(Modifier.padding(4.dp), strokeWidth = 2.dp)
-                            !h.dir -> Icon(Icons.Filled.FileDownload, "Download", tint = MaterialTheme.colorScheme.outline)
+                            !h.dir && !here -> Icon(Icons.Filled.FileDownload, "Download", tint = MaterialTheme.colorScheme.outline)
                         }
                     },
                 )
@@ -187,7 +230,7 @@ fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
         AlertDialog(
             onDismissRequest = { acting = null },
             title = { Text(h.name) },
-            text = { Text(if (h.dir) "A folder on ${at.machine}." else "${size(context, h.size)} on ${at.machine}.") },
+            text = { Text(if (h.dir) "A folder on $on." else "${size(context, h.size)} on $on.") },
             confirmButton = {
                 Row {
                     if (at.writable) {
@@ -195,13 +238,13 @@ fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
                         TextButton(onClick = {
                             acting = null
                             scope.launch {
-                                Drop.call { it.remove(at.machine, at.path, at.dir, h.name) }
+                                (if (here) onDisk { inside(h.name).deleteRecursively() } else Drop.call { it.remove(at.machine, at.path, at.dir, h.name) })
                                     .onFailure { said.showSnackbar("${h.name}: ${it.message}") }
                                 again++
                             }
                         }) { Text("Delete") }
                     }
-                    if (!h.dir) {
+                    if (!h.dir && !here) {
                         TextButton(onClick = {
                             acting = null
                             fetching = h.name
@@ -222,17 +265,36 @@ fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
     naming?.let { h ->
         Named(title = "Rename ${h.name}", start = h.name, done = { naming = null }) { called ->
             scope.launch {
-                Drop.call { it.move(at.machine, at.path, at.dir, h.name, called) }
+                (if (here) onDisk { inside(h.name).renameTo(inside(called)) } else Drop.call { it.move(at.machine, at.path, at.dir, h.name, called) })
                     .onFailure { said.showSnackbar("${h.name}: ${it.message}") }
                 again++
             }
         }
     }
 
+    if (letting) {
+        AlertDialog(
+            onDismissRequest = { letting = false },
+            title = { Text("Stop keeping ${at.path.trimStart('/')} level?") },
+            text = { Text("What is in ${at.local} stays on this phone, and stops following the others.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    letting = false
+                    scope.launch {
+                        Drop.call { it.release(at.path) }
+                            .onSuccess { Drop.bump(); back() }
+                            .onFailure { said.showSnackbar(it.message ?: "") }
+                    }
+                }) { Text("Stop") }
+            },
+            dismissButton = { TextButton(onClick = { letting = false }) { Text("Cancel") } },
+        )
+    }
+
     if (making) {
         Named(title = "New folder", start = "", done = { making = false }) { called ->
             scope.launch {
-                Drop.call { it.mkdir(at.machine, at.path, at.dir, called) }
+                (if (here) onDisk { inside(called).mkdirs() } else Drop.call { it.mkdir(at.machine, at.path, at.dir, called) })
                     .onFailure { said.showSnackbar("$called: ${it.message}") }
                 again++
             }
