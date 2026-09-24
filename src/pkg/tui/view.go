@@ -135,8 +135,11 @@ func (m Model) emptyList() string {
 		// device rather than a report about the network.
 		return dimStyle.Render("could not ask this device.") + "\n\n" +
 			faintStyle.Render("what it shares is unknown, not empty.")
+	case m.at == levelPaths && m.mineOpen():
+		return dimStyle.Render("no topics here yet.") + "\n\n" +
+			keyStyle.Render("a") + faintStyle.Render(" adds one: a chat, a folder, an inbox, a note, a terminal.")
 	case m.at == levelPaths:
-		return dimStyle.Render("this device shares nothing with you.") + "\n\n" +
+		return dimStyle.Render("this machine shares nothing with you.") + "\n\n" +
 			faintStyle.Render("what appears here was decided over there, not here.")
 	case m.at == levelBrowse:
 		return dimStyle.Render("nothing in this directory.")
@@ -155,7 +158,10 @@ func (m Model) listTitle() string {
 		return m.detail.Path + " on " + machineOr(m.onMachine) + "  ·  who may open it"
 	}
 	if m.at == levelUsers {
-		return "users"
+		return "people"
+	}
+	if m.at == levelMachines && m.atUser == Me {
+		return "your machines"
 	}
 	if m.at == levelMachines {
 		return m.atUser + "  ·  machines"
@@ -164,16 +170,16 @@ func (m Model) listTitle() string {
 		return m.walking()
 	}
 	if m.at != levelPaths {
-		return "users"
+		return "people"
 	}
 
-	name := "shares"
+	name := "topics"
 	switch {
 	case m.onSelf:
-		name = "this device shares"
+		name = "topics on " + m.me.Name + ", this machine"
 	default:
 		if with, ok := m.peer(); ok {
-			name = with.Name + " shares"
+			name = "topics on " + with.Name
 		}
 	}
 
@@ -256,13 +262,13 @@ func (m Model) where() string {
 	var parts []string
 
 	if m.linking != nil {
-		return crumb("pairing")
+		return crumb("adding")
 	}
 	if m.at == levelManage {
 		return crumb(m.managed.Name)
 	}
 	if m.joining {
-		return crumb("pairing")
+		return crumb("adding")
 	}
 	if m.onSelf && m.at >= levelPaths {
 		parts = append(parts, Me, m.me.Name)
@@ -574,9 +580,9 @@ func (m Model) keys() []hint {
 				{"a", "show a code"}, {"t", "take a code"}, {"q", "quit"}}
 			break
 		}
-		keys = []hint{{"enter", "machines"}, {"a", "add a device"}, {"t", "take a code"}}
+		keys = []hint{{"enter", "machines"}, {"a", "add a person"}, {"t", "take a code"}}
 		if it, ok := m.list.SelectedItem().(userItem); ok && it.mine {
-			keys = append(keys, hint{"m", "you: leave, or start over"})
+			keys = append(keys, hint{"m", "you: your key, leave, start over"})
 		}
 		if it, ok := m.list.SelectedItem().(userItem); ok && !it.mine {
 			keys = append(keys, hint{"m", "manage " + it.name})
@@ -587,7 +593,10 @@ func (m Model) keys() []hint {
 		keys = append(keys, hint{"r", "reload"}, hint{"q", "quit"})
 
 	case m.at == levelMachines:
-		keys = []hint{{"enter", "open"}}
+		keys = []hint{{"enter", "topics"}}
+		if m.atUser == Me {
+			keys = append(keys, hint{"a", "add a machine"})
+		}
 		if it, ok := m.list.SelectedItem().(deviceItem); ok && !it.self {
 			keys = append(keys, hint{"n", "rename"})
 			if m.atUser == Me {
@@ -602,12 +611,15 @@ func (m Model) keys() []hint {
 		if m.atUser != Me {
 			keys = append(keys, hint{"m", "manage"}, hint{"t", "trust, or stop"})
 		}
-		keys = append(keys, hint{"a", "add a device"}, hint{"r", "reload"}, hint{"esc", "back"})
+		keys = append(keys, hint{"r", "reload"}, hint{"esc", "back"})
 
 	case m.at == levelPaths:
 		keys = []hint{{"enter", "open"}}
 		if m.mineOpen() {
-			keys = append(keys, hint{"w", "who may open it"})
+			keys = append(keys, hint{"a", "add a topic"})
+			if row, ok := m.list.SelectedItem().(pathItem); ok && row.step.is {
+				keys = append(keys, hint{"x", "remove it"}, hint{"w", "who may open it"})
+			}
 		}
 		if row, ok := m.list.SelectedItem().(pathItem); ok && !m.mineOpen() && row.step.served.Locked {
 			keys = append(keys, hint{"a", "ask for it"})
@@ -954,20 +966,21 @@ func (m Model) panelWidth() int {
 func (m Model) nothingPaired() string {
 	body := strings.Join([]string{
 		"",
-		nameStyle.Render("No devices yet"),
+		nameStyle.Render("Nobody yet"),
 		"",
-		dimStyle.Render("drop talks to devices you have added, and nothing else."),
+		dimStyle.Render("People, their machines, and the topics on each: add any of them."),
 		"",
-		keyStyle.Render("a") + sayStyle.Render("  add a device: show a code for it to scan or type in"),
-		keyStyle.Render("t") + sayStyle.Render("  take the code another device is showing"),
+		keyStyle.Render("a") + sayStyle.Render("      add a person: show your code for them to scan or type in"),
+		keyStyle.Render("t") + sayStyle.Render("      take the code somebody shows you"),
+		keyStyle.Render("enter") + sayStyle.Render("  your machines: add one of yours, and topics on each"),
+		keyStyle.Render("m") + sayStyle.Render("      you: your key, and using your SSH key or YubiKey"),
 		"",
-		faintStyle.Render("from a terminal: ") + kindStyle.Render("drop add") + faintStyle.Render(" on one, ") +
-			kindStyle.Render("drop add <code>") + faintStyle.Render(" on the other"),
-		faintStyle.Render("then, on a device you added: ") + kindStyle.Render("o") + faintStyle.Render(" makes it one of your machines"),
+		faintStyle.Render("from a terminal: ") + kindStyle.Render("drop person add") + faintStyle.Render(", ") +
+			kindStyle.Render("drop machine add") + faintStyle.Render(", ") + kindStyle.Render("drop topic add"),
 		"",
 	}, "\n")
 
-	return m.middle(panel("add a device", m.panelWidth(), 0, body))
+	return m.middle(panel("people", m.panelWidth(), 0, body))
 }
 
 // pairingView is the code, the ticket, and the wait.
@@ -983,15 +996,19 @@ func (m Model) pairingView() string {
 	if _, code, found := strings.Cut(typed, "#"); found {
 		typed = code
 	}
-	command, title := "drop add ", "add a device"
+	command, title := "drop person add ", "add a person"
 	if m.linking.machine {
-		title = "add a machine of yours"
+		command, title = "drop machine add ", "add a machine of yours"
 	}
 	folded := fold(command+typed, width-4)
 
 	// What the panel has room for: the body, less its own two edges, less the line that says what
 	// to do with the code, the ticket under it, and the line saying we are waiting.
 	spare := (m.height - 4) - 2 - len(folded) - 2
+	signs := m.linking.machine && m.me.Key != ""
+	if signs {
+		spare--
+	}
 
 	drawn := strings.Split(strings.TrimRight(m.linking.code, "\n"), "\n")
 	switch {
@@ -1007,6 +1024,10 @@ func (m Model) pairingView() string {
 	out.WriteString(faintStyle.Render("point a camera at it, or run this over there:") + "\n")
 	for _, at := range folded {
 		out.WriteString(kindStyle.Render(at) + "\n")
+	}
+	if signs {
+		// What makes the new machine yours, so nobody adds one without seeing it.
+		out.WriteString(faintStyle.Render("your key signs it: ") + dimStyle.Render(fit(m.me.Key, width-24)) + "\n")
 	}
 	out.WriteString(goodStyle.Render("◐ waiting for it to answer…"))
 

@@ -19,6 +19,7 @@ type adminFake struct {
 	renamed        []string
 	joinedMachine  string
 	offeredMachine bool
+	topics         []string
 }
 
 func (f *fake) Rename(old, name string) error {
@@ -53,6 +54,10 @@ func (f *fake) Ask(ctx context.Context, machine string, m proto.Manage) ([]byte,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if m.Op == proto.ManageAdd || m.Op == proto.ManageRemove {
+		f.admin.topics = append(f.admin.topics, m.Op+" "+machine+m.Path+" "+m.Body)
+		return []byte(`{}`), nil
+	}
 	if f.details == nil {
 		f.details = map[string]PathDetail{}
 	}
@@ -399,7 +404,7 @@ func TestADeviceIsAddedFromTheFirstScreen(t *testing.T) {
 	back := &fake{self: Identity{Name: "tron", User: "ssh-ed25519 MINE"}, peers: []book.Entry{{Name: "bob", ID: idFor(3)}}}
 
 	m := press(t, start(t, back), "a")
-	if m.linking == nil || !strings.Contains(m.View(), "drop add code") {
+	if m.linking == nil || !strings.Contains(m.View(), "drop person add code") {
 		t.Fatalf("a did not show a code:\n%s", m.View())
 	}
 	m = press(t, m, "esc")
@@ -474,7 +479,7 @@ func TestEveryActionIsOnTheScreen(t *testing.T) {
 		t.Fatal("space did not open the actions")
 	}
 	shown := m.View()
-	for _, want := range []string{"add a device", "take a code"} {
+	for _, want := range []string{"add a person", "take a code"} {
 		if !strings.Contains(shown, want) {
 			t.Errorf("the actions are missing %q:\n%s", want, shown)
 		}
@@ -494,4 +499,57 @@ func TestEveryActionIsOnTheScreen(t *testing.T) {
 
 func (f *fake) Renewing() int { return 0 }
 
+func (f *fake) UseKey(at string) (string, error) { return "SHA256:fake  your SSH key, " + at, nil }
+
 func (f *fake) Renew(ctx context.Context) (int, error) { return 0, nil }
+
+// a adds whatever the screen lists: a machine on your machines, a topic on one of them.
+func TestAddIsTheSameKeyForMachinesAndTopics(t *testing.T) {
+	back := &fake{
+		self: Identity{Name: "tron", User: "ssh-ed25519 MINE", Key: "SHA256:mine  your SSH key"},
+		mine: []proto.Served{{Path: "/chat", Archetype: "chat"}},
+	}
+
+	m := press(t, start(t, back), "enter")
+	if m.at != levelMachines || m.atUser != Me {
+		t.Fatalf("enter on you did not open your machines: at %d, %q", m.at, m.atUser)
+	}
+	m = press(t, m, "a")
+	if m.linking == nil || !m.linking.machine {
+		t.Fatal("a on your machines did not show a code for a machine")
+	}
+	if shown := m.View(); !strings.Contains(shown, "drop machine add abcd-efgh-ijkl") || !strings.Contains(shown, "SHA256:mine") {
+		t.Fatalf("the code for a machine does not say how to take it, or which key signs it:\n%s", shown)
+	}
+	m = press(t, m, "esc")
+
+	m = press(t, m, "enter")
+	if m.at != levelPaths || !m.onSelf {
+		t.Fatalf("enter on this machine did not open its topics: at %d", m.at)
+	}
+	m = press(t, m, "a")
+	if m.prompt == nil {
+		t.Fatal("a on the topics did not ask for a name")
+	}
+	m = press(t, m, "work", "enter")
+	if m.menu == nil || m.menu.pick == nil {
+		t.Fatal("naming a topic did not ask what kind it is")
+	}
+	for m.menu.items[m.menu.at].key != "folder" {
+		m = press(t, m, "down")
+	}
+	m = press(t, m, "enter")
+
+	want := `add /work {"kind":"folder"}`
+	if len(back.admin.topics) != 1 || back.admin.topics[0] != want {
+		t.Fatalf("adding asked %q, want %q", back.admin.topics, want)
+	}
+
+	m = press(t, m, "x", "y")
+	if len(back.admin.topics) != 2 || back.admin.topics[1] != "remove /chat " {
+		t.Fatalf("removing asked %q", back.admin.topics)
+	}
+	if !strings.Contains(m.View(), "/chat is gone from this machine") {
+		t.Errorf("removing a topic does not say so:\n%s", m.View())
+	}
+}

@@ -114,6 +114,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showAccess()
 		return m, nil
 
+	case topicNamed:
+		m.loading = false
+		if msg.name == "" {
+			return m, nil
+		}
+		return m.kindMenu(msg), nil
+
+	case topicKind:
+		return m.addTopic(msg)
+
+	case topicDone:
+		m.loading = false
+		if msg.err != nil {
+			m.trouble, m.said = msg.err.Error(), ""
+			return m, nil
+		}
+		m.trouble, m.said = "", msg.said
+		if m.at != levelPaths {
+			return m, nil
+		}
+		m.loading = true
+		return m, m.reloadTopics()
+
 	case adminDone:
 		m.loading = false
 		if msg.err != nil {
@@ -623,7 +646,7 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "p":
 		if m.at == levelUsers && m.linking == nil {
-			return m, offer(m.back)
+			return m, offer(m.back, false)
 		}
 		return m, nil
 

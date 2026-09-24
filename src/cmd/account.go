@@ -126,14 +126,20 @@ func overHere() reaches {
 // restartDaemon starts the daemon again when a service runs it, so it forgets what it held in
 // memory; and says how to when it cannot.
 func restartDaemon() {
+	if said := againDaemon(); said != "" {
+		fmt.Println("  " + said)
+	}
+}
+
+// againDaemon restarts the daemon when a service runs it, and says what happened.
+func againDaemon() string {
 	if !daemonUp(context.Background()) {
-		return
+		return ""
 	}
 	if err := exec.Command("systemctl", "--user", "restart", "drop").Run(); err == nil {
-		fmt.Println("  drop serve was started again")
-		return
+		return "drop serve was started again"
 	}
-	fmt.Println("  restart drop serve, so it forgets what it held")
+	return "restart drop serve, so it forgets what it held"
 }
 
 func newLeaveCmd() *cobra.Command {

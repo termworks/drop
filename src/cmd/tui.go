@@ -423,6 +423,7 @@ func (l *running) Self() (tui.Identity, error) {
 		Name:  node.DisplayName(),
 		ID:    l.id.String(),
 		User:  myKey(),
+		Key:   keySays(),
 		Reach: reach,
 	}, nil
 }

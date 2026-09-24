@@ -20,9 +20,7 @@ func (m Model) adminKey(key string) (tea.Model, tea.Cmd, bool) {
 	case levelMachines:
 		return m.machinesKey(key)
 	case levelPaths:
-		if key == "w" && m.mineOpen() {
-			return m.openAccess()
-		}
+		return m.topicsKey(key)
 	case levelAccess:
 		return m.accessKey(key)
 	case levelManage:
@@ -56,7 +54,7 @@ func (m Model) usersKey(key string) (tea.Model, tea.Cmd, bool) {
 	switch key {
 	case "a":
 		if m.linking == nil {
-			return m, offer(m.back), true
+			return m, offer(m.back, false), true
 		}
 	case "m":
 		if onUser && it.mine {
@@ -90,9 +88,12 @@ func (m Model) machinesKey(key string) (tea.Model, tea.Cmd, bool) {
 
 	switch key {
 	case "a":
-		if m.linking == nil {
-			return m, offer(m.back), true
+		// A machine is added to your own, where the code it takes makes it yours. Somebody else's
+		// machines are theirs to add.
+		if m.atUser == Me && m.linking == nil {
+			return m, offer(m.back, true), true
 		}
+		return m, nil, true
 	case "o", "i":
 		// What a device you added is to you: one of your machines, or this one one of theirs.
 		if !other || m.atUser == Me {
@@ -253,6 +254,13 @@ func (m Model) manageKey(key string) (tea.Model, tea.Cmd, bool) {
 			m.confirm = &confirming{ask: "leave your machines? this machine goes back to its own", yes: leaving(m.back)}
 		case actStartOver:
 			m.confirm = &confirming{ask: "delete everything drop knows on this machine? it cannot be brought back", yes: startingOver(m.back)}
+		case actUseKey:
+			m.prompt = &prompting{
+				title: "use your own key",
+				says: "The file: an SSH key like ~/.ssh/id_ed25519, or the .pub of a key in a YubiKey. " +
+					"You become that key, and every machine of yours is added again under it.",
+				done: func(at string) tea.Cmd { return usingKey(m.back, at) },
+			}
 		}
 		return m, nil, true
 	}

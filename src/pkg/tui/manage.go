@@ -141,18 +141,23 @@ const (
 	actLeave     = "leave"
 	actStartOver = "startover"
 	actRenew     = "renew"
+	actUseKey    = "usekey"
 )
 
 // accountRows is you: who you are, and the things only you can do to this machine.
 func accountRows(self Identity, renewing int) []list.Item {
-	key := self.User
-	if len(key) > 60 {
+	key := self.Key
+	if key == "" {
+		key = self.User
+	}
+	if len(key) > 60 && self.Key == "" {
 		key = key[:28] + "…" + key[len(key)-24:]
 	}
 	items := []list.Item{
 		dividerItem{label: "you"},
 		manageItem{what: "you", label: self.Name, note: "this machine, as the others see it"},
 		manageItem{what: "you", label: "your key", note: key},
+		manageItem{what: "you", label: "use your SSH key or YubiKey", note: "who you are becomes that key, and your machines are added again under it — enter", act: actUseKey},
 		dividerItem{label: groupWhat},
 	}
 	if renewing > 0 {

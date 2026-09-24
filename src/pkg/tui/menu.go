@@ -17,6 +17,10 @@ import (
 type menuState struct {
 	items []hint
 	at    int
+	// title and pick make it a choice rather than a list of keys: what is picked is handed to
+	// pick instead of being pressed.
+	title string
+	pick  func(key string) tea.Cmd
 }
 
 // acting is what the menu offers: the keys that do something, not the ones that move about.
@@ -65,9 +69,15 @@ func (m Model) menuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "enter":
-		picked := m.menu.items[m.menu.at].key
+		picked, pick := m.menu.items[m.menu.at].key, m.menu.pick
 		m.menu = nil
+		if pick != nil {
+			return m, pick(picked)
+		}
 		return m.key(pressOf(picked))
+	}
+	if m.menu.pick != nil {
+		return m, nil
 	}
 	// A key pressed with the menu open is that action, the same as without it.
 	for _, it := range m.menu.items {
@@ -91,15 +101,19 @@ func pressOf(key string) tea.KeyMsg {
 func (m Model) menuView() string {
 	var out strings.Builder
 	out.WriteString("\n")
+	width, title, does := 7, "what you can do here", "enter does it"
+	if m.menu.pick != nil {
+		width, title, does = 9, m.menu.title, "enter picks it"
+	}
 	for i, it := range m.menu.items {
-		line := " " + keyStyle.Render(fitted(it.key, 7)) + "  " + faintStyle.Render(it.does)
+		line := " " + keyStyle.Render(fitted(it.key, width)) + "  " + faintStyle.Render(it.does)
 		if i == m.menu.at {
-			line = " " + keyStyle.Render(fitted(it.key, 7)) + "  " + brandStyle.Render("› "+it.does)
+			line = " " + keyStyle.Render(fitted(it.key, width)) + "  " + brandStyle.Render("› "+it.does)
 		}
 		out.WriteString(line + "\n")
 	}
-	out.WriteString("\n " + faintStyle.Render("↑↓ pick · enter does it · esc closes"))
-	return m.middle(panel("what you can do here", m.panelWidth(), 0, out.String()))
+	out.WriteString("\n " + faintStyle.Render("↑↓ pick · "+does+" · esc closes"))
+	return m.middle(panel(title, m.panelWidth(), 0, out.String()))
 }
 
 // footer is the line along the bottom: as many of the screen's keys as fit, and where the rest are.

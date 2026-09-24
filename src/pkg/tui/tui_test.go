@@ -612,7 +612,7 @@ func TestPairingCanBeStartedFromTheInterface(t *testing.T) {
 	if m.linking == nil {
 		t.Fatal("p did not start a pairing")
 	}
-	if !strings.Contains(m.View(), "drop add") {
+	if !strings.Contains(m.View(), "drop person add") {
 		t.Fatalf("the pairing screen does not show the ticket:\n%s", m.View())
 	}
 }

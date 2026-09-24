@@ -101,32 +101,14 @@ func newKeyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			same := myKey() == user.Text(pub)
-			if !sure && !same {
+			if !sure && myKey() != user.Text(pub) {
 				return fmt.Errorf("%s is %s: being it is a new you, and every machine of yours is added again; run this again with --yes", at, user.Fingerprint(pub))
 			}
-			if os.Getenv("DROP_USER_KEY") != "" {
-				return errors.New("$DROP_USER_KEY names the key here, and wins over the config: change that instead")
-			}
-			was := ""
-			if user.Named() {
-				was, _ = user.Where()
-			}
-			user.Use(at)
-			if !same {
-				// Signed before the config names it, so a key that cannot sign is never left named,
-				// and a YubiKey asks for its touch in this terminal.
-				badge, signed, err := user.Mine(time.Now())
-				if err != nil {
-					user.Use(was)
-					return fmt.Errorf("signing this machine's badge with %s: %w", at, err)
-				}
-				wear(badge, signed)
-			}
-			if err := writeUserKey(at); err != nil {
+			changed, err := becomeKey(at, pub)
+			if err != nil {
 				return err
 			}
-			if same {
+			if !changed {
 				fmt.Printf("you are %s, and drop reads it from %s now\n", user.Fingerprint(pub), at)
 				return nil
 			}
@@ -157,6 +139,31 @@ func keyAt(at string) (ssh.PublicKey, error) {
 		return pub, nil
 	}
 	return nil, fmt.Errorf("%s is not an SSH key", at)
+}
+
+// becomeKey makes the key at a file the user key: this machine's badge signed with it, then the
+// config naming it. It says whether that changed who this machine belongs to.
+func becomeKey(at string, pub ssh.PublicKey) (bool, error) {
+	if os.Getenv("DROP_USER_KEY") != "" {
+		return false, errors.New("$DROP_USER_KEY names the key here, and wins over the config: change that instead")
+	}
+	same := myKey() == user.Text(pub)
+	was := ""
+	if user.Named() {
+		was, _ = user.Where()
+	}
+	user.Use(at)
+	if !same {
+		// Signed before the config names it, so a key that cannot sign is never left named, and a
+		// YubiKey asks for its touch where somebody is looking.
+		badge, signed, err := user.Mine(time.Now())
+		if err != nil {
+			user.Use(was)
+			return false, fmt.Errorf("signing this machine's badge with %s: %w", at, err)
+		}
+		wear(badge, signed)
+	}
+	return !same, writeUserKey(at)
 }
 
 // userKeyLine is the config line that names the user key.
@@ -205,4 +212,24 @@ func expandHome(at string) string {
 		return at
 	}
 	return filepath.Join(home, strings.TrimPrefix(at, "~"))
+}
+
+// UseKey makes the key at a file who this user is, from an interface.
+func (l *running) UseKey(at string) (string, error) {
+	full, err := filepath.Abs(expandHome(strings.TrimSpace(at)))
+	if err != nil {
+		return "", err
+	}
+	pub, err := keyAt(full)
+	if err != nil {
+		return "", err
+	}
+	changed, err := becomeKey(full, pub)
+	if err != nil {
+		return "", err
+	}
+	if changed && l.daemon {
+		_ = againDaemon()
+	}
+	return user.Fingerprint(pub), nil
 }
