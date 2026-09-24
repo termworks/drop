@@ -32,7 +32,9 @@ type Config struct {
 	Vault []string
 	// Bootstrap records an unsupported legacy setting. Relays overrides the defaults when set.
 	Bootstrap []string
-	Relays    []string
+	// Defaults says the namespaces are drop's own, served because nothing declared any.
+	Defaults bool
+	Relays   []string
 	// HasName and HasOpenLinks say whether the config mentioned the setting at all, so one it never
 	// named leaves the environment alone.
 	HasName bool
@@ -67,14 +69,20 @@ type Config struct {
 // Open to your own machines and nobody else. Somebody paired is somebody recognised, not somebody
 // let in: opening a path to them is a step taken for that path, from the interface or the config.
 func Default(known *arch.Registry) *Config {
-	open := ns.Access{Named: []string{ns.LevelMe}}
-
 	cfg := &Config{Mounts: ns.NewTable(), known: known}
-	// A share rather than a files: something may be put in the inbox, and nothing taken out of it.
-	cfg.add("/inbox", "share", settings{"dir": Inbox()}, open)
-	cfg.add("/chat", "chat", settings{}, open)
-	cfg.add("/open", "link", settings{}, open)
+	cfg.defaults()
 	return cfg
+}
+
+// defaults declares what drop serves when nothing else is: an inbox, a chat and a place for links,
+// each for its own user's machines only.
+func (c *Config) defaults() {
+	c.Defaults = true
+	open := ns.Access{Named: []string{ns.LevelMe}}
+	// A share rather than a files: something may be put in the inbox, and nothing taken out of it.
+	c.add("/inbox", "share", settings{"dir": Inbox()}, open)
+	c.add("/chat", "chat", settings{}, open)
+	c.add("/open", "link", settings{}, open)
 }
 
 // add declares one namespace of drop's own. An archetype this build does not register is left out
@@ -177,9 +185,10 @@ func loadConfig(known *arch.Registry, requireNamespaces bool) (*Config, error) {
 		cfg.Close()
 		return nil, fmt.Errorf("%s sets drop.bootstrap, which this transport does not support", path)
 	}
+	// A file that only sets things — who you are, what this machine is called — serves what no
+	// file would, and the topics added from an interface beside it.
 	if requireNamespaces && cfg.Mounts.Len() == 0 {
-		cfg.Close()
-		return nil, fmt.Errorf("%s declares no namespaces, so this node would serve nothing", path)
+		cfg.defaults()
 	}
 	return cfg, nil
 }
