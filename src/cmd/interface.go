@@ -180,7 +180,7 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 				return greeting(pinned, cfg.Mounts, known, from, badge)
 			}, moving(pinned, func(string) {}))
 		},
-		node.ALPNManage: managing(pinned, known, func() *inviting { return invites }),
+		node.ALPNManage: managing(pinned, known, func() *inviting { return invites }, put),
 		node.ALPNSync:   syncing(pinned),
 	}
 

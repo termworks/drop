@@ -9,6 +9,7 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/proto"
 )
 
 // Your own machines: adding one is one command on each, and the rest of them hear about it by
@@ -21,7 +22,7 @@ import (
 func newMineCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "machine",
-		Short: "Your own machines: add one, join one, list them",
+		Short: "Machines: yours — add one, list them, rename or remove one",
 		Long: "On a machine that is already yours run `drop machine add`, and on the new one\n" +
 			"`drop machine join <code>` — or scan the code with drop on a phone. The new machine\n" +
 			"becomes yours, and every other machine of yours learns of it within a few minutes.\n\n" +
@@ -96,14 +97,28 @@ func newMineAddCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "add",
-		Short: "Show a code another machine joins you with",
-		Long: "Shows a short code and a QR code. On the new machine run `drop machine join <code>`,\n" +
-			"or scan it with drop on a phone. The new machine is given a badge signed here, which\n" +
-			"any machine of yours renews before it runs out.\n\n" +
-			"--key hands it the user key itself instead, so it signs for itself and for others.",
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Use:   "add [code|name]",
+		Short: "Add a machine of yours: show a code, take one, or ask a device you know",
+		Long: "On a machine that holds your key, `drop machine add` shows a code and a QR. On the new\n" +
+			"machine, `drop machine add <code>` takes it, or scan it with drop on a phone. The new\n" +
+			"machine is given a badge your key signs, and every machine of yours learns of it.\n\n" +
+			"With the name of a device on this network, or of somebody's machine you added, it asks\n" +
+			"that device to become yours, and its person says yes on its screen.\n\n" +
+			"--key hands the new machine the key itself instead, so it signs for itself and for others.",
+		Args: cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				given := strings.Join(args, " ")
+				if near, ok := nearbyNamed(cmd.Context(), given); ok {
+					return askNearby(cmd.Context(), near, proto.InviteMine)
+				}
+				if pinned, err := book.Load(); err == nil {
+					if _, known := pinned.Lookup(given); known {
+						return askAdded(cmd.Context(), given, proto.InviteMine)
+					}
+				}
+				return joinPairing(cmd.Context(), given, as, joinWithin, offerAny, nil)
+			}
 			kind := offerMine
 			if key {
 				kind = offerMineKey

@@ -211,7 +211,7 @@ func runServe(parent context.Context, quiet bool) error {
 				return greeting(pinned, cfg.Mounts, known, from, badge)
 			}, moving(pinned, func(said string) { log.Printf("%s", said) }))
 		},
-		node.ALPNManage: managing(pinned, known, func() *inviting { return invites }),
+		node.ALPNManage: managing(pinned, known, func() *inviting { return invites }, put),
 		node.ALPNSync:   syncing(pinned),
 		node.ALPNInvite: invites.answering(pinned),
 		// Pairing is answered by whoever holds the address, which is this. A separate `drop peer pair`

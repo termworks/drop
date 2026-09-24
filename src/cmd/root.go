@@ -47,19 +47,23 @@ func Execute(v string, exit func(int), args []string) {
 	root.PersistentPreRunE = func(*cobra.Command, []string) error { return prepare() }
 
 	root.SetArgs(args)
+	// People, their machines and the topics on each, first; the older spellings still answer, and
+	// are only left out of the help.
 	root.AddCommand(
-		newConnectCmd(),
-		newServeCmd(),
-		newFileCmd(),
-		newAddCmd(),
-		newPromoteCmd(),
-		newJoinThemCmd(),
-		newNearbyCmd(),
+		newPersonCmd(),
 		newMineCmd(),
-		newPeerCmd(),
-		newPathCmd(),
+		newTopicCmd(),
+		newNearbyCmd(),
+		newConnectCmd(),
+		newFileCmd(),
 		newMeCmd(),
+		newServeCmd(),
 		newTUICmd(),
+		hidden(newAddCmd()),
+		hidden(newPromoteCmd()),
+		hidden(newJoinThemCmd()),
+		hidden(newPeerCmd()),
+		hidden(newPathCmd()),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -78,4 +82,10 @@ func prepare() error {
 	unlocking()
 
 	return wearBadge()
+}
+
+// hidden keeps a command answering and out of the help.
+func hidden(cmd *cobra.Command) *cobra.Command {
+	cmd.Hidden = true
+	return cmd
 }
