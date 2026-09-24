@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/sys/unix"
 
 	"github.com/bresilla/drop/src/pkg/history"
 )
@@ -183,6 +184,31 @@ func TestAnEditMadeWhileDropWasOffIsNoticedAndOneItMadeIsNot(t *testing.T) {
 	}
 }
 
+func TestAFileThatReachedDiskBeforeItsMarkIsRecognised(t *testing.T) {
+	asSomebody(t, "alice")
+	k := aKeeper(t)
+
+	save(t, k.file, "one\ntwo\n")
+	k.turn(t)
+
+	save(t, k.file, "ONE\ntwo\n")
+	c, err := history.Sign(k.log.At(), []byte("ONE\ntwo\n"), k.log.Heads())
+	if err != nil {
+		t.Fatalf("Sign(): %v", err)
+	}
+	if _, err := k.log.Add(c); err != nil {
+		t.Fatalf("Add(): %v", err)
+	}
+
+	again := &keeper{file: k.file, log: k.log}
+	if again.turn(t) {
+		t.Fatal("the file already represented by the history was recorded again")
+	}
+	if n := again.count(t); n != 2 {
+		t.Fatalf("recovery left %d changes, want 2", n)
+	}
+}
+
 // A note that only exists as a history — the machine that joined it — gets the file written for it.
 func TestANoteWithNoFileYetIsWrittenFromItsHistory(t *testing.T) {
 	asSomebody(t, "alice")
@@ -204,6 +230,54 @@ func TestANoteWithNoFileYetIsWrittenFromItsHistory(t *testing.T) {
 	}
 	if k.turn(t) || k.count(t) != 1 {
 		t.Fatalf("the file that was written came back as a change: %d changes", k.count(t))
+	}
+}
+
+func TestANewNoteRemembersItsHistoryBeforeItAppears(t *testing.T) {
+	asSomebody(t, "alice")
+	k := aKeeper(t)
+
+	first, err := history.Sign(k.log.At(), []byte("one\ntwo\n"), nil)
+	if err != nil {
+		t.Fatalf("Sign(): %v", err)
+	}
+	if _, err := k.log.Add(first); err != nil {
+		t.Fatalf("Add(): %v", err)
+	}
+
+	dir := t.TempDir()
+	k.file = filepath.Join(dir, "notes.md")
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.once(); err == nil {
+		t.Fatal("writing into a read-only directory succeeded")
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	mark, err := os.ReadFile(k.mark())
+	if err != nil {
+		t.Fatalf("reading the note mark: %v", err)
+	}
+	if !strings.Contains(string(mark), first.ID().String()) {
+		t.Fatalf("the mark %q does not name the history used for the file", mark)
+	}
+
+	save(t, k.file, "one\nTWO\n")
+	again := &keeper{file: k.file, log: k.log}
+	if !again.turn(t) {
+		t.Fatal("the edit after the interrupted write was not recorded")
+	}
+
+	changes, err := k.log.Ordered()
+	if err != nil {
+		t.Fatalf("Ordered(): %v", err)
+	}
+	last := changes[len(changes)-1]
+	if len(last.Heads) != 1 || last.Heads[0] != first.ID() {
+		t.Fatalf("the edit names %v, want the initial change", last.Heads)
 	}
 }
 
@@ -296,6 +370,62 @@ func TestAFileBeingWrittenIsSkipped(t *testing.T) {
 	raw, there, err := steady(at)
 	if !there || err != nil || string(raw) != "one\n" {
 		t.Fatalf("a file that is there read as %q, %v, %v", raw, there, err)
+	}
+}
+
+func TestAnOversizedNoteIsReadOnlyToItsLimit(t *testing.T) {
+	at := filepath.Join(t.TempDir(), "large.md")
+	if err := os.WriteFile(at, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(at, MaxSize+4096); err != nil {
+		t.Fatal(err)
+	}
+	settled(t, at)
+
+	raw, there, err := steady(at)
+	if err != nil || !there {
+		t.Fatalf("steady() = %d bytes, %v, %v", len(raw), there, err)
+	}
+	if len(raw) != MaxSize+1 {
+		t.Fatalf("steady() read %d bytes, want the %d-byte detection limit", len(raw), MaxSize+1)
+	}
+}
+
+func TestAnUnrecordedCopyAtAFifoDoesNotBlock(t *testing.T) {
+	k := aKeeper(t)
+	beside := k.file + ".unrecorded"
+	if err := unix.Mkfifo(beside, 0o600); err != nil {
+		t.Skipf("this disk will not make a fifo: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- k.spare([]byte("the complete save")) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("saving beside a fifo blocked")
+	}
+	if got := held(t, beside); got != "the complete save" {
+		t.Fatalf("unrecorded copy = %q", got)
+	}
+}
+
+func TestAnOversizedNoteMarkIsRefused(t *testing.T) {
+	k := aKeeper(t)
+	if err := os.WriteFile(k.mark(), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(k.mark(), maxMarkSize+1); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := k.recall(); err == nil {
+		t.Fatal("an oversized note mark was read")
 	}
 }
 

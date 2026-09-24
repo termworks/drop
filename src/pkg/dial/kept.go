@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tmc/go-iroh/iroh"
 
@@ -26,9 +27,16 @@ type Kept struct {
 
 	mu   sync.Mutex
 	open map[string]*iroh.Conn
+	// pending are connections made before their stream handler was installed.
+	pending map[*iroh.Conn]struct{}
+	// born is when each connection was taken up, and suspect is those left over from before the
+	// device at the other end came back, which are not used again.
+	born    map[*iroh.Conn]time.Time
+	suspect map[*iroh.Conn]struct{}
 	// dialling is the dial in progress for a device and protocol, so that everybody asking for one
 	// at the same moment waits for the same connection instead of opening one each.
-	dialling map[string]*flight
+	dialling  map[string]*flight
+	answering chan struct{}
 	// ctx bounds the accept loops on connections we made.
 	ctx context.Context
 	// serve is what answers streams the far end opens on a connection we made.
@@ -45,11 +53,15 @@ type Kept struct {
 
 func Hold(n *node.Node, wire Wire, find Finder) *Kept {
 	return &Kept{
-		node:     n,
-		wire:     wire,
-		find:     find,
-		open:     map[string]*iroh.Conn{},
-		dialling: map[string]*flight{},
+		node:      n,
+		wire:      wire,
+		find:      find,
+		open:      map[string]*iroh.Conn{},
+		pending:   map[*iroh.Conn]struct{}{},
+		born:      map[*iroh.Conn]time.Time{},
+		suspect:   map[*iroh.Conn]struct{}{},
+		dialling:  map[string]*flight{},
+		answering: make(chan struct{}, maxAnsweringTotal),
 	}
 }
 
@@ -65,9 +77,21 @@ type flight struct {
 // streams are never accepted, and a device we dialled can only ever answer, never ask.
 func (k *Kept) Serving(ctx context.Context, answer func(node.ID, string, *iroh.Stream)) {
 	k.mu.Lock()
-	defer k.mu.Unlock()
-
 	k.serve, k.ctx = answer, ctx
+
+	var pending []*iroh.Conn
+	if answer != nil {
+		pending = make([]*iroh.Conn, 0, len(k.pending))
+		for conn := range k.pending {
+			pending = append(pending, conn)
+			delete(k.pending, conn)
+		}
+	}
+	k.mu.Unlock()
+
+	for _, conn := range pending {
+		go k.answerOn(conn)
+	}
 }
 
 // answerOn accepts whatever the far end opens on a connection we made.
@@ -84,13 +108,43 @@ func (k *Kept) answerOn(conn *iroh.Conn) {
 	}
 
 	from, alpn := conn.RemoteID(), conn.ALPN()
+	streams := make(chan struct{}, maxAnsweringStreams)
 	for {
 		s, err := conn.AcceptStream(ctx)
 		if err != nil {
 			return
 		}
-		go answer(from, alpn, s)
+		if !startAnswering(streams, k.answering, func() { answer(from, alpn, s) }) {
+			_ = s.Close()
+		}
 	}
+}
+
+const (
+	maxAnsweringStreams = 16
+	maxAnsweringTotal   = 64
+)
+
+func startAnswering(slots, all chan struct{}, work func()) bool {
+	select {
+	case slots <- struct{}{}:
+	default:
+		return false
+	}
+	select {
+	case all <- struct{}{}:
+	default:
+		<-slots
+		return false
+	}
+	go func() {
+		defer func() {
+			<-all
+			<-slots
+		}()
+		work()
+	}()
+	return true
 }
 
 // To opens a stream to a device, over the connection already held if there is one.
@@ -173,22 +227,36 @@ func (k *Kept) held(id node.ID, alpn string) *iroh.Conn {
 	// A connection whose context is done is closed, however it got that way.
 	select {
 	case <-conn.Context().Done():
+		k.forget(conn)
 		delete(k.open, key(id, alpn))
 		return nil
 	default:
-		return conn
 	}
+
+	// One from before the far end came back is replaced rather than trusted.
+	if _, stale := k.suspect[conn]; stale {
+		_ = conn.Close()
+		k.forget(conn)
+		delete(k.open, key(id, alpn))
+		return nil
+	}
+	return conn
 }
 
 func (k *Kept) keep(id node.ID, alpn string, conn *iroh.Conn) {
 	k.mu.Lock()
 
 	if was, ok := k.open[key(id, alpn)]; ok && was != conn {
-		was.Close()
+		_ = was.Close()
+		k.forget(was)
 	}
 	k.open[key(id, alpn)] = conn
+	k.born[conn] = time.Now()
 
 	answering := k.serve != nil
+	if !answering {
+		k.pending[conn] = struct{}{}
+	}
 
 	k.mu.Unlock()
 
@@ -210,7 +278,8 @@ func (k *Kept) drop(id node.ID, alpn string, conn *iroh.Conn) {
 
 	at := key(id, alpn)
 	if held, ok := k.open[at]; ok && held == conn {
-		held.Close()
+		_ = held.Close()
+		k.forget(held)
 		delete(k.open, at)
 	}
 }
@@ -221,7 +290,8 @@ func (k *Kept) Close() {
 	defer k.mu.Unlock()
 
 	for at, conn := range k.open {
-		conn.Close()
+		_ = conn.Close()
+		k.forget(conn)
 		delete(k.open, at)
 	}
 }
@@ -237,8 +307,16 @@ func (k *Kept) Reaching(id node.ID) bool {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
-	for at := range k.open {
-		if strings.HasPrefix(at, id.String()+"\x00") {
+	for at, conn := range k.open {
+		if !strings.HasPrefix(at, id.String()+"\x00") {
+			continue
+		}
+		select {
+		case <-conn.Context().Done():
+			_ = conn.Close()
+			k.forget(conn)
+			delete(k.open, at)
+		default:
 			return true
 		}
 	}
@@ -266,16 +344,58 @@ func (k *Kept) Adopt(id node.ID, alpn string, conn *iroh.Conn) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
-	// Only when nothing is held. Two devices that can both dial will each open one, and replacing
-	// a working connection with the other side's would have them closing each other's every time
-	// round — which is a conversation that stops mid-sentence every few seconds.
-	//
-	// A connection that has stopped working is dropped when it is next used, so keeping the older
-	// one costs nothing but one failed stream.
-	if _, ok := k.open[key(id, alpn)]; ok {
-		return
+	at := key(id, alpn)
+	if was, ok := k.open[at]; ok && was != conn {
+		if k.keeps(was, id) {
+			return
+		}
+		_ = was.Close()
+		k.forget(was)
+		delete(k.open, at)
 	}
-	k.open[key(id, alpn)] = conn
+	k.open[at] = conn
+	k.born[conn] = time.Now()
+
+	// Whatever else is held to the same device is from before it came back, if it restarted, and a
+	// device that restarted says nothing on a connection it no longer knows: a stream opened there
+	// waits for an answer that never comes. Each is dialled afresh the next time it is asked for.
+	for other, held := range k.open {
+		if other != at && strings.HasPrefix(other, id.String()+"\x00") {
+			k.suspect[held] = struct{}{}
+		}
+	}
+}
+
+// keeps says a connection already held should stay, rather than give way to one the far end has
+// just opened for the same thing.
+//
+// The far end dials only for something it holds no connection for, so an arrival says the one held
+// here is dead at its end: it restarted, or its network moved. The exception is two devices dialling
+// each other at the same moment, which leaves each with one connection it made and one it was
+// handed. Both sides then keep the one the lower id dialled, so they agree, rather than each closing
+// the other's and both ending with nothing.
+func (k *Kept) keeps(was *iroh.Conn, far node.ID) bool {
+	select {
+	case <-was.Context().Done():
+		return false
+	default:
+	}
+	if time.Since(k.born[was]) > raceWindow || k.node == nil {
+		return false
+	}
+	lower := k.node.ID().Compare(far) < 0
+	return (was.Side() == iroh.SideClient) == lower
+}
+
+// raceWindow is how young two connections have to be to have crossed on the way, rather than one
+// being left over from before the far end came back.
+const raceWindow = 10 * time.Second
+
+// forget drops what is remembered about a connection that is no longer held.
+func (k *Kept) forget(conn *iroh.Conn) {
+	delete(k.pending, conn)
+	delete(k.born, conn)
+	delete(k.suspect, conn)
 }
 
 // knows reports whether the address book has this device.
@@ -292,8 +412,8 @@ func (k *Kept) knows(id node.ID) bool {
 			return false
 		}
 		k.known = pinned
-	} else {
-		_ = k.known.Refresh()
+	} else if err := k.known.Refresh(); err != nil {
+		return false
 	}
 
 	_, ok := k.known.ByID(id)

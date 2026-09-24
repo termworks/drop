@@ -11,6 +11,10 @@ $ drop path create /standup note --set file=~/notes/standup.md --access paired -
 $ drop path join tron:/standup --at /standup --set file=~/notes/standup.md
 ```
 
+Whatever holds the address keeps what it joined level: the daemon, the interface when no daemon is
+running, and the [Android app](../apps/android/README.md), where *Keep a copy* on a note or a folder
+is the same join.
+
 The share id is what both machines call the same thing. A namespace is one machine's own word for
 it; the id is what two of them are talking *about*, so two machines that spell the path differently
 still meet about one thing.
@@ -88,6 +92,10 @@ come after a change it does not contain buries that change on every machine.
 A save is heard rather than waited for: an inotify watch nudges the round, with the timer kept as a
 backstop, because inotify misses things — watch limits, network filesystems, a directory replaced
 wholesale. Local detection is about 500 ms, which is the settling period.
+
+For shared folders, an event scans only the folder containing the changed watched directory. A full
+round still runs every 30 seconds so an event that was lost or never produced cannot leave a folder
+permanently behind.
 
 ## Keeping it small
 

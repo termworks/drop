@@ -1,6 +1,7 @@
 package passwd
 
 import (
+	"context"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -13,9 +14,9 @@ import (
 // node it does not — a path guarded by a password is reachable by anybody who knows this device's
 // id, so the guessing happens on somebody else's machine and the 64 MiB is allocated on this one.
 //
-// So the work is queued. A caller waits its turn rather than being refused, because a person typing
-// a password should get in behind whoever is ahead of them; what is bounded is how much memory is
-// committed at any moment, not how many people may ask.
+// So the work is queued. A live caller waits its turn rather than being refused, and a caller whose
+// stream or server has ended leaves the queue. What is bounded is how much memory is committed at
+// any moment, not how many people may ask.
 var hashing = make(chan struct{}, atOnce())
 
 // atOnce is how many hashes may run together: enough that one person never waits on nothing, few
@@ -39,13 +40,21 @@ var spent atomic.Uint64
 // Spent is how many guesses this process has paid for.
 func Spent() uint64 { return spent.Load() }
 
-// spend runs one hash, waiting for room.
-func spend(hash func()) {
-	hashing <- struct{}{}
-	defer func() { <-hashing }()
+func spendContext(ctx context.Context, slots chan struct{}, hash func()) bool {
+	select {
+	case slots <- struct{}{}:
+	case <-ctx.Done():
+		return false
+	}
+	defer func() { <-slots }()
+
+	if ctx.Err() != nil {
+		return false
+	}
 
 	spent.Add(1)
 	hash()
+	return true
 }
 
 // Tried remembers what a caller already offered, so one session hashes a guess once.
@@ -58,11 +67,20 @@ func spend(hash func()) {
 // A caller with no Tried still works and simply pays twice; nothing here is required for a correct
 // answer, only for a cheap one.
 type Tried struct {
-	mu sync.Mutex
-	on map[string]bool
+	mu  sync.Mutex
+	on  map[string]bool
+	ctx context.Context
 }
 
-func NewTried() *Tried { return &Tried{on: map[string]bool{}} }
+func NewTried() *Tried { return NewTriedContext(context.Background()) }
+
+// NewTriedContext returns a guess memory whose queued hashes stop when ctx ends.
+func NewTriedContext(ctx context.Context) *Tried {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &Tried{on: map[string]bool{}, ctx: ctx}
+}
 
 // Says whether a guess matches a hash, remembering the answer.
 func (t *Tried) Says(hash, plain string) bool {
@@ -82,7 +100,7 @@ func (t *Tried) Says(hash, plain string) bool {
 		return was
 	}
 
-	got := Verify(hash, plain)
+	got := verifyContext(t.ctx, hash, plain)
 
 	t.mu.Lock()
 	t.on[key] = got

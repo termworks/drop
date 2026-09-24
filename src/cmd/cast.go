@@ -1,16 +1,18 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tmc/go-iroh/iroh"
@@ -20,6 +22,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/cast"
 	"github.com/bresilla/drop/src/pkg/discovery"
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
@@ -88,14 +91,14 @@ func runCast(parent context.Context, addressFile string) error {
 	if err != nil {
 		return err
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	pinned, err := book.Load()
 	if err != nil {
 		return err
 	}
 
-	stage := cast.New(uint16(head.Width), uint16(head.Height))
+	stage := cast.New(head.Width, head.Height)
 	defer stage.Stop()
 
 	doing := &doings{
@@ -115,7 +118,7 @@ func runCast(parent context.Context, addressFile string) error {
 	mounts := castMounts(known)
 	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			_ = proto.Handle(ctx, s, from, proto.Policy{
 				Mounts:     mounts,
 				Archetypes: known,
@@ -125,7 +128,7 @@ func runCast(parent context.Context, addressFile string) error {
 			})
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
 				return greeting(pinned, mounts, known, from, badge)
 			}, moving(pinned, func(said string) { log.Printf("%s", said) }))
@@ -135,10 +138,12 @@ func runCast(parent context.Context, addressFile string) error {
 	// The address goes to a file as well as to stdout: hexe starts this detached and reads the
 	// file, having no pipe to read a reply on.
 	address := n.ID().String()
-	if err := publishAddress(addressFile, address); err != nil {
+	unpublish, err := publishAddress(addressFile, address)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "drop: %v\n", err)
+	} else {
+		defer unpublish()
 	}
-	defer os.Remove(addressFile)
 
 	fmt.Println(address)
 	fmt.Fprintf(os.Stderr, "drop: casting %dx%d; watch with `drop connect %s:%s`\n",
@@ -149,14 +154,18 @@ func runCast(parent context.Context, addressFile string) error {
 
 // pump turns the cast into what watchers see, and stops when whoever started it asks.
 func pump(ctx context.Context, reader *asciicast.Reader, stage *cast.Caster) error {
-	events := reads(reader)
+	events := reads(ctx, reader)
 
 	for {
 		var next read
+		var ok bool
 		select {
 		case <-ctx.Done():
 			return nil
-		case next = <-events:
+		case next, ok = <-events:
+			if !ok {
+				return nil
+			}
 		}
 
 		if err := next.err; err != nil {
@@ -191,18 +200,19 @@ type read struct {
 	err   error
 }
 
-// reads takes the recording apart on a goroutine of its own.
-//
-// A read of standard input cannot be cancelled: it ends when whatever is writing stops. On the
-// reading goroutine that is fine, because the one waiting on this channel can be told to stop by a
-// signal without waiting for a line that may never come.
-func reads(reader *asciicast.Reader) <-chan read {
+// reads emits recording events until input ends or cancellation follows a completed read.
+func reads(ctx context.Context, reader *asciicast.Reader) <-chan read {
 	out := make(chan read, 1)
 
 	go func() {
+		defer close(out)
 		for {
 			event, err := reader.Next()
-			out <- read{event: event, err: err}
+			select {
+			case out <- read{event: event, err: err}:
+			case <-ctx.Done():
+				return
+			}
 			if err != nil {
 				return
 			}
@@ -240,14 +250,23 @@ func (nothing) Bool(string) (bool, bool)        { return false, false }
 func (nothing) Strings(string) ([]string, bool) { return nil, false }
 
 // publishAddress writes the address where hexe will look for it.
-func publishAddress(path, address string) error {
+func publishAddress(path, address string) (func(), error) {
 	if path == "" {
-		return nil
+		return func() {}, nil
 	}
-	if err := os.WriteFile(path, []byte(address), 0o600); err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
+	if err := keep.Replace(path, []byte(address)); err != nil {
+		return nil, fmt.Errorf("writing %s: %w", path, err)
 	}
-	return nil
+	published, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("looking at %s: %w", path, err)
+	}
+	return func() {
+		current, err := os.Lstat(path)
+		if err == nil && os.SameFile(published, current) {
+			_ = os.Remove(path)
+		}
+	}, nil
 }
 
 // errNoDaemon says there is nothing listening locally, so a cast has to be its own node.
@@ -264,26 +283,48 @@ func castThroughDaemon(ctx context.Context, addressFile string) error {
 		return errNoDaemon
 	}
 
-	conn, err := net.Dial("unix", path)
+	conn, err := dialLocal(ctx, path)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return errNoDaemon
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	id, err := node.LocalID()
 	if err != nil {
 		return err
 	}
 
-	address := id.String()
-	if err := publishAddress(addressFile, address); err != nil {
-		fmt.Fprintf(os.Stderr, "drop: %v\n", err)
+	input := bufio.NewReader(os.Stdin)
+	header, err := readLocalLine(input)
+	if err != nil {
+		return fmt.Errorf("reading the cast header: %w", err)
 	}
-	defer os.Remove(addressFile)
 
-	// The first line says what this connection is for; the rest is the recording.
-	if _, err := io.WriteString(conn, "cast\n"); err != nil {
+	if err := writeLocal(conn, "cast\n"); err != nil {
 		return err
+	}
+	if err := writeLocal(conn, "%s", header); err != nil {
+		return err
+	}
+
+	replies := bufio.NewReader(conn)
+	answer, err := readLocalReply(conn, replies)
+	if err != nil {
+		return fmt.Errorf("asking this node to cast: %w", err)
+	}
+	if what, why, _ := strings.Cut(strings.TrimSpace(answer), " "); what != "ok" {
+		return fmt.Errorf("this node will not cast: %s", why)
+	}
+
+	address := id.String()
+	unpublish, err := publishAddress(addressFile, address)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drop: %v\n", err)
+	} else {
+		defer unpublish()
 	}
 
 	fmt.Println(address)
@@ -293,9 +334,18 @@ func castThroughDaemon(ctx context.Context, addressFile string) error {
 	// Closed when standard input runs out, which is what tells the daemon the cast is over.
 	done := make(chan error, 1)
 	go func() {
-		_, err := io.Copy(conn, os.Stdin)
+		_, err := io.Copy(conn, input)
 		if closer, ok := conn.(interface{ CloseWrite() error }); ok {
 			_ = closer.CloseWrite()
+		}
+		if err == nil {
+			_ = conn.SetReadDeadline(time.Now().Add(localHelloWithin))
+			line, readErr := readLocalLine(replies)
+			if readErr != nil {
+				err = readErr
+			} else if strings.TrimSpace(line) != "done" {
+				err = fmt.Errorf("the node stopped casting without confirming it")
+			}
 		}
 		done <- err
 	}()

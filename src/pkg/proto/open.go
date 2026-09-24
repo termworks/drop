@@ -3,7 +3,6 @@ package proto
 import (
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/wire"
@@ -52,27 +51,30 @@ func start(s Stream, open Opening) (*wire.Conn, error) {
 	open.Plate, open.Stamped = stamping()
 	open.Moved, open.Handed = handing()
 
-	_ = s.SetReadDeadline(time.Now().Add(settleIn))
-	defer func() { _ = s.SetReadDeadline(time.Time{}) }()
-
-	if err := conn.WriteFrame(wire.KindOpen, open.encode()); err != nil {
-		return nil, fmt.Errorf("opening %s: %w", what, err)
-	}
-
-	kind, body, err := conn.ReadFrame()
-	if err != nil {
-		return nil, fmt.Errorf("reading the answer about %s: %w", what, err)
-	}
-	switch kind {
-	case wire.KindAccept:
-		return conn, nil
-	case wire.KindReject:
-		reject, derr := wire.DecodeReject(body)
-		if derr != nil {
-			return nil, derr
+	err := conn.WithIdle(settleIn, func() error {
+		if err := conn.WriteFrame(wire.KindOpen, open.encode()); err != nil {
+			return fmt.Errorf("opening %s: %w", what, err)
 		}
-		return nil, Declined{Reason: reject.Reason, Settled: reject.Settled}
-	default:
-		return nil, fmt.Errorf("expected an answer about %s, got frame kind %d", what, kind)
+
+		kind, body, err := conn.ReadFrame()
+		if err != nil {
+			return fmt.Errorf("reading the answer about %s: %w", what, err)
+		}
+		switch kind {
+		case wire.KindAccept:
+			return nil
+		case wire.KindReject:
+			reject, derr := wire.DecodeReject(body)
+			if derr != nil {
+				return derr
+			}
+			return Declined{Reason: reject.Reason, Settled: reject.Settled}
+		default:
+			return fmt.Errorf("expected an answer about %s, got frame kind %d", what, kind)
+		}
+	})
+	if err != nil {
+		return nil, err
 	}
+	return conn, nil
 }

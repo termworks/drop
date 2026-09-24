@@ -121,9 +121,15 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		t.Fatalf("a namespace that was written down is not being served:\n%s", out)
 	}
 
-	// And taken off the list again, which the node already running is told nothing about.
+	// Taking it off the list also takes it off the node that loaded it at startup.
 	said = holder.must("path", "rm", "/kept")
-	if !strings.Contains(said, "until it restarts") {
-		t.Fatalf("rm did not say the running node keeps serving it:\n%s", said)
+	if strings.Contains(said, "until it restarts") {
+		t.Fatalf("rm left the running node serving it:\n%s", said)
+	}
+	waitFor(t, "the kept namespace to go", 30*time.Second, func() bool {
+		return !strings.Contains(walker.must("path", "ls", "holder"), "/kept")
+	})
+	if out, err := walker.run("file", "ls", "holder:/kept", "--wait", "10s"); err == nil {
+		t.Fatalf("a removed namespace still answered:\n%s", out)
 	}
 }

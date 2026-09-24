@@ -14,13 +14,18 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/bresilla/drop/src/pkg/arch"
+	"github.com/bresilla/drop/src/pkg/arch/share"
 	"github.com/bresilla/drop/src/pkg/asciicast"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/cast"
 	"github.com/bresilla/drop/src/pkg/dial"
+	"github.com/bresilla/drop/src/pkg/discovery"
 	"github.com/bresilla/drop/src/pkg/made"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
@@ -36,7 +41,224 @@ import (
 // always means the same thing.
 //
 // The first line says which it is: "cast", "share <who> <dir>", "mount <declaration>",
-// "pair <code> <name>", "via <device> <protocol>", or "held".
+// "pair <code> <name>", "via <device> <protocol>", "held", or "arrivals".
+
+// hosts is everything a local connection may ask this node for.
+type hosts struct {
+	casts  *castHost
+	shares *shareHost
+	put    *mountHost
+	offers *pairHost
+	held   *dial.Kept
+	rung   *bell
+	lan    *discovery.LAN
+}
+
+// joinWithin bounds how long this node spends taking somebody's ticket.
+const joinWithin = 2 * time.Minute
+
+// takeJoin takes a ticket as this node: "join <ticket> <as> <person|machine> [host:port,…]".
+//
+// A command that took it with a node of its own would pair from that node's address, which is gone
+// the moment the command exits, and the far end would go on dialling somewhere nobody answers.
+func takeJoin(ctx context.Context, h hosts, conn net.Conn, rest string) error {
+	fields := strings.Fields(rest)
+	if len(fields) < 3 {
+		return writeLocal(conn, "failed a join needs a ticket, a name and a kind\n")
+	}
+	if h.offers == nil || h.offers.node == nil {
+		return writeLocal(conn, "failed this node does not pair\n")
+	}
+	ticket, as, machine := fields[0], fields[1], fields[2] == "machine"
+	if as == "-" {
+		as = ""
+	}
+	var at []string
+	if len(fields) > 3 {
+		at = strings.Split(fields[3], ",")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, joinWithin)
+	defer cancel()
+
+	p, name, err := join(ctx, h.offers.node, h.lan, ticket, as, machine, at)
+	if err != nil {
+		return writeLocal(conn, "failed %s\n", strings.ReplaceAll(err.Error(), "\n", " "))
+	}
+	fmt.Printf("  paired with %s\n", name)
+	return writeLocal(conn, "paired %s %s %s\n", name, p.Peer, p.Machine)
+}
+
+// joinThroughDaemon asks the running node to take a ticket, and says who it paired with, their id,
+// and what they call the machine of theirs that answered.
+func joinThroughDaemon(ctx context.Context, ticket, as string, machine bool, at []string) (string, string, string, error) {
+	path, err := castSocket()
+	if err != nil {
+		return "", "", "", errNoDaemon
+	}
+	conn, err := dialLocal(ctx, path)
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", "", "", ctx.Err()
+		}
+		return "", "", "", errNoDaemon
+	}
+	defer func() { _ = conn.Close() }()
+	defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
+
+	name := as
+	if name == "" {
+		name = "-"
+	}
+	kind := "person"
+	if machine {
+		kind = "machine"
+	}
+	line := fmt.Sprintf("join %s %s %s", strings.TrimSpace(ticket), name, kind)
+	if len(at) > 0 {
+		line += " " + strings.Join(at, ",")
+	}
+	if err := writeLocal(conn, "%s\n", line); err != nil {
+		return "", "", "", err
+	}
+
+	said, err := readLocalLine(bufio.NewReader(conn))
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", "", "", ctx.Err()
+		}
+		return "", "", "", fmt.Errorf("the node stopped answering: %w", err)
+	}
+	what, rest, _ := strings.Cut(strings.TrimSpace(said), " ")
+	switch what {
+	case "paired":
+		parts := strings.SplitN(rest, " ", 3)
+		for len(parts) < 3 {
+			parts = append(parts, "")
+		}
+		return parts[0], parts[1], parts[2], nil
+	case "failed":
+		return "", "", "", errors.New(rest)
+	}
+	return "", "", "", fmt.Errorf("the node said %q", said)
+}
+
+// bell tells whoever on this machine is listening that something landed.
+//
+// An interface open beside the daemon is a second process: what arrives lands in the daemon, and
+// without this the conversation on screen is the one that was there when it was opened.
+type bell struct {
+	mu        sync.Mutex
+	listening map[chan struct{}]struct{}
+}
+
+func newBell() *bell { return &bell{listening: make(map[chan struct{}]struct{})} }
+
+// ring never waits: a listener that has not caught up already has a ring pending, and one means the
+// same as ten.
+func (b *bell) ring() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for at := range b.listening {
+		knock(at)
+	}
+}
+
+func (b *bell) listen() (<-chan struct{}, func()) {
+	at := make(chan struct{}, 1)
+	b.mu.Lock()
+	b.listening[at] = struct{}{}
+	b.mu.Unlock()
+
+	return at, func() {
+		b.mu.Lock()
+		delete(b.listening, at)
+		b.mu.Unlock()
+	}
+}
+
+// arrivalLine is what the daemon writes each time the bell rings.
+const arrivalLine = "landed"
+
+// hearDaemon knocks for everything the daemon says landed, and listens again when it comes back
+// after a restart.
+func hearDaemon(ctx context.Context, arriving chan struct{}) {
+	for ctx.Err() == nil {
+		_ = listenDaemon(ctx, arriving)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func listenDaemon(ctx context.Context, arriving chan struct{}) error {
+	path, err := castSocket()
+	if err != nil {
+		return err
+	}
+	conn, err := dialLocal(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
+
+	if err := writeLocal(conn, "arrivals\n"); err != nil {
+		return err
+	}
+	reading := bufio.NewReader(conn)
+	first, err := readLocalLine(reading)
+	if err != nil {
+		return err
+	}
+	if said := strings.TrimSpace(first); said != "ok" {
+		return fmt.Errorf("the node said %q", said)
+	}
+
+	// Anything may have landed while nobody was listening.
+	knock(arriving)
+	for {
+		if _, err := readLocalLine(reading); err != nil {
+			return err
+		}
+		knock(arriving)
+	}
+}
+
+// takeArrivals writes a line whenever something lands, for as long as whoever asked stays connected.
+func takeArrivals(ctx context.Context, rung *bell, conn net.Conn) error {
+	if rung == nil {
+		return writeLocal(conn, "no this node rings for nobody\n")
+	}
+	at, stop := rung.listen()
+	defer stop()
+
+	if err := writeLocal(conn, "ok\n"); err != nil {
+		return err
+	}
+
+	// The listener going away is the only way this ends, and a read is how that is seen.
+	gone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, conn)
+		close(gone)
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-gone:
+			return nil
+		case <-at:
+			if err := writeLocal(conn, "%s\n", arrivalLine); err != nil {
+				return nil
+			}
+		}
+	}
+}
 
 // pairHost is the pairing offer open on this node, if any.
 //
@@ -48,13 +270,13 @@ type pairHost struct {
 	as   string
 	// node is this daemon's endpoint, so a code being shown can publish where to find it.
 	node   *node.Node
-	paired chan proto.Pairing
+	paired chan pairAttempt
 }
 
 func newPairHost(n *node.Node) *pairHost { return &pairHost{node: n} }
 
 // open puts a code up for answering, and hands back what to wait on.
-func (h *pairHost) open(code, as string) (<-chan proto.Pairing, error) {
+func (h *pairHost) open(code, as string) (<-chan pairAttempt, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -63,7 +285,7 @@ func (h *pairHost) open(code, as string) (<-chan proto.Pairing, error) {
 	}
 
 	h.code, h.as = code, as
-	h.paired = make(chan proto.Pairing, 1)
+	h.paired = make(chan pairAttempt, 1)
 	return h.paired, nil
 }
 
@@ -82,18 +304,35 @@ func (h *pairHost) asking() (string, string) {
 	return h.code, h.as
 }
 
-// answered says somebody completed the pairing.
-func (h *pairHost) answered(p proto.Pairing) {
+// answered hands a pairing to whoever is showing the code, and waits until it is written down: the
+// far end is answered only after that, so what it opens next is met by somebody who knows it.
+func (h *pairHost) answered(p proto.Pairing) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	waiting := h.paired
+	h.mu.Unlock()
 
-	if h.paired == nil {
-		return
+	if waiting == nil {
+		return errors.New("no code is being shown")
 	}
+	attempt := pairAttempt{pairing: p, filed: make(chan error, 1)}
 	select {
-	case h.paired <- p:
+	case waiting <- attempt:
 	default:
+		return errors.New("another device is pairing with this code")
 	}
+
+	select {
+	case err := <-attempt.filed:
+		return err
+	case <-time.After(localHelloWithin):
+		return errors.New("the pairing was not written down in time")
+	}
+}
+
+// pairAttempt is a pairing on its way to the address book, and how its answerer hears it landed.
+type pairAttempt struct {
+	pairing proto.Pairing
+	filed   chan error
 }
 
 // castHost is the terminal being cast through this node, if any.
@@ -104,12 +343,10 @@ type castHost struct {
 	mu     sync.Mutex
 	stage  *cast.Caster
 	mounts *ns.Table
+	lease  ns.Lease
 	// known is what a cast's path is, so the mount it puts up carries the settings the tty
 	// archetype reads rather than a shape this file made up.
 	known *arch.Registry
-	// declared says the path was in the config, so ending a cast leaves it alone. A /cast a person
-	// wrote down carries their access rule, and a cast that came and went must not replace it.
-	declared bool
 }
 
 func newCastHost(mounts *ns.Table, known *arch.Registry) *castHost {
@@ -126,23 +363,29 @@ func (h *castHost) live() *cast.Caster {
 
 // begin puts a cast on the air, and declares the path it is served at. It refuses while another
 // cast is running.
-func (h *castHost) begin(cols, rows uint16) (*cast.Caster, error) {
+func (h *castHost) begin(cols, rows int) (*cast.Caster, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if h.stage != nil {
 		return nil, errors.New("this device is already casting a terminal")
 	}
-	h.stage = cast.New(cols, rows)
 
-	// The path is put up only when nothing declared it. A config that names /cast already says who
-	// may watch it, and overwriting that with "any paired device" hands out a screen its owner
-	// meant for one person.
-	mount, _, ok := h.mounts.Lookup(CastPath)
-	h.declared = ok && mount.Path == CastPath
-	if !h.declared {
-		_ = h.mounts.Add(castMount(h.known))
+	mount, lease, reserved := h.mounts.Reserve(CastPath)
+	if reserved {
+		if mount.Archetype != "tty" {
+			lease.Release()
+			return nil, fmt.Errorf("%s is already a %s namespace", CastPath, kindOf(mount.Archetype))
+		}
+	} else {
+		var err error
+		lease, err = h.mounts.Claim(castMount(h.known))
+		if err != nil {
+			return nil, fmt.Errorf("putting up %s: %w", CastPath, err)
+		}
 	}
+	h.lease = lease
+	h.stage = cast.New(cols, rows)
 	return h.stage, nil
 }
 
@@ -158,9 +401,8 @@ func (h *castHost) end(stage *cast.Caster) {
 
 	h.stage.Stop()
 	h.stage = nil
-	if !h.declared {
-		h.mounts.Drop(CastPath)
-	}
+	h.lease.Release()
+	h.lease = ns.Lease{}
 }
 
 // shareHost is the handoff open through this node, if any.
@@ -178,11 +420,10 @@ type shareHost struct {
 
 // handoff is one handoff on the air, and how whoever asked for it learns it is over.
 type handoff struct {
-	done chan struct{}
-	over bool
-	// took says something has actually come through it. A session that landed nothing — one that
-	// was refused, or that hung up mid-file — is not the transfer this was put up for.
-	took bool
+	done   chan struct{}
+	over   bool
+	config share.Config
+	lease  ns.Lease
 }
 
 func newShareHost(mounts *ns.Table, known *arch.Registry) *shareHost {
@@ -207,11 +448,17 @@ func (h *shareHost) begin(dir string, to []string) (*handoff, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := h.mounts.Add(mount); err != nil {
+	lease, err := h.mounts.Claim(mount)
+	if err != nil {
 		return nil, err
 	}
 
-	h.open = &handoff{done: make(chan struct{})}
+	config, ok := mount.Config.(share.Config)
+	if !ok {
+		lease.Release()
+		return nil, fmt.Errorf("the share mount has invalid settings")
+	}
+	h.open = &handoff{done: make(chan struct{}), config: config, lease: lease}
 	return h.open, nil
 }
 
@@ -226,39 +473,23 @@ func (h *shareHost) end(box *handoff) {
 	}
 
 	h.open = nil
-	h.mounts.Drop(SharePath)
+	box.lease.Release()
 }
 
-// took notes that a share namespace received something. A handoff that is open is the one that may
-// have taken it.
-func (h *shareHost) took() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if h.open != nil {
-		h.open.took = true
-	}
-}
-
-// finished is a session on some path having ended. A handoff takes one transfer, so once one has
-// come through, the one that was open for that path is over.
-//
-// The path a session named is not the path it was served at: a mount answers for everything under
-// it, so /share/anything is the handoff too and has to end it like anything else.
-func (h *shareHost) finished(path string) {
+// finished closes the handoff served by one completed share batch.
+func (h *shareHost) finished(_ node.ID, path string, config share.Config) {
 	at, err := ns.Clean(path)
 	if err != nil {
 		return
 	}
-	mount, _, ok := h.mounts.Lookup(at)
-	if !ok || mount.Path != SharePath {
+	if at != SharePath && !strings.HasPrefix(at, SharePath+"/") {
 		return
 	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.open == nil || h.open.over || !h.open.took {
+	if h.open == nil || h.open.over || h.open.config != config {
 		return
 	}
 	h.open.over = true
@@ -272,7 +503,7 @@ func (h *shareHost) finished(path string) {
 // first would otherwise take down the mount the other is holding.
 type mountHost struct {
 	mu     sync.Mutex
-	up     map[string]bool
+	up     map[string]ns.Lease
 	mounts *ns.Table
 	// known is what a created namespace is, so the mount carries the settings the archetype it
 	// names reads rather than a shape this file made up.
@@ -280,7 +511,7 @@ type mountHost struct {
 }
 
 func newMountHost(mounts *ns.Table, known *arch.Registry) *mountHost {
-	return &mountHost{up: map[string]bool{}, mounts: mounts, known: known}
+	return &mountHost{up: map[string]ns.Lease{}, mounts: mounts, known: known}
 }
 
 // begin puts a namespace up and declares the path it is served at. It refuses a path the config
@@ -294,7 +525,7 @@ func (h *mountHost) begin(line made.Line) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.up[at] {
+	if _, ok := h.up[at]; ok {
 		return fmt.Errorf("%s is already up", at)
 	}
 	if m, _, ok := h.mounts.Lookup(at); ok && m.Path == at {
@@ -323,7 +554,7 @@ func (h *mountHost) begin(line made.Line) error {
 	if line.Keep {
 		source = ns.Written
 	}
-	if err := h.mounts.Add(ns.Mount{
+	mount := ns.Mount{
 		Path:      at,
 		Source:    source,
 		Archetype: line.Archetype,
@@ -331,32 +562,42 @@ func (h *mountHost) begin(line made.Line) error {
 		Config:    settings,
 		Access:    line.Access.Rule(),
 		Shared:    line.Shared,
-	}); err != nil {
+	}
+	if line.Keep {
+		return h.mounts.ReplaceWritten(mount)
+	}
+	lease, err := h.mounts.Claim(mount)
+	if err != nil {
 		return err
 	}
-
-	h.up[at] = true
+	h.up[at] = lease
 	return nil
 }
 
 // end takes a held namespace down, and the path with it.
-// mine reports whether this node is the one that put a path up.
-func (h *mountHost) mine(at string) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	return h.up[at]
-}
-
 func (h *mountHost) end(at string) {
+	at, err := ns.Clean(at)
+	if err != nil {
+		return
+	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if !h.up[at] {
+	lease, ok := h.up[at]
+	if !ok {
 		return
 	}
 	delete(h.up, at)
-	h.mounts.Drop(at)
+	lease.Release()
+}
+
+// removeWritten takes an exact written namespace down from the running node.
+func (h *mountHost) removeWritten(at string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return h.mounts.DropIfSource(at, ns.Written)
 }
 
 // castSocket is where a cast hands its output to the node.
@@ -368,9 +609,19 @@ func castSocket() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	dir, err := localDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "cast-"+node.Brief(id)+".sock"), nil
+}
 
+// localDir is where this machine's drop processes find each other: the runtime directory, which
+// only this account can read, or the config directory where there is none.
+func localDir() (string, error) {
 	dir := os.Getenv("XDG_RUNTIME_DIR")
 	if dir == "" {
+		var err error
 		if dir, err = node.ConfigDir(); err != nil {
 			return "", err
 		}
@@ -381,104 +632,194 @@ func castSocket() (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "cast-"+node.Brief(id)+".sock"), nil
+	return dir, nil
 }
 
 const (
-	// firstAcceptWait is how long the socket is left alone after one failed accept.
-	firstAcceptWait = 10 * time.Millisecond
-	// slowestAcceptWait is where the doubling stops. Whatever is wrong is not going to be fixed by
-	// asking faster, and a machine that recovers waits at most this long to be noticed.
-	slowestAcceptWait = 2 * time.Second
+	localDialWithin     = 2 * time.Second
+	localHelloWithin    = 10 * time.Second
+	maxLocalLine        = 1 << 20
+	maxLocalConnections = 64
 )
 
-// hostLocal listens for whatever on this machine wants to act as this node.
-func hostLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mountHost, offers *pairHost, held *dial.Kept) error {
+type localClient struct {
+	net.Conn
+	stop func() bool
+}
+
+func (c *localClient) Close() error {
+	c.stop()
+	return c.Conn.Close()
+}
+
+func (c *localClient) CloseWrite() error {
+	half, ok := c.Conn.(interface{ CloseWrite() error })
+	if !ok {
+		return errors.New("local connection cannot close its write side")
+	}
+	return half.CloseWrite()
+}
+
+func dialLocal(ctx context.Context, path string) (net.Conn, error) {
+	dialer := net.Dialer{Timeout: localDialWithin}
+	conn, err := dialer.DialContext(ctx, "unix", path)
+	if err != nil {
+		return nil, err
+	}
+	client := &localClient{Conn: conn}
+	client.stop = context.AfterFunc(ctx, func() { _ = conn.Close() })
+	return client, nil
+}
+
+func localGuard(path string) (*os.File, error) {
+	guard, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("opening the local socket lock: %w", err)
+	}
+	if err := unix.Flock(int(guard.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = guard.Close()
+		return nil, fmt.Errorf("another node is already serving locally: %w", err)
+	}
+	return guard, nil
+}
+
+type localServer struct {
+	path      string
+	guard     *os.File
+	listening net.Listener
+	once      sync.Once
+	err       error
+}
+
+func openLocalServer(ctx context.Context) (*localServer, error) {
 	path, err := castSocket()
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	// A socket left behind by a process that was killed would otherwise make this address
-	// permanently unusable.
-	_ = os.Remove(path)
-
-	listening, err := net.Listen("unix", path)
+	guard, err := localGuard(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	go func() {
-		<-ctx.Done()
+	_ = os.Remove(path)
+	var listen net.ListenConfig
+	listening, err := listen.Listen(ctx, "unix", path)
+	if err != nil {
+		_ = guard.Close()
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
 		_ = listening.Close()
 		_ = os.Remove(path)
-	}()
+		_ = guard.Close()
+		return nil, fmt.Errorf("protecting %s: %w", path, err)
+	}
 
-	// How long to wait after an accept that failed, doubling from there. A machine out of file
-	// descriptors fails every accept, and a loop that only ever continues spends a whole core
-	// saying so to nobody.
+	server := &localServer{path: path, guard: guard, listening: listening}
+	go func() {
+		<-ctx.Done()
+		_ = server.Close()
+	}()
+	return server, nil
+}
+
+func (s *localServer) Close() error {
+	s.once.Do(func() {
+		closeErr := s.listening.Close()
+		if errors.Is(closeErr, net.ErrClosed) {
+			closeErr = nil
+		}
+		removeErr := os.Remove(s.path)
+		if errors.Is(removeErr, os.ErrNotExist) {
+			removeErr = nil
+		}
+		s.err = errors.Join(closeErr, removeErr, s.guard.Close())
+	})
+	return s.err
+}
+
+// hostLocal listens for whatever on this machine wants to act as this node.
+func hostLocal(ctx context.Context, server *localServer, h hosts) error {
 	var waiting time.Duration
+	connections := make(chan struct{}, maxLocalConnections)
 
 	for {
-		conn, err := listening.Accept()
+		conn, err := server.listening.Accept()
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
 
 			if waiting == 0 {
-				waiting = firstAcceptWait
-				fmt.Fprintf(os.Stderr, "drop: cannot accept on %s: %v\n", path, err)
-			} else if waiting < slowestAcceptWait {
-				waiting *= 2
+				fmt.Fprintf(os.Stderr, "drop: cannot accept on %s: %v\n", server.path, err)
 			}
-
-			select {
-			case <-ctx.Done():
+			waiting = nextAcceptWait(waiting)
+			if !waitForAcceptRetry(ctx, waiting) {
 				return nil
-			case <-time.After(waiting):
 			}
 			continue
 		}
 
 		if waiting != 0 {
-			fmt.Fprintf(os.Stderr, "drop: accepting on %s again\n", path)
+			fmt.Fprintf(os.Stderr, "drop: accepting on %s again\n", server.path)
 			waiting = 0
 		}
 
-		go func() {
-			defer conn.Close()
-			if err := takeLocal(ctx, casts, shares, put, offers, held, conn); err != nil {
+		accepted := conn
+		if !startBounded(connections, func() {
+			defer func() { _ = accepted.Close() }()
+			// Whoever asked going away before the answer is theirs to worry about, not an error here:
+			// a command interrupted with ctrl-c is the ordinary way one of these ends.
+			if err := takeLocal(ctx, h, accepted); err != nil && !errors.Is(err, syscall.EPIPE) && !errors.Is(err, syscall.ECONNRESET) {
 				fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 			}
-		}()
+		}) {
+			_ = accepted.Close()
+		}
 	}
 }
 
 // takeCast reads one cast from the socket and puts it on the air for as long as it lasts.
-func takeCast(ctx context.Context, host *castHost, from io.Reader) error {
+func takeCast(ctx context.Context, host *castHost, from io.Reader, conn net.Conn) error {
+	if err := conn.SetReadDeadline(time.Now().Add(localHelloWithin)); err != nil {
+		return err
+	}
 	reader, head, err := asciicast.NewReader(from)
+	_ = conn.SetReadDeadline(time.Time{})
 	if err != nil {
+		_ = writeLocal(conn, "no %v\n", err)
 		return err
 	}
 
-	stage, err := host.begin(uint16(head.Width), uint16(head.Height))
+	stage, err := host.begin(head.Width, head.Height)
 	if err != nil {
+		_ = writeLocal(conn, "no %v\n", err)
 		return err
 	}
 	defer host.end(stage)
+	if err := writeLocal(conn, "ok\n"); err != nil {
+		return err
+	}
 
 	fmt.Printf("  a terminal is being cast at %s (%dx%d)\n", CastPath, head.Width, head.Height)
 	defer fmt.Printf("  the cast at %s ended\n", CastPath)
 
-	return pump(ctx, reader, stage)
+	if err := pump(ctx, reader, stage); err != nil {
+		return err
+	}
+	host.end(stage)
+	return writeLocal(conn, "done\n")
 }
 
 // takeLocal reads what this connection is for and does it.
-func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mountHost, offers *pairHost, held *dial.Kept, conn net.Conn) error {
+func takeLocal(ctx context.Context, h hosts, conn net.Conn) error {
 	reading := bufio.NewReader(conn)
 
-	first, err := reading.ReadString('\n')
+	if err := conn.SetReadDeadline(time.Now().Add(localHelloWithin)); err != nil {
+		return fmt.Errorf("setting the local request deadline: %w", err)
+	}
+	first, err := readLocalLine(reading)
+	_ = conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		return err
 	}
@@ -486,32 +827,80 @@ func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 	what, rest, _ := strings.Cut(strings.TrimSpace(first), " ")
 	switch what {
 	case "cast":
-		return takeCast(ctx, casts, reading)
+		return takeCast(ctx, h.casts, reading, conn)
 
 	case "share":
-		return takeShare(ctx, shares, conn, rest)
+		return takeShare(ctx, h.shares, conn, rest)
 
 	case "mount":
-		return takeMount(ctx, put, conn, rest)
+		return takeMount(ctx, h.put, conn, rest)
 
 	case "unmount":
-		return takeUnmount(put, conn, rest)
+		return takeUnmount(h.put, conn, rest)
 
 	case "pair":
 		code, as, machine, err := offerAsked(rest)
 		if err != nil {
 			return err
 		}
-		return takeOffer(ctx, offers, conn, code, as, machine)
+		return takeOffer(ctx, h.offers, conn, code, as, machine)
 
 	case "via":
 		name, alpn, _ := strings.Cut(rest, " ")
-		return takeVia(ctx, held, conn, name, alpn)
+		return takeVia(ctx, h.held, conn, name, alpn)
 
 	case "held":
-		return takeHeld(held, conn)
+		return takeHeld(h.held, conn)
+
+	case "arrivals":
+		return takeArrivals(ctx, h.rung, conn)
+
+	case "join":
+		return takeJoin(ctx, h, conn, rest)
 	}
 	return fmt.Errorf("a local connection asked for %q, which is nothing", what)
+}
+
+func readLocalLine(reading *bufio.Reader) (string, error) {
+	line := make([]byte, 0, min(reading.Size(), maxLocalLine))
+	for {
+		part, err := reading.ReadSlice('\n')
+		if len(line)+len(part) > maxLocalLine {
+			return "", fmt.Errorf("a local request is longer than %d bytes", maxLocalLine)
+		}
+		line = append(line, part...)
+		if err == nil {
+			return string(line), nil
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return "", err
+		}
+	}
+}
+
+// readLocalReply reads one bounded line under the local handshake deadline.
+func readLocalReply(conn net.Conn, reading *bufio.Reader) (string, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(localHelloWithin)); err != nil {
+		return "", err
+	}
+	line, err := readLocalLine(reading)
+	_ = conn.SetReadDeadline(time.Time{})
+	return line, err
+}
+
+func writeLocal(conn net.Conn, format string, args ...any) (err error) {
+	if err := conn.SetWriteDeadline(time.Now().Add(localHelloWithin)); err != nil {
+		return err
+	}
+	defer func() {
+		reset := conn.SetWriteDeadline(time.Time{})
+		if errors.Is(reset, net.ErrClosed) || errors.Is(reset, io.ErrClosedPipe) {
+			reset = nil
+		}
+		err = errors.Join(err, reset)
+	}()
+	_, err = fmt.Fprintf(conn, format, args...)
+	return err
 }
 
 // takeHeld answers with the devices this node has a connection to, one id a line.
@@ -519,23 +908,21 @@ func takeLocal(ctx context.Context, casts *castHost, shares *shareHost, put *mou
 // Read out of what is already open rather than dialled, so a command asking which of somebody's
 // machines to use spends nothing finding out.
 func takeHeld(held *dial.Kept, conn net.Conn) error {
-	if held == nil {
-		return nil
-	}
-
-	pinned, err := book.Load()
-	if err != nil {
-		return err
-	}
-	for _, entry := range pinned.All() {
-		if !held.Reaching(entry.ID) {
-			continue
-		}
-		if _, err := fmt.Fprintln(conn, entry.ID); err != nil {
+	if held != nil {
+		pinned, err := book.Load()
+		if err != nil {
 			return err
 		}
+		for _, entry := range pinned.All() {
+			if !held.Reaching(entry.ID) {
+				continue
+			}
+			if err := writeLocal(conn, "%s\n", entry.ID); err != nil {
+				return err
+			}
+		}
 	}
-	return nil
+	return writeLocal(conn, "%s\n", heldReplyEnd)
 }
 
 // takeShare holds a handoff open for as long as whoever asked for it stays connected, and takes it
@@ -551,12 +938,11 @@ func takeShare(ctx context.Context, host *shareHost, conn net.Conn, rest string)
 
 	box, err := host.begin(dir, sendersNamed(who))
 	if err != nil {
-		fmt.Fprintf(conn, "no %v\n", err)
-		return nil
+		return writeLocal(conn, "no %v\n", err)
 	}
 	defer host.end(box)
 
-	if _, err := fmt.Fprintln(conn, "ok"); err != nil {
+	if err := writeLocal(conn, "ok\n"); err != nil {
 		return err
 	}
 
@@ -575,7 +961,9 @@ func takeShare(ctx context.Context, host *shareHost, conn net.Conn, rest string)
 	case <-ctx.Done():
 	case <-gone:
 	case <-box.done:
-		fmt.Fprintln(conn, "done")
+		if err := writeLocal(conn, "done\n"); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -592,10 +980,9 @@ func takeMount(ctx context.Context, host *mountHost, conn net.Conn, rest string)
 	}
 
 	if err := host.begin(line); err != nil {
-		fmt.Fprintf(conn, "no %v\n", err)
-		return nil
+		return writeLocal(conn, "no %v\n", err)
 	}
-	if _, err := fmt.Fprintln(conn, "ok"); err != nil {
+	if err := writeLocal(conn, "ok\n"); err != nil {
 		host.end(line.Path)
 		return err
 	}
@@ -631,25 +1018,17 @@ func takeMount(ctx context.Context, host *mountHost, conn net.Conn, rest string)
 func takeUnmount(host *mountHost, conn net.Conn, rest string) error {
 	at, err := ns.Clean(strings.TrimSpace(rest))
 	if err != nil {
-		fmt.Fprintf(conn, "no %v\n", err)
-		return nil
+		return writeLocal(conn, "no %v\n", err)
 	}
 
-	if !host.mine(at) {
-		fmt.Fprintln(conn, "no this node did not put that up")
-		return nil
+	if host.removeWritten(at) {
+		fmt.Printf("  %s is gone\n", at)
+		return writeLocal(conn, "ok\n")
 	}
-	// Only one that was written down: a held namespace goes when the command holding it goes, and
-	// taking it out from under that command would leave it waiting on a path that is not there.
-	if m, _, ok := host.mounts.Lookup(at); ok && m.Path == at && m.Source != ns.Written {
-		fmt.Fprintln(conn, "no something is holding that open")
-		return nil
+	if m, _, ok := host.mounts.Lookup(at); ok && m.Path == at && m.Source == ns.Held {
+		return writeLocal(conn, "no something is holding that open\n")
 	}
-	host.end(at)
-
-	fmt.Printf("  %s is gone\n", at)
-	_, err = fmt.Fprintln(conn, "ok")
-	return err
+	return writeLocal(conn, "no this node did not put that up\n")
 }
 
 // offerAsked reads what a local `drop pair` asked for: a code, a name to file the far end under,
@@ -678,8 +1057,7 @@ func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as st
 
 	waiting, err := offers.open(code, as)
 	if err != nil {
-		fmt.Fprintf(conn, "busy %v\n", err)
-		return nil
+		return writeLocal(conn, "busy %v\n", err)
 	}
 	defer offers.close()
 
@@ -712,13 +1090,14 @@ func takeOffer(ctx context.Context, offers *pairHost, conn net.Conn, code, as st
 		return nil
 	case <-gone:
 		return nil
-	case p := <-waiting:
-		if err := record(p, as, machine); err != nil {
-			fmt.Fprintf(conn, "failed %v\n", err)
+	case at := <-waiting:
+		err := record(at.pairing, as, machine)
+		at.filed <- err
+		if err != nil {
+			_ = writeLocal(conn, "failed %v\n", err)
 			return err
 		}
-		fmt.Fprintf(conn, "paired %s %s\n", nameOf(p, as), p.Peer)
-		return nil
+		return writeLocal(conn, "paired %s %s\n", nameOf(at.pairing, as), at.pairing.Peer)
 	}
 }
 
@@ -741,30 +1120,26 @@ func nameOf(p proto.Pairing, as string) string {
 // with every protocol drop grows.
 func takeVia(ctx context.Context, held *dial.Kept, conn net.Conn, name, alpn string) error {
 	if held == nil {
-		fmt.Fprintln(conn, "no connections are being held")
-		return nil
+		return writeLocal(conn, "no connections are being held\n")
 	}
 
 	pinned, err := book.Load()
 	if err != nil {
-		fmt.Fprintf(conn, "no %v\n", err)
-		return nil
+		return writeLocal(conn, "no %v\n", err)
 	}
 
 	entry, ok := lookUp(pinned, name)
 	if !ok {
-		fmt.Fprintf(conn, "no %q is neither a known name nor a peer id\n", name)
-		return nil
+		return writeLocal(conn, "no %q is neither a known name nor a peer id\n", name)
 	}
 
 	s, err := held.To(ctx, entry, alpn)
 	if err != nil {
-		fmt.Fprintf(conn, "no %v\n", err)
-		return nil
+		return writeLocal(conn, "no %v\n", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
-	if _, err := fmt.Fprintln(conn, "ok"); err != nil {
+	if err := writeLocal(conn, "ok\n"); err != nil {
 		return err
 	}
 	return splice(conn, s)
@@ -779,7 +1154,7 @@ func splice(conn net.Conn, s *iroh.Stream) error {
 
 	go func() {
 		_, err := io.Copy(s, conn)
-		s.Close()
+		_ = s.Close()
 		done <- err
 	}()
 	go func() {

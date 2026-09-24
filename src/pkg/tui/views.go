@@ -19,9 +19,7 @@ import (
 type shows byte
 
 const (
-	// showsAbout has nothing of its own: what an interface built before an archetype existed draws
-	// for one, and what one of this machine's own namespaces draws when it keeps nothing here.
-	showsAbout shows = iota
+	_ shows = iota
 	// showsTalk is a conversation.
 	showsTalk
 	// showsPut is what has gone to a namespace, and the line for sending the next thing.

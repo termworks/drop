@@ -48,7 +48,7 @@ func askFor(parent context.Context, target, why string) error {
 		return fmt.Errorf("say which path: drop path ask <machine>:/<path>")
 	}
 
-	entry, err := resolve(at)
+	entry, err := resolve(parent, at)
 	if err != nil {
 		return err
 	}
@@ -62,7 +62,7 @@ func askFor(parent context.Context, target, why string) error {
 	if err != nil {
 		return err
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	lan, _ := discovery.StartLAN(ctx, n)
 
@@ -70,8 +70,9 @@ func askFor(parent context.Context, target, why string) error {
 	if err != nil {
 		return err
 	}
-	defer done.Close()
-	defer s.Close()
+	defer func() { _ = done.Close() }()
+	defer func() { _ = s.Close() }()
+	defer stopStreamOnDone(ctx, s)()
 
 	if err := proto.Ask(ctx, s, at.Path, why, node.DisplayName()); err != nil {
 		return err
@@ -158,6 +159,10 @@ func newRequestsRefuseCmd() *cobra.Command {
 // answering is the shared half of allowing and refusing: change the grant, then drop every request
 // for that path from whoever it was, because it has been dealt with either way.
 func answering(path, who string, allow bool) error {
+	path, err := ns.Clean(path)
+	if err != nil {
+		return err
+	}
 	store, err := grant.Load()
 	if err != nil {
 		return err

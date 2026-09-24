@@ -2,9 +2,12 @@ package tty
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -25,7 +28,7 @@ func TestAnEndedFeedEndsTheAttach(t *testing.T) {
 	d := live.New(wire.NewConn(s), s)
 
 	done := make(chan error, 1)
-	go func() { done <- attach(d, stage, io.Discard, nil) }()
+	go func() { done <- attach(context.Background(), d, stage, io.Discard, false, false) }()
 
 	select {
 	case err := <-done:
@@ -131,6 +134,8 @@ func (q *quiet) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
+func (q *quiet) SetWriteDeadline(time.Time) error { return nil }
+
 // A shell that leaves something behind must not take the namespace with it.
 //
 // Whatever the shell started keeps the other side of the pty open, so reading it never ends — and
@@ -182,4 +187,131 @@ func TestAShellThatLeavesSomethingBehindDoesNotKeepTheNamespace(t *testing.T) {
 	if next == term {
 		t.Fatal("the next watcher was handed the terminal whose shell had gone")
 	}
+}
+
+func TestAFastShellDrainsItsOutput(t *testing.T) {
+	tty := New(Into{})
+	defer tty.Stop()
+
+	term, err := tty.at("/shell", Config{Shell: "/bin/sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer, _, _, _ := term.stage.Join()
+	defer term.stage.Leave(viewer)
+
+	done := make(chan []byte, 1)
+	go func() {
+		var out bytes.Buffer
+		for chunk := range viewer.Frames() {
+			_, _ = out.Write(chunk)
+		}
+		done <- out.Bytes()
+	}()
+
+	if _, err := term.ptmx.WriteString("printf 'marker-from-shell\\n'\nexit\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case out := <-done:
+		if !bytes.Contains(out, []byte("marker-from-shell")) {
+			t.Fatalf("shell output ended as %q", out)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the shell output did not finish")
+	}
+}
+
+func TestTerminalShellsHaveAProcessWideLimit(t *testing.T) {
+	tty := New(Into{})
+	tty.terminals = make(chan struct{}, MaxTerminals)
+	defer tty.Stop()
+
+	terminals := make([]*terminal, 0, MaxTerminals)
+	for i := 0; i < MaxTerminals; i++ {
+		term, err := tty.at("/shell/"+strconv.Itoa(i), Config{Shell: "/bin/sh"})
+		if err != nil {
+			t.Fatalf("starting terminal %d before the limit: %v", i, err)
+		}
+		terminals = append(terminals, term)
+	}
+	if _, err := tty.at("/shell/over", Config{Shell: "/bin/sh"}); err == nil {
+		t.Fatal("a terminal shell started above the process limit")
+	}
+
+	if _, err := terminals[0].ptmx.WriteString("exit\n"); err != nil {
+		t.Fatalf("ending the first terminal: %v", err)
+	}
+	select {
+	case <-terminals[0].reaped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first terminal was not reaped")
+	}
+
+	until := time.Now().Add(2 * time.Second)
+	for {
+		tty.mu.Lock()
+		_, still := tty.open["/shell/0"]
+		tty.mu.Unlock()
+		if !still {
+			break
+		}
+		if time.Now().After(until) {
+			t.Fatal("the reaped terminal kept its process capacity")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if _, err := tty.at("/shell/after", Config{Shell: "/bin/sh"}); err != nil {
+		t.Fatalf("a terminal stayed refused after capacity returned: %v", err)
+	}
+}
+
+func TestStoppingTerminalShellsHappensTogether(t *testing.T) {
+	tty := New(Into{})
+	tty.terminals = make(chan struct{}, MaxTerminals)
+
+	dir := t.TempDir()
+	var terminals []*terminal
+	for i := range 3 {
+		ready := filepath.Join(dir, "ready-"+strconv.Itoa(i))
+		script := filepath.Join(dir, "shell-"+strconv.Itoa(i))
+		body := "#!/bin/sh\ntrap '' HUP\n: > \"$DROP_TTY_READY\"\nwhile :; do sleep 1; done\n"
+		if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+			t.Fatalf("writing shell %d: %v", i, err)
+		}
+		t.Setenv("DROP_TTY_READY", ready)
+		term, err := tty.at("/shell/"+strconv.Itoa(i), Config{Shell: script})
+		if err != nil {
+			t.Fatalf("starting shell %d: %v", i, err)
+		}
+		terminals = append(terminals, term)
+		untilFile(t, ready)
+	}
+
+	began := time.Now()
+	tty.Stop()
+	if took := time.Since(began); took >= 2*hangUpWithin {
+		t.Fatalf("stopping three terminal shells took %s", took)
+	}
+	for i, term := range terminals {
+		select {
+		case <-term.reaped:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("terminal shell %d was not reaped", i)
+		}
+	}
+}
+
+func untilFile(t *testing.T, path string) {
+	t.Helper()
+
+	until := time.Now().Add(2 * time.Second)
+	for time.Now().Before(until) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("%s did not appear", path)
 }

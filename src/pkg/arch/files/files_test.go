@@ -2,8 +2,11 @@ package files
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -15,8 +18,175 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
+
+func TestAStoppedFilesWatcherSaysItIsFinished(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	done := New(Into{}).Watch(ctx, nil)
+
+	select {
+	case <-done:
+		t.Fatal("the watcher stopped before its context")
+	default:
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the watcher did not finish after its context stopped")
+	}
+}
+
+func TestACancelledFolderScanDoesNotStart(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "large"), make([]byte, 1<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, err := scan(ctx, dir, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("scan() = %v, want context cancellation", err)
+	}
+}
+
+type endedEar struct {
+	heard  chan struct{}
+	minded chan struct{}
+}
+
+func (e *endedEar) Heard() <-chan struct{} { return e.heard }
+
+func (e *endedEar) Dirty() ([]string, bool) { return nil, true }
+
+func (e *endedEar) Mind([]string) {
+	select {
+	case e.minded <- struct{}{}:
+	default:
+	}
+}
+
+func TestAClosedNudgeFallsBackToTheFilesTimer(t *testing.T) {
+	heard := make(chan struct{})
+	close(heard)
+	ear := &endedEar{heard: heard, minded: make(chan struct{}, 2)}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := New(Into{}).watch(ctx, nil, ear, time.Hour)
+
+	select {
+	case <-ear.minded:
+	case <-time.After(time.Second):
+		t.Fatal("the watcher did not run its first round")
+	}
+	select {
+	case <-ear.minded:
+		t.Fatal("the closed nudge channel caused another immediate round")
+	case <-time.After(50 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the watcher did not stop")
+	}
+}
+
+func TestOnlyADirtySharedFolderNeedsAnEventRound(t *testing.T) {
+	first := filepath.Join(t.TempDir(), "first")
+	second := filepath.Join(t.TempDir(), "second")
+	watched := watchedFolder{dir: first}
+
+	if !needsReconciliation(false, first, watched, true, []string{filepath.Join(first, "inside")}) {
+		t.Fatal("a changed directory inside the folder was skipped")
+	}
+	if needsReconciliation(false, first, watched, true, []string{filepath.Join(second, "inside")}) {
+		t.Fatal("an unrelated folder selected this one")
+	}
+	if needsReconciliation(false, first, watched, true, []string{first + "-copy"}) {
+		t.Fatal("a sibling with the same path prefix selected this folder")
+	}
+	if !needsReconciliation(true, first, watched, true, nil) {
+		t.Fatal("the full backstop skipped a clean folder")
+	}
+	if !needsReconciliation(false, first, watchedFolder{dir: second}, true, nil) {
+		t.Fatal("a changed folder location was skipped")
+	}
+	if !needsReconciliation(false, first, watchedFolder{}, false, nil) {
+		t.Fatal("a new folder was skipped")
+	}
+}
+
+func TestAnEventRoundReconcilesOnlyItsDirtyFolder(t *testing.T) {
+	block := filepath.Join(t.TempDir(), "block")
+	if err := os.WriteFile(block, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(block, "first")
+	second := filepath.Join(block, "second")
+	table := ns.NewTable()
+	shared := ns.Shared{Creator: "tester", At: "/shared"}
+	for _, mount := range []ns.Mount{
+		{Path: "/first", Archetype: "files", Config: Config{Dir: first}, Shared: shared},
+		{Path: "/second", Archetype: "files", Config: Config{Dir: second}, Shared: shared},
+	} {
+		if err := table.Add(mount); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var trouble []string
+	f := New(Into{Trouble: func(text string) { trouble = append(trouble, text) }})
+	watched := watchedFolders{
+		"/first":  {dir: first, dirs: []string{first}},
+		"/second": {dir: second, dirs: []string{second}},
+	}
+	f.round(t.Context(), table, watched, []string{first}, false)
+
+	if len(trouble) != 1 || !strings.HasPrefix(trouble[0], "/first:") {
+		t.Fatalf("event round reported %q", trouble)
+	}
+}
+
+func TestFilesWatcherForgetsRetiredNamespaceState(t *testing.T) {
+	current := t.TempDir()
+	table := ns.NewTable()
+	if err := table.Add(ns.Mount{
+		Path: "/current", Archetype: "files", Config: Config{Dir: current},
+		Shared: ns.Shared{Creator: "tester", At: "/shared"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	f := New(Into{})
+	f.kept["/old"] = &keeper{dir: "/old"}
+	f.kept["/current"] = &keeper{dir: "/previous"}
+	f.said["/old"] = "old trouble"
+	f.said["/current"] = "current trouble"
+	watched := watchedFolders{
+		"/old":     {dir: "/old"},
+		"/current": {dir: current},
+	}
+	f.round(t.Context(), table, watched, nil, false)
+
+	if len(f.kept) != 0 {
+		t.Fatalf("retired keepers = %v", f.kept)
+	}
+	if len(f.said) != 1 || f.said["/current"] != "current trouble" {
+		t.Fatalf("diagnostic state = %v", f.said)
+	}
+	if len(watched) != 1 {
+		t.Fatalf("watched folders = %v", watched)
+	}
+
+	table.Drop("/current")
+	f.round(t.Context(), table, watched, nil, false)
+	if len(f.kept) != 0 || len(f.said) != 0 || len(watched) != 0 {
+		t.Fatalf("state after removal: kept=%v said=%v watched=%v", f.kept, f.said, watched)
+	}
+}
 
 // readWriter is the two halves of a stream a test has in two buffers.
 type readWriter struct {
@@ -27,22 +197,37 @@ type readWriter struct {
 // serving runs a files namespace over a pipe and hands back the caller's side of the stream.
 func serving(t *testing.T, dir string, writable bool, hooks Into) *wire.Conn {
 	t.Helper()
+	return servingConfig(t, Config{Dir: dir, Writable: writable}, hooks)
+}
+
+func servingConfig(t *testing.T, cfg Config, hooks Into) *wire.Conn {
+	t.Helper()
 
 	caller, server := net.Pipe()
-	t.Cleanup(func() { caller.Close() })
+	t.Cleanup(func() { _ = caller.Close() })
 
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 
 		at := arch.Session{
 			Path:   "/files",
-			Config: Config{Dir: dir, Writable: writable},
+			Config: cfg,
 			Conn:   wire.NewConn(server),
 		}
 		_ = New(hooks).Serve(t.Context(), at)
 	}()
 
 	return wire.NewConn(caller)
+}
+
+func openedConfig(t *testing.T, cfg Config, hooks Into) *Browsing {
+	t.Helper()
+
+	b, err := Browse(servingConfig(t, cfg, hooks))
+	if err != nil {
+		t.Fatalf("Browse(): %v", err)
+	}
+	return b
 }
 
 // opened runs a files namespace and walks it.
@@ -215,6 +400,80 @@ func TestBrowseRefusesEveryWriteOnAReadOnlyMount(t *testing.T) {
 	}
 }
 
+func TestBrowseRefusesAnUploadLargerThanFreeSpace(t *testing.T) {
+	dir := t.TempDir()
+	b := openedConfig(t, Config{
+		Dir: dir, Writable: true, MaxItemBytes: math.MaxInt64, MaxSessionBytes: math.MaxInt64,
+	}, Into{})
+
+	err := b.Put("too-large", strings.NewReader(""), Given{Size: math.MaxInt64, Mode: 0o600})
+	if err == nil || !strings.Contains(err.Error(), "free space") {
+		t.Fatalf("the oversized upload was answered with %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "too-large")); !os.IsNotExist(err) {
+		t.Fatalf("the refused upload left a file: %v", err)
+	}
+}
+
+func TestAnUnknownUploadCannotCrossItsItemLimit(t *testing.T) {
+	dir := t.TempDir()
+	b := openedConfig(t, Config{Dir: dir, Writable: true, MaxItemBytes: 4, MaxSessionBytes: 8}, Into{})
+
+	err := b.Put("too-large", strings.NewReader("12345"), Given{Size: wire.SizeUnknown, Mode: 0o600})
+	if err == nil {
+		t.Fatal("an unknown-size upload crossed its item limit")
+	}
+	left, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(left) != 0 {
+		t.Fatalf("the refused upload left %d entries", len(left))
+	}
+}
+
+func TestAFileSessionCannotCrossItsByteLimit(t *testing.T) {
+	dir := t.TempDir()
+	b := openedConfig(t, Config{Dir: dir, Writable: true, MaxItemBytes: 8, MaxSessionBytes: 10}, Into{})
+
+	if err := b.Put("first", strings.NewReader("123456"), Given{Size: 6}); err != nil {
+		t.Fatalf("first Put(): %v", err)
+	}
+	if err := b.Put("refused", strings.NewReader("12345"), Given{Size: 5}); err == nil || !strings.Contains(err.Error(), "bytes left") {
+		t.Fatalf("second Put() = %v", err)
+	}
+	if err := b.Put("last", strings.NewReader("1234"), Given{Size: 4}); err != nil {
+		t.Fatalf("third Put(): %v", err)
+	}
+	if got := string(read(t, filepath.Join(dir, "first"))); got != "123456" {
+		t.Fatalf("first = %q", got)
+	}
+	if got := string(read(t, filepath.Join(dir, "last"))); got != "1234" {
+		t.Fatalf("last = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "refused")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("refused upload exists: %v", err)
+	}
+}
+
+func TestAnUnknownUploadCannotCrossTheSessionRemainder(t *testing.T) {
+	dir := t.TempDir()
+	b := openedConfig(t, Config{Dir: dir, Writable: true, MaxItemBytes: 4, MaxSessionBytes: 4}, Into{})
+
+	if err := b.Put("first", strings.NewReader("123"), Given{Size: 3}); err != nil {
+		t.Fatalf("first Put(): %v", err)
+	}
+	if err := b.Put("overflow", strings.NewReader("12"), Given{Size: wire.SizeUnknown}); err == nil {
+		t.Fatal("an unknown-size upload crossed the session remainder")
+	}
+	if got := string(read(t, filepath.Join(dir, "first"))); got != "123" {
+		t.Fatalf("first = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "overflow")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("overflow upload exists: %v", err)
+	}
+}
+
 func TestBrowseReportsAnUploadThatLands(t *testing.T) {
 	dir := t.TempDir()
 
@@ -241,7 +500,7 @@ func TestAClosedSessionIsNotAnError(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 
 		at := arch.Session{
 			Path:   "/files",
@@ -258,7 +517,7 @@ func TestAClosedSessionIsNotAnError(t *testing.T) {
 	if _, err := b.List(""); err != nil {
 		t.Fatalf("List(): %v", err)
 	}
-	caller.Close()
+	_ = caller.Close()
 
 	if err := <-done; err != nil {
 		t.Fatalf("a session that was closed came back as %v", err)
@@ -424,7 +683,7 @@ func TestOnlyARegularFileIsRead(t *testing.T) {
 	if err != nil {
 		t.Skipf("no unix sockets here: %v", err)
 	}
-	defer listening.Close()
+	defer func() { _ = listening.Close() }()
 
 	b := opened(t, dir, false, Into{})
 	if err := b.Get("socket", filepath.Join(t.TempDir(), "copy"), Want{}); err == nil {
@@ -468,14 +727,95 @@ func TestALinkAtThePartIsNotWrittenThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening the namespace: %v", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	if out, _, err := opening(root, arriving{part: ".planted.abcdef012345.part"}); err == nil {
-		out.Close()
+		_ = out.Close()
 		t.Fatal("opening() opened a part that was already there")
 	}
 	if got := read(t, outside); string(got) != "original" {
 		t.Errorf("the file behind the link now says %q", got)
+	}
+}
+
+func TestALinkAtAResumablePartIsNotWrittenThrough(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sum := bytes.Repeat([]byte{1}, 32)
+	part := partFor("report.bin", sum)
+	if err := os.Symlink("victim", filepath.Join(dir, part)); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	if out, _, err := opening(root, arriving{part: part, kept: true}); err == nil {
+		_ = out.Close()
+		t.Fatal("opening() followed a resumable part link")
+	}
+	if got := read(t, victim); string(got) != "original" {
+		t.Errorf("the file behind the link now says %q", got)
+	}
+}
+
+func TestOnlyOneTransferFillsAResumablePart(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	a := arriving{part: ".report.sum.part", kept: true}
+	first, _, err := opening(root, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Close() }()
+
+	if second, _, err := opening(root, a); err == nil {
+		_ = second.Close()
+		t.Fatal("two transfers locked the same resumable part")
+	} else if !strings.Contains(err.Error(), "already filling") {
+		t.Fatalf("the second transfer failed as %v", err)
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	third, _, err := opening(root, a)
+	if err != nil {
+		t.Fatalf("the part stayed locked after its transfer ended: %v", err)
+	}
+	_ = third.Close()
+}
+
+func TestAResumePartMustStillHaveTheRequestedSize(t *testing.T) {
+	dir := t.TempDir()
+	part := ".report.sum.part"
+	if err := os.WriteFile(filepath.Join(dir, part), []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	if out, _, err := opening(root, arriving{part: part, have: 3, kept: true}); err == nil {
+		_ = out.Close()
+		t.Fatal("opening() resumed from a size the part no longer had")
+	}
+	if got := read(t, filepath.Join(dir, part)); string(got) != "changed" {
+		t.Errorf("the changed part now says %q", got)
 	}
 }
 
@@ -676,6 +1016,13 @@ func TestRequestAndReplyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRequestRefusesAnInvalidUnknownSize(t *testing.T) {
+	q := request{Op: opPut, Name: "report.bin", Size: wire.SizeUnknown - 1}
+	if _, err := decodeRequest(q.encode()); err == nil {
+		t.Fatal("decodeRequest() accepted an invalid negative size")
+	}
+}
+
 // A count is a claim. A small body must not make a large allocation, and must not decode.
 func TestReplyRefusesAnImpossibleCount(t *testing.T) {
 	w := wire.NewWriter()
@@ -734,7 +1081,7 @@ func TestTakeOntoRefusesACorruptedTransfer(t *testing.T) {
 
 	dir := t.TempDir()
 	into := filepath.Join(dir, "landed")
-	if err := takeOnto(conn, into, "landed", Entry{Size: 5, Mode: 0o644}, nil, nil); err == nil {
+	if err := takeOnto(conn, into, "landed", Entry{Size: 5, Mode: 0o644}, nil, 0, nil); err == nil {
 		t.Fatal("takeOnto() accepted a digest that does not match")
 	}
 	if _, err := os.Stat(into); err == nil {
@@ -827,19 +1174,242 @@ func TestALinkSwappedInUnderASessionIsNotFollowed(t *testing.T) {
 	}
 }
 
+func TestScanNoticesAReplacementWithMatchingMetadata(t *testing.T) {
+	dir := t.TempDir()
+	at := filepath.Join(dir, "same.txt")
+	if err := os.WriteFile(at, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(at, when, when); err != nil {
+		t.Fatal(err)
+	}
+	first, err := scan(t.Context(), dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.Open(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := held.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	replacement := filepath.Join(dir, "replacement")
+	if err := os.WriteFile(replacement, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(replacement, when, when); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, at); err != nil {
+		t.Fatal(err)
+	}
+	second, err := scan(t.Context(), dir, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first["same.txt"].Sum == second["same.txt"].Sum {
+		t.Fatal("replacement with matching size and timestamp kept the old digest")
+	}
+}
+
+func TestScanRefusesHardLinks(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(outside, filepath.Join(dir, "linked")); err != nil {
+		t.Skipf("hard links are unavailable: %v", err)
+	}
+
+	got, err := scan(t.Context(), dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["linked"]; ok {
+		t.Fatal("a hard link was included in a shared folder")
+	}
+}
+
+func TestScanDoesNotReportUnsupportedReplacementsAsDeleted(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		replace func(*testing.T, string)
+	}{
+		{
+			name: "directory",
+			replace: func(t *testing.T, at string) {
+				if err := os.Mkdir(at, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(at, "child"), []byte("not tracked"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "symbolic link",
+			replace: func(t *testing.T, at string) {
+				outside := filepath.Join(t.TempDir(), "outside")
+				if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, at); err != nil {
+					t.Skipf("symbolic links are unavailable: %v", err)
+				}
+			},
+		},
+		{
+			name: "hard link",
+			replace: func(t *testing.T, at string) {
+				outside := filepath.Join(t.TempDir(), "outside")
+				if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Link(outside, at); err != nil {
+					t.Skipf("hard links are unavailable: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			at := filepath.Join(dir, "tracked")
+			if err := os.WriteFile(at, []byte("held"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			first, err := scan(t.Context(), dir, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(at); err != nil {
+				t.Fatal(err)
+			}
+			test.replace(t, at)
+
+			second, err := scan(t.Context(), dir, first)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if second["tracked"].Sum != first["tracked"].Sum {
+				t.Fatal("the last readable version was not retained")
+			}
+			edits, err := (&keeper{held: first}).mine(t.Context(), second, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(edits) != 0 {
+				t.Fatalf("an unsupported replacement became edits: %+v", edits)
+			}
+			if _, tracked := second["tracked/child"]; tracked {
+				t.Fatal("a directory replacing a tracked file was descended into")
+			}
+		})
+	}
+}
+
+func TestScanRefusesSparseFiles(t *testing.T) {
+	dir := t.TempDir()
+	at := filepath.Join(dir, "sparse")
+	if err := os.WriteFile(at, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(at, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasHole, err := sparse(file, 1<<20)
+	if closeErr := file.Close(); err == nil && closeErr != nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasHole {
+		t.Skip("filesystem does not expose sparse extents")
+	}
+
+	got, err := scan(t.Context(), dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["sparse"]; ok {
+		t.Fatal("a sparse file was included in a shared folder")
+	}
+}
+
+func TestScanLeavesOutPathsTheProtocolCannotCarry(t *testing.T) {
+	dir := t.TempDir()
+	deep := dir
+	for i := range 5 {
+		deep = filepath.Join(deep, strings.Repeat(string(rune('a'+i)), 220))
+	}
+	if err := os.MkdirAll(deep, 0o700); err != nil {
+		t.Skipf("this disk cannot make a path over %d bytes: %v", MaxRel, err)
+	}
+	long := filepath.Join(deep, "too-long")
+	if err := os.WriteFile(long, []byte("not carried"), 0o600); err != nil {
+		t.Skipf("this disk cannot make a path over %d bytes: %v", MaxRel, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "carried"), []byte("yes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := scan(t.Context(), dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["carried"]; !ok {
+		t.Fatal("a supported path was lost beside an unsupported one")
+	}
+	rel, err := filepath.Rel(dir, long)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got[filepath.ToSlash(rel)]; ok {
+		t.Fatal("a path longer than the wire limit was included")
+	}
+}
+
 // A pipe under a name is answered, not waited on: an open that waits for a writer has no deadline
 // and nothing to end it.
 func TestAPipeUnderANameIsNotWaitedOn(t *testing.T) {
 	dir := t.TempDir()
-	if err := exec.Command("mkfifo", filepath.Join(dir, "pipe")).Run(); err != nil {
+	pipe := filepath.Join(dir, "pipe")
+	if err := exec.Command("mkfifo", pipe).Run(); err != nil {
 		t.Skipf("no fifos here: %v", err)
+	}
+	if file, _, err := lifted(pipe); err == nil {
+		_ = file.Close()
+		t.Fatal("lifted() accepted a pipe for upload")
+	}
+	summed := make(chan error, 1)
+	go func() {
+		_, _, err := sumOf(t.Context(), pipe)
+		summed <- err
+	}()
+	select {
+	case err := <-summed:
+		if err == nil {
+			t.Fatal("sumOf() accepted a pipe")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("hashing a pipe waited for a writer")
 	}
 
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		t.Fatalf("opening the namespace: %v", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	done := make(chan os.FileMode, 1)
 	go func() {
@@ -848,7 +1418,7 @@ func TestAPipeUnderANameIsNotWaitedOn(t *testing.T) {
 			done <- 0
 			return
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		done <- stat.Mode()
 	}()
 
@@ -887,8 +1457,8 @@ func TestAListingTooBigForOneReplyIsRefused(t *testing.T) {
 	}
 }
 
-// A part that cannot be moved onto its name leaves neither itself nor the name behind.
-func TestAPartThatCannotBeMovedIsNotLeftBehind(t *testing.T) {
+// A part that cannot be linked onto its name leaves neither itself nor the name behind.
+func TestAFailedFreeLandingLeavesNothingBehind(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, ".x.abcdef012345.part"), 0o700); err != nil {
 		t.Fatalf("making the part: %v", err)
@@ -898,7 +1468,7 @@ func TestAPartThatCannotBeMovedIsNotLeftBehind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening the namespace: %v", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	if final, err := place(root, ".x.abcdef012345.part", "x"); err == nil {
 		t.Fatalf("place() landed on %s", final)
@@ -910,5 +1480,44 @@ func TestAPartThatCannotBeMovedIsNotLeftBehind(t *testing.T) {
 	}
 	for _, at := range left {
 		t.Errorf("%s was left behind", at.Name())
+	}
+}
+
+func TestAFreeLandingHasCompleteBytesAtItsCommit(t *testing.T) {
+	dir := t.TempDir()
+	part := ".report.abcdef012345.part"
+	body := []byte("complete")
+	if err := os.WriteFile(filepath.Join(dir, part), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	final, err := linkFree(root, part, "report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, filepath.Join(dir, final)); !bytes.Equal(got, body) {
+		t.Fatalf("committed %q, want %q", got, body)
+	}
+	partInfo, err := os.Stat(filepath.Join(dir, part))
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalInfo, err := os.Stat(filepath.Join(dir, final))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(partInfo, finalInfo) {
+		t.Fatal("the commit copied through an intermediate destination")
+	}
+	if err := root.Remove(part); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, filepath.Join(dir, final)); !bytes.Equal(got, body) {
+		t.Fatalf("removing the part changed the destination to %q", got)
 	}
 }

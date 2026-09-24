@@ -13,8 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"lukechampine.com/blake3"
 
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -23,15 +25,45 @@ import (
 // from is how much of the item the far end already holds. Everything is read and weighed, so the
 // size and the digest are the whole item's, and only what the far end is missing goes on the wire.
 func sendBody(conn *wire.Conn, body io.Reader, name string, size, from int64, progress func(string, int64, int64)) error {
+	return sendBodyChecked(conn, body, name, size, from, progress, nil)
+}
+
+func sendBodyChecked(
+	conn *wire.Conn,
+	body io.Reader,
+	name string,
+	size, from int64,
+	progress func(string, int64, int64),
+	check func() error,
+) error {
+	return conn.WithIdle(wire.FiniteIdle, func() error {
+		return sendBodyWithin(conn, body, name, size, from, progress, check)
+	})
+}
+
+func sendBodyWithin(
+	conn *wire.Conn,
+	body io.Reader,
+	name string,
+	size, from int64,
+	progress func(string, int64, int64),
+	check func() error,
+) error {
+	body = &progressReader{Reader: body}
 	digest := blake3.New(32, nil)
 	buf := make([]byte, wire.DataChunk)
 	read := int64(0)
+	var localErr error
 
 	for {
 		n, err := body.Read(buf)
 		if n > 0 {
+			if size != wire.SizeUnknown && int64(n) > size-read {
+				localErr = fmt.Errorf("%s has more than the announced %d bytes", name, size)
+				break
+			}
 			chunk, start := buf[:n], read
-			digest.Write(chunk)
+			_, _ = digest.Write(chunk)
 			read += int64(n)
 
 			if read > from {
@@ -53,8 +85,18 @@ func sendBody(conn *wire.Conn, body io.Reader, name string, size, from int64, pr
 			return fmt.Errorf("reading %s: %w", name, err)
 		}
 	}
+	if localErr == nil && size != wire.SizeUnknown && read != size {
+		localErr = fmt.Errorf("%s has %d bytes, while %d were announced", name, read, size)
+	}
+	if localErr == nil && check != nil {
+		localErr = check()
+	}
 
-	end := wire.End{Size: read, Digest: digest.Sum(nil)}
+	endDigest := digest.Sum(nil)
+	if localErr != nil {
+		endDigest = nil
+	}
+	end := wire.End{Size: read, Digest: endDigest}
 	if err := conn.WriteFrame(wire.KindEnd, end.Encode()); err != nil {
 		return err
 	}
@@ -70,11 +112,48 @@ func sendBody(conn *wire.Conn, body io.Reader, name string, size, from int64, pr
 	if err != nil {
 		return err
 	}
+	if localErr != nil {
+		return localErr
+	}
 	if !ack.OK {
 		return fmt.Errorf("%s was rejected: %s", name, ack.Reason)
 	}
 	return nil
 }
+
+type progressReader struct {
+	io.Reader
+	emptyReads int
+}
+
+func (r *progressReader) Read(buf []byte) (int, error) {
+	n, err := r.Reader.Read(buf)
+	if n > 0 {
+		r.emptyReads = 0
+		return n, err
+	}
+	if err == nil {
+		r.emptyReads++
+		if r.emptyReads >= maxConsecutiveEmptyReads {
+			return 0, io.ErrNoProgress
+		}
+	}
+	return n, err
+}
+
+func steadyFile(file *os.File, before os.FileInfo, name string) error {
+	after, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("checking %s after it was sent: %w", name, err)
+	}
+	if !os.SameFile(before, after) || before.Size() != after.Size() ||
+		!before.ModTime().Equal(after.ModTime()) || before.Mode().Perm() != after.Mode().Perm() {
+		return fmt.Errorf("%s changed while being sent", name)
+	}
+	return nil
+}
+
+const maxConsecutiveEmptyReads = 100
 
 // arriving is a part file being filled: where it waits, how much of the item is already in it, and
 // whether it is worth keeping when something goes wrong.
@@ -90,13 +169,13 @@ type arriving struct {
 //
 // Nothing that arrives replaces a file that was on this disk first, nothing is written through a
 // name somebody else laid a link on, and the part this one fills is nobody else's.
-func takeInto(conn *wire.Conn, dir *os.Root, name string, q request, progress func(string, int64, int64)) (string, int64, error) {
+func takeInto(conn *wire.Conn, dir *os.Root, name string, quota *transferQuota, q request, progress func(string, int64, int64)) (string, int64, error) {
 	part, err := partName(name)
 	if err != nil {
 		return "", 0, err
 	}
 
-	got, err := land(conn, dir, arriving{part: part}, path.Base(name), q.Size, q.Mode, progress)
+	got, err := land(conn, dir, arriving{part: part}, path.Base(name), q.Size, q.Mode, quota, progress)
 	if err != nil {
 		return "", 0, err
 	}
@@ -106,6 +185,9 @@ func takeInto(conn *wire.Conn, dir *os.Root, name string, q request, progress fu
 		return "", 0, err
 	}
 	dated(dir, final, q.At)
+	if err := syncLanding(dir, final); err != nil {
+		return "", 0, fmt.Errorf("syncing %s: %w", final, err)
+	}
 
 	if err := conn.WriteFrame(wire.KindAck, wire.Ack{OK: true}.Encode()); err != nil {
 		return "", 0, fmt.Errorf("acknowledging %s: %w", final, err)
@@ -114,66 +196,82 @@ func takeInto(conn *wire.Conn, dir *os.Root, name string, q request, progress fu
 }
 
 // takeOver reads one item into a namespace and puts it where the caller said, over whatever is
-// there. What was checked before the caller started sending is that the name still holds the
-// version they believe it holds.
-func takeOver(conn *wire.Conn, dir *os.Root, name string, q request, progress func(string, int64, int64)) (int64, error) {
+// there. The destination is checked again after the item arrives and immediately before it is
+// replaced.
+func takeOver(conn *wire.Conn, dir *os.Root, name string, quota *transferQuota, q request, progress func(string, int64, int64)) (int64, bool, error) {
 	part, err := partName(name)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 
-	got, err := land(conn, dir, arriving{part: part}, path.Base(name), q.Size, q.Mode, progress)
+	got, err := land(conn, dir, arriving{part: part}, path.Base(name), q.Size, q.Mode, quota, progress)
 	if err != nil {
-		return 0, err
+		return 0, false, err
+	}
+
+	if reason := standing(dir, name, q.Sum); reason != "" {
+		_ = dir.Remove(part)
+		if err := conn.WriteFrame(wire.KindAck, wire.Ack{Reason: reason}.Encode()); err != nil {
+			return 0, false, fmt.Errorf("refusing replacement of %s: %w", name, err)
+		}
+		return 0, false, nil
 	}
 
 	if err := dir.Rename(part, name); err != nil {
 		_ = dir.Remove(part)
-		return 0, fmt.Errorf("renaming %s: %w", part, err)
+		return 0, false, fmt.Errorf("renaming %s: %w", part, err)
 	}
 	dated(dir, name, q.At)
+	if err := syncLanding(dir, name); err != nil {
+		return 0, false, fmt.Errorf("syncing %s: %w", name, err)
+	}
 
 	if err := conn.WriteFrame(wire.KindAck, wire.Ack{OK: true}.Encode()); err != nil {
-		return 0, fmt.Errorf("acknowledging %s: %w", name, err)
+		return 0, false, fmt.Errorf("acknowledging %s: %w", name, err)
 	}
-	return got, nil
+	return got, true, nil
 }
 
-// place moves a finished part onto a free name beside it, which is what it returns. Nothing that
-// fails here leaves the part or the name it reached for lying about.
+// place links a finished part onto a free name beside it, which is what it returns.
 func place(dir *os.Root, part, name string) (string, error) {
-	final, err := claim(dir, name)
+	final, err := linkFree(dir, part, name)
 	if err != nil {
 		_ = dir.Remove(part)
 		return "", fmt.Errorf("making room for %s: %w", name, err)
 	}
-	if err := dir.Rename(part, final); err != nil {
+	if err := syncDirectory(dir, path.Dir(final)); err != nil {
 		_ = dir.Remove(final)
 		_ = dir.Remove(part)
-		return "", fmt.Errorf("renaming %s: %w", part, err)
+		_ = syncDirectory(dir, path.Dir(final))
+		return "", fmt.Errorf("committing %s: %w", final, err)
+	}
+	if err := dir.Remove(part); err != nil {
+		_ = dir.Remove(final)
+		_ = syncDirectory(dir, path.Dir(final))
+		return "", fmt.Errorf("removing %s: %w", part, err)
 	}
 	return final, nil
 }
 
 // takeOnto reads one item and lands it on the path this side asked for. The part waits in the
 // directory the item lands in, opened through it, so nothing on the way is followed.
-func takeOnto(conn *wire.Conn, into, name string, e Entry, sum []byte, progress func(string, int64, int64)) error {
+func takeOnto(conn *wire.Conn, into, name string, e Entry, sum []byte, from int64, progress func(string, int64, int64)) error {
 	where := filepath.Dir(into)
 	dir, err := os.OpenRoot(where)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", where, err)
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 
 	final := filepath.Base(into)
 	at := arriving{}
 	if len(sum) > 0 {
-		at.part, at.have, at.kept = partFor(final, sum), already(where, final, sum), true
+		at.part, at.have, at.kept = partFor(final, sum), from, true
 	} else if at.part, err = partName(final); err != nil {
 		return err
 	}
 
-	if _, err := land(conn, dir, at, name, e.Size, e.Mode, progress); err != nil {
+	if _, err := land(conn, dir, at, name, e.Size, e.Mode, nil, progress); err != nil {
 		return err
 	}
 	if err := dir.Rename(at.part, final); err != nil {
@@ -181,6 +279,9 @@ func takeOnto(conn *wire.Conn, into, name string, e Entry, sum []byte, progress 
 		return fmt.Errorf("renaming %s: %w", at.part, err)
 	}
 	dated(dir, final, e.At)
+	if err := syncLanding(dir, final); err != nil {
+		return fmt.Errorf("syncing %s: %w", final, err)
+	}
 
 	return conn.WriteFrame(wire.KindAck, wire.Ack{OK: true}.Encode())
 }
@@ -200,12 +301,22 @@ func already(where, name string, sum []byte) int64 {
 // when the part is named after the digest of what is coming, because that name is where the next
 // attempt for the same bytes looks, and thrown away when it is not, because a name nothing can
 // recognise is a name nothing will ever finish.
-func land(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mode uint32, progress func(string, int64, int64)) (int64, error) {
+func land(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mode uint32, quota *transferQuota, progress func(string, int64, int64)) (int64, error) {
+	var got int64
+	err := conn.WithIdle(wire.FiniteIdle, func() error {
+		var err error
+		got, err = landWithin(conn, dir, a, name, size, mode, quota, progress)
+		return err
+	})
+	return got, err
+}
+
+func landWithin(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mode uint32, quota *transferQuota, progress func(string, int64, int64)) (int64, error) {
 	out, seed, err := opening(dir, a)
 	if err != nil {
 		return 0, fmt.Errorf("opening %s: %w", a.part, err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	lost := func(err error) (int64, error) {
 		_ = dir.Remove(a.part)
@@ -217,7 +328,7 @@ func land(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mo
 		stopped = func(err error) (int64, error) { return 0, err }
 	}
 
-	got, reason, err := drain(conn, out, a, seed, name, size, progress)
+	got, reason, err := drain(conn, out, a, seed, name, size, quota, progress)
 	if err != nil {
 		return stopped(err)
 	}
@@ -237,6 +348,9 @@ func land(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mo
 	if err := out.Chmod(landing(mode)); err != nil {
 		return lost(fmt.Errorf("setting the mode of %s: %w", a.part, err))
 	}
+	if err := out.Sync(); err != nil {
+		return lost(fmt.Errorf("syncing %s: %w", a.part, err))
+	}
 	if err := out.Close(); err != nil {
 		return lost(fmt.Errorf("closing %s: %w", a.part, err))
 	}
@@ -246,7 +360,7 @@ func land(conn *wire.Conn, dir *os.Root, a arriving, name string, size int64, mo
 // drain reads a run of data frames into an open file and weighs what arrived against the count, the
 // digest the sender ended with, and the size the round was opened on. A reason back means the item
 // is not what was promised.
-func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, name string, size int64, progress func(string, int64, int64)) (int64, string, error) {
+func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, name string, size int64, quota *transferQuota, progress func(string, int64, int64)) (int64, string, error) {
 	buf := make([]byte, wire.DataChunk)
 	got := a.have
 
@@ -279,19 +393,58 @@ func drain(conn *wire.Conn, out *os.File, a arriving, digest *blake3.Hasher, nam
 		if kind != wire.KindData {
 			return 0, "", fmt.Errorf("expected data for %s, got frame kind %d", name, kind)
 		}
+		if length == 0 {
+			return 0, "", fmt.Errorf("empty data frame for %s", name)
+		}
 
 		if err := conn.ReadBody(buf, length); err != nil {
 			return 0, "", err
 		}
+		if size != wire.SizeUnknown && int64(length) > size-got {
+			return 0, "", fmt.Errorf("%s sent more than the announced %d bytes", name, size)
+		}
+		if quota != nil {
+			if err := quota.take(name, got, int64(length)); err != nil {
+				return 0, "", err
+			}
+		}
+		if err := keep.Room(out, int64(length)); err != nil {
+			return 0, "", fmt.Errorf("%s: not enough free space: %w", name, err)
+		}
 		if _, err := out.Write(buf[:length]); err != nil {
 			return 0, "", fmt.Errorf("writing %s: %w", a.part, err)
 		}
-		digest.Write(buf[:length])
+		_, _ = digest.Write(buf[:length])
 		got += int64(length)
 		if progress != nil {
 			progress(name, got, size)
 		}
 	}
+}
+
+func syncLanding(dir *os.Root, name string) error {
+	file, err := dir.Open(name)
+	if err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+
+	return syncDirectory(dir, path.Dir(name))
+}
+
+func syncDirectory(dir *os.Root, name string) error {
+	parent, err := dir.Open(name)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = parent.Close() }()
+	return parent.Sync()
 }
 
 // partName is where an item waits while it arrives: beside where it lands, named after it and a tag
@@ -330,30 +483,60 @@ func partFor(name string, sum []byte) string {
 // the item carries on from the end of it.
 func opening(dir *os.Root, a arriving) (*os.File, *blake3.Hasher, error) {
 	digest := blake3.New(32, nil)
-	if a.have <= 0 {
-		flags := os.O_CREATE | os.O_EXCL | os.O_WRONLY
-		if a.kept {
-			flags = os.O_CREATE | os.O_TRUNC | os.O_WRONLY
-		}
-		out, err := dir.OpenFile(a.part, flags, 0o600)
+	if !a.kept {
+		out, err := dir.OpenFile(a.part, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		return out, digest, err
 	}
 
-	held, err := dir.Open(a.part)
+	named, err := dir.Lstat(a.part)
+	if errors.Is(err, fs.ErrNotExist) && a.have == 0 {
+		out, createErr := dir.OpenFile(a.part, os.O_CREATE|os.O_EXCL|os.O_RDWR|os.O_APPEND, 0o600)
+		if createErr != nil {
+			return nil, nil, createErr
+		}
+		if lockErr := unix.Flock(int(out.Fd()), unix.LOCK_EX|unix.LOCK_NB); lockErr != nil {
+			_ = out.Close()
+			_ = dir.Remove(a.part)
+			return nil, nil, fmt.Errorf("locking %s: %w", a.part, lockErr)
+		}
+		return out, digest, nil
+	}
 	if err != nil {
 		return nil, nil, err
 	}
-	n, err := io.Copy(digest, io.LimitReader(held, a.have))
-	held.Close()
+	if !named.Mode().IsRegular() || named.Size() != a.have {
+		return nil, nil, fmt.Errorf("%s changed while the transfer was starting", a.part)
+	}
+
+	out, err := dir.OpenFile(a.part, os.O_RDWR|os.O_APPEND|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
+		return nil, nil, err
+	}
+	opened, err := out.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(named, opened) {
+		_ = out.Close()
+		return nil, nil, fmt.Errorf("%s changed while the transfer was starting", a.part)
+	}
+	if err := unix.Flock(int(out.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = out.Close()
+		return nil, nil, fmt.Errorf("another transfer is already filling %s: %w", a.part, err)
+	}
+	opened, err = out.Stat()
+	if err != nil || opened.Size() != a.have {
+		_ = out.Close()
+		return nil, nil, fmt.Errorf("%s changed while the transfer was starting", a.part)
+	}
+
+	n, err := io.Copy(digest, io.LimitReader(out, a.have))
+	if err != nil {
+		_ = out.Close()
 		return nil, nil, err
 	}
 	if n != a.have {
+		_ = out.Close()
 		return nil, nil, fmt.Errorf("%s holds %d bytes of the %d it was carrying on from", a.part, n, a.have)
 	}
-
-	out, err := dir.OpenFile(a.part, os.O_WRONLY|os.O_APPEND, 0o600)
-	return out, digest, err
+	return out, digest, nil
 }
 
 // dated puts the modification time the item had where it came from on the item where it landed.
@@ -383,13 +566,12 @@ func landing(mode uint32) os.FileMode {
 	return 0o600
 }
 
-// claim takes a free name for a finished item, numbering it when something is already there.
-func claim(dir *os.Root, name string) (string, error) {
+// linkFree links a complete part to a free destination, numbering it when a name is already there.
+func linkFree(dir *os.Root, part, name string) (string, error) {
 	for n := range 1000 {
 		at := numbered(name, n)
-		f, err := dir.OpenFile(at, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		err := dir.Link(part, at)
 		if err == nil {
-			f.Close()
 			return at, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {

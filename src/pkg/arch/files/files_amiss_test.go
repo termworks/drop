@@ -38,12 +38,27 @@ func TestAFolderWithAConflictInItSaysSo(t *testing.T) {
 	}
 
 	// Something that is not text is not searched for markers that happen to be in it.
-	os.RemoveAll(filepath.Join(dir, "deep"))
-	os.Remove(filepath.Join(dir, "notes.md"))
+	_ = os.RemoveAll(filepath.Join(dir, "deep"))
+	_ = os.Remove(filepath.Join(dir, "notes.md"))
 	if err := os.WriteFile(filepath.Join(dir, "x.bin"), append([]byte(stuck), 0x00, 0x01), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if said := f.Amiss(Config{Dir: dir}); said != "" {
 		t.Fatalf("a binary file that happens to hold markers says %q", said)
+	}
+}
+
+func TestALargeFolderFileIsNotReadForConflictMarkers(t *testing.T) {
+	dir := t.TempDir()
+	at := filepath.Join(dir, "large.txt")
+	if err := os.WriteFile(at, []byte("<<<<<<< alice\n=======\n>>>>>>> bob\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(at, 128<<20); err != nil {
+		t.Fatal(err)
+	}
+
+	if said := New(Into{}).Amiss(Config{Dir: dir}); said != "" {
+		t.Fatalf("a file too large to merge reports conflict markers: %q", said)
 	}
 }

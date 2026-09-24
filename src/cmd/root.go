@@ -44,12 +44,7 @@ func Execute(v string, exit func(int), args []string) {
 
 	// Settings before any command runs, so one that only dials still knows what it is allowed
 	// to do. The commands that serve load the whole config themselves.
-	root.PersistentPreRunE = func(*cobra.Command, []string) error {
-		conf.ApplySettings(reading())
-		unlocking()
-
-		return wearBadge()
-	}
+	root.PersistentPreRunE = func(*cobra.Command, []string) error { return prepare() }
 
 	root.SetArgs(args)
 	root.AddCommand(
@@ -59,10 +54,23 @@ func Execute(v string, exit func(int), args []string) {
 		newPeerCmd(),
 		newPathCmd(),
 		newMeCmd(),
+		newTUICmd(),
 	)
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "drop:", err)
 		exiter(1)
 	}
+}
+
+// prepare is what every command needs before it does anything: the settings, the key the
+// conversations are sealed with, and a badge saying whose machine this is — made on the first run,
+// so a device that has never been told who it belongs to still pairs as somebody.
+func prepare() error {
+	if err := conf.ApplySettings(reading()); err != nil {
+		return err
+	}
+	unlocking()
+
+	return wearBadge()
 }

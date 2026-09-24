@@ -7,7 +7,10 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/tmc/go-iroh/iroh"
@@ -19,7 +22,9 @@ import (
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/live"
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/plain"
 	"github.com/bresilla/drop/src/pkg/proto"
+	"github.com/bresilla/drop/src/pkg/wire"
 )
 
 // What each kind of namespace does when it is opened from a terminal.
@@ -71,8 +76,9 @@ func openNote(ctx context.Context, o opening) error {
 	if err != nil {
 		return err
 	}
-	defer done.Close()
-	defer s.Close()
+	defer func() { _ = done.Close() }()
+	defer func() { _ = s.Close() }()
+	defer stopStreamOnDone(ctx, s)()
 
 	conn, err := proto.Open(s, o.served.Path, "note", 0, "", node.DisplayName())
 	if err != nil {
@@ -115,25 +121,40 @@ func sendFiles(parent context.Context, o opening, sources []share.Source) error 
 	ctx, cancel := o.within(parent)
 	defer cancel()
 
-	done, s, err := o.over().To(ctx, o.entry, node.ALPNSession)
+	transfer, err := share.NewTransfer(sources)
 	if err != nil {
 		return err
 	}
-	defer done.Close()
-	defer s.Close()
+	defer func() { _ = transfer.Close() }()
 
 	bar := &progress{}
 	defer bar.clear()
 
-	conn, err := proto.Open(s, o.served.Path, "share", 0, "", node.DisplayName())
-	if err != nil {
-		return err
+	open := func(ctx context.Context) (*wire.Conn, func(), error) {
+		done, s, err := o.over().To(ctx, o.entry, node.ALPNSession)
+		if err != nil {
+			return nil, nil, err
+		}
+		stop := stopStreamOnDone(ctx, s)
+		close := func() {
+			stop()
+			_ = s.Close()
+			_ = done.Close()
+		}
+		conn, err := proto.Open(s, o.served.Path, "share", 0, "", node.DisplayName())
+		if err != nil {
+			close()
+			return nil, nil, err
+		}
+		return conn, close, nil
 	}
-	if err := share.Send(conn, sources, bar.update); err != nil {
+	if err := retryTransfer(ctx, transfer, bar.update, open); err != nil {
 		return err
 	}
 	for _, src := range sources {
-		noteFile(o.entry.ID, convo.Out, src.Name, src.Size)
+		if err := noteFile(o.entry.ID, convo.Out, src.Name, src.Size); err != nil {
+			return fmt.Errorf("sent %d item(s) to %s, but %w", len(sources), o.where(), err)
+		}
 	}
 
 	fmt.Printf("\nsent %d item(s) to %s\n", len(sources), o.where())
@@ -164,7 +185,7 @@ func sendMessage(parent context.Context, o opening, archetype string, kind byte,
 	if err != nil {
 		// Queued is not lost. A device that is off is the normal case, so this says where the
 		// message is rather than only what went wrong.
-		fmt.Printf("queued for %s: %v\n", o.entry.Name, err)
+		fmt.Printf("queued, and sent when %s is reachable (%v)\n", o.entry.Name, err)
 		return nil
 	}
 	if sent > 0 {
@@ -182,7 +203,8 @@ func readLive(parent context.Context, o opening, raw bool) error {
 	if err != nil {
 		return err
 	}
-	defer over.Close()
+	defer func() { _ = over.Close() }()
+	defer func() { _ = s.Close() }()
 
 	conn, err := proto.Open(s, o.served.Path, o.served.Archetype, 0, "", node.DisplayName())
 	if err != nil {
@@ -197,11 +219,31 @@ func readLive(parent context.Context, o opening, raw bool) error {
 	if raw && term.IsTerminal(local) {
 		state, err := term.MakeRaw(local)
 		if err == nil {
-			defer term.Restore(local, state)
+			defer func() { _ = term.Restore(local, state) }()
 		}
+		shape := &watchingIn{where: o.where()}
 		if w, h, err := term.GetSize(local); err == nil {
-			_ = d.Resize(uint16(w), uint16(h))
+			shape.window(w, h)
+			_ = d.Resize(w, h)
 		}
+
+		// What the terminal is goes in the window's title, which is the one place a raw terminal
+		// has for it that does not draw over the far end's screen.
+		d.OnResize = func(cols, rows uint16) { shape.sized(int(cols), int(rows)) }
+		d.OnCompany = shape.company
+
+		// And a window that changes shape says so, the way any terminal program's does.
+		changes := make(chan os.Signal, 1)
+		signal.Notify(changes, syscall.SIGWINCH)
+		defer signal.Stop(changes)
+		go func() {
+			for range changes {
+				if w, h, err := term.GetSize(local); err == nil {
+					shape.window(w, h)
+					_ = d.Resize(w, h)
+				}
+			}
+		}()
 	}
 
 	// Closed when standard input runs out, so a piped-in script ends the far side's shell rather
@@ -218,6 +260,7 @@ func readLive(parent context.Context, o opening, raw bool) error {
 
 	select {
 	case <-parent.Done():
+		stopLive(d, done)
 		return nil
 	case err := <-done:
 		if streamOver(err) {
@@ -267,11 +310,11 @@ func talkTo(ctx context.Context, o opening) error {
 	}
 	go serveLoop(ctx, o.node, map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			_ = proto.Handle(ctx, s, from, policy)
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
 				return greeting(pinned, mounts, known, from, badge)
 			}, moving(pinned, func(said string) { log.Printf("%s", said) }))
@@ -280,26 +323,34 @@ func talkTo(ctx context.Context, o opening) error {
 
 	fmt.Printf("\ntalking to %s; ctrl-c or ctrl-d to stop\n\n", o.entry.Name)
 
-	go flushLoop(ctx, o)
-
-	lines := make(chan string)
-	go func() {
-		defer close(lines)
-		scan := bufio.NewScanner(os.Stdin)
-		scan.Buffer(make([]byte, 0, 64<<10), convo.MaxBody)
-		for scan.Scan() {
-			lines <- scan.Text()
+	deliveries := make(chan struct{}, 1)
+	go deliveryLoop(ctx, flushEvery, deliveries, func() error {
+		_, err := deliverTo(ctx, o.node, o.lan, o.entry, o.served.Path, "chat")
+		return err
+	}, func(err error) {
+		switch {
+		case err == nil:
+		case proto.Settled(err):
+			fmt.Printf("  (not delivered: %v)\n", err)
+		default:
+			fmt.Printf("  (queued: %v)\n", err)
 		}
-	}()
+	})
+
+	lines := chatInput(ctx, os.Stdin)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case line, ok := <-lines:
+		case input, ok := <-lines:
 			if !ok {
 				return nil
 			}
+			if input.err != nil {
+				return fmt.Errorf("reading chat input: %w", input.err)
+			}
+			line := input.line
 			text := strings.TrimSpace(line)
 			if text == "" {
 				continue
@@ -308,19 +359,42 @@ func talkTo(ctx context.Context, o opening) error {
 				fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 				continue
 			}
-			// Sent in the background so a slow or absent far end does not stop the typing.
-			go func() {
-				_, err := deliverTo(ctx, o.node, o.lan, o.entry, o.served.Path, "chat")
-				switch {
-				case err == nil:
-				case proto.Settled(err):
-					fmt.Printf("  (not delivered: %v)\n", err)
-				default:
-					fmt.Printf("  (queued: %v)\n", err)
-				}
-			}()
+			queueDelivery(deliveries)
 		}
 	}
+}
+
+type chatLine struct {
+	line string
+	err  error
+}
+
+func chatInput(ctx context.Context, from io.Reader) <-chan chatLine {
+	lines := make(chan chatLine, 1)
+	go func() {
+		defer close(lines)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		scan := bufio.NewScanner(from)
+		scan.Buffer(make([]byte, 0, 64<<10), convo.MaxBody)
+		for scan.Scan() {
+			select {
+			case lines <- chatLine{line: scan.Text()}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if err := scan.Err(); err != nil {
+			select {
+			case lines <- chatLine{err: err}:
+			case <-ctx.Done():
+			}
+		}
+	}()
+	return lines
 }
 
 // shownOnOpening is how much of a conversation a window opens on.
@@ -329,18 +403,31 @@ const shownOnOpening = 20
 // flushEvery is how often a chat retries whatever is still queued.
 const flushEvery = 15 * time.Second
 
-// flushLoop keeps trying whatever is still queued, so a device coming back gets the backlog without
-// anyone typing again.
-func flushLoop(ctx context.Context, o opening) {
-	tick := time.NewTicker(flushEvery)
+func queueDelivery(deliveries chan<- struct{}) {
+	select {
+	case deliveries <- struct{}{}:
+	default:
+	}
+}
+
+// deliveryLoop serializes requested deliveries and retries pending messages periodically.
+func deliveryLoop(ctx context.Context, every time.Duration, requests <-chan struct{}, deliver func() error, report func(error)) {
+	tick := time.NewTicker(every)
 	defer tick.Stop()
 
 	for {
+		reportResult := false
 		select {
 		case <-ctx.Done():
 			return
+		case <-requests:
+			reportResult = true
 		case <-tick.C:
-			_, _ = deliverTo(ctx, o.node, o.lan, o.entry, o.served.Path, "chat")
+		}
+
+		err := deliver()
+		if reportResult {
+			report(err)
 		}
 	}
 }
@@ -350,4 +437,61 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// watchingIn is a far terminal as a plain one shows it: in the window's title, which says whose it
+// is, how many are on it, and whether this window is big enough for it.
+type watchingIn struct {
+	mu                    sync.Mutex
+	where                 string
+	cols, rows            int
+	windowCols, windowRow int
+	watching              int
+	own, told             bool
+}
+
+func (w *watchingIn) window(cols, rows int) {
+	w.mu.Lock()
+	w.windowCols, w.windowRow = cols, rows
+	w.mu.Unlock()
+}
+
+func (w *watchingIn) sized(cols, rows int) {
+	w.mu.Lock()
+	w.cols, w.rows = cols, rows
+	w.mu.Unlock()
+	w.title()
+}
+
+func (w *watchingIn) company(c live.Company) {
+	w.mu.Lock()
+	w.watching, w.own, w.told = c.Watching, c.Own, true
+	w.mu.Unlock()
+	w.title()
+}
+
+// title writes what the terminal is into the window's title. Called from the reading side only, so
+// it never lands in the middle of the far end's own escapes.
+func (w *watchingIn) title() {
+	w.mu.Lock()
+	parts := []string{"drop " + w.where}
+	switch {
+	case !w.told:
+	case w.own:
+		parts = append(parts, "your own shell")
+	case w.watching > 1:
+		parts = append(parts, fmt.Sprintf("shared, %d watching", w.watching))
+	default:
+		parts = append(parts, "shared, only you")
+	}
+	if w.cols > 0 {
+		shape := fmt.Sprintf("%d×%d", w.cols, w.rows)
+		if w.cols > w.windowCols || w.rows > w.windowRow {
+			shape += fmt.Sprintf(" — bigger than this %d×%d window", w.windowCols, w.windowRow)
+		}
+		parts = append(parts, shape)
+	}
+	w.mu.Unlock()
+
+	_, _ = fmt.Fprintf(os.Stdout, "\x1b]2;%s\x07", plain.Line(strings.Join(parts, " · ")))
 }

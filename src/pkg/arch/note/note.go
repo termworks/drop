@@ -99,13 +99,19 @@ func (n *Note) Note(c arch.Config) arch.Note {
 // answered before any archetype is looked at. What is left for this is somebody who does not hold
 // it and wants to read it, and reading it is all they may do — changing it means holding it.
 func (n *Note) Serve(ctx context.Context, at arch.Session) error {
+	return at.Conn.WithIdle(wire.FiniteIdle, func() error {
+		return n.serve(at)
+	})
+}
+
+func (n *Note) serve(at arch.Session) error {
 	cfg, ok := at.Config.(Config)
 	if !ok || cfg.File == "" {
 		reject := wire.Reject{Reason: "this namespace has no file"}
 		return at.Conn.WriteFrame(wire.KindReject, reject.Encode())
 	}
 
-	raw, err := os.ReadFile(cfg.File)
+	raw, _, err := readRegular(cfg.File, MaxSize)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		reject := wire.Reject{Reason: "this namespace's file cannot be read"}
 		return at.Conn.WriteFrame(wire.KindReject, reject.Encode())
@@ -123,7 +129,17 @@ func (n *Note) Serve(ctx context.Context, at arch.Session) error {
 
 // Text reads a note off an opened namespace.
 func Text(conn *wire.Conn) ([]byte, error) {
-	kind, body, err := conn.ReadFrame()
+	var out []byte
+	err := conn.WithIdle(wire.FiniteIdle, func() error {
+		var err error
+		out, err = text(conn)
+		return err
+	})
+	return out, err
+}
+
+func text(conn *wire.Conn) ([]byte, error) {
+	kind, body, err := conn.ReadFrameUpTo(MaxSize)
 	if err != nil {
 		return nil, fmt.Errorf("reading the note: %w", err)
 	}
@@ -144,16 +160,26 @@ func Text(conn *wire.Conn) ([]byte, error) {
 //
 // The table is read again every time round, so a namespace created while this is running is picked
 // up without anything having to say so.
-func (n *Note) Watch(ctx context.Context, mounts *ns.Table) {
+func (n *Note) Watch(ctx context.Context, mounts *ns.Table) <-chan struct{} {
 	// A nudge makes a save quick; the timer is what makes every save eventually seen. A machine
 	// with no inotify, or one at its watch limit, keeps the timer and loses only the quickness.
 	ear, err := nudge.Listen(ctx)
 	if err != nil {
 		ear = nil
 	}
+	return n.watch(ctx, mounts, ear, Every)
+}
 
+type changeEar interface {
+	Heard() <-chan struct{}
+	Mind([]string)
+}
+
+func (n *Note) watch(ctx context.Context, mounts *ns.Table, ear changeEar, every time.Duration) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
-		tick := time.NewTicker(Every)
+		defer close(done)
+		tick := time.NewTicker(every)
 		defer tick.Stop()
 
 		var heard <-chan struct{}
@@ -169,20 +195,27 @@ func (n *Note) Watch(ctx context.Context, mounts *ns.Table) {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-			case <-heard:
+			case _, open := <-heard:
+				if !open {
+					heard, ear = nil, nil
+				}
 			}
 		}
 	}()
+	return done
 }
 
 // round brings every note level with its history once, and says which directories are worth
 // listening to until the next one.
 func (n *Note) round(mounts *ns.Table) []string {
 	if mounts == nil {
+		n.retain(nil, nil)
 		return nil
 	}
 
 	var dirs []string
+	keeping := map[string]string{}
+	present := map[string]struct{}{}
 
 	for _, mount := range mounts.All() {
 		if mount.Archetype != n.Name() {
@@ -192,10 +225,12 @@ func (n *Note) round(mounts *ns.Table) []string {
 		if !ok || cfg.File == "" {
 			continue
 		}
+		present[mount.Path] = struct{}{}
 		if !mount.Shared.Declared() {
 			n.say(mount.Path, fmt.Sprintf("%s is a note nobody else holds, so nothing is kept for it", mount.Path))
 			continue
 		}
+		keeping[mount.Path] = cfg.File
 
 		// The directory and not the file: an editor saves by writing beside it and renaming over
 		// it, so the file being watched is not the file that is written.
@@ -211,7 +246,25 @@ func (n *Note) round(mounts *ns.Table) []string {
 			n.into.Changed(mount.Path)
 		}
 	}
+	n.retain(keeping, present)
 	return dirs
+}
+
+func (n *Note) retain(keeping map[string]string, present map[string]struct{}) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	for path, k := range n.kept {
+		file, exists := keeping[path]
+		if !exists || k.file != file {
+			delete(n.kept, path)
+		}
+	}
+	for path := range n.said {
+		if _, exists := present[path]; !exists {
+			delete(n.said, path)
+		}
+	}
 }
 
 // keep runs one note's turn, and says whether a change of this machine's own was recorded.
@@ -269,7 +322,7 @@ func (n *Note) Amiss(c arch.Config) string {
 		return ""
 	}
 
-	if raw, err := os.ReadFile(cfg.File); err == nil {
+	if raw, _, err := readRegular(cfg.File, MaxSize); err == nil {
 		if who := weave.Unsettled(raw); len(who) > 0 {
 			return fmt.Sprintf("unsettled: %s", strings.Join(who, " and "))
 		}

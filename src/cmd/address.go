@@ -2,9 +2,9 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
-	"net"
 	"strings"
 	"time"
 
@@ -20,7 +20,7 @@ import (
 // work out which of theirs — and when it cannot, it says so instead of picking.
 
 // resolve turns an address into the machine it names.
-func resolve(at ns.Address) (book.Entry, error) {
+func resolve(ctx context.Context, at ns.Address) (book.Entry, error) {
 	if at.Here {
 		return book.Entry{}, fmt.Errorf("%s is this machine, and this command is for somebody else's", at)
 	}
@@ -33,7 +33,10 @@ func resolve(at ns.Address) (book.Entry, error) {
 		return book.Entry{}, err
 	}
 
-	theirs := machinesOf(pinned, at.User)
+	theirs, err := machinesOf(pinned, at.User)
+	if err != nil {
+		return book.Entry{}, err
+	}
 	switch len(theirs) {
 	case 0:
 		return book.Entry{}, fmt.Errorf("nobody here is called %q: pair with a machine of theirs first", at.User)
@@ -41,8 +44,11 @@ func resolve(at ns.Address) (book.Entry, error) {
 		return theirs[0], nil
 	}
 
-	if one, ok := onlyAnswering(theirs); ok {
+	if one, ok := onlyAnswering(ctx, theirs); ok {
 		return one, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return book.Entry{}, err
 	}
 	return book.Entry{}, fmt.Errorf("%s has %d machines here and none of them answered: say which of %s",
 		at.User, len(theirs), namesOf(theirs))
@@ -50,25 +56,32 @@ func resolve(at ns.Address) (book.Entry, error) {
 
 // machinesOf is every machine in the book that belongs to a person, found by the name they are
 // called here or by the user key itself.
-func machinesOf(pinned *book.Book, who string) []book.Entry {
+func machinesOf(pinned *book.Book, who string) ([]book.Entry, error) {
 	mine := myKey()
 
 	var out []book.Entry
+	owner, foundOwner := "", false
 	for _, entry := range pinned.All() {
 		if !entry.Owned() {
 			continue
+		}
+		if entry.Person == who {
+			if foundOwner && entry.User != owner {
+				return nil, fmt.Errorf("%q names more than one person in the address book", who)
+			}
+			owner, foundOwner = entry.User, true
 		}
 		if entry.Person == who || entry.User == who || (who == "me" && mine != "" && entry.User == mine) {
 			out = append(out, entry)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // onlyAnswering narrows a person's machines to the one this node is holding a connection to, and
 // gives up when that is none of them or more than one.
-func onlyAnswering(theirs []book.Entry) (book.Entry, bool) {
-	held := heldHere()
+func onlyAnswering(ctx context.Context, theirs []book.Entry) (book.Entry, bool) {
+	held := heldHere(ctx)
 	if len(held) == 0 {
 		return book.Entry{}, false
 	}
@@ -90,31 +103,50 @@ func onlyAnswering(theirs []book.Entry) (book.Entry, bool) {
 //
 // Not a probe: the daemon is asked what it is already holding, so narrowing a person's machines to
 // one costs nothing. With no daemon there is nothing to narrow with and the answer is empty.
-func heldHere() map[node.ID]bool {
+func heldHere(ctx context.Context) map[node.ID]bool {
 	path, err := castSocket()
 	if err != nil {
 		return nil
 	}
 
-	conn, err := net.Dial("unix", path)
+	conn, err := dialLocal(ctx, path)
 	if err != nil {
 		return nil
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	_ = conn.SetDeadline(time.Now().Add(answerWait))
 	if _, err := io.WriteString(conn, "held\n"); err != nil {
 		return nil
 	}
 
-	out := map[node.ID]bool{}
-	scan := bufio.NewScanner(conn)
-	for scan.Scan() {
-		if id, err := node.ParseID(strings.TrimSpace(scan.Text())); err == nil {
-			out[id] = true
-		}
+	out, err := readHeldReply(conn)
+	if err != nil {
+		return nil
 	}
 	return out
+}
+
+const heldReplyEnd = "."
+
+func readHeldReply(from io.Reader) (map[node.ID]bool, error) {
+	out := map[node.ID]bool{}
+	scan := bufio.NewScanner(from)
+	for scan.Scan() {
+		line := strings.TrimSpace(scan.Text())
+		if line == heldReplyEnd {
+			return out, nil
+		}
+		id, err := node.ParseID(line)
+		if err != nil {
+			return nil, fmt.Errorf("reading the held-device reply: %w", err)
+		}
+		out[id] = true
+	}
+	if err := scan.Err(); err != nil {
+		return nil, fmt.Errorf("reading the held-device reply: %w", err)
+	}
+	return nil, io.ErrUnexpectedEOF
 }
 
 // answerWait bounds asking the node on this machine a question it answers out of memory.

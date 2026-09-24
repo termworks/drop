@@ -28,7 +28,7 @@ func listThere(parent context.Context, at ns.Address, entry book.Entry, wait tim
 	if err != nil {
 		return err
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	lan, _ := discovery.StartLAN(ctx, n)
 

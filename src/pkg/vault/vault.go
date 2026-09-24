@@ -53,7 +53,7 @@ func (v *Vault) Key() []byte {
 	if v == nil {
 		return nil
 	}
-	return v.key
+	return append([]byte(nil), v.key...)
 }
 
 // On reports whether anything is encrypted at all.
@@ -83,7 +83,7 @@ func Open(to []string) (*Vault, error) {
 		return nil, err
 	}
 
-	wrapped, err := os.ReadFile(file)
+	wrapped, err := keep.ReadFile(file, keep.MaxState)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return mint(file, to)
@@ -104,13 +104,17 @@ func mint(file string, to []string) (*Vault, error) {
 	var made *Vault
 
 	err := keep.While(file, func() error {
-		if wrapped, err := os.ReadFile(file); err == nil {
-			got, err := unwrap(wrapped, to)
+		existing, err := keep.ReadFile(file, keep.MaxState)
+		switch {
+		case err == nil:
+			got, err := unwrap(existing, to)
 			if err != nil {
 				return err
 			}
 			made = got
 			return nil
+		case !errors.Is(err, os.ErrNotExist):
+			return fmt.Errorf("reading %s: %w", file, err)
 		}
 
 		key := [KeyBytes]byte{}
@@ -234,7 +238,7 @@ func identitiesOf(to []string) ([]age.Identity, error) {
 func keyFile(at string, create bool) (*age.X25519Identity, error) {
 	at = expand(at)
 
-	raw, err := os.ReadFile(at)
+	raw, err := keep.ReadFile(at, keep.MaxState)
 	switch {
 	case errors.Is(err, os.ErrNotExist) && create:
 		return newKeyFile(at)
@@ -243,7 +247,10 @@ func keyFile(at string, create bool) (*age.X25519Identity, error) {
 	case err != nil:
 		return nil, fmt.Errorf("reading %s: %w", at, err)
 	}
+	return identityIn(raw, at)
+}
 
+func identityIn(raw []byte, at string) (*age.X25519Identity, error) {
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -260,19 +267,28 @@ func keyFile(at string, create bool) (*age.X25519Identity, error) {
 
 // newKeyFile writes a key where the config said one should be.
 func newKeyFile(at string) (*age.X25519Identity, error) {
-	identity, err := age.GenerateX25519Identity()
-	if err != nil {
-		return nil, fmt.Errorf("generating an age key: %w", err)
-	}
+	var identity *age.X25519Identity
+	err := keep.While(at, func() error {
+		raw, err := keep.ReadFile(at, keep.MaxState)
+		switch {
+		case err == nil:
+			identity, err = identityIn(raw, at)
+			return err
+		case !errors.Is(err, os.ErrNotExist):
+			return fmt.Errorf("reading %s: %w", at, err)
+		}
 
-	if err := os.MkdirAll(filepath.Dir(at), 0o700); err != nil {
-		return nil, fmt.Errorf("creating %s: %w", filepath.Dir(at), err)
-	}
-	body := fmt.Sprintf("# %s\n%s\n", identity.Recipient(), identity)
-	if err := os.WriteFile(at, []byte(body), 0o600); err != nil {
-		return nil, fmt.Errorf("writing %s: %w", at, err)
-	}
-	return identity, nil
+		identity, err = age.GenerateX25519Identity()
+		if err != nil {
+			return fmt.Errorf("generating an age key: %w", err)
+		}
+		body := fmt.Sprintf("# %s\n%s\n", identity.Recipient(), identity)
+		if err := keep.Replace(at, []byte(body)); err != nil {
+			return fmt.Errorf("writing %s: %w", at, err)
+		}
+		return nil
+	})
+	return identity, err
 }
 
 // expand resolves ~ in a path, because a config is written by a person.
@@ -316,7 +332,7 @@ func Peek(to []string) (State, error) {
 	if err != nil {
 		return Off, err
 	}
-	wrapped, err := os.ReadFile(file)
+	wrapped, err := keep.ReadFile(file, keep.MaxState)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return Fresh, nil

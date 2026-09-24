@@ -2,15 +2,16 @@
 package book
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
-	"time"
 
 	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
@@ -18,6 +19,9 @@ import (
 
 // SecretBytes is the width of the shared secret two paired peers derive.
 const SecretBytes = 32
+
+// MaxEntries caps how many peers one address book holds.
+const MaxEntries = 1 << 8
 
 // Entry is one known peer. Secret is empty for a peer that was pinned by id rather than paired;
 // such a peer can be reached on the local network, but not looked up privately.
@@ -57,9 +61,8 @@ type Book struct {
 	// writes to it, and because Refresh replaces the whole map under them.
 	mu      sync.RWMutex
 	entries map[string]Entry
-	// read is when the file this was loaded from was last written, so Refresh can tell whether
-	// anything has happened since.
-	read time.Time
+	// seen identifies the file revision loaded into entries.
+	seen os.FileInfo
 }
 
 // Refresh re-reads the address book if the file has changed since it was loaded.
@@ -73,8 +76,14 @@ func (b *Book) Refresh() error {
 		return err
 	}
 
-	at, err := os.Stat(file)
+	current, err := os.Stat(file)
 	if errors.Is(err, os.ErrNotExist) {
+		b.mu.Lock()
+		if b.seen != nil {
+			b.entries = map[string]Entry{}
+			b.seen = nil
+		}
+		b.mu.Unlock()
 		return nil
 	}
 	if err != nil {
@@ -82,10 +91,10 @@ func (b *Book) Refresh() error {
 	}
 
 	b.mu.RLock()
-	known := b.read
+	seen := b.seen
 	b.mu.RUnlock()
 
-	if !at.ModTime().After(known) {
+	if sameRevision(seen, current) {
 		return nil
 	}
 
@@ -95,14 +104,19 @@ func (b *Book) Refresh() error {
 	}
 
 	fresh.mu.RLock()
-	entries := fresh.entries
+	entries, seen := fresh.entries, fresh.seen
 	fresh.mu.RUnlock()
 
 	b.mu.Lock()
-	b.entries, b.read = entries, at.ModTime()
+	b.entries, b.seen = entries, seen
 	b.mu.Unlock()
 
 	return nil
+}
+
+func sameRevision(left, right os.FileInfo) bool {
+	return left != nil && right != nil && os.SameFile(left, right) &&
+		left.Size() == right.Size() && left.ModTime().Equal(right.ModTime())
 }
 
 // stored is the on-disk shape.
@@ -131,22 +145,25 @@ func Load() (*Book, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw, err := os.ReadFile(file)
+	at, err := os.Stat(file)
+	if errors.Is(err, os.ErrNotExist) {
+		return b, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("stating %s: %w", file, err)
+	}
+
+	raw, err := keep.ReadFile(file, keep.MaxState)
 	if errors.Is(err, os.ErrNotExist) {
 		return b, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", file, err)
 	}
+	b.seen = at
 
-	// Stamped before parsing, so a write that lands while this is being read is noticed next time
-	// rather than being taken for already-read.
-	if at, err := os.Stat(file); err == nil {
-		b.read = at.ModTime()
-	}
-
-	var onDisk map[string]stored
-	if err := json.Unmarshal(raw, &onDisk); err != nil {
+	onDisk, err := decode(raw, MaxEntries)
+	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", file, err)
 	}
 
@@ -181,6 +198,9 @@ func Load() (*Book, error) {
 func (b *Book) Save() error {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	if len(b.entries) > MaxEntries {
+		return fmt.Errorf("address book has %d peers, over the %d-peer limit", len(b.entries), MaxEntries)
+	}
 
 	file, err := path()
 	if err != nil {
@@ -206,6 +226,51 @@ func (b *Book) Save() error {
 	return keep.Replace(file, append(raw, '\n'))
 }
 
+func decode(raw []byte, most int) (map[string]stored, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	start, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if start != json.Delim('{') {
+		return nil, errors.New("an address book is not an object")
+	}
+
+	out := make(map[string]stored)
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		name, ok := token.(string)
+		if !ok {
+			return nil, errors.New("an address book name is not a string")
+		}
+		var entry stored
+		if err := decoder.Decode(&entry); err != nil {
+			return nil, err
+		}
+		if _, exists := out[name]; !exists && len(out) >= most {
+			return nil, fmt.Errorf("an address book names more than the %d-peer limit", most)
+		}
+		out[name] = entry
+	}
+	end, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if end != json.Delim('}') {
+		return nil, errors.New("an address book does not end as an object")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("an address book has another value after it")
+		}
+		return nil, err
+	}
+	return out, nil
+}
+
 // Pin records a name for a peer id, without a shared secret.
 func (b *Book) Pin(name string, id node.ID) {
 	b.mu.Lock()
@@ -219,7 +284,7 @@ func (b *Book) Pair(name string, id node.ID, secret []byte, addrs ...string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.entries[name] = Entry{Name: name, ID: id, Secret: secret, Addrs: addrs}
+	b.entries[name] = cloneEntry(Entry{Name: name, ID: id, Secret: secret, Addrs: addrs})
 }
 
 // Belongs records whose machine an entry is. Pairing learns the person from the ticket; this is
@@ -320,7 +385,7 @@ func (b *Book) ByUser(key string) (Entry, bool) {
 	if found {
 		out.Trusted = trusted
 	}
-	return out, found
+	return cloneEntry(out), found
 }
 
 // Remove drops a name, reporting whether it was there.
@@ -339,7 +404,7 @@ func (b *Book) Lookup(name string) (Entry, bool) {
 	defer b.mu.RUnlock()
 
 	entry, ok := b.entries[name]
-	return entry, ok
+	return cloneEntry(entry), ok
 }
 
 // ByID finds the entry for a peer id.
@@ -349,7 +414,7 @@ func (b *Book) ByID(id node.ID) (Entry, bool) {
 
 	for _, entry := range b.entries {
 		if entry.ID == id {
-			return entry, true
+			return cloneEntry(entry), true
 		}
 	}
 	return Entry{}, false
@@ -362,7 +427,7 @@ func (b *Book) All() []Entry {
 
 	out := make([]Entry, 0, len(b.entries))
 	for _, entry := range b.entries {
-		out = append(out, entry)
+		out = append(out, cloneEntry(entry))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -408,7 +473,17 @@ func Resolve(target string) (Entry, error) {
 //
 // Only when it changes something. A dial is not a reason to rewrite a file.
 func (b *Book) Reached(id node.ID, at string) (bool, error) {
+	changed := false
+	err := b.Change(func() (bool, error) {
+		changed = b.reached(id, at)
+		return changed, nil
+	})
+	return changed, err
+}
+
+func (b *Book) reached(id node.ID, at string) bool {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	name, entry, found := "", Entry{}, false
 	for known, e := range b.entries {
@@ -418,8 +493,7 @@ func (b *Book) Reached(id node.ID, at string) (bool, error) {
 		}
 	}
 	if !found || (len(entry.Addrs) > 0 && entry.Addrs[0] == at) {
-		b.mu.Unlock()
-		return false, nil
+		return false
 	}
 
 	// First, and once: the rest keep their order behind it, because they were worth trying before
@@ -437,9 +511,7 @@ func (b *Book) Reached(id node.ID, at string) (bool, error) {
 
 	entry.Addrs = addrs
 	b.entries[name] = entry
-	b.mu.Unlock()
-
-	return true, b.Save()
+	return true
 }
 
 // mostAddrs caps what is remembered for one device. A machine that moves between a few networks is
@@ -503,13 +575,100 @@ func (b *Book) Change(alter func() (bool, error)) error {
 	}
 
 	return keep.While(file, func() error {
-		if err := b.Refresh(); err != nil {
+		if err := b.reload(); err != nil {
 			return err
 		}
+
+		b.mu.RLock()
+		before, seen := cloneEntries(b.entries), b.seen
+		b.mu.RUnlock()
+		restore := func() {
+			b.mu.Lock()
+			b.entries, b.seen = before, seen
+			b.mu.Unlock()
+		}
+
 		changed, err := alter()
 		if err != nil || !changed {
+			restore()
 			return err
 		}
-		return b.Save()
+		if err := b.Save(); err != nil {
+			if reloadErr := b.reload(); reloadErr != nil {
+				return errors.Join(err, fmt.Errorf("restoring the address book after the failed write: %w", reloadErr))
+			}
+			return err
+		}
+		return nil
 	})
+}
+
+func cloneEntries(entries map[string]Entry) map[string]Entry {
+	out := make(map[string]Entry, len(entries))
+	for name, entry := range entries {
+		out[name] = cloneEntry(entry)
+	}
+	return out
+}
+
+func cloneEntry(entry Entry) Entry {
+	entry.Secret = append([]byte(nil), entry.Secret...)
+	entry.Addrs = append([]string(nil), entry.Addrs...)
+	return entry
+}
+
+func (b *Book) reload() error {
+	fresh, err := Load()
+	if err != nil {
+		return err
+	}
+
+	fresh.mu.RLock()
+	entries, seen := fresh.entries, fresh.seen
+	fresh.mu.RUnlock()
+
+	b.mu.Lock()
+	b.entries, b.seen = entries, seen
+	b.mu.Unlock()
+	return nil
+}
+
+// Rename files a machine under another name. Its person, trust and secret go with it.
+func (b *Book) Rename(old, name string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	entry, ok := b.entries[old]
+	if !ok {
+		return fmt.Errorf("%s is not in the address book", old)
+	}
+	if _, taken := b.entries[name]; taken && name != old {
+		return fmt.Errorf("%s is a name already taken here", name)
+	}
+	delete(b.entries, old)
+	entry.Name = name
+	if entry.Person == old {
+		entry.Person = name
+	}
+	b.entries[name] = entry
+	return nil
+}
+
+// RenamePerson calls a person something else here, on every machine of theirs.
+func (b *Book) RenamePerson(old, name string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	found := false
+	for at, entry := range b.entries {
+		if entry.User == "" || entry.Person != old {
+			continue
+		}
+		entry.Person, found = name, true
+		b.entries[at] = entry
+	}
+	if !found {
+		return fmt.Errorf("%s is nobody in the address book", old)
+	}
+	return nil
 }

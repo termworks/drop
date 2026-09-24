@@ -184,7 +184,7 @@ func TestTheWalkGoesThroughWhateverIsStackedOnTheDrive(t *testing.T) {
 	}
 }
 
-// A mirror is named by both of its halves, so losing one at boot does not rename the machine.
+// A mirror is named by every member present in its stack.
 func TestAMirrorIsNamedByEveryDriveUnderIt(t *testing.T) {
 	dir := t.TempDir()
 	laid(t, dir, map[string]string{

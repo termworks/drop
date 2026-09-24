@@ -14,7 +14,7 @@ import (
 func FuzzText(f *testing.F) {
 	f.Add("a chat\x1b[1A\x1b[2K  /secrets", 120)
 	f.Add("\x1b]0;title\x07", 10)
-	f.Add("annexe‮gnp.eht", 120)
+	f.Add("annexe\u202egnp.eht", 120)
 	f.Add("\xff\xfe\xfd", 120)
 	f.Add(strings.Repeat("a", 5000), 3)
 	f.Add("", 0)

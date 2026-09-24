@@ -43,8 +43,9 @@ func newMachineCmd() *cobra.Command {
 				fmt.Printf("  which reads   %s\n", mark.Brief())
 				fmt.Printf("  and by        where this drop keeps its things, so every account and\n")
 				fmt.Printf("                profile here is reachable as itself\n")
-				fmt.Printf("  survives      a reinstall, because nothing about it is written down\n")
-				fmt.Printf("  changes if    %s\n", changes(mark.From))
+				fmt.Printf("  checked by    the public identity in %s.hardware\n", at)
+				fmt.Printf("  survives      a reinstall when the same hardware source is available\n")
+				fmt.Printf("  refuses if    %s\n", changes(mark.From))
 			default:
 				fmt.Printf("  named by      the key kept in %s\n", at)
 				fmt.Printf("  survives      a reinstall only if that file is in your backup\n")
@@ -100,6 +101,15 @@ func newRebindCmd() *cobra.Command {
 			if _, err := os.Stat(at); os.IsNotExist(err) {
 				return fmt.Errorf("this machine is already named by %s", mark.Says)
 			}
+			if sure {
+				rebound, err := node.RebindHardware()
+				if err != nil {
+					return err
+				}
+				fmt.Printf("this machine is now %s, named by %s\n", node.Brief(rebound.Now), rebound.From.Says)
+				fmt.Printf("who it was is in %s\n", rebound.Kept)
+				return nil
+			}
 
 			where, err := node.ConfigDir()
 			if err != nil {
@@ -115,23 +125,11 @@ func newRebindCmd() *cobra.Command {
 			}
 			becomes := node.From(seed)
 
-			if !sure {
-				fmt.Printf("this machine is %s\n", node.Brief(was))
-				fmt.Printf("it would become %s, named by %s\n\n", node.Brief(becomes), mark.Says)
-				fmt.Printf("every machine paired with this one knows it by the old name and will not\n")
-				fmt.Printf("recognise the new one. Each pairing has to be made again.\n\n")
-				fmt.Printf("run it again with --yes to go ahead.\n")
-				return nil
-			}
-
-			// Kept rather than removed: it is the only copy of who this machine used to be, and
-			// somebody who changes their mind an hour later should not be told it is gone.
-			beside := at + ".was"
-			if err := os.Rename(at, beside); err != nil {
-				return fmt.Errorf("moving %s aside: %w", at, err)
-			}
-			fmt.Printf("this machine is now %s, named by %s\n", node.Brief(becomes), mark.Says)
-			fmt.Printf("who it was is in %s\n", beside)
+			fmt.Printf("this machine is %s\n", node.Brief(was))
+			fmt.Printf("it would become %s, named by %s\n\n", node.Brief(becomes), mark.Says)
+			fmt.Printf("every machine paired with this one knows it by the old name and will not\n")
+			fmt.Printf("recognise the new one. Each pairing has to be made again.\n\n")
+			fmt.Printf("run it again with --yes to go ahead.\n")
 			return nil
 		},
 	}

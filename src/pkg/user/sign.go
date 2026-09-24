@@ -2,12 +2,18 @@ package user
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
+
+	"github.com/bresilla/drop/src/pkg/keep"
 )
 
 // How a badge gets signed, when drop cannot do it itself.
@@ -59,7 +65,7 @@ func signCommand(where string) string {
 
 // heldElsewhere reports whether the file names a key drop cannot sign with itself.
 func heldElsewhere(where string) bool {
-	raw, err := os.ReadFile(where)
+	raw, err := keep.ReadFile(where, keep.MaxState)
 	if err != nil {
 		return false
 	}
@@ -72,6 +78,10 @@ func heldElsewhere(where string) bool {
 // a touch says so there, and swallowing it would leave somebody staring at a command that appears
 // to have hung.
 func signVia(command string, message []byte) ([]byte, error) {
+	return signViaWithin(command, message, signCommandWithin, maxCommandSignature)
+}
+
+func signViaWithin(command string, message []byte, within time.Duration, maxOutput int) ([]byte, error) {
 	parts := strings.Fields(command)
 	if len(parts) == 0 {
 		return nil, fmt.Errorf("the signing command is empty")
@@ -80,19 +90,68 @@ func signVia(command string, message []byte) ([]byte, error) {
 		parts[i] = expand(at)
 	}
 
-	run := exec.Command(parts[0], parts[1:]...)
+	ctx, cancel := context.WithTimeout(context.Background(), within)
+	defer cancel()
+
+	run := exec.CommandContext(ctx, parts[0], parts[1:]...)
+	run.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	run.Cancel = func() error {
+		err := syscall.Kill(-run.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	run.WaitDelay = commandWaitDelay
 	run.Stdin = bytes.NewReader(message)
 	run.Stderr = os.Stderr
+	out := &cappedOutput{limit: maxOutput, cancel: cancel}
+	run.Stdout = out
 
-	out, err := run.Output()
+	err := run.Run()
+	if out.over {
+		return nil, fmt.Errorf("%s wrote more than %d signature bytes", parts[0], maxOutput)
+	}
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("%s did not finish within %s: %w", parts[0], within, ctx.Err())
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", parts[0], err)
 	}
-	if len(bytes.TrimSpace(out)) == 0 {
+	if len(bytes.TrimSpace(out.buf.Bytes())) == 0 {
 		return nil, fmt.Errorf("%s signed nothing", parts[0])
 	}
-	return out, nil
+	return out.buf.Bytes(), nil
 }
+
+type cappedOutput struct {
+	buf    bytes.Buffer
+	limit  int
+	over   bool
+	cancel context.CancelFunc
+}
+
+func (w *cappedOutput) Write(p []byte) (int, error) {
+	written := len(p)
+	keep := written
+	if left := w.limit - w.buf.Len(); keep > left {
+		keep = max(left, 0)
+		if !w.over {
+			w.over = true
+			w.cancel()
+		}
+	}
+	if keep > 0 {
+		_, _ = w.buf.Write(p[:keep])
+	}
+	return written, nil
+}
+
+const (
+	signCommandWithin   = 2 * time.Minute
+	commandWaitDelay    = 2 * time.Second
+	maxCommandSignature = 64 << 10
+)
 
 // expand resolves ~ in a command's arguments, because a config is written by a person.
 func expand(at string) string {

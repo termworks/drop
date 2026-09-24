@@ -1,15 +1,20 @@
 package convo
 
 import (
+	"bytes"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/tmc/go-iroh/key"
 
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
@@ -33,6 +38,217 @@ func openStore(t *testing.T) *Store {
 		t.Fatalf("Open(): %v", err)
 	}
 	return s
+}
+
+func TestConversationDirectoriesAreBounded(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"one", "two"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := prepareConversation(root, filepath.Join(root, "three"), 2); err == nil {
+		t.Fatal("a conversation was created past the directory limit")
+	}
+	if err := prepareConversation(root, filepath.Join(root, "one"), 2); err != nil {
+		t.Fatalf("an existing conversation was refused: %v", err)
+	}
+}
+
+func TestConversationDirectoryCannotBeASymlink(t *testing.T) {
+	root := t.TempDir()
+	target := t.TempDir()
+	link := filepath.Join(root, "peer")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := prepareConversation(root, link, 2); err == nil {
+		t.Fatal("a symlink was accepted as a conversation directory")
+	}
+}
+
+func TestConversationDirectoryLimitIsConcurrent(t *testing.T) {
+	root := t.TempDir()
+	const (
+		limit      = 8
+		contenders = 32
+	)
+
+	start := make(chan struct{})
+	results := make(chan error, contenders)
+	var waiting sync.WaitGroup
+	waiting.Add(contenders)
+	for i := range contenders {
+		go func() {
+			waiting.Done()
+			<-start
+			results <- prepareConversation(root, filepath.Join(root, fmt.Sprintf("peer-%d", i)), limit)
+		}()
+	}
+	waiting.Wait()
+	close(start)
+
+	created := 0
+	for range contenders {
+		if err := <-results; err == nil {
+			created++
+		}
+	}
+	if created != limit {
+		t.Fatalf("created %d conversation directories, want %d", created, limit)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directories := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			directories++
+		}
+	}
+	if directories != limit {
+		t.Fatalf("found %d conversation directories, want %d", directories, limit)
+	}
+}
+
+func TestConversationStorageIsBoundedAcrossPeers(t *testing.T) {
+	root := t.TempDir()
+	for _, peer := range []string{"one", "two"} {
+		if err := os.Mkdir(filepath.Join(root, peer), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	body := []byte("one record")
+	var head [binary.MaxVarintLen64]byte
+	frameBytes := int64(binary.PutUvarint(head[:], uint64(len(body))) + len(body))
+	if err := appendToLimit(filepath.Join(root, "one", "history"), body, frameBytes); err != nil {
+		t.Fatalf("writing within the account limit: %v", err)
+	}
+	if err := appendToLimit(filepath.Join(root, "two", "history"), body, frameBytes); err == nil {
+		t.Fatal("conversation storage grew past the account limit")
+	}
+	if _, err := os.Stat(filepath.Join(root, "two", "history")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused log was created: %v", err)
+	}
+}
+
+func TestConversationStorageLimitIsConcurrent(t *testing.T) {
+	root := t.TempDir()
+	for _, peer := range []string{"one", "two"} {
+		if err := os.Mkdir(filepath.Join(root, peer), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	body := []byte("one record")
+	var head [binary.MaxVarintLen64]byte
+	frameBytes := int64(binary.PutUvarint(head[:], uint64(len(body))) + len(body))
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, peer := range []string{"one", "two"} {
+		go func() {
+			<-start
+			results <- appendToLimit(filepath.Join(root, peer, "history"), body, frameBytes)
+		}()
+	}
+	close(start)
+
+	written := 0
+	for range 2 {
+		if err := <-results; err == nil {
+			written++
+		}
+	}
+	if written != 1 {
+		t.Fatalf("%d concurrent logs were written, want 1", written)
+	}
+	used, err := conversationBytes(root, MaxConversations+2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used != frameBytes {
+		t.Fatalf("conversation storage is %d bytes, want %d", used, frameBytes)
+	}
+}
+
+func TestConversationStorageRejectsSymlinkedLogs(t *testing.T) {
+	root := t.TempDir()
+	peer := filepath.Join(root, "peer")
+	if err := os.Mkdir(peer, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(peer, "history")); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+
+	if err := appendToLimit(filepath.Join(peer, "outbox"), []byte("message"), 1024); err == nil {
+		t.Fatal("conversation storage accepted a symlinked log")
+	}
+	if raw, err := os.ReadFile(target); err != nil || string(raw) != "untouched" {
+		t.Fatalf("symlink target = %q, %v", raw, err)
+	}
+}
+
+func TestConversationRewriteCannotExceedAccountLimit(t *testing.T) {
+	root := t.TempDir()
+	peer := filepath.Join(root, "peer")
+	if err := os.Mkdir(peer, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	history := filepath.Join(peer, "history")
+	before := []byte("old")
+	if err := os.WriteFile(history, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := replaceConversationLog(history, []byte("larger"), int64(len(before))); err == nil {
+		t.Fatal("a rewrite grew conversation storage past the account limit")
+	}
+	after, err := os.ReadFile(history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("a refused account rewrite changed the original log")
+	}
+}
+
+func BenchmarkConversationBytes(b *testing.B) {
+	for _, peers := range []int{16, 256, MaxConversations} {
+		b.Run(fmt.Sprintf("peers-%d", peers), func(b *testing.B) {
+			root := b.TempDir()
+			for i := range peers {
+				dir := filepath.Join(root, fmt.Sprintf("peer-%d", i))
+				if err := os.Mkdir(dir, 0o700); err != nil {
+					b.Fatal(err)
+				}
+				for _, name := range []string{"history", "outbox"} {
+					if err := os.WriteFile(filepath.Join(dir, name), []byte{0}, 0o600); err != nil {
+						b.Fatal(err)
+					}
+				}
+			}
+
+			b.ResetTimer()
+			for range b.N {
+				used, err := conversationBytes(root, MaxConversations+2)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if used != int64(peers*2) {
+					b.Fatalf("measured %d bytes, want %d", used, peers*2)
+				}
+			}
+		})
+	}
 }
 
 func queue(t *testing.T, s *Store, body string) Message {
@@ -67,6 +283,28 @@ func TestQueuedMessageIsAlreadyHistory(t *testing.T) {
 	}
 	if len(waiting) != 1 {
 		t.Fatalf("Pending() = %d messages, want 1", len(waiting))
+	}
+}
+
+func TestQueueIsIdempotent(t *testing.T) {
+	s := openStore(t)
+	m, err := New(KindText, "hello", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Queue(m); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Queue(m); err != nil {
+		t.Fatal(err)
+	}
+
+	waiting, err := s.Pending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(waiting) != 1 {
+		t.Fatalf("Pending() = %d copies, want 1", len(waiting))
 	}
 }
 
@@ -106,6 +344,58 @@ func TestDeliveredEverythingRemovesTheOutbox(t *testing.T) {
 	waiting, _ := s.Pending()
 	if len(waiting) != 0 {
 		t.Fatalf("Pending() = %d, want 0", len(waiting))
+	}
+}
+
+func TestARewriteCannotGrowALogPastItsLimit(t *testing.T) {
+	s := openStore(t)
+	queue(t, s, "kept in the original log")
+
+	before, err := os.ReadFile(s.history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rewriteLog(s.history, s.peer.String(), make([]byte, 32), 1); err == nil {
+		t.Fatal("a rewritten log grew past its limit")
+	}
+	after, err := os.ReadFile(s.history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("a refused rewrite changed the original log")
+	}
+}
+
+func TestOutboxChangesWaitForOtherProcesses(t *testing.T) {
+	s := openStore(t)
+	m := queue(t, s, "waiting")
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lockErr := make(chan error, 1)
+	go func() {
+		lockErr <- keep.While(s.outbox, func() error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+
+	done := make(chan error, 1)
+	go func() { done <- s.Delivered(m.ID) }()
+	select {
+	case err := <-done:
+		t.Fatalf("Delivered() passed a held cross-process lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-lockErr; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -155,6 +445,61 @@ func TestTruncatedTailDoesNotLoseEarlierMessages(t *testing.T) {
 	}
 	if len(history) != 2 {
 		t.Fatalf("History() = %d entries, want the 2 written before the tear", len(history))
+	}
+}
+
+func TestWritingAfterATruncatedTailKeepsNewMessages(t *testing.T) {
+	s := openStore(t)
+	queue(t, s, "first")
+
+	for _, path := range []string{s.history, s.outbox} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(raw, 0x40, 0x01, 0x02), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	queue(t, s, "second")
+	history, err := s.History()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := s.Pending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, messages := range map[string][]Message{"history": history, "outbox": pending} {
+		if len(messages) != 2 || messages[0].Body != "first" || messages[1].Body != "second" {
+			t.Fatalf("%s after repair = %+v", name, messages)
+		}
+	}
+}
+
+func TestTailRepairDoesNotTruncateAReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history")
+	if err := os.WriteFile(path, []byte("broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seen, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := keep.Replace(path, []byte("replacement")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := trimTail(path, seen, 0); err == nil {
+		t.Fatal("trimTail() accepted a replacement")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "replacement" {
+		t.Fatalf("replacement changed to %q", raw)
 	}
 }
 
@@ -318,6 +663,60 @@ func TestAnOversizedMessageIsRefused(t *testing.T) {
 	}
 }
 
+func TestAnOversizedConversationLogIsRefused(t *testing.T) {
+	s := openStore(t)
+	if err := os.WriteFile(s.history, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(s.history, MaxLog+1); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.History(); err == nil {
+		t.Fatal("History() accepted an oversized log")
+	}
+	m, err := New(KindText, "one more", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Add(m); err == nil {
+		t.Fatal("Add() grew an oversized log")
+	}
+	stat, err := os.Stat(s.history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat.Size() != MaxLog+1 {
+		t.Fatalf("oversized log changed to %d bytes", stat.Size())
+	}
+}
+
+func TestConversationLogsRefuseHardLinks(t *testing.T) {
+	s := openStore(t)
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(outside, s.history); err != nil {
+		t.Skipf("hard links are unavailable: %v", err)
+	}
+
+	m, err := New(KindText, "private", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Add(m); err == nil {
+		t.Fatal("Add() wrote through a hard link")
+	}
+	stat, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat.Size() != 0 {
+		t.Fatalf("hard-link target changed to %d bytes", stat.Size())
+	}
+}
+
 // One record that will not read costs that record and nothing else. Ending the walk there hid
 // every message written after it, and the next Rewrite deleted them.
 func TestARecordThatWillNotReadDoesNotHideTheRest(t *testing.T) {
@@ -351,6 +750,37 @@ func TestARecordThatWillNotReadDoesNotHideTheRest(t *testing.T) {
 	}
 }
 
+func TestRewriteDoesNotFollowAPredictableScratchLink(t *testing.T) {
+	s := openStore(t)
+	queue(t, s, "kept")
+
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, s.history+".new"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Rewrite(nil); err != nil {
+		t.Fatalf("Rewrite(): %v", err)
+	}
+	if raw, err := os.ReadFile(victim); err != nil || string(raw) != "untouched" {
+		t.Fatalf("scratch link target = %q, %v", raw, err)
+	}
+	stat, err := os.Lstat(s.history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stat.Mode().IsRegular() {
+		t.Fatalf("rewritten history mode = %v", stat.Mode())
+	}
+	history, err := s.History()
+	if err != nil || len(history) != 1 || history[0].Body != "kept" {
+		t.Fatalf("rewritten history = %+v, %v", history, err)
+	}
+}
+
 // Storing a message must not cost a read of everything said before it. The daemon opens the
 // conversation once per arriving message, so the walk has to be paid once, not per message.
 func TestStoringDoesNotRereadTheWholeLog(t *testing.T) {
@@ -359,33 +789,60 @@ func TestStoringDoesNotRereadTheWholeLog(t *testing.T) {
 	peer := testPeer(t)
 	body := strings.Repeat("x", 4096)
 
-	const block = 400
-	store := func() time.Duration {
-		start := time.Now()
-		for i := 0; i < block; i++ {
-			s, err := Open(peer)
-			if err != nil {
-				t.Fatalf("Open(): %v", err)
-			}
-			m, err := New(KindText, body, "")
-			if err != nil {
-				t.Fatalf("New(): %v", err)
-			}
-			m.Dir = In
-			if _, err := s.Add(m); err != nil {
-				t.Fatalf("Add(): %v", err)
-			}
+	var s *Store
+	for range 1600 {
+		var err error
+		s, err = Open(peer)
+		if err != nil {
+			t.Fatalf("Open(): %v", err)
 		}
-		return time.Since(start)
+		m, err := New(KindText, body, "")
+		if err != nil {
+			t.Fatalf("New(): %v", err)
+		}
+		m.Dir = In
+		if _, err := s.Add(m); err != nil {
+			t.Fatalf("Add(): %v", err)
+		}
 	}
 
-	first := store()
-	store()
-	store()
-	last := store()
+	if s.reads != 1 {
+		t.Fatalf("storing 1600 messages read the whole log %d times", s.reads)
+	}
+}
 
-	if last > 4*first && last > 200*time.Millisecond {
-		t.Fatalf("messages %d-%d took %s against %s for the first %d: the cost grows with the log",
-			3*block, 4*block, last, first, block)
+func TestDedupeNoticesAnEqualSizedReplacement(t *testing.T) {
+	s := openStore(t)
+	first := Message{ID: "first-id", Kind: KindText, Dir: In, Body: "first", At: 1}
+	if fresh, err := s.Add(first); err != nil || !fresh {
+		t.Fatalf("Add(first) = %v, %v", fresh, err)
+	}
+
+	second := Message{ID: "other-id", Kind: KindText, Dir: In, Body: "other", At: 2}
+	body, err := record(second, s.peer.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var head [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(head[:], uint64(len(body)))
+	replacement := append(append([]byte{}, head[:n]...), body...)
+	if stat, err := os.Stat(s.history); err != nil {
+		t.Fatal(err)
+	} else if int64(len(replacement)) != stat.Size() {
+		t.Fatalf("replacement is %d bytes, want %d", len(replacement), stat.Size())
+	}
+	if err := keep.Replace(s.history, replacement); err != nil {
+		t.Fatal(err)
+	}
+
+	if fresh, err := s.Add(first); err != nil || !fresh {
+		t.Fatalf("Add(first) after replacement = %v, %v", fresh, err)
+	}
+	history, err := s.History()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("History() = %d messages, want both records", len(history))
 	}
 }

@@ -30,7 +30,7 @@ type Config struct {
 	// Vault is who the data key is wrapped to: age recipients, or a path to a key file. Empty is a
 	// node that keeps its history in the clear, which is the default and a decision.
 	Vault []string
-	// Bootstrap and Relays override the defaults when set.
+	// Bootstrap records an unsupported legacy setting. Relays overrides the defaults when set.
 	Bootstrap []string
 	Relays    []string
 	// HasName and HasOpenLinks say whether the config mentioned the setting at all, so one it never
@@ -147,6 +147,10 @@ func FilePath() (string, error) {
 // A file that exists and does not parse is fatal rather than ignored: a typo that silently drops
 // half the namespaces is worse than not starting.
 func Load(known *arch.Registry) (*Config, error) {
+	return loadConfig(known, true)
+}
+
+func loadConfig(known *arch.Registry, requireNamespaces bool) (*Config, error) {
 	path, err := FilePath()
 	if err != nil {
 		return nil, err
@@ -170,7 +174,12 @@ func Load(known *arch.Registry) (*Config, error) {
 	if err := run(cfg, path); err != nil {
 		return nil, err
 	}
-	if cfg.Mounts.Len() == 0 {
+	if len(cfg.Bootstrap) > 0 {
+		cfg.Close()
+		return nil, fmt.Errorf("%s sets drop.bootstrap, which this transport does not support", path)
+	}
+	if requireNamespaces && cfg.Mounts.Len() == 0 {
+		cfg.Close()
 		return nil, fmt.Errorf("%s declares no namespaces, so this node would serve nothing", path)
 	}
 	return cfg, nil
@@ -199,9 +208,6 @@ func (c *Config) Apply() {
 	if c.HasName && c.Name != "" {
 		node.SetName(c.Name)
 	}
-	if len(c.Bootstrap) > 0 {
-		node.SetBootstrap(c.Bootstrap)
-	}
 	if c.HasRendezvous {
 		node.SetRendezvous(c.Rendezvous)
 	}
@@ -222,17 +228,16 @@ func (c *Config) Apply() {
 // ApplySettings puts the config's settings in effect and nothing else.
 //
 // Every command needs the settings — a command that dials has to know whether a rendezvous is
-// allowed — but only the ones that serve need the namespaces and handlers. An unreadable config is
-// ignored here rather than reported, because the command that actually depends on it loads it
-// again and says so properly.
-func ApplySettings(known *arch.Registry) {
-	cfg, err := Load(known)
+// allowed — while only the ones that serve need the namespaces and handlers.
+func ApplySettings(known *arch.Registry) error {
+	cfg, err := loadConfig(known, false)
 	if err != nil {
-		return
+		return err
 	}
 	defer cfg.Close()
 
 	cfg.Apply()
+	return nil
 }
 
 // Vaulted opens the vault this config names, making a data key the first time.

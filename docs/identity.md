@@ -15,8 +15,9 @@ $ drop me machine
   which reads   e5535c77824b
   and by        where this drop keeps its things, so every account and
                 profile here is reachable as itself
-  survives      a reinstall, because nothing about it is written down
-  changes if    the drive the system is on is replaced, or this drop is moved to another home
+  checked by    the public identity in /home/alice/.config/drop/identity.hardware
+  survives      a reinstall when the same hardware source is available
+  refuses if    the drive the system is on is replaced, or this drop is moved to another home
 ```
 
 ## The sources
@@ -34,7 +35,8 @@ The drive case is the fiddly one. `/` is usually a partition, often on LVM, ofte
 of those have a serial — the kernel made their names up and a reinstall makes up different ones. So
 the walk starts at the device `/` is actually on and follows `slaves/` links down until it reaches
 something with a serial written on it by a manufacturer. A mirror is named by both of its halves, so
-losing one at boot does not rename the machine.
+the order in which they appear cannot change the name. Losing one changes the derivation;
+`identity.hardware` makes an installed drop refuse to start instead of silently taking a new name.
 
 **The TPM path has never run.** Neither machine this was built on has one. A PC whose firmware
 offers one (Intel PTT, AMD fTPM) usually ships with it switched off in the BIOS. `metal.Seal` and
@@ -47,9 +49,16 @@ that has not executed is not code that works.
 seed = KDF(purpose, what the hardware said, where this drop keeps its things)
 ```
 
-Nothing is written down when a machine will name itself, which is the point: **reinstall and it
-comes back as the machine it was**, with no backup and nothing to restore. Carry a backup to another
-box and it does *not* come back as that machine, because the key was never in the backup.
+The secret is not written down when a machine names itself. A reinstall derives it again, so the
+machine comes back with the same identity when the same hardware source and config path are
+available. A public anchor is written to `identity.hardware`; it contains no secret and cannot be
+used to impersonate the machine.
+
+Keep that public anchor in a backup. An installed drop uses it to refuse a silent identity change
+when the TPM becomes unreachable, firmware identifiers change, a mirror is degraded, or a stronger
+source appears. A completely wiped config directory has no record to compare against, so restoring
+the anchor is the only way it can detect changed hardware before starting. Carrying the backup to
+another box does not carry the secret; the anchor makes the mismatch fail closed.
 
 The second half is in there because a machine is one machine and the drops running on it are
 several — every account with one, every profile under an account, every node a test brings up. Each
@@ -112,7 +121,9 @@ recognise the new one. Each pairing has to be made again.
 run it again with --yes to go ahead.
 ```
 
-The old key is kept beside the new one as `identity.was`, not deleted.
+The old key is kept beside the new one as `identity.was`, not deleted. Rebinding refuses to
+overwrite an existing `identity.was`; move that recovery key somewhere safe before rebinding again.
+The hardware's public identity is pinned before the written key is retired.
 
 A machine's key is minted exactly once, however many drops start at the same moment. Two of them
 each making one would leave whichever wrote second owning the file while the other ran its whole

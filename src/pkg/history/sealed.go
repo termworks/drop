@@ -44,7 +44,7 @@ func Unlock(key []byte) {
 	held.Lock()
 	defer held.Unlock()
 
-	held.key, held.get, held.asked, held.err = key, nil, true, nil
+	held.key, held.get, held.asked, held.err = append([]byte(nil), key...), nil, true, nil
 }
 
 // Unlocking says how to get the data key, without getting it.
@@ -66,7 +66,8 @@ func keyed() ([]byte, error) {
 	defer held.Unlock()
 
 	if !held.asked && held.get != nil {
-		held.key, held.err = held.get()
+		key, err := held.get()
+		held.key, held.err = append([]byte(nil), key...), err
 		held.asked = true
 	}
 	return held.key, held.err
@@ -83,6 +84,11 @@ func stored(body []byte, about string, id ID) ([]byte, error) {
 		// log. Refusing to write is the only safe answer.
 		return nil, err
 	}
+	return storedWith(body, about, id, key)
+}
+
+// storedWith keeps one record under the key given. An empty key writes it in the clear.
+func storedWith(body []byte, about string, id ID, key []byte) ([]byte, error) {
 	if len(key) == 0 {
 		return body, nil
 	}
@@ -149,6 +155,9 @@ func unseal(key, kept []byte, about string) ([]byte, error) {
 	body, err := r.Bytes(maxCipher)
 	if err != nil {
 		return nil, err
+	}
+	if !r.Done() {
+		return nil, fmt.Errorf("a sealed change has trailing bytes")
 	}
 
 	box, err := chacha20poly1305.NewX(key)

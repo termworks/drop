@@ -19,7 +19,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
@@ -32,6 +31,16 @@ type Rule struct {
 	Allow []string `json:"allow,omitempty"`
 	// Deny is who may not, whatever anything else says.
 	Deny []string `json:"deny,omitempty"`
+	// Level, when set, is who may reach it in place of what the config says: me, trusted, paired or
+	// anyone. The names allowed here still count; the ones the config names do not.
+	Level string `json:"level,omitempty"`
+	// Shown, when set, is whether those who may not open it may still see it is there and ask.
+	Shown *bool `json:"shown,omitempty"`
+}
+
+// empty reports whether a rule says nothing, and can go.
+func (r Rule) empty() bool {
+	return len(r.Allow) == 0 && len(r.Deny) == 0 && r.Level == "" && r.Shown == nil
 }
 
 // Store is every such rule, and the file they are kept in.
@@ -40,11 +49,8 @@ type Store struct {
 	// interface writes to it, and because Refresh replaces the whole map under them.
 	mu    sync.RWMutex
 	paths map[string]Rule
-	// read is when the file was last written and how big it was, so Refresh can tell whether
-	// anything has happened since. Size as well as time, because a grant made and revoked within
-	// the same second of a filesystem that counts in seconds would otherwise go unnoticed.
-	read time.Time
-	size int64
+	// seen identifies the file revision loaded into paths.
+	seen os.FileInfo
 	// broken is why the file last refused to load, and nil once it has loaded. A rule set nobody
 	// can read is not a rule set that allows everything.
 	broken error
@@ -75,8 +81,9 @@ func (s *Store) Refresh() error {
 		return err
 	}
 
-	at, err := os.Stat(file)
+	current, err := os.Stat(file)
 	if errors.Is(err, os.ErrNotExist) {
+		s.clear()
 		return nil
 	}
 	if err != nil {
@@ -84,13 +91,18 @@ func (s *Store) Refresh() error {
 	}
 
 	s.mu.RLock()
-	fresh := at.ModTime().Equal(s.read) && at.Size() == s.size
+	fresh := sameRevision(s.seen, current)
 	s.mu.RUnlock()
 
 	if fresh {
 		return nil
 	}
 	return s.reread()
+}
+
+func sameRevision(left, right os.FileInfo) bool {
+	return left != nil && right != nil && os.SameFile(left, right) &&
+		left.Size() == right.Size() && left.ModTime().Equal(right.ModTime())
 }
 
 // reread builds the whole rule set before putting any of it in place.
@@ -104,9 +116,19 @@ func (s *Store) reread() error {
 		return s.failed(err)
 	}
 
-	raw, err := os.ReadFile(file)
+	at, err := os.Stat(file)
 	if errors.Is(err, os.ErrNotExist) {
-		return s.failed(nil)
+		s.clear()
+		return nil
+	}
+	if err != nil {
+		return s.failed(fmt.Errorf("stating %s: %w", file, err))
+	}
+
+	raw, err := keep.ReadFile(file, keep.MaxState)
+	if errors.Is(err, os.ErrNotExist) {
+		s.clear()
+		return nil
 	}
 	if err != nil {
 		return s.failed(fmt.Errorf("reading %s: %w", file, err))
@@ -129,11 +151,16 @@ func (s *Store) reread() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.paths, s.broken = fresh, nil
-	if stamp, err := os.Stat(file); err == nil {
-		s.read, s.size = stamp.ModTime(), stamp.Size()
-	}
+	s.paths, s.broken, s.seen = fresh, nil, at
 	return nil
+}
+
+func (s *Store) clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.paths = map[string]Rule{}
+	s.seen, s.broken = nil, nil
 }
 
 // failed records why the grants could not be read and leaves what was last read in place.
@@ -207,24 +234,86 @@ func (s *Store) For(at string) (allow, deny []string) {
 	return allow, deny
 }
 
+// Level reports who may reach a path in place of what the config says, and whether others may see
+// it, as the nearest path at or above it that says so.
+//
+// A file nobody can read narrows rather than widens: whatever level it had loaded becomes only me.
+func (s *Store) Level(at string) (string, *bool) {
+	at, err := ns.Clean(at)
+	if err != nil {
+		return "", nil
+	}
+	broken := s.Refresh()
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if broken == nil {
+		broken = s.broken
+	}
+
+	var level string
+	var shown *bool
+	for _, above := range ancestry(at) {
+		rule, ok := s.paths[above]
+		if !ok {
+			continue
+		}
+		if rule.Level != "" {
+			level = rule.Level
+		}
+		if rule.Shown != nil {
+			shown = rule.Shown
+		}
+	}
+	if broken != nil && level != "" {
+		return ns.LevelMe, nil
+	}
+	return level, shown
+}
+
+// SetLevel says who may reach a path in place of what the config says. Empty hands it back to the
+// config.
+func (s *Store) SetLevel(at, level string) error {
+	if level != "" && !ns.IsLevel(level) {
+		return fmt.Errorf("%q is not a level: me, trusted, paired or anyone", level)
+	}
+	return s.edit(at, func(rule Rule) Rule {
+		rule.Level = level
+		return rule
+	})
+}
+
+// SetShown says whether those who may not open a path may see it is there. Nil hands it back to the
+// config.
+func (s *Store) SetShown(at string, shown *bool) error {
+	return s.edit(at, func(rule Rule) Rule {
+		rule.Shown = shown
+		return rule
+	})
+}
+
 // Allow adds somebody to a path, and takes them off its refusal list if they were on it.
 func (s *Store) Allow(at, who string) error {
 	return s.edit(at, func(rule Rule) Rule {
-		return Rule{Allow: with(rule.Allow, who), Deny: without(rule.Deny, who)}
+		rule.Allow, rule.Deny = with(rule.Allow, who), without(rule.Deny, who)
+		return rule
 	})
 }
 
 // Deny refuses somebody at a path, and takes them off its allow list if they were on it.
 func (s *Store) Deny(at, who string) error {
 	return s.edit(at, func(rule Rule) Rule {
-		return Rule{Allow: without(rule.Allow, who), Deny: with(rule.Deny, who)}
+		rule.Allow, rule.Deny = without(rule.Allow, who), with(rule.Deny, who)
+		return rule
 	})
 }
 
 // Forget drops somebody from a path entirely, leaving whatever the config says about them.
 func (s *Store) Forget(at, who string) error {
 	return s.edit(at, func(rule Rule) Rule {
-		return Rule{Allow: without(rule.Allow, who), Deny: without(rule.Deny, who)}
+		rule.Allow, rule.Deny = without(rule.Allow, who), without(rule.Deny, who)
+		return rule
 	})
 }
 
@@ -235,7 +324,12 @@ func (s *Store) Paths() map[string]Rule {
 
 	out := make(map[string]Rule, len(s.paths))
 	for at, rule := range s.paths {
-		out[at] = Rule{Allow: append([]string(nil), rule.Allow...), Deny: append([]string(nil), rule.Deny...)}
+		out[at] = Rule{
+			Allow: append([]string(nil), rule.Allow...),
+			Deny:  append([]string(nil), rule.Deny...),
+			Level: rule.Level,
+			Shown: rule.Shown,
+		}
 	}
 	return out
 }
@@ -264,7 +358,7 @@ func (s *Store) edit(at string, change func(Rule) Rule) error {
 
 		s.mu.Lock()
 		rule := change(s.paths[at])
-		if len(rule.Allow) == 0 && len(rule.Deny) == 0 {
+		if rule.empty() {
 			delete(s.paths, at)
 		} else {
 			s.paths[at] = rule
@@ -311,4 +405,42 @@ func without(list []string, who string) []string {
 		}
 	}
 	return out
+}
+
+// Rename carries every grant written against one name over to another: a person, or a machine on
+// its own, bare, and a person's machine written as person@machine.
+func (s *Store) Rename(old, name string, machine bool) error {
+	file, err := path()
+	if err != nil {
+		return err
+	}
+	moved := func(list []string) []string {
+		out := make([]string, 0, len(list))
+		for _, who := range list {
+			person, at, narrowed := strings.Cut(who, "@")
+			switch {
+			case !narrowed && who == old:
+				who = name
+			case narrowed && !machine && person == old:
+				who = name + "@" + at
+			case narrowed && machine && at == old:
+				who = person + "@" + name
+			}
+			out = with(out, who)
+		}
+		return out
+	}
+
+	return keep.While(file, func() error {
+		if err := s.reread(); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		for at, rule := range s.paths {
+			rule.Allow, rule.Deny = moved(rule.Allow), moved(rule.Deny)
+			s.paths[at] = rule
+		}
+		s.mu.Unlock()
+		return s.Save()
+	})
 }

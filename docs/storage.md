@@ -8,6 +8,7 @@ $XDG_CONFIG_HOME/drop/          ~/.config/drop
   init.lua          the configuration
   archetypes/       plugins, loaded at startup
   identity          this machine's key — only when the hardware will not name it
+  identity.hardware public identity expected from the hardware-derived key
   identity.was      what it used to be, kept by `drop me machine rebind`
   handover          a statement this machine presents after moving
   user, user.pub    the user key, when drop keeps one of its own
@@ -25,10 +26,11 @@ $XDG_DATA_HOME/drop/            ~/.local/share
 `$DROP_PROFILE` puts the whole config tree under `…/drop/profiles/<name>/` and the data tree
 likewise, which is why two profiles are strangers.
 
-**`identity` is often not there at all.** A machine that names itself from its hardware writes
-nothing down — that is the point of [taking the name from the machine](identity.md). The file exists
-only where the hardware will not answer, or on a machine that has been running since before it
-could.
+**`identity` is often not there at all.** A machine that names itself from its hardware does not
+write the secret down. It writes only the public endpoint ID to `identity.hardware`, so a missing,
+changed, or newly preferred hardware source cannot silently give an installed drop a new identity.
+The `identity` file exists only where the hardware will not answer, or on a machine that has been
+running since before it could.
 
 ## One writer at a time
 
@@ -107,6 +109,14 @@ so rather than reporting a conversation that is there as missing.
 A shared thing's record would otherwise grow by a copy per save. Once everybody still remembered has
 seen all of it, the whole record is replaced by one change carrying what it came to. That is
 [folding](shared.md), and it is what turns a demo into something you can leave running for a month.
+
+A conversation history and its pending queue are each capped at 64 MiB per peer. Reaching the cap
+refuses another message instead of letting a damaged or runaway log consume memory and disk without
+limit. Conversation history is not discarded automatically.
+
+Each shared history is capped at 32 MiB. Vault maintenance reads at most 4,097 entries from the
+shared-history root and refuses more than 4,096, so resealing cannot become an unbounded directory
+walk.
 
 ## Where it lives
 

@@ -55,8 +55,10 @@ type LAN struct {
 	// out is the same socket, for saying which interface an announcement goes out of.
 	out *ipv4.PacketConn
 	// on is every interface that joined the group, which is where announcements are written.
-	on   []net.Interface
-	self string
+	on []net.Interface
+	// since is when this started listening, which is what a lookup's window is counted from.
+	since time.Time
+	self  string
 }
 
 type sighting struct {
@@ -106,7 +108,7 @@ func StartLAN(ctx context.Context, n *node.Node) (*LAN, error) {
 	}
 	_ = p.SetMulticastLoopback(true)
 
-	lan := &LAN{peers: map[string]sighting{}, conn: conn, out: p, on: joined, self: n.ID().String()}
+	lan := &LAN{peers: map[string]sighting{}, conn: conn, out: p, on: joined, self: n.ID().String(), since: time.Now()}
 
 	go lan.listen(ctx)
 	go lan.announce(ctx, n, group)
@@ -187,6 +189,7 @@ func (l *LAN) heard(packet []byte, from netip.Addr) {
 	if _, err := node.ParseID(id); err != nil {
 		return
 	}
+	addrs = usable(addrs)
 	if !claims(addrs, from) {
 		return
 	}
@@ -209,6 +212,16 @@ func (l *LAN) heard(packet []byte, from netip.Addr) {
 	l.peers[id] = sighting{addrs: addrs, seen: now}
 }
 
+func usable(addrs []netip.AddrPort) []netip.AddrPort {
+	out := make([]netip.AddrPort, 0, len(addrs))
+	for _, at := range addrs {
+		if at.Port() != 0 && node.Dialable(at.Addr()) {
+			out = append(out, at)
+		}
+	}
+	return out
+}
+
 // claims reports whether an announcement includes the address it came from.
 func claims(addrs []netip.AddrPort, from netip.Addr) bool {
 	for _, at := range addrs {
@@ -228,8 +241,11 @@ func (l *LAN) Find(parent context.Context, id node.ID) (netaddr.EndpointAddr, bo
 		return netaddr.EndpointAddr{}, false
 	}
 
+	// Counted from when this started listening, not from the question. A node that has been
+	// hearing the wire for a minute has heard every device on it announce itself many times over,
+	// and one it has not heard is not going to announce itself in the next five seconds either.
 	want := id.String()
-	deadline := time.Now().Add(LANWindow)
+	deadline := l.since.Add(LANWindow)
 
 	for {
 		l.mu.RLock()
@@ -259,6 +275,9 @@ func (l *LAN) Find(parent context.Context, id node.ID) (netaddr.EndpointAddr, bo
 func encodeAnnounce(id string, addrs []netip.AddrPort) []byte {
 	if len(addrs) == 0 {
 		return nil
+	}
+	if len(addrs) > maxAddrs {
+		addrs = addrs[:maxAddrs]
 	}
 
 	w := wire.NewWriter()
@@ -302,6 +321,9 @@ func decodeAnnounce(packet []byte) (string, []netip.AddrPort, bool) {
 			continue
 		}
 		addrs = append(addrs, ap)
+	}
+	if !r.Done() {
+		return "", nil, false
 	}
 	return id, addrs, true
 }

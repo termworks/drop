@@ -27,6 +27,9 @@ type Caster struct {
 	stage *term.Screen
 	cols  uint16
 	rows  uint16
+	// follow, when set, is told each shape the terminal takes from its watchers. Unset, the shape is
+	// whatever it was given, which is what a recording wants.
+	follow func(cols, rows uint16)
 	// stopped says the cast is over. Everything after that is a no-op, and whoever joins is handed
 	// a feed that is already closed rather than one nothing will ever close.
 	stopped bool
@@ -36,6 +39,17 @@ type Caster struct {
 type Viewer struct {
 	id  int
 	out chan []byte
+	// changed says the terminal's shape, or who is watching it, is not what this watcher was last
+	// told.
+	changed chan struct{}
+	// cols and rows are the window this watcher has, once it has said; zero until then.
+	cols, rows uint16
+}
+
+// Changed fires when the terminal changes shape or somebody joins or leaves it — which somebody
+// else watching may be the cause of.
+func (v *Viewer) Changed() <-chan struct{} {
+	return v.changed
 }
 
 // Frames is what to write to this watcher, in order. It is closed when the cast ends or the
@@ -44,12 +58,14 @@ func (v *Viewer) Frames() <-chan []byte {
 	return v.out
 }
 
-func New(cols, rows uint16) *Caster {
+func New(cols, rows int) *Caster {
+	stage := term.New(cols, rows)
+	cols, rows = stage.Size()
 	return &Caster{
 		viewers: map[int]*Viewer{},
-		stage:   term.New(int(cols), int(rows)),
-		cols:    cols,
-		rows:    rows,
+		stage:   stage,
+		cols:    uint16(cols),
+		rows:    uint16(rows),
 	}
 }
 
@@ -97,8 +113,9 @@ func (c *Caster) Join() (*Viewer, []byte, uint16, uint16) {
 	}
 
 	c.nextID++
-	v := &Viewer{id: c.nextID, out: make(chan []byte, Backlog)}
+	v := &Viewer{id: c.nextID, out: make(chan []byte, Backlog), changed: make(chan struct{}, 1)}
 	c.viewers[v.id] = v
+	c.notify()
 
 	return v, c.picture(), c.cols, c.rows
 }
@@ -119,10 +136,12 @@ func (c *Caster) Leave(v *Viewer) {
 	if _, live := c.viewers[v.id]; live {
 		delete(c.viewers, v.id)
 		close(v.out)
+		c.reshape()
+		c.notify()
 	}
 }
 
-// Resize records the terminal's new shape, for watchers that join later.
+// Resize gives the terminal a new shape: the one a recording says it had, say.
 func (c *Caster) Resize(cols, rows uint16) {
 	if cols < 1 || rows < 1 {
 		return
@@ -134,10 +153,94 @@ func (c *Caster) Resize(cols, rows uint16) {
 	if c.stopped {
 		return
 	}
+	c.resize(cols, rows)
+}
 
-	c.cols, c.rows = cols, rows
+// resize is Resize with the lock held. Every watcher is told, whoever the change was for.
+func (c *Caster) resize(cols, rows uint16) {
 	if c.stage != nil {
 		c.stage.Resize(int(cols), int(rows))
+		boundedCols, boundedRows := c.stage.Size()
+		cols, rows = uint16(boundedCols), uint16(boundedRows)
+	}
+	c.cols, c.rows = cols, rows
+	c.notify()
+}
+
+// Follow makes the terminal's shape follow the windows watching it: as big as the smallest of them,
+// so everybody sees all of it and nobody a corner. apply is told each shape it takes, which is how
+// the program behind it hears.
+//
+// The smallest rather than the last to ask. The last to ask won when this was written, and two
+// watchers with different windows took the terminal from each other on every resize — each seeing
+// it drawn for the other, one of them with every row wrapped.
+func (c *Caster) Follow(apply func(cols, rows uint16)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.follow = apply
+	c.reshape()
+}
+
+// Want says how big one watcher's window is.
+func (c *Caster) Want(v *Viewer, cols, rows uint16) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.stopped || c.viewers[v.id] != v {
+		return
+	}
+	v.cols, v.rows = cols, rows
+	c.reshape()
+}
+
+// reshape fits a terminal that follows its watchers to the smallest window among them. A terminal
+// nobody has said anything about keeps the shape it has.
+func (c *Caster) reshape() {
+	if c.follow == nil {
+		return
+	}
+
+	var cols, rows uint16
+	windows := 0
+	for _, v := range c.viewers {
+		if v.cols == 0 || v.rows == 0 {
+			continue
+		}
+		windows++
+		if cols == 0 || v.cols < cols {
+			cols = v.cols
+		}
+		if rows == 0 || v.rows < rows {
+			rows = v.rows
+		}
+	}
+	if cols == 0 || rows == 0 {
+		return
+	}
+
+	// Shared, it is never held below the size terminals are made at. One small window would
+	// otherwise take everybody else's with it — a phone held upright, or a pane split in two,
+	// shrinking a program others are using to a size it refuses to draw at. The small window is
+	// the one that crops. Watched by one, the terminal is that window's, whatever size it is.
+	if windows > 1 {
+		cols, rows = max(cols, leastCols), max(rows, leastRows)
+	}
+	if cols == c.cols && rows == c.rows {
+		return
+	}
+	c.resize(cols, rows)
+	c.follow(c.cols, c.rows)
+}
+
+// notify tells every watcher something about the terminal changed, without waiting for any of
+// them: one that has not caught up already has a change pending, and one means the same as two.
+func (c *Caster) notify() {
+	for _, v := range c.viewers {
+		select {
+		case v.changed <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -181,3 +284,10 @@ func (c *Caster) Clear() {
 
 	c.stage = term.New(int(c.cols), int(c.rows))
 }
+
+// leastCols and leastRows are the size a terminal is made at, and the smallest a shared one is held
+// to.
+const (
+	leastCols = 80
+	leastRows = 24
+)

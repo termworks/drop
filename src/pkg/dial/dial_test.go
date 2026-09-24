@@ -3,6 +3,8 @@ package dial
 import (
 	"context"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +30,11 @@ func (s sighted) Find(ctx context.Context, id node.ID) (netaddr.EndpointAddr, bo
 type rendezvous struct {
 	relay string
 	asked chan struct{}
+}
+
+type acceptedConnection struct {
+	conn *iroh.Conn
+	err  error
 }
 
 func (r *rendezvous) Find(ctx context.Context, entry book.Entry) (netaddr.EndpointAddr, bool) {
@@ -86,7 +93,7 @@ func onlyThisMachine(t *testing.T) *node.Node {
 	if err != nil {
 		t.Fatalf("starting a node: %v", err)
 	}
-	t.Cleanup(func() { n.Close() })
+	t.Cleanup(func() { _ = n.Close() })
 
 	return n
 }
@@ -95,7 +102,8 @@ func onlyThisMachine(t *testing.T) *node.Node {
 // that ever dialled is a map that only grows, and nothing ever looks at those entries: every caller
 // asking for a connection hands in an entry read out of the book.
 func TestOnlyADeviceTheBookHasIsKept(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	config := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", config)
 
 	held := Hold(nil, nil, nil)
 
@@ -117,5 +125,213 @@ func TestOnlyADeviceTheBookHasIsKept(t *testing.T) {
 	held.Adopt(idFor(12), forTesting, &iroh.Conn{})
 	if len(held.open) != 1 {
 		t.Fatalf("a paired device's connection was not kept: %v", held.open)
+	}
+
+	delete(held.open, key(idFor(12), forTesting))
+	if err := os.WriteFile(filepath.Join(config, "drop", "peers.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	held.Adopt(idFor(12), forTesting, &iroh.Conn{})
+	if len(held.open) != 0 {
+		t.Fatalf("an unreadable address book left a stale peer trusted: %v", held.open)
+	}
+}
+
+func TestADeadHeldConnectionIsReplacedByAnArrival(t *testing.T) {
+	t.Setenv("DROP_PORT", "0")
+	wasRendezvous := node.Rendezvous()
+	node.SetRendezvous(false)
+	t.Cleanup(func() { node.SetRendezvous(wasRendezvous) })
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	remote, err := node.Start(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := remote.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	local, err := node.Start(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := local.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	pinned, err := book.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned.Pair("remote", remote.ID(), testSharedSecret())
+	if err := pinned.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	held := Hold(nil, nil, nil)
+	firstDial, firstArrival := connectNodes(t, remote, local)
+	held.Adopt(remote.ID(), node.ALPNSession, firstArrival)
+	if err := firstDial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-firstArrival.Context().Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("closed connection remained live")
+	}
+
+	secondDial, secondArrival := connectNodes(t, remote, local)
+	t.Cleanup(func() {
+		_ = secondDial.Close()
+		_ = secondArrival.Close()
+	})
+	held.Adopt(remote.ID(), node.ALPNSession, secondArrival)
+	if held.open[key(remote.ID(), node.ALPNSession)] != secondArrival {
+		t.Fatal("a fresh arrival did not replace the dead held connection")
+	}
+	if err := secondDial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-secondArrival.Context().Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement connection remained live after close")
+	}
+	if held.Reaching(remote.ID()) {
+		t.Fatal("a dead held connection was reported as reachable")
+	}
+	if _, ok := held.open[key(remote.ID(), node.ALPNSession)]; ok {
+		t.Fatal("a dead held connection remains stored")
+	}
+}
+
+func connectNodes(t *testing.T, from, to *node.Node) (*iroh.Conn, *iroh.Conn) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	accepted := make(chan acceptedConnection, 1)
+	go func() {
+		conn, err := to.Accept(ctx)
+		accepted <- acceptedConnection{conn: conn, err: err}
+	}()
+
+	dialed, err := from.Dial(ctx, to.Addr(), node.ALPNSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrival := <-accepted
+	if arrival.err != nil {
+		_ = dialed.Close()
+		t.Fatal(arrival.err)
+	}
+	return dialed, arrival.conn
+}
+
+func TestServingAnswersAConnectionMadeBeforeTheHandler(t *testing.T) {
+	local := onlyThisMachine(t)
+	remote := onlyThisMachine(t)
+
+	dialed, arrival := connectNodes(t, local, remote)
+	defer func() { _ = arrival.Close() }()
+
+	held := Hold(nil, nil, nil)
+	held.keep(remote.ID(), node.ALPNSession, dialed)
+	defer held.Close()
+
+	type answer struct {
+		from node.ID
+		alpn string
+	}
+	answered := make(chan answer, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	held.Serving(ctx, func(from node.ID, alpn string, stream *iroh.Stream) {
+		_ = stream.Close()
+		answered <- answer{from: from, alpn: alpn}
+	})
+
+	stream, err := arrival.OpenStreamSync(ctx)
+	if err != nil {
+		t.Fatalf("opening a stream back over the held connection: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	if _, err := stream.Write([]byte("hello")); err != nil {
+		t.Fatalf("starting the stream back over the held connection: %v", err)
+	}
+
+	select {
+	case got := <-answered:
+		if got.from != remote.ID() || got.alpn != node.ALPNSession {
+			t.Fatalf("the delayed handler answered %s on %q", got.from, got.alpn)
+		}
+	case <-ctx.Done():
+		t.Fatal("the handler never answered the connection that preceded it")
+	}
+}
+
+func testSharedSecret() []byte {
+	return []byte("0123456789abcdef0123456789abcdef")
+}
+
+// A device that restarted dials again for what it was connected for, and says nothing on the
+// connection from before: a stream opened there waits for an answer that never comes. So its
+// arrival takes the place of an old connection that still looks alive, and whatever else is held to
+// it is dialled afresh rather than trusted.
+func TestAnArrivalSupersedesAnOldConnection(t *testing.T) {
+	t.Setenv("DROP_PORT", "0")
+	wasRendezvous := node.Rendezvous()
+	node.SetRendezvous(false)
+	t.Cleanup(func() { node.SetRendezvous(wasRendezvous) })
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	remote, err := node.Start(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = remote.Close() })
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	local, err := node.Start(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = local.Close() })
+
+	pinned, err := book.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned.Pair("remote", remote.ID(), testSharedSecret())
+	if err := pinned.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	held := Hold(nil, nil, nil)
+	oldDial, oldArrival := connectNodes(t, remote, local)
+	t.Cleanup(func() { _ = oldDial.Close() })
+	_, otherArrival := connectNodes(t, remote, local)
+	held.Adopt(remote.ID(), node.ALPNSession, oldArrival)
+	held.Adopt(remote.ID(), node.ALPNHello, otherArrival)
+
+	// Old enough not to have crossed with anything on the way.
+	held.born[oldArrival] = time.Now().Add(-time.Minute)
+	held.born[otherArrival] = time.Now().Add(-time.Minute)
+
+	newDial, newArrival := connectNodes(t, remote, local)
+	t.Cleanup(func() { _ = newDial.Close() })
+	held.Adopt(remote.ID(), node.ALPNSession, newArrival)
+
+	if held.open[key(remote.ID(), node.ALPNSession)] != newArrival {
+		t.Fatal("an old connection outlived the arrival that replaced it")
+	}
+	if held.held(remote.ID(), node.ALPNHello) != nil {
+		t.Fatal("a connection from before the device came back was offered again")
 	}
 }

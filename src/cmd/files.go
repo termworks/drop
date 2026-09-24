@@ -47,7 +47,7 @@ func walk(parent context.Context, target string, wait time.Duration) (*walking, 
 		return nil, err
 	}
 
-	entry, err := resolve(at)
+	entry, err := resolve(parent, at)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +64,7 @@ func walk(parent context.Context, target string, wait time.Duration) (*walking, 
 	lan, _ := discovery.StartLAN(ctx, n)
 
 	giveUp := func() {
-		n.Close()
+		_ = n.Close()
 		cancel()
 		stop()
 	}
@@ -97,8 +97,8 @@ func browse(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.En
 		return nil, nil, err
 	}
 	shut := func() {
-		s.Close()
-		over.Close()
+		_ = s.Close()
+		_ = over.Close()
 	}
 
 	conn, err := proto.Open(s, at, "files", 0, "", node.DisplayName())
@@ -120,8 +120,9 @@ func serving(ctx context.Context, n *node.Node, lan *discovery.LAN, entry book.E
 	if err != nil {
 		return proto.Hello{}, err
 	}
-	defer done.Close()
-	defer s.Close()
+	defer func() { _ = done.Close() }()
+	defer func() { _ = s.Close() }()
+	defer stopStreamOnDone(ctx, s)()
 
 	return proto.AskHello(s)
 }

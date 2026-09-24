@@ -88,6 +88,12 @@ drop.mount("/chat", { type = "chat", access = "paired" })
 		defer stopAlice()
 		_, bobAgain, stopBob := bob.background("serve")
 		defer stopBob()
+		t.Cleanup(func() {
+			if t.Failed() {
+				t.Logf("alice note: %q\nbob note: %q\nalice daemon:\n%s\nbob daemon:\n%s",
+					reading(t, hers), reading(t, his), aliceAgain.String(), bobAgain.String())
+			}
+		})
 
 		waitFor(t, "both nodes to be ready again", 30*time.Second, func() bool {
 			return strings.Contains(aliceAgain.String(), "ready") && strings.Contains(bobAgain.String(), "ready")

@@ -34,6 +34,21 @@ const MaxSaid = 1 << 20
 // no store, no config. Sixty-four is more than a plugin has a reason to hold.
 const MaxOpen = 64
 
+// MaxName bounds one file name supplied by a plugin.
+const MaxName = 255
+
+// MaxArgs and MaxArgBytes bound one command supplied by a plugin.
+const (
+	MaxArgs     = 256
+	MaxArgBytes = 64 << 10
+)
+
+const (
+	markBytes  = 6
+	markLength = markBytes * 2
+	sweepBatch = 256
+)
+
 // Waiting is how long a process a plugin starts may take before it is killed.
 const Waiting = 30 * time.Second
 
@@ -41,22 +56,12 @@ const Waiting = 30 * time.Second
 // at all only when it left something behind holding the other end.
 const Lingering = 2 * time.Second
 
-// wants is what a plugin has stopped for. Everything else it asks for is answered where it stands.
-type wants byte
-
-const (
-	wantNothing wants = iota
-	wantRead
-	wantWrite
-)
-
 // session is one namespace open, as the plugin holds it.
-//
-// The fields either side of the yield are read on two goroutines and never at once: a yield hands
-// control to the driver and a resume hands it back, and neither runs while the other does.
 type session struct {
 	ctx context.Context
 	at  arch.Session
+	// limits are shared by every plugin in this process.
+	limits *resourceLimits
 	// where is the directory this namespace keeps its own files in, and dir is that directory
 	// opened. Nothing is made on disk until a plugin asks for a file.
 	where string
@@ -65,81 +70,18 @@ type session struct {
 	open []*os.File
 	// mark is what makes a name this session's own, and what is swept up after it.
 	mark string
-
-	// want is what the plugin stopped for, with body and kind for a frame going out.
-	want wants
-	body []byte
-	kind byte
-	// gave, was and more are the answer: a frame, what kind it was, and whether there was one.
-	gave []byte
-	was  byte
-	more bool
-}
-
-// drive runs the plugin's serve as a coroutine and answers whatever it stops for.
-//
-// The plugin writes straight-line code and this decides when it runs. Every wait happens out here,
-// on the far side of a yield, where the session's budget is not being charged for standing still.
-func (s *session) drive(w *world, serve rt.Callable) error {
-	main := w.lua.MainThread()
-
-	th := rt.NewThread(w.lua)
-	// A coroutine left suspended holds its goroutine for ever. Closing it is what ends that one.
-	defer th.Close(main)
-
-	th.Start(serve)
-	args := []rt.Value{s.value(w.lua), value(s.at.Config)}
-
-	for {
-		if _, err := th.Resume(main, args); err != nil {
-			return err
-		}
-		if th.Status() == rt.ThreadDead {
-			return nil
-		}
-		if err := s.answer(); err != nil {
-			return err
-		}
-		args = nil
-	}
-}
-
-// answer does the one thing the plugin stopped for.
-func (s *session) answer() error {
-	if err := s.ctx.Err(); err != nil {
-		return err
-	}
-
-	switch s.want {
-	case wantRead:
-		kind, body, err := s.at.Conn.ReadFrame()
-		switch {
-		case wire.Closed(err), err == nil && kind == wire.KindEnd:
-			s.gave, s.was, s.more = nil, 0, false
-		case err != nil:
-			return fmt.Errorf("reading a frame on %s: %w", s.at.Path, err)
-		default:
-			s.gave, s.was, s.more = body, kind, true
-		}
-
-	case wantWrite:
-		if err := s.at.Conn.WriteFrame(s.kind, s.body); err != nil {
-			return fmt.Errorf("writing a frame on %s: %w", s.at.Path, err)
-		}
-	}
-
-	s.want, s.body = wantNothing, nil
-	return nil
 }
 
 // shut closes what the session left open and takes away what it named its own.
 func (s *session) shut() {
 	for _, file := range s.open {
-		file.Close()
+		_ = file.Close()
+		s.limits.files.give()
 	}
+	s.open = nil
 	if s.dir != nil {
 		s.sweep()
-		s.dir.Close()
+		_ = s.dir.Close()
 	}
 }
 
@@ -152,12 +94,17 @@ func (s *session) sweep() {
 	if err != nil {
 		return
 	}
-	names, _ := dir.Readdirnames(-1)
-	dir.Close()
+	defer func() { _ = dir.Close() }()
 
-	for _, name := range names {
-		if strings.HasSuffix(name, "."+s.mark) {
-			_ = s.dir.Remove(name)
+	for {
+		names, err := dir.Readdirnames(sweepBatch)
+		for _, name := range names {
+			if strings.HasSuffix(name, "."+s.mark) {
+				_ = s.dir.Remove(name)
+			}
+		}
+		if err != nil {
+			return
 		}
 	}
 }
@@ -181,21 +128,25 @@ func (s *session) value(machine *rt.Runtime) rt.Value {
 // read is `s:read()`: the next frame and what kind it was, and nothing at all once the far end has
 // finished.
 func (s *session) read(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
-	s.want = wantRead
-	if _, err := t.Yield(nil); err != nil {
+	if err := s.ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !s.more {
+
+	kind, body, err := s.at.Conn.ReadFrame()
+	switch {
+	case wire.Closed(err), err == nil && kind == wire.KindEnd:
 		return c.Next(), nil
+	case err != nil:
+		return nil, fmt.Errorf("reading a frame on %s: %w", s.at.Path, err)
 	}
 
 	// What arrived is charged to the session, so a plugin that hoovers up everything sent to it
 	// runs out the way one that makes it up runs out.
-	t.RequireBytes(len(s.gave))
+	t.RequireBytes(len(body))
 
 	next := c.Next()
-	t.Push1(next, rt.StringValue(string(s.gave)))
-	t.Push1(next, rt.StringValue(wordOf[s.was]))
+	t.Push1(next, rt.StringValue(string(body)))
+	t.Push1(next, rt.StringValue(wordOf[kind]))
 	return next, nil
 }
 
@@ -222,9 +173,11 @@ func (s *session) write(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		}
 	}
 
-	s.want, s.body, s.kind = wantWrite, []byte(body), kind
-	if _, err := t.Yield(nil); err != nil {
+	if err := s.ctx.Err(); err != nil {
 		return nil, err
+	}
+	if err := s.at.Conn.WriteFrame(kind, []byte(body)); err != nil {
+		return nil, fmt.Errorf("writing a frame on %s: %w", s.at.Path, err)
 	}
 	return c.Next(), nil
 }
@@ -270,6 +223,16 @@ func (s *session) opens(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if len(s.open) >= MaxOpen {
 		return nil, fmt.Errorf("this session holds %d files open already, which is as many as it may", MaxOpen)
 	}
+	if !s.limits.files.take() {
+		return nil, fmt.Errorf("%d plugin files are open already, which is as many as the process may hold", cap(s.limits.files))
+	}
+	kept := false
+	defer func() {
+		if !kept {
+			s.limits.files.give()
+		}
+	}()
+
 	dir, err := s.under()
 	if err != nil {
 		return nil, err
@@ -281,6 +244,7 @@ func (s *session) opens(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		return nil, fmt.Errorf("opening %s: %w", name, err)
 	}
 	s.open = append(s.open, file)
+	kept = true
 
 	return c.PushingNext1(t.Runtime, s.holding(t.Runtime, file)), nil
 }
@@ -299,9 +263,12 @@ func (s *session) mine(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := fileName(name, MaxName-markLength-1); err != nil {
+		return nil, err
+	}
 
 	if s.mark == "" {
-		var seed [6]byte
+		var seed [markBytes]byte
 		if _, err := rand.Read(seed[:]); err != nil {
 			return nil, fmt.Errorf("naming a file only %s uses: %w", s.at.Path, err)
 		}
@@ -324,13 +291,20 @@ func (s *session) runs(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if err != nil {
 		return nil, err
 	}
-	argv := words(list)
+	argv, err := words(list)
+	if err != nil {
+		return nil, err
+	}
 	if len(argv) == 0 {
 		return nil, fmt.Errorf("a command is a program and its arguments, and this one names no program")
 	}
 	if _, err := s.under(); err != nil {
 		return nil, err
 	}
+	if !s.limits.processes.take() {
+		return nil, fmt.Errorf("%d plugin processes are running already, which is as many as the process may hold", cap(s.limits.processes))
+	}
+	defer s.limits.processes.give()
 	t.RequireCPU(costRun)
 
 	ctx, stop := context.WithTimeout(s.ctx, Waiting)
@@ -411,6 +385,10 @@ func (s *session) under() (*os.Root, error) {
 // other end waits in the kernel, where the session's budget, the timeout and the cancellation all
 // reach a host function that is no longer running lua and cannot be told anything.
 func opening(dir *os.Root, name, how string) (*os.File, error) {
+	if err := fileName(name, MaxName); err != nil {
+		return nil, err
+	}
+
 	var flag int
 	switch how {
 	case "r":
@@ -429,14 +407,21 @@ func opening(dir *os.Root, name, how string) (*os.File, error) {
 	}
 	said, err := file.Stat()
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return nil, err
 	}
 	if !said.Mode().IsRegular() {
-		file.Close()
+		_ = file.Close()
 		return nil, errors.New("not a plain file")
 	}
 	return file, nil
+}
+
+func fileName(name string, max int) error {
+	if name == "" || name == "." || name == ".." || len(name) > max || strings.ContainsAny(name, "/\x00") {
+		return fmt.Errorf("a file name must be 1 to %d bytes with no slash or zero byte", max)
+	}
+	return nil
 }
 
 // holding is an open file as the plugin holds it.
@@ -500,22 +485,26 @@ func writing(file *os.File) rt.GoFunctionFunc {
 
 func (s *session) closing(file *os.File) rt.GoFunctionFunc {
 	return func(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
-		if err := file.Close(); err != nil {
+		err := file.Close()
+		if s.forget(file) {
+			s.limits.files.give()
+		}
+		if err != nil {
 			return nil, fmt.Errorf("closing: %w", err)
 		}
-		s.forget(file)
 		return c.Next(), nil
 	}
 }
 
 // forget drops a file the plugin closed, so closing one gives its place back.
-func (s *session) forget(file *os.File) {
+func (s *session) forget(file *os.File) bool {
 	for i, held := range s.open {
 		if held == file {
 			s.open = append(s.open[:i], s.open[i+1:]...)
-			return
+			return true
 		}
 	}
+	return false
 }
 
 // capped takes what a process says up to a limit and throws the rest away, so a program that never
@@ -533,15 +522,23 @@ func (c *capped) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// words reads a Lua list of strings, stopping at the first hole.
-func words(list *rt.Table) []string {
+// words reads a bounded Lua list of strings, stopping at the first hole.
+func words(list *rt.Table) ([]string, error) {
 	var out []string
+	used := 0
 	for i := int64(1); ; i++ {
 		word, ok := list.Get(rt.IntValue(i)).TryString()
 		if !ok {
-			return out
+			return out, nil
+		}
+		if len(out) >= MaxArgs {
+			return nil, fmt.Errorf("a command may have at most %d words", MaxArgs)
+		}
+		if len(word)+1 > MaxArgBytes-used {
+			return nil, fmt.Errorf("a command may use at most %d bytes", MaxArgBytes)
 		}
 		out = append(out, word)
+		used += len(word) + 1
 	}
 }
 

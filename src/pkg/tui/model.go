@@ -3,11 +3,9 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/charmbracelet/bubbles/list"
 
@@ -127,6 +125,9 @@ type Model struct {
 	list   list.Model
 	width  int
 	height int
+
+	// listed is which screen the list holds, so a filter typed over one is not carried to the next.
+	listed string
 
 	// me is this device, shown in the header: two of these side by side are two machines.
 	me Identity
@@ -328,26 +329,6 @@ func (m *Model) stop() {
 	m.screen = nil
 }
 
-func shortID(e book.Entry) string {
-	id := e.ID.String()
-	if len(id) > 12 {
-		return id[:12]
-	}
-	return id
-}
-
-func lines(text string, n int) string {
-	got := strings.Split(text, "\n")
-	if len(got) <= n {
-		return text
-	}
-	return strings.Join(got[len(got)-n:], "\n")
-}
-
-func joinPanes(width int, panes ...string) string {
-	return lipgloss.JoinHorizontal(lipgloss.Top, panes...)
-}
-
 // say puts a message on the wire.
 // say writes a message down. It does not send it: that happens next, and takes as long as somebody
 // else's network takes, which is not how long a person should watch an empty screen.
@@ -381,6 +362,7 @@ func watch(back Backend, on book.Entry, at proto.Served, into *screen, ctx conte
 			Archetype: at.Archetype,
 			Into:      into,
 			Sized:     into.Resize,
+			Told:      into.Tell,
 			Ready:     ready,
 		})
 		into.Finish()
@@ -482,6 +464,9 @@ type Watching struct {
 	Into io.Writer
 	// Sized is called when the far end reports the shape of its terminal.
 	Sized func(cols, rows int)
+	// Told is called when the far end says who is on it: how many are watching, and whether the
+	// shell is this watcher's alone.
+	Told func(watching int, own bool)
 	// Ready hands back a way to speak to it, once there is one.
 	Ready func(Talk)
 }
@@ -557,7 +542,7 @@ func offer(back Backend) tea.Cmd {
 		// The code is drawn rather than the ticket alone: a phone has no keyboard worth typing a
 		// hundred characters on, and a camera is the whole point of showing one.
 		if drawn, err := tickets.Code(ticket); err == nil {
-			at.code = tickets.Render(drawn)
+			at.code = tickets.Painted(drawn)
 		}
 		return pairStarted{at: at}
 	}

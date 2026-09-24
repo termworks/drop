@@ -12,8 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tmc/go-iroh/key"
 
 	"github.com/bresilla/drop/src/pkg/book"
@@ -424,7 +426,7 @@ func TestWritingAMessageSendsIt(t *testing.T) {
 	for _, r := range "hello" {
 		m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	back.mu.Lock()
 	defer back.mu.Unlock()
@@ -578,17 +580,6 @@ func (f *fake) Arrivals() <-chan struct{} {
 		f.arriving = make(chan struct{}, 1)
 	}
 	return f.arriving
-}
-
-// lands is another device saying something while the interface is sitting there.
-func (f *fake) lands() {
-	f.mu.Lock()
-	at := f.arriving
-	f.mu.Unlock()
-
-	if at != nil {
-		at <- struct{}{}
-	}
 }
 
 func (f *fake) Join(ctx context.Context, ticket string) (string, error) {
@@ -761,7 +752,7 @@ func TestALinkIsSentFromTheInterface(t *testing.T) {
 		m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyTab}) // must do nothing here
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	back.mu.Lock()
 	defer back.mu.Unlock()
@@ -785,6 +776,19 @@ func TestTabCompletesAPath(t *testing.T) {
 	}
 	if len(options) != 2 {
 		t.Errorf("offered %v, want both files", options)
+	}
+}
+
+func TestPathCompletionStopsAtItsEntryLimit(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"one", "two", "three"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := readDirUpTo(dir, 2); err == nil {
+		t.Fatal("completion read a directory past its entry limit")
 	}
 }
 
@@ -1481,6 +1485,29 @@ func TestADeviceThatIsOffStillOpens(t *testing.T) {
 	}
 }
 
+type currentPathsError string
+
+func (e currentPathsError) Error() string     { return string(e) }
+func (e currentPathsError) CurrentData() bool { return true }
+
+func TestCurrentPathsWithACacheFailureStayCurrent(t *testing.T) {
+	back := withOne()
+	m := start(t, back)
+	m = settle(t, m, pathsLoaded{
+		peer:  "beta",
+		paths: []proto.Served{{Path: "/current", Archetype: "chat"}},
+		err:   currentPathsError("could not cache beta's current paths"),
+	})
+
+	view := m.View()
+	if !strings.Contains(view, "could not cache") {
+		t.Fatalf("the cache failure was not shown:\n%s", view)
+	}
+	if strings.Contains(view, "last shared") {
+		t.Fatalf("current paths were described as stale:\n%s", view)
+	}
+}
+
 func (f *fake) Reaching() map[string]bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2042,5 +2069,116 @@ func TestAReadOnlyTerminalIsNotTypedInto(t *testing.T) {
 
 	if m.atKeyboard {
 		t.Error("a read-only terminal took the keyboard")
+	}
+}
+
+// A filter narrows the screen it was typed over. The list is every screen in turn, and one carried
+// from the users screen into a machine's paths hid every path, which read as a device sharing
+// nothing.
+func TestAFilterStaysOnTheScreenItWasTypedOver(t *testing.T) {
+	m := start(t, withOne())
+
+	keys := []tea.Msg{tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}}
+	for _, r := range "anon" {
+		keys = append(keys, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = settle(t, m, keys...)
+	if got := len(m.list.VisibleItems()); got == 0 || got == len(m.list.Items()) {
+		t.Fatalf("the filter did not narrow the users screen: %d of %d shown", got, len(m.list.Items()))
+	}
+
+	// Taken, then entered, twice: into the person and into their machine.
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter}, tea.KeyMsg{Type: tea.KeyEnter})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.at != levelPaths {
+		t.Fatalf("ended at level %d, not a machine's paths", m.at)
+	}
+	if shown, all := len(m.list.VisibleItems()), len(m.list.Items()); shown != all || all == 0 {
+		t.Fatalf("the paths screen shows %d of its %d paths", shown, all)
+	}
+}
+
+// Entering a filtered row opens that row. The rows were looked up by where the cursor was among the
+// ones on show, against the whole list, so a filter down to /term opened whatever was first.
+func TestEnteringAFilteredPathOpensIt(t *testing.T) {
+	m := intoPeer(t, start(t, withOne()), 0)
+	if m.at != levelPaths {
+		t.Fatalf("at level %d, not a machine's paths", m.at)
+	}
+
+	keys := []tea.Msg{tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}}
+	for _, r := range "term" {
+		keys = append(keys, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = settle(t, m, keys...)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	at, ok := m.path()
+	if !ok || at.Path != "/term" {
+		t.Fatalf("a filter down to /term opened %q", at.Path)
+	}
+}
+
+// With a filter narrowing the list, esc takes the filter away before it takes you back: otherwise
+// there is no way to clear one, and the next filter is typed on the end of it.
+func TestEscClearsAFilterBeforeGoingBack(t *testing.T) {
+	m := intoPeer(t, start(t, withOne()), 0)
+
+	keys := []tea.Msg{tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}}
+	for _, r := range "term" {
+		keys = append(keys, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = settle(t, m, keys...)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.list.FilterState() != list.FilterApplied {
+		t.Fatalf("the filter was not applied: %v", m.list.FilterState())
+	}
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.at != levelPaths || m.list.FilterState() != list.Unfiltered {
+		t.Fatalf("esc left level %d with the filter %v", m.at, m.list.FilterState())
+	}
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.at == levelPaths {
+		t.Fatal("esc with nothing to clear did not go back")
+	}
+}
+
+// A far terminal wider than this window is cut at the edge, never wrapped: a wrapped row is one row
+// of somebody's program drawn across two, and nothing under it lines up after that.
+func TestAWideTerminalIsCutNotWrapped(t *testing.T) {
+	m := New(&fake{})
+	m.width, m.height = 104, 30
+
+	wide := strings.Repeat("x", 150)
+	drawn := m.canvas(wide+"\n"+wide+"\n"+wide, 150, 3, true)
+
+	rows := strings.Split(drawn, "\n")
+	if len(rows) != 3 {
+		t.Fatalf("three rows of a 150-wide terminal came out as %d lines", len(rows))
+	}
+	for i, row := range rows {
+		if got := ansi.StringWidth(row); got != m.viewWidth() {
+			t.Fatalf("row %d is %d wide in a %d-wide view", i, got, m.viewWidth())
+		}
+	}
+}
+
+// One narrower than this window is drawn at its own width, so where it ends can be seen.
+func TestANarrowTerminalIsDrawnAtItsOwnWidth(t *testing.T) {
+	m := New(&fake{})
+	m.width, m.height = 104, 30
+
+	rows := strings.Split(m.canvas("prompt$", 40, 5, true), "\n")
+	if len(rows) != 5 {
+		t.Fatalf("a 40x5 terminal came out as %d lines", len(rows))
+	}
+	for i, row := range rows {
+		if got := ansi.StringWidth(row); got != 40 {
+			t.Fatalf("row %d of a 40-wide terminal is %d wide", i, got)
+		}
 	}
 }

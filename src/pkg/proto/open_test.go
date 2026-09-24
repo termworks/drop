@@ -9,45 +9,63 @@ import (
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
-// watched is a session stream that remembers the first deadline put on its read side.
+// watched is a session stream that remembers the deadlines put on both sides.
 type watched struct {
 	net.Conn
 
-	mu    sync.Mutex
-	first time.Time
-	seen  bool
+	mu           sync.Mutex
+	readFirst    time.Time
+	writeFirst   time.Time
+	readSeen     bool
+	writeSeen    bool
+	readCleared  bool
+	writeCleared bool
 }
 
 func (w *watched) SetReadDeadline(t time.Time) error {
 	w.mu.Lock()
-	if !w.seen && !t.IsZero() {
-		w.first, w.seen = t, true
+	if t.IsZero() {
+		w.readCleared = true
+	} else if !w.readSeen {
+		w.readFirst, w.readSeen = t, true
 	}
 	w.mu.Unlock()
 	return w.Conn.SetReadDeadline(t)
 }
 
-func (w *watched) bounded() (time.Time, bool) {
+func (w *watched) SetWriteDeadline(t time.Time) error {
+	w.mu.Lock()
+	if t.IsZero() {
+		w.writeCleared = true
+	} else if !w.writeSeen {
+		w.writeFirst, w.writeSeen = t, true
+	}
+	w.mu.Unlock()
+	return w.Conn.SetWriteDeadline(t)
+}
+
+func (w *watched) bounded() (time.Time, time.Time, bool, bool, bool, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	return w.first, w.seen
+	return w.readFirst, w.writeFirst, w.readSeen, w.writeSeen, w.readCleared, w.writeCleared
 }
 
-// The side that speaks first bounds the answer the same way the side listening bounds the opening.
-// A peer that takes the stream and says nothing otherwise holds the goroutine and the stream that
-// opened it until the process stops.
-func TestAnOpeningIsBoundedWhileItWaitsToBeAnswered(t *testing.T) {
+// Both sides of an opening are bounded, and an accepted session has both bounds removed.
+func TestAnOpeningBoundsAndThenClearsBothSides(t *testing.T) {
 	caller, server := net.Pipe()
-	t.Cleanup(func() { caller.Close() })
+	t.Cleanup(func() { _ = caller.Close() })
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
 
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 		c := wire.NewConn(server)
 		if _, _, err := c.ReadFrame(); err != nil {
 			return
 		}
 		_ = c.WriteFrame(wire.KindAccept, nil)
+		<-release
 	}()
 
 	w := &watched{Conn: caller}
@@ -55,12 +73,15 @@ func TestAnOpeningIsBoundedWhileItWaitsToBeAnswered(t *testing.T) {
 		t.Fatalf("Open(): %v", err)
 	}
 
-	at, bounded := w.bounded()
-	if !bounded {
-		t.Fatal("nothing bounds how long an opening waits to be answered")
+	readAt, writeAt, readSeen, writeSeen, readCleared, writeCleared := w.bounded()
+	if !readSeen || !writeSeen {
+		t.Fatalf("opening deadlines set on read=%t write=%t", readSeen, writeSeen)
 	}
-	if at.Before(time.Now()) {
-		t.Fatalf("the answer was bounded to %v, which is already past", at)
+	if readAt.Before(time.Now()) || writeAt.Before(time.Now()) {
+		t.Fatalf("opening deadlines are already past: read=%v write=%v", readAt, writeAt)
+	}
+	if !readCleared || !writeCleared {
+		t.Fatalf("accepted session deadlines cleared on read=%t write=%t", readCleared, writeCleared)
 	}
 }
 
@@ -68,10 +89,10 @@ func TestAnOpeningIsBoundedWhileItWaitsToBeAnswered(t *testing.T) {
 // opening is lifted once there is an answer.
 func TestAnAcceptedSessionIsNotBounded(t *testing.T) {
 	caller, server := net.Pipe()
-	t.Cleanup(func() { caller.Close() })
+	t.Cleanup(func() { _ = caller.Close() })
 
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 		c := wire.NewConn(server)
 		if _, _, err := c.ReadFrame(); err != nil {
 			return

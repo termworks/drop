@@ -1,6 +1,7 @@
 package meet
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -113,8 +115,8 @@ func meeting(t *testing.T, mine, theirs *history.Log, admits func(string) bool) 
 	t.Helper()
 
 	here, there := net.Pipe()
-	defer here.Close()
-	defer there.Close()
+	defer func() { _ = here.Close() }()
+	defer func() { _ = there.Close() }()
 
 	var (
 		wg              sync.WaitGroup
@@ -277,8 +279,8 @@ func TestAChangeAfterARefusedOneIsPassedOver(t *testing.T) {
 // allocated for.
 func TestTooManyHeadsAreRefused(t *testing.T) {
 	here, there := net.Pipe()
-	defer here.Close()
-	defer there.Close()
+	defer func() { _ = here.Close() }()
+	defer func() { _ = there.Close() }()
 
 	go func() {
 		w := wire.NewWriter()
@@ -290,6 +292,106 @@ func TestTooManyHeadsAreRefused(t *testing.T) {
 		t.Fatal("a claim of too many heads was believed")
 	} else if !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("readHeads() = %v", err)
+	}
+}
+
+func TestHeadsWithTrailingBytesAreRefused(t *testing.T) {
+	here, there := net.Pipe()
+	defer func() { _ = here.Close() }()
+	defer func() { _ = there.Close() }()
+
+	go func() {
+		w := wire.NewWriter()
+		w.Uint(0)
+		_ = wire.NewConn(there).WriteFrame(wire.KindItem, append(w.Body(), 0))
+	}()
+
+	if _, err := readHeads(wire.NewConn(here)); err == nil {
+		t.Fatal("readHeads() accepted trailing bytes")
+	}
+}
+
+func TestAskStopsWhenTheFarEndStalls(t *testing.T) {
+	here, there := net.Pipe()
+	defer func() { _ = here.Close() }()
+	defer func() { _ = there.Close() }()
+
+	go func() {
+		_, _, _ = wire.NewConn(there).ReadFrame()
+	}()
+
+	stream := &shortDeadline{Conn: here}
+	started := time.Now()
+	if _, err := Ask(wire.NewConn(stream), aLog(t), "them", anybody); err == nil {
+		t.Fatal("Ask() waited forever for a stalled peer")
+	}
+	if time.Since(started) > time.Second {
+		t.Fatalf("Ask() took %s to stop", time.Since(started))
+	}
+	if stream.set < 2 || !stream.cleared {
+		t.Fatalf("read deadline was set %d times and cleared %t", stream.set, stream.cleared)
+	}
+}
+
+func TestAnswerStopsWhenTheFarEndStalls(t *testing.T) {
+	here, there := net.Pipe()
+	defer func() { _ = here.Close() }()
+	defer func() { _ = there.Close() }()
+
+	go func() {
+		conn := wire.NewConn(there)
+		w := wire.NewWriter()
+		w.Uint(0)
+		if err := conn.WriteFrame(wire.KindItem, w.Body()); err != nil {
+			return
+		}
+		_, _, _ = conn.ReadFrame()
+	}()
+
+	stream := &shortDeadline{Conn: here}
+	started := time.Now()
+	if _, err := Answer(wire.NewConn(stream), aLog(t), "them", anybody); err == nil {
+		t.Fatal("Answer() waited forever for a stalled peer")
+	}
+	if time.Since(started) > time.Second {
+		t.Fatalf("Answer() took %s to stop", time.Since(started))
+	}
+	if stream.set < 2 || !stream.cleared {
+		t.Fatalf("read deadline was set %d times and cleared %t", stream.set, stream.cleared)
+	}
+}
+
+type shortDeadline struct {
+	net.Conn
+	set     int
+	cleared bool
+}
+
+func (s *shortDeadline) SetReadDeadline(at time.Time) error {
+	if at.IsZero() {
+		s.cleared = true
+		return s.Conn.SetReadDeadline(at)
+	}
+	s.set++
+	return s.Conn.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+}
+
+func TestMeetingChangeBytesAreBounded(t *testing.T) {
+	asSomebody(t)
+	change := signed(t, strings.Repeat("x", history.MaxBody-1024))
+	raw := change.Encode()
+
+	var sent bytes.Buffer
+	writing := wire.NewConn(&sent)
+	for total := 0; total <= MaxBytes; total += len(raw) {
+		if err := writing.WriteFrame(wire.KindItem, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var caught Caught
+	if _, err := take(wire.NewConn(&sent), aLog(t), anybody, &caught); err == nil || !strings.Contains(err.Error(), "bytes of changes") {
+		t.Fatalf("oversized meeting ended as %v", err)
 	}
 }
 
@@ -351,8 +453,8 @@ func answering(t *testing.T, l *history.Log, changes ...history.Change) (Caught,
 	t.Helper()
 
 	here, there := net.Pipe()
-	defer here.Close()
-	defer there.Close()
+	defer func() { _ = here.Close() }()
+	defer func() { _ = there.Close() }()
 
 	go func() {
 		conn := wire.NewConn(there)

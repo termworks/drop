@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -55,6 +54,9 @@ func runShare(parent context.Context, dir string, to []string) error {
 		return err
 	}
 
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// Through the node that is already running, and only that one. A second endpoint on this
 	// identity is not reachable at the address everybody has written down, so a handoff it served
 	// would be one nobody could find.
@@ -62,21 +64,21 @@ func runShare(parent context.Context, dir string, to []string) error {
 	if err != nil {
 		return err
 	}
-	conn, err := net.Dial("unix", path)
+	conn, err := dialLocal(ctx, path)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("nothing is serving on this device: start `drop serve` first")
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
-	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	if _, err := fmt.Fprintf(conn, "share %s %s\n", whoLine(to), dir); err != nil {
+	if err := writeLocal(conn, "share %s %s\n", whoLine(to), dir); err != nil {
 		return err
 	}
 
 	reading := bufio.NewReader(conn)
-	said, err := reading.ReadString('\n')
+	said, err := readLocalReply(conn, reading)
 	if err != nil {
 		return fmt.Errorf("asking this node for a handoff: %w", err)
 	}
@@ -94,7 +96,7 @@ func runShare(parent context.Context, dir string, to []string) error {
 	// somebody presses ctrl-c: the daemon holds the mount for exactly as long as this connection.
 	over := make(chan string, 1)
 	go func() {
-		line, _ := reading.ReadString('\n')
+		line, _ := readLocalLine(reading)
 		over <- strings.TrimSpace(line)
 	}()
 

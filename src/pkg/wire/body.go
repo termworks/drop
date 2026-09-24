@@ -1,5 +1,7 @@
 package wire
 
+import "fmt"
+
 // The bodies that belong to a frame kind rather than to a conversation.
 //
 // An end, an ack and a refusal say the same thing wherever they appear: this item is over and here
@@ -32,12 +34,18 @@ func DecodeEnd(body []byte) (End, error) {
 	if err != nil {
 		return out, err
 	}
+	if size < 0 {
+		return out, fmt.Errorf("an end has invalid size %d", size)
+	}
 	digest, err := r.Bytes(64)
 	if err != nil {
 		return out, err
 	}
 	out.Size = size
 	out.Digest = append([]byte(nil), digest...)
+	if !r.Done() {
+		return End{}, fmt.Errorf("an end has trailing bytes")
+	}
 	return out, nil
 }
 
@@ -67,6 +75,9 @@ func DecodeAck(body []byte) (Ack, error) {
 		return out, err
 	}
 	out.OK, out.Reason = ok, reason
+	if !r.Done() {
+		return Ack{}, fmt.Errorf("an ack has trailing bytes")
+	}
 	return out, nil
 }
 
@@ -99,6 +110,9 @@ func DecodeReject(body []byte) (Reject, error) {
 	settled, err := r.Bool()
 	if err != nil {
 		return Reject{Reason: reason}, err
+	}
+	if !r.Done() {
+		return Reject{}, fmt.Errorf("a rejection has trailing bytes")
 	}
 	return Reject{Reason: reason, Settled: settled}, nil
 }

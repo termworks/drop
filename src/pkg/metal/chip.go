@@ -56,7 +56,7 @@ func Sealing() bool {
 	if err != nil {
 		return false
 	}
-	chip.Close()
+	_ = chip.Close()
 	return true
 }
 
@@ -76,7 +76,7 @@ func rooted(chip transport.TPM) (*tpm2.CreatePrimaryResponse, func(), error) {
 	}
 
 	drop := func() {
-		tpm2.FlushContext{FlushHandle: made.ObjectHandle}.Execute(chip)
+		_, _ = tpm2.FlushContext{FlushHandle: made.ObjectHandle}.Execute(chip)
 	}
 	return made, drop, nil
 }
@@ -91,7 +91,7 @@ func fromChip() (Mark, error) {
 	if err != nil {
 		return Mark{}, err
 	}
-	defer chip.Close()
+	defer func() { _ = chip.Close() }()
 
 	made, drop, err := rooted(chip)
 	if err != nil {
@@ -121,7 +121,7 @@ func Seal(plain []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer chip.Close()
+	defer func() { _ = chip.Close() }()
 
 	made, drop, err := rooted(chip)
 	if err != nil {
@@ -169,7 +169,7 @@ func Unseal(sealed []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer chip.Close()
+	defer func() { _ = chip.Close() }()
 
 	made, drop, err := rooted(chip)
 	if err != nil {
@@ -198,7 +198,7 @@ func Unseal(sealed []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("this machine's TPM will not take what was sealed: %w", err)
 	}
-	defer tpm2.FlushContext{FlushHandle: held.ObjectHandle}.Execute(chip)
+	defer func() { _, _ = tpm2.FlushContext{FlushHandle: held.ObjectHandle}.Execute(chip) }()
 
 	open, err := tpm2.Unseal{
 		ItemHandle: tpm2.NamedHandle{Handle: held.ObjectHandle, Name: held.Name},

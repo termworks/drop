@@ -36,6 +36,7 @@ func newPathCmd() *cobra.Command {
 		newGrantCmd(),
 		newRevokeCmd(),
 		newGrantsCmd(),
+		newLevelCmd(),
 		newRequestsCmd(),
 		newAskCmd(),
 		newShareCmd(),
@@ -71,7 +72,7 @@ func newPathListCmd() *cobra.Command {
 				return showOwnTable(reading())
 			}
 
-			entry, err := resolve(at)
+			entry, err := resolve(cmd.Context(), at)
 			if err != nil {
 				return err
 			}

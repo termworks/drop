@@ -1,6 +1,7 @@
 package convo
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"github.com/tmc/go-iroh/key"
 
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/wire"
 )
 
 func peerFor(seed byte) node.ID {
@@ -38,6 +40,41 @@ func aKey() []byte {
 		key[i] = byte(i)
 	}
 	return key
+}
+
+func TestUnlockOwnsItsKey(t *testing.T) {
+	key := aKey()
+	want := append([]byte(nil), key...)
+	Unlock(key)
+	t.Cleanup(func() { Unlock(nil) })
+	key[0] ^= 0xff
+
+	got, err := keyed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("mutating the supplied key changed the retained key")
+	}
+}
+
+func TestLazyUnlockOwnsItsKey(t *testing.T) {
+	key := aKey()
+	want := append([]byte(nil), key...)
+	Unlocking(func() ([]byte, error) { return key, nil })
+	t.Cleanup(func() { Unlock(nil) })
+	if _, err := keyed(); err != nil {
+		t.Fatal(err)
+	}
+	key[0] ^= 0xff
+
+	got, err := keyed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("mutating the resolved key changed the retained key")
+	}
 }
 
 // Without a key, `strings` reads the history. With one, it does not -- and drop still does.
@@ -163,6 +200,27 @@ func TestASealedRecordCannotBeMoved(t *testing.T) {
 	}
 	if _, err := unseal(key, sealedUp, "peer-two"); err == nil {
 		t.Error("a record opened in somebody else's conversation")
+	}
+}
+
+func TestASealedRecordCannotCarryUnauthenticatedBytes(t *testing.T) {
+	key := aKey()
+	sealedUp, err := seal(key, []byte("the body"), "peer-one", "message-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unseal(key, append(sealedUp, 0), "peer-one"); err == nil {
+		t.Fatal("unseal() accepted trailing bytes outside the authenticated body")
+	}
+}
+
+func TestAConversationRecordRefusesTrailingBytes(t *testing.T) {
+	m := Message{ID: "message-one", Kind: KindText, Body: "hello"}
+	w := wire.NewWriter()
+	w.Byte(Out)
+	w.Bytes(m.Encode())
+	if _, err := plain(append(w.Body(), 0)); err == nil {
+		t.Fatal("plain() accepted trailing bytes")
 	}
 }
 

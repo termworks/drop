@@ -2,6 +2,7 @@ package grant
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 
@@ -194,6 +195,88 @@ func TestARefusalMadeElsewhereIsNoticed(t *testing.T) {
 	}
 	if _, deny := serving.For("/work"); len(deny) != 0 {
 		t.Errorf("the running store missed the refusal being lifted: %v", deny)
+	}
+}
+
+func TestAReplacementWithMatchingMetadataIsNoticed(t *testing.T) {
+	s := empty(t)
+	if err := s.Allow("/work", "bob"); err != nil {
+		t.Fatal(err)
+	}
+
+	serving, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := held.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	original, err := held.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := changed.Forget("/work", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if err := changed.Allow("/work", "eve"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(file, original.ModTime(), original.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.Size() != original.Size() || !replacement.ModTime().Equal(original.ModTime()) {
+		t.Fatalf("replacement metadata = (%d, %s), want (%d, %s)", replacement.Size(), replacement.ModTime(), original.Size(), original.ModTime())
+	}
+	if os.SameFile(original, replacement) {
+		t.Fatal("replacement reused the original file identity")
+	}
+
+	allow, _ := serving.For("/work")
+	if len(allow) != 1 || allow[0] != "eve" {
+		t.Fatalf("allowed after replacement = %v, want eve", allow)
+	}
+}
+
+func TestRemovingTheGrantFileWithdrawsItsAllows(t *testing.T) {
+	s := empty(t)
+	if err := s.Allow("/work", "bob"); err != nil {
+		t.Fatal(err)
+	}
+
+	serving, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+
+	allow, deny := serving.For("/work")
+	if len(allow) != 0 || len(deny) != 0 {
+		t.Fatalf("removed grants remain as allow=%v deny=%v", allow, deny)
 	}
 }
 

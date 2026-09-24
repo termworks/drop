@@ -28,6 +28,13 @@ type screen struct {
 	// done says the screen is finished with, so whoever is waiting for a repaint stops waiting.
 	done chan struct{}
 	over sync.Once
+
+	// sized says the far end has said what shape its terminal is; a command with no terminal never
+	// does. told says it has said who is on it: how many are watching, and whether it is theirs.
+	sized    bool
+	told     bool
+	watching int
+	own      bool
 }
 
 func newScreen(cols, rows int) *screen {
@@ -64,6 +71,7 @@ func (s *screen) Resize(cols, rows int) {
 	}
 
 	s.mu.Lock()
+	s.sized = true
 	s.inner.Resize(cols, rows)
 	s.mu.Unlock()
 
@@ -141,4 +149,30 @@ func keyBytes(msg tea.KeyMsg) []byte {
 		}
 	}
 	return nil
+}
+
+// Tell records who is on the far end's terminal.
+func (s *screen) Tell(watching int, own bool) {
+	s.mu.Lock()
+	s.told, s.watching, s.own = true, watching, own
+	s.mu.Unlock()
+
+	s.wake()
+}
+
+// Shape is the far end's terminal, and whether it has said; a command with no terminal has not.
+func (s *screen) Shape() (cols, rows int, known bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cols, rows = s.inner.Size()
+	return cols, rows, s.sized
+}
+
+// Company is who is on it, and whether that has been said.
+func (s *screen) Company() (watching int, own, known bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.watching, s.own, s.told
 }

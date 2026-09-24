@@ -15,6 +15,7 @@ package keep
 import (
 	"fmt"
 	"golang.org/x/sys/unix"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -24,6 +25,28 @@ import (
 // The scratch file is made by CreateTemp, which is 0600, so what is written is never briefly
 // readable by anybody else on the way in.
 func Replace(file string, raw []byte) error {
+	return replace(file, func(scratch *os.File) error {
+		if err := Room(scratch, int64(len(raw))); err != nil {
+			return fmt.Errorf("reserving room for %s: %w", file, err)
+		}
+		if _, err := scratch.Write(raw); err != nil {
+			return fmt.Errorf("writing %s: %w", scratch.Name(), err)
+		}
+		return nil
+	})
+}
+
+// ReplaceWith atomically replaces file with bytes written without first holding them all in memory.
+func ReplaceWith(file string, write func(io.Writer) error) error {
+	return replace(file, func(scratch *os.File) error {
+		if err := write(scratch); err != nil {
+			return fmt.Errorf("writing %s: %w", scratch.Name(), err)
+		}
+		return nil
+	})
+}
+
+func replace(file string, write func(*os.File) error) error {
 	dir := filepath.Dir(file)
 
 	scratch, err := os.CreateTemp(dir, filepath.Base(file)+".*")
@@ -31,14 +54,14 @@ func Replace(file string, raw []byte) error {
 		return fmt.Errorf("creating a scratch file in %s: %w", dir, err)
 	}
 	name := scratch.Name()
-	defer os.Remove(name)
+	defer func() { _ = os.Remove(name) }()
 
-	if _, err := scratch.Write(raw); err != nil {
-		scratch.Close()
-		return fmt.Errorf("writing %s: %w", name, err)
+	if err := write(scratch); err != nil {
+		_ = scratch.Close()
+		return err
 	}
 	if err := scratch.Sync(); err != nil {
-		scratch.Close()
+		_ = scratch.Close()
 		return fmt.Errorf("syncing %s: %w", name, err)
 	}
 	if err := scratch.Close(); err != nil {
@@ -48,12 +71,44 @@ func Replace(file string, raw []byte) error {
 		return fmt.Errorf("replacing %s: %w", file, err)
 	}
 
-	// A rename is atomic to a reader and not yet a fact on the disk. This is what makes it one.
+	return SyncDir(dir)
+}
+
+// Rename moves one kept file and flushes every directory whose entries changed.
+func Rename(from, to string) error {
+	if err := os.Rename(from, to); err != nil {
+		return fmt.Errorf("moving %s to %s: %w", from, to, err)
+	}
+
+	toDir := filepath.Dir(to)
+	if err := SyncDir(toDir); err != nil {
+		return err
+	}
+	fromDir := filepath.Dir(from)
+	if fromDir != toDir {
+		return SyncDir(fromDir)
+	}
+	return nil
+}
+
+// Remove unlinks one kept file and flushes its directory. An absent file is already removed.
+func Remove(file string) error {
+	if err := os.Remove(file); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("removing %s: %w", file, err)
+	}
+	return SyncDir(filepath.Dir(file))
+}
+
+// SyncDir flushes a directory and its entries to disk.
+func SyncDir(dir string) error {
 	opened, err := os.Open(dir)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", dir, err)
 	}
-	defer opened.Close()
+	defer func() { _ = opened.Close() }()
 
 	if err := opened.Sync(); err != nil {
 		return fmt.Errorf("syncing %s: %w", dir, err)
@@ -82,12 +137,12 @@ func While(file string, change func() error) error {
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", at, err)
 	}
-	defer held.Close()
+	defer func() { _ = held.Close() }()
 
 	if err := unix.Flock(int(held.Fd()), unix.LOCK_EX); err != nil {
 		return fmt.Errorf("waiting for %s: %w", at, err)
 	}
-	defer unix.Flock(int(held.Fd()), unix.LOCK_UN)
+	defer func() { _ = unix.Flock(int(held.Fd()), unix.LOCK_UN) }()
 
 	return change()
 }

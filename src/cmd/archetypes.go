@@ -32,18 +32,21 @@ type doings struct {
 	cfg *conf.Config
 	// notes, when set, prints one line about something that happened.
 	notes func(text string)
+	// trouble, when set, reports a non-fatal failure.
+	trouble func(text string)
 	// bar, when set, prints transfers as they go.
 	bar *progress
 	// said, when set, is told about a message that was stored.
 	said func(from node.ID, m convo.Message)
+	// arrived, when set, is told about a file that landed here.
+	arrived func(from node.ID, name string, size int64)
 	// noticed, when set, is nudged whenever anything lands, for an interface that redraws.
 	noticed func()
 	// changed, when set, is told that something in a namespace has moved, so that whoever else
 	// holds it hears about it rather than finding out the next time they ask.
 	changed arch.Changed
-	// took, when set, is told that something arrived in a share namespace, for a handoff that is
-	// up for one transfer.
-	took func()
+	// completed, when set, is told that a whole non-empty share batch arrived.
+	completed func(from node.ID, path string, config share.Config)
 	// shown, when set, answers whether a path is a screen this process is already running rather
 	// than a shell to start.
 	shown func(path string) (*cast.Caster, bool)
@@ -69,7 +72,7 @@ func reading() *arch.Registry {
 // serving registers everything a config can name.
 func (d *doings) serving() *arch.Registry {
 	known := arch.NewRegistry()
-	known.Register(share.New(share.Into{Progress: d.moving, Landed: d.dropped}))
+	known.Register(share.New(share.Into{Progress: d.moving, Landed: d.dropped, Completed: d.completedShare}))
 	known.Register(d.filing())
 	known.Register(chat.New(chat.Into{Store: d.store}))
 	known.Register(link.New(link.Into{Store: d.store}))
@@ -110,7 +113,7 @@ func (d *doings) filing() *files.Files {
 			Landed:   d.landed,
 			Changed:  d.moved,
 			Fetch:    d.pull,
-			Trouble:  d.note,
+			Trouble:  d.warn,
 		})
 	}
 	return d.folders
@@ -128,7 +131,7 @@ func (d *doings) pull(w files.Wanted) error {
 // noting is this process's notes, made once so that the config reads the same ones the timer keeps.
 func (d *doings) noting() *note.Note {
 	if d.pages == nil {
-		d.pages = note.New(note.Into{Changed: d.moved, Named: d.person, Trouble: d.note})
+		d.pages = note.New(note.Into{Changed: d.moved, Named: d.person, Trouble: d.warn})
 	}
 	return d.pages
 }
@@ -154,6 +157,9 @@ func (d *doings) person(author string) string {
 		return ""
 	}
 	if owner, known := d.pinned.ByUser(author); known {
+		if localLabelConflict(d.pinned, owner.Person, owner.User) {
+			return ""
+		}
 		return personOf(owner)
 	}
 	return ""
@@ -182,19 +188,26 @@ func (d *doings) moving(name string, done, total int64) {
 // landed records a file that arrived, wherever it arrived.
 func (d *doings) landed(from node.ID, name string, size int64) {
 	d.note(fmt.Sprintf("received %s (%s)", name, bytes(size)))
-	noteFile(from, convo.In, name, size)
+	if err := noteFile(from, convo.In, name, size); err != nil {
+		d.warn(err.Error())
+	}
 	if d.cfg != nil {
 		d.cfg.FireFile(conf.File{From: nameFor(d.pinned, from), Name: name, Size: size})
+	}
+	if d.arrived != nil {
+		d.arrived(from, name, size)
 	}
 	d.knock()
 }
 
-// dropped records a file that arrived in a share namespace, which is the one kind of arrival a
-// handoff is put up for.
+// dropped records a file that arrived in a share namespace.
 func (d *doings) dropped(from node.ID, name string, size int64) {
 	d.landed(from, name, size)
-	if d.took != nil {
-		d.took()
+}
+
+func (d *doings) completedShare(from node.ID, path string, config share.Config) {
+	if d.completed != nil {
+		d.completed(from, path, config)
 	}
 }
 
@@ -222,6 +235,14 @@ func (d *doings) note(text string) {
 	if d.notes != nil {
 		d.notes(text)
 	}
+}
+
+func (d *doings) warn(text string) {
+	if d.trouble != nil {
+		d.trouble(text)
+		return
+	}
+	d.note(text)
 }
 
 func (d *doings) knock() {

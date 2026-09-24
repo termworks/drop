@@ -69,16 +69,19 @@ s:write(body)             -- send text
 s:write(body, "data")     -- send bytes
 s:who()                   -- { name, person, id, paired, trusted }
 s:path()                  -- which namespace this is
-s:mine(name)              -- a path in this namespace's own directory
+s:mine(name)              -- a session-private file name
 s:open(name)              -- open a file there: :read() :write() :close()
 s:run{ "sh", "-c", cmd }  -- run a program, get its output
 drop.log(text)            -- a line in the daemon log
 ```
 
-`s:mine` is worth a sentence. It gives a path in a directory belonging to the *namespace*, and
+`s:mine` is worth a sentence. It gives a name in a directory belonging to the *namespace*, and
 `s:open` will not leave it. In the camera example the still is written to `s:mine("still.jpg")`
 rather than a fixed path, because two people asking for a still at the same moment would otherwise
 run their commands into one file and each read back the other's half of it.
+
+File names are one component of at most 255 bytes. A command passed to `s:run` may contain at most
+256 words and 64 KiB including their terminating bytes.
 
 ## The sandbox
 
@@ -101,6 +104,10 @@ write, bounded, and passed through the same sanitiser everything printed goes th
 
 A program started with `s:run` gets a process group of its own and the group is killed when the
 session ends, so a plugin cannot leave something behind holding your machine.
+
+Across the daemon, at most 16 Lua sessions, 128 plugin-opened files and four plugin process groups
+are active at once. One session may hold at most 64 of those files. Work above a limit is refused
+immediately, and closing a file or ending a session returns its capacity.
 
 Each session gets a runtime of its own. The interpreter's runtime is not safe to share between
 goroutines — seven out of eight panicked when tried — so they are not shared. The compiled unit is,

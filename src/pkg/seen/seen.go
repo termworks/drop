@@ -60,13 +60,18 @@ func Knocked(id node.ID, asked, why string, now time.Time) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	all, err := read()
+	file, err := path()
 	if err != nil {
 		return err
 	}
-	all[id.String()] = stored{At: now.UTC(), Asked: asked, Why: why}
-
-	return write(trim(all))
+	return keep.While(file, func() error {
+		all, err := read()
+		if err != nil {
+			return err
+		}
+		all[id.String()] = stored{At: now.UTC(), Asked: asked, Why: why}
+		return write(trim(all))
+	})
 }
 
 // All is what has knocked, most recent first.
@@ -96,13 +101,18 @@ func Forget(id node.ID) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	all, err := read()
+	file, err := path()
 	if err != nil {
 		return err
 	}
-	delete(all, id.String())
-
-	return write(all)
+	return keep.While(file, func() error {
+		all, err := read()
+		if err != nil {
+			return err
+		}
+		delete(all, id.String())
+		return write(all)
+	})
 }
 
 func read() (map[string]stored, error) {
@@ -111,7 +121,7 @@ func read() (map[string]stored, error) {
 		return nil, err
 	}
 
-	raw, err := os.ReadFile(file)
+	raw, err := keep.ReadFile(file, keep.MaxState)
 	if errors.Is(err, os.ErrNotExist) {
 		return map[string]stored{}, nil
 	}
@@ -120,7 +130,7 @@ func read() (map[string]stored, error) {
 	}
 
 	out := map[string]stored{}
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
 		// A file that will not parse is not worth failing a connection over: it is a note of who
 		// knocked, and starting it again loses nothing that was decided.
 		return map[string]stored{}, nil

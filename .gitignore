@@ -19,20 +19,15 @@ result-*
 /.vscode/
 /__debug_bin
 
-# Android build output
-android/.gradle/
-android/build/
-android/app/build/
-android/local.properties
-android/gradle/
-android/gradlew
-android/gradlew.bat
-
 # the staging file `_pack` renames onto ./drop
 drop.new
 
-# the interface, built by `make build`
-src/pkg/web/assets/drop.wasm
+# Android build output
+apps/android/libs/
+apps/android/.gradle/
+apps/android/build/
+apps/android/app/build/
+apps/android/local.properties
 
-# built by gogio
-android/libs/
+# Kotlin compiler sessions.
+apps/android/.kotlin/

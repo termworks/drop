@@ -10,17 +10,65 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	"lukechampine.com/blake3"
 
 	"github.com/bresilla/drop/src/pkg/arch"
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
+type replacementLock struct {
+	sync.Mutex
+	users int
+}
+
+var replacements struct {
+	sync.Mutex
+	active map[string]*replacementLock
+}
+
+// lockReplacement holds one destination name until its replacement round finishes.
+func lockReplacement(dir *os.Root, name string) (func(), error) {
+	stat, err := dir.Stat(".")
+	if err != nil {
+		return nil, err
+	}
+	raw, ok := stat.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil, fmt.Errorf("the directory has no filesystem identity")
+	}
+	key := fmt.Sprintf("%d:%d:%s", raw.Dev, raw.Ino, name)
+
+	replacements.Lock()
+	if replacements.active == nil {
+		replacements.active = make(map[string]*replacementLock)
+	}
+	lock := replacements.active[key]
+	if lock == nil {
+		lock = &replacementLock{}
+		replacements.active[key] = lock
+	}
+	lock.users++
+	replacements.Unlock()
+
+	lock.Lock()
+	return func() {
+		lock.Unlock()
+		replacements.Lock()
+		lock.users--
+		if lock.users == 0 {
+			delete(replacements.active, key)
+		}
+		replacements.Unlock()
+	}, nil
+}
+
 // answer carries out one request. A refusal is a reply, not an error: the session stays open so the
 // caller can ask for something else.
-func (f *Files) answer(conn *wire.Conn, at arch.Session, dir *os.Root, writable bool, q request) error {
+func (f *Files) answer(conn *wire.Conn, at arch.Session, dir *os.Root, writable bool, quota *transferQuota, q request) error {
 	refuse := func(reason string) error {
 		return conn.WriteFrame(wire.KindReply, reply{Reason: reason}.encode())
 	}
@@ -60,20 +108,26 @@ func (f *Files) answer(conn *wire.Conn, at arch.Session, dir *os.Root, writable 
 		return f.handGet(conn, dir, name, q)
 
 	case opPut:
-		return f.handPut(conn, at, dir, name, q)
+		return f.handPut(conn, at, dir, name, quota, q)
 
 	case opReplace:
-		return f.handReplace(conn, at, dir, name, q)
+		return f.handReplace(conn, at, dir, name, quota, q)
 
 	case opRemove:
 		if err := dir.Remove(name); err != nil {
 			return refuse(fmt.Sprintf("cannot remove %s: %v", name, unpath(err)))
+		}
+		if err := syncDirectory(dir, path.Dir(name)); err != nil {
+			return fmt.Errorf("syncing removal of %s: %w", name, err)
 		}
 		return conn.WriteFrame(wire.KindReply, reply{OK: true}.encode())
 
 	case opMkdir:
 		if err := dir.Mkdir(name, 0o700); err != nil {
 			return refuse(fmt.Sprintf("cannot make %s: %v", name, unpath(err)))
+		}
+		if err := syncDirectory(dir, path.Dir(name)); err != nil {
+			return fmt.Errorf("syncing directory %s: %w", name, err)
 		}
 		return conn.WriteFrame(wire.KindReply, reply{OK: true}.encode())
 
@@ -87,6 +141,15 @@ func (f *Files) answer(conn *wire.Conn, at arch.Session, dir *os.Root, writable 
 		}
 		if err := dir.Rename(name, to); err != nil {
 			return refuse(fmt.Sprintf("cannot move %s: %v", name, unpath(err)))
+		}
+		fromDir, toDir := path.Dir(name), path.Dir(to)
+		if err := syncDirectory(dir, fromDir); err != nil {
+			return fmt.Errorf("syncing move of %s: %w", name, err)
+		}
+		if toDir != fromDir {
+			if err := syncDirectory(dir, toDir); err != nil {
+				return fmt.Errorf("syncing move to %s: %w", to, err)
+			}
 		}
 		return conn.WriteFrame(wire.KindReply, reply{OK: true}.encode())
 
@@ -107,7 +170,7 @@ func (f *Files) handGet(conn *wire.Conn, dir *os.Root, name string, q request) e
 	if err != nil {
 		return refuse(fmt.Sprintf("cannot read %s: %v", name, unpath(err)))
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	if open.IsDir() {
 		return refuse(fmt.Sprintf("%s is a directory", name))
@@ -123,11 +186,13 @@ func (f *Files) handGet(conn *wire.Conn, dir *os.Root, name string, q request) e
 	if err := conn.WriteFrame(wire.KindReply, said.encode()); err != nil {
 		return err
 	}
-	return sendBody(conn, file, path.Base(name), open.Size(), q.From, f.into.Progress)
+	return sendBodyChecked(conn, file, path.Base(name), open.Size(), q.From, f.into.Progress, func() error {
+		return steadyFile(file, open, name)
+	})
 }
 
 // handPut answers a put and then takes the file in.
-func (f *Files) handPut(conn *wire.Conn, at arch.Session, dir *os.Root, name string, q request) error {
+func (f *Files) handPut(conn *wire.Conn, at arch.Session, dir *os.Root, name string, quota *transferQuota, q request) error {
 	refuse := func(reason string) error {
 		return conn.WriteFrame(wire.KindReply, reply{Reason: reason}.encode())
 	}
@@ -137,11 +202,19 @@ func (f *Files) handPut(conn *wire.Conn, at arch.Session, dir *os.Root, name str
 	if reason := roomFor(dir, name); reason != "" {
 		return refuse(reason)
 	}
+	if reason := quota.preflight(q.Size); reason != "" {
+		return refuse(reason)
+	}
+	if q.Size != wire.SizeUnknown {
+		if err := keep.RoomIn(dir, q.Size); err != nil {
+			return refuse("not enough free space")
+		}
+	}
 	if err := conn.WriteFrame(wire.KindReply, reply{OK: true}.encode()); err != nil {
 		return err
 	}
 
-	final, size, err := takeInto(conn, dir, name, q, f.into.Progress)
+	final, size, err := takeInto(conn, dir, name, quota, q, f.into.Progress)
 	if err != nil {
 		return err
 	}
@@ -156,13 +229,26 @@ func (f *Files) handPut(conn *wire.Conn, at arch.Session, dir *os.Root, name str
 // The caller names the version they believe is at that name. What is actually there is weighed
 // against it before a byte is sent, so a file that somebody else changed in the meantime is a
 // refusal the caller can act on rather than a version silently written over.
-func (f *Files) handReplace(conn *wire.Conn, at arch.Session, dir *os.Root, name string, q request) error {
+func (f *Files) handReplace(conn *wire.Conn, at arch.Session, dir *os.Root, name string, quota *transferQuota, q request) error {
 	refuse := func(reason string) error {
 		return conn.WriteFrame(wire.KindReply, reply{Reason: reason}.encode())
 	}
+	unlock, err := lockReplacement(dir, name)
+	if err != nil {
+		return refuse(fmt.Sprintf("cannot prepare to replace %s: %v", name, unpath(err)))
+	}
+	defer unlock()
 
 	if reason := roomFor(dir, name); reason != "" {
 		return refuse(reason)
+	}
+	if reason := quota.preflight(q.Size); reason != "" {
+		return refuse(reason)
+	}
+	if q.Size != wire.SizeUnknown {
+		if err := keep.RoomIn(dir, q.Size); err != nil {
+			return refuse("not enough free space")
+		}
 	}
 	if reason := standing(dir, name, q.Sum); reason != "" {
 		return refuse(reason)
@@ -171,9 +257,12 @@ func (f *Files) handReplace(conn *wire.Conn, at arch.Session, dir *os.Root, name
 		return err
 	}
 
-	size, err := takeOver(conn, dir, name, q, f.into.Progress)
+	size, replaced, err := takeOver(conn, dir, name, quota, q, f.into.Progress)
 	if err != nil {
 		return err
+	}
+	if !replaced {
+		return nil
 	}
 	if f.into.Landed != nil {
 		f.into.Landed(at.From, name, size)
@@ -233,7 +322,7 @@ func digestOf(dir *os.Root, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	sum := blake3.New(32, nil)
 	if _, err := io.Copy(sum, file); err != nil {
@@ -248,7 +337,7 @@ func listed(dir *os.Root, name string) ([]Entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot list it: %v", unpath(err))
 	}
-	defer at.Close()
+	defer func() { _ = at.Close() }()
 
 	if !stat.IsDir() {
 		return nil, fmt.Errorf("%s is not a directory", name)
@@ -288,12 +377,12 @@ func reading(dir *os.Root, name string) (*os.File, fs.FileInfo, error) {
 
 	stat, err := file.Stat()
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return nil, nil, err
 	}
 	if stat.Mode().IsRegular() {
 		if err := waiting(file); err != nil {
-			file.Close()
+			_ = file.Close()
 			return nil, nil, err
 		}
 	}

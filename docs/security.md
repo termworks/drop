@@ -15,10 +15,26 @@ frame can legally be. Read before authentication, that number is a stranger nami
 megabytes to set aside for them, at five bytes each, held until the deadline expires. Measured
 before it was fixed: **200 stalled streams, fed 1000 bytes in total, grew the heap by 812 MiB.**
 Both pre-auth reads now refuse at the header, at 256 KiB, before anything is allocated.
+At most 64 stream handlers run across all inbound connections, with no more than 16 belonging to
+one connection, so one connection cannot consume the process-wide ceiling.
+Streams arriving over connections held to paired devices have the same 64-handler process ceiling
+and 16-handler per-connection ceiling.
+Local directory listings use the same 16,384-entry ceiling as remote listings and stop reading at
+the boundary, rather than first loading an arbitrarily large directory into memory.
+Interactive path completion stops after 4,096 entries.
+Lua archetypes have a second process-wide ceiling: 16 active runtimes, 128 files opened through
+plugins and four plugin process groups. Reaching one refuses new work instead of waiting while it
+holds an admitted stream.
+Archetype discovery also refuses a plugin directory with more than 256 entries instead of loading
+an unbounded directory into memory during startup.
+Configuration events run at most 64 registered handlers; assigning a larger handler table cannot
+turn one incoming message or file into an unbounded callback loop.
 
 **How long a read may wait.** Every read in the handshake has a deadline, on both sides. A far end
 that takes what you sent and then says nothing would otherwise hold a goroutine, a stream and a
 buffer for as long as it liked.
+After the handshake, canceling a bounded command or interface operation sets both stream deadlines
+and closes the stream. Its context therefore ends protocol reads and writes as well as dialing.
 
 **How much a guess may cost.** A password-guarded path costs 64 MiB and three passes of argon2 to
 try, which is the point of it. A caller gets six tries a minute. Two things make that number mean
@@ -28,10 +44,16 @@ what it says:
   with two streams could alternate — guess, open something public, guess again — for ever.
 - One guess is hashed once however many rules ask about it. Resolving a path walks every rule above
   it; without a cache, **one guess against eight rules cost eight hashes**. It now costs one.
+- Only the exact cost and salt/hash sizes produced by `drop me passwd` are accepted. A stored line
+  cannot request an enormous allocation, excessive passes or threads, or silently lower the cost.
+- Hashes waiting for a memory slot leave the queue when the stream or server ends. An abandoned
+  request does not start its expensive work later.
 
 **How much disk a stranger may spend.** A device nobody knows that dials is written down so you can
 let it in later without copying its id out of a log. That write is flushed to the disk itself, so it
-happens at most once every thirty seconds per device rather than once per dial.
+happens at most once every thirty seconds per device rather than once per dial. Rotating endpoint
+IDs does not bypass the limit: at most 64 stranger records are written in one thirty-second process
+window.
 
 ## What a peer says, and what your terminal does with it
 
@@ -70,6 +92,11 @@ is printed**.
 Names *you* wrote — what you called a machine in your own address book — are yours and are printed
 as you typed them. Nothing from the network is ever one of those.
 
+When `drop.open_links` is enabled, only an `http://` or `https://` link of at most 8 KiB is handed
+to the configured opener. The link is one argument, never shell text. At most four opener processes
+run together and at most eight are started per minute; excess links remain in the conversation but
+do not launch another process.
+
 ## What a peer can do to a shared thing
 
 A namespace several machines hold takes signed changes from anybody the rule admits. Three things
@@ -100,6 +127,7 @@ the session that started them.
 session ends. Before that, a command that left anything behind — a pipeline, a backgrounded job —
 left it holding the output pipe, and the copy waited on a read that never finished. Not when the
 peer hung up, not when the session ended, not at daemon shutdown.
+At most 16 stream commands run across the process; another stream is refused until one ends.
 
 `tty` is subtler and the fix is different. A shell with a terminal turns job control **on**, so
 anything a person backgrounds gets a process group of its own — a group kill cannot reach it. So
@@ -107,6 +135,13 @@ what ends a tty session is the shell being waited for, and the tidying happens t
 behind the pty read. Before that, one watcher who typed `sleep 600 &` and exited left the terminal
 in the table with no shell behind it, and **every later watcher of that path got nothing until the
 daemon restarted**.
+At most 16 shell-backed terminal namespaces are live at once. Watchers of an existing terminal do
+not consume another shell; a seventeenth namespace is refused until one shell exits.
+
+On the watching side, ending a terminal or stream closes both halves of its QUIC stream and waits
+for the read pump. Closing only the write half leaves a read blocked on a held connection, so an
+interface that repeatedly opened and closed live paths accumulated pumps still writing to old
+screens.
 
 ## One writer at a time
 
@@ -135,6 +170,28 @@ its output was not valid input to itself.
 
 A length prefix in a conversation log could also wrap negative past a signed bounds check and panic
 the reader on a corrupt file.
+
+## State files have limits
+
+Small JSON state files are refused above 16 MiB, an address book is capped at 256 peers, and a node
+may serve at most 4,096 namespaces. Command-created namespaces are refused at the same limit both
+when their state file is loaded and when a new one is written. A corrupt file cannot turn a short
+local record into an unbounded live lookup table during startup.
+
+Conversation histories are capped at 4,096 peers, and their directory is read with a bounded
+iterator. New histories take a cross-process lock before checking the limit, so simultaneous
+senders cannot race past it. A peer history path that is a symlink or another non-directory object
+is refused rather than followed.
+Rewriting an existing history to turn vault encryption on or off keeps the same 64 MiB per-log
+limit and leaves the original untouched if the encoded replacement would exceed it.
+All histories and pending queues together are capped at 4 GiB per account. The total is checked
+under a cross-process lock before an append or a rewrite grows a log, so parallel senders cannot
+race past it.
+
+The record beside a shared folder is different: it can legitimately describe 131,072 paths, each
+up to 1024 bytes. It is decoded and written as a stream instead of being held as a second complete
+copy in memory. The file size, path count, string tokens and numeric tokens are all capped before
+they can grow the live map.
 
 ## What is not defended
 

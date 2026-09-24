@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -118,11 +120,11 @@ func unlocking() {
 func newVaultSealCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "seal",
-		Short: "Encrypt the conversations that are already on this disk",
+		Short: "Encrypt the histories that are already on this disk",
 		Long: "Turning a vault on encrypts what is written from then on. This is what does the\n" +
 			"same to what is already there.\n\n" +
 			"Stop drop first. Each log is rewritten through a temporary file and renamed, so an\n" +
-			"interruption leaves the old one or the new one — but a message that arrives while\n" +
+			"interruption leaves the old one or the new one — but a record that arrives while\n" +
 			"the walk is running lands in neither.",
 		Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
@@ -134,7 +136,7 @@ func newVaultSealCmd() *cobra.Command {
 func newVaultClearCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "clear",
-		Short: "Put the conversations back in the clear",
+		Short: "Put the histories back in the clear",
 		Long: "The other direction: read with the key, write without it. The data key itself is\n" +
 			"left alone, so this can be undone by sealing again.\n\n" +
 			"Stop drop first, for the same reason.",
@@ -145,8 +147,20 @@ func newVaultClearCmd() *cobra.Command {
 	}
 }
 
-// reseal walks every conversation on this disk and writes it back, sealed or not.
-func reseal(seal bool) error {
+// reseal writes every conversation and shared history back, sealed or not.
+func reseal(seal bool) error { return resealTo(os.Stdout, seal) }
+
+func resealTo(out io.Writer, seal bool) error {
+	path, err := castSocket()
+	if err != nil {
+		return err
+	}
+	guard, err := localGuard(path)
+	if err != nil {
+		return fmt.Errorf("stop drop before rewriting its history: %w", err)
+	}
+	defer func() { _ = guard.Close() }()
+
 	cfg, err := conf.Load(reading())
 	if err != nil {
 		return err
@@ -187,11 +201,30 @@ func reseal(seal bool) error {
 		}
 		done++
 	}
+	things, err := history.Things()
+	if err != nil {
+		return err
+	}
+	shared := 0
+	for _, thing := range things {
+		log, err := history.Open(thing)
+		if err != nil {
+			return err
+		}
+		if err := log.Rewrite(to); err != nil {
+			return fmt.Errorf("shared history %s: %w", thing, err)
+		}
+		shared++
+	}
 
 	what := "sealed"
 	if !seal {
 		what = "put back in the clear"
 	}
-	fmt.Printf("%d conversation(s) %s\n", done, what)
+	_, err = fmt.Fprintf(out, "%d conversation(s) %s\n%d shared history(s) %s\n",
+		done, what, shared, what)
+	if err != nil {
+		return fmt.Errorf("reporting rewritten histories: %w", err)
+	}
 	return nil
 }

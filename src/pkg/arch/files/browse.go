@@ -7,6 +7,8 @@ import (
 	"path"
 	"path/filepath"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -91,6 +93,7 @@ type Given struct {
 	At int64
 	// Progress, when set, is called as the bytes move.
 	Progress func(name string, done, total int64)
+	check    func() error
 }
 
 // Get reads one file out of the namespace and writes it to a local path, carrying on from whatever
@@ -105,12 +108,17 @@ func (b *Browsing) Get(name, into string, want Want) error {
 	if !got.OK {
 		return fmt.Errorf("reading %s: %s", shown(name), got.Reason)
 	}
-
-	e := Entry{Size: wire.SizeUnknown}
-	if len(got.Entries) > 0 {
-		e = got.Entries[0]
+	if len(got.Entries) != 1 {
+		return fmt.Errorf("reading %s: the answer describes %d files", shown(name), len(got.Entries))
 	}
-	return takeOnto(b.conn, into, path.Base(name), e, want.Sum, want.Progress)
+	e := got.Entries[0]
+	if e.Dir {
+		return fmt.Errorf("reading %s: the answer describes a directory", shown(name))
+	}
+	if e.Name != path.Base(name) {
+		return fmt.Errorf("reading %s: the answer describes %s", shown(name), e.Name)
+	}
+	return takeOnto(b.conn, into, path.Base(name), e, want.Sum, from, want.Progress)
 }
 
 // Put writes one file into the namespace, on a free name beside whatever is already there. It fails
@@ -123,7 +131,10 @@ func (b *Browsing) Put(name string, body io.Reader, g Given) error {
 	if !got.OK {
 		return fmt.Errorf("writing %s: %s", shown(name), got.Reason)
 	}
-	return sendBody(b.conn, body, path.Base(name), g.Size, 0, g.Progress)
+	if len(got.Entries) != 0 {
+		return fmt.Errorf("writing %s: the answer carries unexpected file entries", shown(name))
+	}
+	return sendBodyChecked(b.conn, body, path.Base(name), g.Size, 0, g.Progress, g.check)
 }
 
 // Replace writes one file over the version already at that name.
@@ -139,7 +150,10 @@ func (b *Browsing) Replace(name string, body io.Reader, was []byte, g Given) err
 	if !got.OK {
 		return fmt.Errorf("replacing %s: %s", shown(name), got.Reason)
 	}
-	return sendBody(b.conn, body, path.Base(name), g.Size, 0, g.Progress)
+	if len(got.Entries) != 0 {
+		return fmt.Errorf("replacing %s: the answer carries unexpected file entries", shown(name))
+	}
+	return sendBodyChecked(b.conn, body, path.Base(name), g.Size, 0, g.Progress, g.check)
 }
 
 // PutFile writes one file from this disk into the namespace.
@@ -148,9 +162,9 @@ func (b *Browsing) PutFile(name, from string, progress func(name string, done, t
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
-	return b.Put(name, file, given(stat, progress))
+	return b.Put(name, file, given(file, stat, from, progress))
 }
 
 // ReplaceFile writes one file from this disk over the version already at a name.
@@ -159,33 +173,38 @@ func (b *Browsing) ReplaceFile(name, from string, was []byte, progress func(name
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
-	return b.Replace(name, file, was, given(stat, progress))
+	return b.Replace(name, file, was, given(file, stat, from, progress))
 }
 
 // lifted opens a file on this disk and weighs it.
 func lifted(from string) (*os.File, os.FileInfo, error) {
-	file, err := os.Open(from)
+	file, err := os.OpenFile(from, os.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening %s: %w", from, err)
 	}
 
 	stat, err := file.Stat()
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return nil, nil, fmt.Errorf("looking at %s: %w", from, err)
+	}
+	if !stat.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, nil, fmt.Errorf("cannot send %s: not a regular file", from)
 	}
 	return file, stat, nil
 }
 
 // given is what to say about a file on this disk that is about to be written elsewhere.
-func given(stat os.FileInfo, progress func(name string, done, total int64)) Given {
+func given(file *os.File, stat os.FileInfo, from string, progress func(name string, done, total int64)) Given {
 	return Given{
 		Size:     stat.Size(),
 		Mode:     uint32(stat.Mode().Perm()),
 		At:       stat.ModTime().UnixNano(),
 		Progress: progress,
+		check:    func() error { return steadyFile(file, stat, from) },
 	}
 }
 
@@ -212,6 +231,9 @@ func (b *Browsing) did(q request, doing string) error {
 	}
 	if !got.OK {
 		return fmt.Errorf("%s %s: %s", doing, shown(q.Name), got.Reason)
+	}
+	if len(got.Entries) != 0 {
+		return fmt.Errorf("%s %s: the answer carries unexpected file entries", doing, shown(q.Name))
 	}
 	return nil
 }

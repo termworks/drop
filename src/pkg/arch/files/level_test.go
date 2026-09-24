@@ -2,20 +2,106 @@ package files
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"lukechampine.com/blake3"
 
 	"github.com/bresilla/drop/src/pkg/arch"
+	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
+
+type emptyReader struct{}
+
+func (emptyReader) Read([]byte) (int, error) { return 0, nil }
+
+func TestASourceThatMakesNoProgressIsStopped(t *testing.T) {
+	var sent bytes.Buffer
+	err := sendBody(wire.NewConn(readWriter{Reader: &bytes.Buffer{}, Writer: &sent}), emptyReader{}, "stuck", wire.SizeUnknown, 0, nil)
+	if !errors.Is(err, io.ErrNoProgress) {
+		t.Fatalf("a stuck source returned %v", err)
+	}
+	if sent.Len() != 0 {
+		t.Fatalf("a stuck source sent %d bytes", sent.Len())
+	}
+}
+
+func changing(path string) (func(string, int64, int64), <-chan error) {
+	var once sync.Once
+	changed := make(chan error, 1)
+	progress := func(string, int64, int64) {
+		once.Do(func() {
+			file, err := os.OpenFile(path, os.O_WRONLY, 0)
+			if err == nil {
+				_, err = file.WriteAt([]byte("x"), 0)
+			}
+			if file != nil {
+				if closeErr := file.Close(); err == nil {
+					err = closeErr
+				}
+			}
+			if err == nil {
+				when := time.Now().Add(time.Hour)
+				err = os.Chtimes(path, when, when)
+			}
+			changed <- err
+		})
+	}
+	return progress, changed
+}
+
+func TestAChangingPutFileIsNotAccepted(t *testing.T) {
+	from := filepath.Join(t.TempDir(), "source")
+	if err := os.WriteFile(from, bytes.Repeat([]byte("a"), wire.DataChunk*2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	progress, changed := changing(from)
+	dir := t.TempDir()
+	b := opened(t, dir, true, Into{})
+
+	err := b.PutFile("copy", from, progress)
+	if changeErr := <-changed; changeErr != nil {
+		t.Fatal(changeErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "changed while being sent") {
+		t.Fatalf("PutFile() returned %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "copy")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the changing file landed: %v", statErr)
+	}
+}
+
+func TestAChangingGetSourceIsNotAccepted(t *testing.T) {
+	dir := t.TempDir()
+	from := filepath.Join(dir, "source")
+	if err := os.WriteFile(from, bytes.Repeat([]byte("a"), wire.DataChunk*2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	progress, changed := changing(from)
+	b := opened(t, dir, false, Into{Progress: progress})
+	into := filepath.Join(t.TempDir(), "copy")
+
+	err := b.Get("source", into, Want{})
+	if changeErr := <-changed; changeErr != nil {
+		t.Fatal(changeErr)
+	}
+	if err == nil {
+		t.Fatal("Get() accepted a changing source")
+	}
+	if _, statErr := os.Stat(into); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the changing file landed: %v", statErr)
+	}
+}
 
 // What a folder kept level on two machines needs of a directory, and what it did not have.
 //
@@ -46,10 +132,10 @@ func weighed(t *testing.T, dir string, writable bool, limit int64) (*Browsing, *
 	t.Helper()
 
 	caller, server := net.Pipe()
-	t.Cleanup(func() { caller.Close() })
+	t.Cleanup(func() { _ = caller.Close() })
 
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 
 		at := arch.Session{
 			Path:   "/files",
@@ -91,6 +177,175 @@ func changed(t *testing.T, b *Browsing, name string) Entry {
 	}
 	t.Fatalf("%s is not in the listing", name)
 	return Entry{}
+}
+
+func TestFolderWriteDoesNotFollowAPartLink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("victim", filepath.Join(dir, parting("report"))); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := written(root, "report", []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := read(t, victim); string(got) != "original" {
+		t.Fatalf("part link target = %q", got)
+	}
+	if got := read(t, filepath.Join(dir, "report")); string(got) != "new" {
+		t.Fatalf("written file = %q", got)
+	}
+}
+
+func TestFolderCopyDoesNotFollowAPartLink(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "source"), []byte("copied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	part := parting("report")
+	if err := os.Symlink("victim", filepath.Join(dir, part)); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := copyOut(t.Context(), root, "source", part); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := read(t, victim); string(got) != "original" {
+		t.Fatalf("part link target = %q", got)
+	}
+	if got := read(t, filepath.Join(dir, part)); string(got) != "copied" {
+		t.Fatalf("copied part = %q", got)
+	}
+}
+
+func TestFolderCopyStopsWithItsContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	from := &cancelingReader{cancel: cancel}
+
+	n, err := copyContext(ctx, io.Discard, from)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("copyContext() = %v, want context cancellation", err)
+	}
+	if n <= 0 || n > 64<<10 {
+		t.Fatalf("copyContext() moved %d bytes after cancellation", n)
+	}
+}
+
+type cancelingReader struct {
+	cancel context.CancelFunc
+	read   bool
+}
+
+func (r *cancelingReader) Read(into []byte) (int, error) {
+	if r.read {
+		return len(into), nil
+	}
+	r.read = true
+	r.cancel()
+	return len(into), nil
+}
+
+func TestCancelledFolderCopyRemovesItsPart(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "source"), []byte("copied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	part := parting("report")
+	if err := copyOut(ctx, root, "source", part); !errors.Is(err, context.Canceled) {
+		t.Fatalf("copyOut() = %v, want context cancellation", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, part)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled part still exists: %v", err)
+	}
+}
+
+func TestCancelledFetchDoesNotLeaveUnverifiedBytes(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	body := []byte("expected")
+	ctx, cancel := context.WithCancel(t.Context())
+	k := &keeper{path: "/work", dir: dir, held: map[string]mark{}}
+	err = k.put(ctx, root, "report", Held{Size: int64(len(body)), Sum: blake3.Sum256(body)}, func(w Wanted) error {
+		if err := os.WriteFile(w.Into, body, 0o600); err != nil {
+			return err
+		}
+		cancel()
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("put() = %v, want context cancellation", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "report")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unverified bytes still exist: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, parting("report"))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unverified part still exists: %v", err)
+	}
+}
+
+func TestFetchedBytesLandOnlyAfterVerification(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	body := []byte("expected")
+	final := filepath.Join(dir, "report")
+	k := &keeper{path: "/work", dir: dir, held: map[string]mark{}}
+	err = k.put(t.Context(), root, "report", Held{Size: int64(len(body)), Sum: blake3.Sum256(body)}, func(w Wanted) error {
+		if w.Into == final {
+			return errors.New("fetch wrote directly to the final path")
+		}
+		if _, err := os.Stat(final); err == nil {
+			return errors.New("final path exists before verification")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return os.WriteFile(w.Into, body, 0o600)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, final); !bytes.Equal(got, body) {
+		t.Fatalf("landed %q, want %q", got, body)
+	}
+	if _, err := os.Stat(filepath.Join(dir, parting("report"))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("verified part still exists: %v", err)
+	}
 }
 
 // A save and the save three milliseconds after it are two saves. At whole seconds they are one, and
@@ -185,6 +440,174 @@ func TestAReplaceRefusesAVersionSomebodyElseChanged(t *testing.T) {
 	}
 	if _, err := b.List(""); err != nil {
 		t.Fatalf("the session did not survive two refusals: %v", err)
+	}
+}
+
+func TestAReplaceRechecksTheVersionAfterTheUpload(t *testing.T) {
+	dir := t.TempDir()
+	at := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(at, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	was := blake3.Sum256([]byte("original"))
+
+	halfway := make(chan struct{})
+	rest := make(chan struct{})
+	landed := false
+	b := opened(t, dir, true, Into{
+		Progress: func(_ string, done, _ int64) {
+			if done == 4 {
+				close(halfway)
+			}
+		},
+		Landed: func(node.ID, string, int64) { landed = true },
+	})
+	done := make(chan error, 1)
+	go func() {
+		done <- b.Replace("notes.txt", &held{body: []byte("incoming"), rest: rest}, was[:], Given{Size: 8, Mode: 0o644})
+	}()
+	<-halfway
+
+	if err := os.WriteFile(at, []byte("local edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	close(rest)
+	err := <-done
+	if err == nil || !strings.Contains(err.Error(), "changed since you last read it") {
+		t.Fatalf("Replace() = %v", err)
+	}
+	if got := read(t, at); string(got) != "local edit" {
+		t.Fatalf("the concurrent edit was replaced by %q", got)
+	}
+	if landed {
+		t.Fatal("a refused replacement was reported as landed")
+	}
+	if _, err := b.List(""); err != nil {
+		t.Fatalf("the session did not survive the commit refusal: %v", err)
+	}
+	assertNoParts(t, dir)
+}
+
+func TestTwoReplacementsOfOneVersionCannotBothCommit(t *testing.T) {
+	dir := t.TempDir()
+	at := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(at, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	was := blake3.Sum256([]byte("original"))
+
+	halfway := make(chan struct{})
+	rest := make(chan struct{})
+	slow := opened(t, dir, true, Into{Progress: func(_ string, done, _ int64) {
+		if done == 4 {
+			close(halfway)
+		}
+	}})
+	first := make(chan error, 1)
+	go func() {
+		first <- slow.Replace("notes.txt", &held{body: []byte("firstone"), rest: rest}, was[:], Given{Size: 8, Mode: 0o644})
+	}()
+	<-halfway
+
+	quick := opened(t, dir, true, Into{})
+	second := make(chan error, 1)
+	go func() {
+		second <- quick.Replace("notes.txt", strings.NewReader("second!!"), was[:], Given{Size: 8, Mode: 0o644})
+	}()
+	select {
+	case err := <-second:
+		t.Fatalf("the competing replacement passed the active round: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(rest)
+	if err := <-first; err != nil {
+		t.Fatalf("first Replace(): %v", err)
+	}
+	if err := <-second; err == nil || !strings.Contains(err.Error(), "changed since you last read it") {
+		t.Fatalf("second Replace() = %v", err)
+	}
+	if got := read(t, at); string(got) != "firstone" {
+		t.Fatalf("the committed replacement is %q", got)
+	}
+	if _, err := quick.List(""); err != nil {
+		t.Fatalf("the competing session did not survive its refusal: %v", err)
+	}
+	assertNoParts(t, dir)
+}
+
+func TestReplacementsOfDifferentNamesProceedTogether(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"one.txt", "two.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("original"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	was := blake3.Sum256([]byte("original"))
+
+	halfway := make(chan struct{})
+	rest := make(chan struct{})
+	slow := opened(t, dir, true, Into{Progress: func(_ string, done, _ int64) {
+		if done == 4 {
+			close(halfway)
+		}
+	}})
+	first := make(chan error, 1)
+	go func() {
+		first <- slow.Replace("one.txt", &held{body: []byte("firstone"), rest: rest}, was[:], Given{Size: 8, Mode: 0o644})
+	}()
+	<-halfway
+
+	quick := opened(t, dir, true, Into{})
+	second := make(chan error, 1)
+	go func() {
+		second <- quick.Replace("two.txt", strings.NewReader("second!!"), was[:], Given{Size: 8, Mode: 0o644})
+	}()
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatalf("second Replace(): %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a replacement of another file waited behind the active round")
+	}
+
+	close(rest)
+	if err := <-first; err != nil {
+		t.Fatalf("first Replace(): %v", err)
+	}
+	if got := read(t, filepath.Join(dir, "one.txt")); string(got) != "firstone" {
+		t.Fatalf("one.txt = %q", got)
+	}
+	if got := read(t, filepath.Join(dir, "two.txt")); string(got) != "second!!" {
+		t.Fatalf("two.txt = %q", got)
+	}
+	assertNoParts(t, dir)
+}
+
+func assertNoParts(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".part") {
+			t.Fatalf("a refused replacement left %s", entry.Name())
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		replacements.Lock()
+		active := len(replacements.active)
+		replacements.Unlock()
+		if active == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d replacement locks remain", active)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -357,6 +780,104 @@ func TestWhatArrivesIsWeighedAgainstWhatWasAnnounced(t *testing.T) {
 	}
 	if len(left) != 0 {
 		t.Errorf("a put that did not weigh out left %d files behind", len(left))
+	}
+}
+
+func TestWhatArrivesCannotExceedWhatWasAnnounced(t *testing.T) {
+	dir := t.TempDir()
+	b := opened(t, dir, true, Into{})
+
+	err := b.Put("report.bin", strings.NewReader("too long"), Given{Size: 3, Mode: 0o644})
+	if err == nil {
+		t.Fatal("a put larger than its announced size was taken")
+	}
+	if !strings.Contains(err.Error(), "more than the announced") {
+		t.Errorf("it was refused as %v", err)
+	}
+
+	left, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading the directory: %v", err)
+	}
+	if len(left) != 0 {
+		t.Errorf("an oversized put left %d files behind", len(left))
+	}
+}
+
+func TestAnOversizedTransferNeedsNoEndFrameToStop(t *testing.T) {
+	var sent bytes.Buffer
+	if err := wire.NewConn(readWriter{&sent, &sent}).WriteData([]byte("too long")); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	out, err := root.OpenFile("part", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Close() }()
+
+	_, _, err = drain(wire.NewConn(readWriter{&sent, &bytes.Buffer{}}), out, arriving{}, blake3.New(32, nil), "report.bin", 3, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "more than the announced") {
+		t.Fatalf("oversized transfer ended as %v", err)
+	}
+}
+
+func TestAnUnknownTransferStopsBeforeCrossingItsQuota(t *testing.T) {
+	var sent bytes.Buffer
+	if err := wire.NewConn(readWriter{&sent, &sent}).WriteData([]byte("too long")); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	out, err := root.OpenFile("part", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Close() }()
+
+	quota := transferQuota{item: 4, session: 8}
+	_, _, err = drain(wire.NewConn(readWriter{&sent, &bytes.Buffer{}}), out, arriving{}, blake3.New(32, nil), "report.bin", wire.SizeUnknown, &quota, nil)
+	if err == nil || !strings.Contains(err.Error(), "item limit") {
+		t.Fatalf("unknown transfer ended as %v", err)
+	}
+	stat, statErr := out.Stat()
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if stat.Size() != 0 {
+		t.Fatalf("quota overflow wrote %d bytes", stat.Size())
+	}
+}
+
+func TestAnEmptyDataFrameStopsATransfer(t *testing.T) {
+	var sent bytes.Buffer
+	if err := wire.NewConn(readWriter{&sent, &sent}).WriteFrame(wire.KindData, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	out, err := root.OpenFile("part", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Close() }()
+
+	_, _, err = drain(wire.NewConn(readWriter{&sent, &bytes.Buffer{}}), out, arriving{}, blake3.New(32, nil), "report.bin", wire.SizeUnknown, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "empty data frame") {
+		t.Fatalf("empty data frame ended as %v", err)
 	}
 }
 

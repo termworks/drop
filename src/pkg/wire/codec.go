@@ -82,7 +82,13 @@ func (r *Reader) Byte() (byte, error) {
 
 func (r *Reader) Bool() (bool, error) {
 	v, err := r.Byte()
-	return v == 1, err
+	if err != nil {
+		return false, err
+	}
+	if v > 1 {
+		return false, fmt.Errorf("wire: invalid boolean %d", v)
+	}
+	return v == 1, nil
 }
 
 func (r *Reader) Uint() (uint64, error) {

@@ -2,7 +2,6 @@ package proto
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/node"
@@ -58,6 +57,9 @@ type Hello struct {
 	Name    string
 	Version string
 	Serves  []Served
+	// Renewed is a fresh badge for the caller, signed by its own user's key: sent to a machine of
+	// this user's whose badge is running low and that cannot sign one itself. Empty otherwise.
+	Renewed []byte
 }
 
 // encode writes what this node says it offers, cut to what the far end will read.
@@ -96,6 +98,7 @@ func (h Hello) encode() []byte {
 			w.String(key)
 		}
 	}
+	w.Bytes(h.Renewed)
 	return w.Body()
 }
 
@@ -141,6 +144,9 @@ func decodeHello(body []byte) (Hello, error) {
 		if err != nil {
 			return out, err
 		}
+		if version > MaxVersion {
+			return out, fmt.Errorf("a namespace claims version %d, over the %d limit", version, MaxVersion)
+		}
 		writable, err := r.Bool()
 		if err != nil {
 			return out, err
@@ -172,6 +178,14 @@ func decodeHello(body []byte) (Hello, error) {
 			Shared:    shared,
 			Holders:   holders,
 		})
+	}
+	renewed, err := r.Bytes(MaxSigned)
+	if err != nil {
+		return out, err
+	}
+	out.Renewed = renewed
+	if !r.Done() {
+		return out, fmt.Errorf("a hello has trailing bytes")
 	}
 	return out, nil
 }
@@ -283,21 +297,22 @@ func lookup(known *arch.Registry, m ns.Mount) (arch.Archetype, bool) {
 // it likes, and it never has to say another word.
 func AnswerHello(s Stream, from node.ID, self func(Badged) Hello, moved func(was, now node.ID)) error {
 	c := wire.NewConn(s)
+	return c.WithIdle(settleIn, func() error {
+		// Reading the ask is also what keeps the two sides in step on one stream.
+		kind, body, err := c.ReadFrameUpTo(MaxUnknown)
+		if err != nil {
+			return fmt.Errorf("reading the ask: %w", err)
+		}
+		if kind != wire.KindPing {
+			return fmt.Errorf("reading the ask: expected frame kind %d, got %d", wire.KindPing, kind)
+		}
 
-	_ = s.SetReadDeadline(time.Now().Add(settleIn))
-
-	// Reading the ask is also what keeps the two sides in step on one stream.
-	_, body, err := c.ReadFrameUpTo(MaxUnknown)
-	if err != nil {
-		return fmt.Errorf("reading the ask: %w", err)
-	}
-	_ = s.SetReadDeadline(time.Time{})
-
-	who, was, movedOn := showing(from, body)
-	if movedOn && moved != nil {
-		moved(was, from)
-	}
-	return c.WriteFrame(wire.KindOpen, self(who).encode())
+		who, was, movedOn := showing(from, body)
+		if movedOn && moved != nil {
+			moved(was, from)
+		}
+		return c.WriteFrame(wire.KindOpen, self(who).encode())
+	})
 }
 
 // ReadHello reads what the far end calls itself.
@@ -306,14 +321,14 @@ func AnswerHello(s Stream, from node.ID, self func(Badged) Hello, moved func(was
 // at all would otherwise hold whoever asked for as long as it cared to — and asking what somebody
 // serves is the first thing a person does, so it is the first place they would find drop hung.
 func ReadHello(s Stream) (Hello, error) {
-	_ = s.SetReadDeadline(time.Now().Add(settleIn))
-	defer func() { _ = s.SetReadDeadline(time.Time{}) }()
-
-	_, body, err := wire.NewConn(s).ReadFrameUpTo(MaxHello)
-	if err != nil {
-		return Hello{}, fmt.Errorf("reading hello: %w", err)
-	}
-	return decodeHello(body)
+	var out Hello
+	c := wire.NewConn(s)
+	err := c.WithReadIdle(settleIn, func() error {
+		var err error
+		out, err = readHello(c)
+		return err
+	})
+	return out, err
 }
 
 // AskHello asks the far end what it is and reads the answer.
@@ -322,10 +337,31 @@ func ReadHello(s Stream) (Hello, error) {
 // sent on it, so a client that opened one and only read would wait for an answer to a stream the
 // server had not yet been handed. This is the byte that makes the stream exist over there.
 func AskHello(s Stream) (Hello, error) {
-	if err := wire.NewConn(s).WriteFrame(wire.KindPing, showable()); err != nil {
-		return Hello{}, fmt.Errorf("asking: %w", err)
+	var out Hello
+	c := wire.NewConn(s)
+	err := c.WithIdle(settleIn, func() error {
+		if err := c.WriteFrame(wire.KindPing, showable()); err != nil {
+			return fmt.Errorf("asking: %w", err)
+		}
+		var err error
+		out, err = readHello(c)
+		return err
+	})
+	if err == nil && len(out.Renewed) > 0 {
+		renewing(out.Renewed)
 	}
-	return ReadHello(s)
+	return out, err
+}
+
+func readHello(c *wire.Conn) (Hello, error) {
+	kind, body, err := c.ReadFrameUpTo(MaxHello)
+	if err != nil {
+		return Hello{}, fmt.Errorf("reading hello: %w", err)
+	}
+	if kind != wire.KindOpen {
+		return Hello{}, fmt.Errorf("reading hello: expected frame kind %d, got %d", wire.KindOpen, kind)
+	}
+	return decodeHello(body)
 }
 
 // MaxHello bounds what a node may say about itself. Every field in it is bounded already and the

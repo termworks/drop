@@ -51,6 +51,8 @@ type Badged struct {
 	Key string
 	// As is what that person calls this machine. Their label, not ours.
 	As string
+	// Until is when the badge runs out.
+	Until time.Time
 }
 
 // Shown reports whether there is anything here to look up.
@@ -71,7 +73,7 @@ func vouched(from node.ID, open Opening) Badged {
 	if err != nil || badge.Device != from.String() {
 		return Badged{}
 	}
-	return Badged{Key: user.Text(badge.User), As: badge.Name}
+	return Badged{Key: user.Text(badge.User), As: badge.Name, Until: badge.Until}
 }
 
 // showable is a badge on the wire, for the frames that carry nothing else.
@@ -112,6 +114,9 @@ func showing(from node.ID, body []byte) (Badged, node.ID, bool) {
 	handed, err := r.Bytes(MaxSignature)
 	if err != nil {
 		return who, node.ID{}, false
+	}
+	if !r.Done() {
+		return Badged{}, node.ID{}, false
 	}
 	was, ok := handedRaw(from, moved, handed)
 	return who, was, ok
@@ -226,4 +231,32 @@ func handedRaw(from node.ID, moved, hand []byte) (node.ID, bool) {
 		return node.ID{}, false
 	}
 	return over.Was, true
+}
+
+// What this machine does with a badge another machine of its user's signed again for it.
+//
+// Kept the way the badge is: this package reads what arrives, and the one that keeps badges keeps
+// it, so neither imports the other's business.
+
+var renewal struct {
+	sync.RWMutex
+	take func(bundle []byte)
+}
+
+// OnRenewed names what is done with a fresh badge that arrives on a hello. Nil ignores them.
+func OnRenewed(take func(bundle []byte)) {
+	renewal.Lock()
+	defer renewal.Unlock()
+
+	renewal.take = take
+}
+
+func renewing(bundle []byte) {
+	renewal.RLock()
+	take := renewal.take
+	renewal.RUnlock()
+
+	if take != nil {
+		take(bundle)
+	}
 }

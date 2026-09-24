@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"context"
 	"net"
 	"net/netip"
 	"strings"
@@ -79,6 +80,28 @@ func TestAnnounceRefusesAnAbsurdCount(t *testing.T) {
 
 	if _, _, ok := decodeAnnounce(w.Body()); ok {
 		t.Fatal("decodeAnnounce() accepted a packet claiming a million addresses")
+	}
+}
+
+func TestAnnounceWritesOnlyWhatItsReaderAccepts(t *testing.T) {
+	all := make([]netip.AddrPort, maxAddrs+10)
+	for i := range all {
+		all[i] = netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, byte(i / 256), byte(i + 1)}), 47777)
+	}
+
+	_, got, ok := decodeAnnounce(encodeAnnounce("an-id", all))
+	if !ok {
+		t.Fatal("encodeAnnounce() wrote a packet its reader refused")
+	}
+	if len(got) != maxAddrs {
+		t.Fatalf("announcement has %d addresses, want %d", len(got), maxAddrs)
+	}
+}
+
+func TestAnnounceRefusesTrailingBytes(t *testing.T) {
+	body := append(encodeAnnounce("an-id", addrs(t, "192.168.1.10:47901")), 0)
+	if _, _, ok := decodeAnnounce(body); ok {
+		t.Fatal("decodeAnnounce() accepted trailing bytes")
 	}
 }
 
@@ -191,6 +214,83 @@ func TestASightingNeedsARealID(t *testing.T) {
 	}
 }
 
+func TestASightingKeepsOnlyUsableAddresses(t *testing.T) {
+	peer := idFrom(2).String()
+	l := &LAN{peers: map[string]sighting{}, self: idFrom(1).String()}
+	from := netip.MustParseAddr("192.168.1.50")
+
+	l.heard(encodeAnnounce(peer, addrs(t,
+		"192.168.1.50:47777",
+		"10.0.0.5:47777",
+		"0.0.0.0:47777",
+		"127.0.0.1:47777",
+		"169.254.1.2:47777",
+		"239.255.77.88:47777",
+		"192.168.1.50:0",
+	)), from)
+
+	got := l.peers[peer].addrs
+	want := addrs(t, "192.168.1.50:47777", "10.0.0.5:47777")
+	if len(got) != len(want) {
+		t.Fatalf("stored addresses are %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("stored address %d is %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestASightingNeedsAUsableSenderClaim(t *testing.T) {
+	peer := idFrom(2).String()
+	l := &LAN{peers: map[string]sighting{}, self: idFrom(1).String()}
+	from := netip.MustParseAddr("192.168.1.50")
+
+	l.heard(encodeAnnounce(peer, addrs(t, "192.168.1.50:0", "10.0.0.5:47777")), from)
+
+	if len(l.peers) != 0 {
+		t.Fatalf("stored a sighting with no usable sender claim: %v", l.peers)
+	}
+}
+
+func TestFindReturnsAFreshSighting(t *testing.T) {
+	peer := idFrom(2)
+	want := netip.MustParseAddrPort("192.168.1.50:47777")
+	l := &LAN{peers: map[string]sighting{
+		peer.String(): {addrs: []netip.AddrPort{want}, seen: time.Now()},
+	}}
+
+	got, found := l.Find(t.Context(), peer)
+	if !found {
+		t.Fatal("fresh sighting was not found")
+	}
+	if got.ID != peer || len(got.Addrs()) != 1 {
+		t.Fatalf("found %v, want %s at %s", got, peer, want)
+	}
+}
+
+func TestFindIgnoresAStaleSighting(t *testing.T) {
+	peer := idFrom(2)
+	l := &LAN{peers: map[string]sighting{
+		peer.String(): {addrs: addrs(t, "192.168.1.50:47777"), seen: time.Now().Add(-Stale)},
+	}}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, found := l.Find(ctx, peer); found {
+		t.Fatal("stale sighting was found")
+	}
+}
+
+func TestFindStopsWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, found := (&LAN{peers: map[string]sighting{}}).Find(ctx, idFrom(2)); found {
+		t.Fatal("cancelled lookup found an absent peer")
+	}
+}
+
 // Ids cost a keypair to mint, and nothing but the wire decides how many arrive. What is remembered
 // has to have a ceiling, or a stream of announcements is the daemon's memory.
 func TestTheWireIsRememberedUpToAPoint(t *testing.T) {
@@ -222,7 +322,7 @@ func TestAnnouncingGoesOutEveryInterfaceJoined(t *testing.T) {
 	if err != nil {
 		t.Skipf("no socket to listen on: %v", err)
 	}
-	defer hear.Close()
+	defer func() { _ = hear.Close() }()
 
 	group := &net.UDPAddr{IP: net.ParseIP(Group), Port: hear.LocalAddr().(*net.UDPAddr).Port}
 	joined := ipv4.NewPacketConn(hear.(*net.UDPConn))
@@ -235,7 +335,7 @@ func TestAnnouncingGoesOutEveryInterfaceJoined(t *testing.T) {
 	if err != nil {
 		t.Skipf("no socket to announce from: %v", err)
 	}
-	defer say.Close()
+	defer func() { _ = say.Close() }()
 
 	out := ipv4.NewPacketConn(say.(*net.UDPConn))
 	_ = out.SetMulticastLoopback(true)
@@ -289,5 +389,19 @@ func heardFrom(conn net.PacketConn) int {
 			return seen
 		}
 		seen++
+	}
+}
+
+// A node that has been listening longer than the window has already heard everybody on the wire, so
+// asking about somebody it has not heard answers at once rather than after another window.
+func TestALongListenerAnswersAtOnce(t *testing.T) {
+	l := &LAN{peers: map[string]sighting{}, self: idFrom(1).String(), since: time.Now().Add(-time.Minute)}
+
+	start := time.Now()
+	if _, found := l.Find(t.Context(), idFrom(2)); found {
+		t.Fatal("found a device nobody announced")
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Fatalf("waited %s for a device that had a minute to announce itself", waited)
 	}
 }

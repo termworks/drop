@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"os"
@@ -18,9 +19,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.list.SetSize(m.listWidth(), m.listHeight())
 
 		if m.screen != nil {
-			m.screen.Resize(m.viewWidth(), m.viewHeight())
+			// A terminal's shape is the far end's to say, and it may be held to somebody else's
+			// smaller window: this one is only asked for. Resizing the copy here to this window
+			// drew the far end's rows into a grid of another width, and they wrapped. What has no
+			// terminal behind it — a command's output — is drawn at whatever size there is room for.
+			if _, _, sized := m.screen.Shape(); !sized {
+				m.screen.Resize(m.viewWidth(), m.viewHeight())
+			}
 
-			// The far end draws for the window it is being watched in, whether or not it takes
+			// The far end draws for the windows it is being watched in, whether or not they take
 			// keys. Its shape is not something it has to be trusted with.
 			if m.typingAt != nil {
 				_ = m.typingAt.Resize(m.viewWidth(), m.viewHeight())
@@ -121,10 +128,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// somebody is reading a conversation moves the ground under them for no reason.
 		next := []tea.Cmd{listenFor(m.back.Arrivals())}
 
-		switch {
-		case m.at == levelUsers:
+		switch m.at {
+		case levelUsers:
 			next = append(next, loadPeers(m.back))
-		case m.at == levelOpen:
+		case levelOpen:
 			if with, ok := m.peer(); ok {
 				next = append(next, loadHistory(m.back, with))
 			}
@@ -200,10 +207,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// A list may come back with the failure: what the device said the last time anybody
 			// asked. It is worth showing, because a conversation with a device that is off is
 			// still on this disk and there is no other way in to it.
-			if len(msg.paths) == 0 {
-				return m, nil
+			if !reportsCurrentData(msg.err) {
+				if len(msg.paths) == 0 {
+					return m, nil
+				}
+				m.trouble = "not reachable — showing what it last shared"
 			}
-			m.trouble = "not reachable — showing what it last shared"
 		}
 
 		if m.known == nil {
@@ -319,8 +328,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, loadHistory(m.back, at)
 		}
 		return m, nil
+
+	default:
+		// What the list sends itself has to reach it: the matches for a filter being typed come
+		// back as a message of their own, and dropping them left a filter prompt that never
+		// narrowed anything.
+		if m.at != levelOpen {
+			var cmd tea.Cmd
+			m.list, cmd = m.list.Update(msg)
+			return m, cmd
+		}
 	}
 	return m, nil
+}
+
+func reportsCurrentData(err error) bool {
+	var current interface{ CurrentData() bool }
+	return errors.As(err, &current) && current.CurrentData()
 }
 
 func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -419,6 +443,13 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.back_()
 
 	case "esc", "left", "h":
+		// A filter still narrowing the list is the first thing esc takes away, the way it is
+		// everywhere else a list is filtered. Going back a level instead left the filter with no
+		// way to be cleared, and typed over the next time it was opened.
+		if msg.String() == "esc" && m.at != levelOpen && m.list.FilterState() == list.FilterApplied {
+			m.list.ResetFilter()
+			return m, nil
+		}
 		return m.back_()
 
 	case "enter", "right", "l":
@@ -660,7 +691,7 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.onSelf = false
-		m.atPeer = m.peerFor(m.list.Index())
+		m.atPeer = m.peerFor(m.list.GlobalIndex())
 		m.at = levelPaths
 
 		with, _ := m.peer()
@@ -679,7 +710,7 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		at := m.steps[m.list.Index()]
+		at := m.steps[m.list.GlobalIndex()]
 
 		// A way down is walked into, whether or not it is also a namespace: what is inside is
 		// listed along with the path itself, so nothing becomes unreachable by having something
@@ -693,7 +724,7 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		m.atPath = m.list.Index()
+		m.atPath = m.list.GlobalIndex()
 
 		// A namespace that is a directory is walked at its own level, where the list carries the
 		// arrows and the filtering.
@@ -771,14 +802,14 @@ func (m *Model) showMachines() {
 	items, from := machinesOf(m.me, m.peers, m.rows.under[m.atUser], m.atUser, m.reaching)
 
 	m.ofUser = from
-	m.list.SetItems(items)
+	m.fill("machines\x00"+m.atUser, items)
 	m.list.Select(m.rowFor(m.atPeer))
 	m.list.SetSize(m.listWidth(), m.listHeight())
 }
 
 func (m *Model) showUsers() {
 	m.rows = group(m.me, m.peers, m.reaching, m.knocked)
-	m.list.SetItems(m.rows.items)
+	m.fill("users", m.rows.items)
 	m.list.Select(m.rowFor(m.atPeer))
 	m.list.SetSize(m.listWidth(), m.listHeight())
 }
@@ -796,7 +827,7 @@ func (m *Model) showPaths() {
 	for _, at := range m.steps {
 		items = append(items, pathItem{step: at, on: with.Name})
 	}
-	m.list.SetItems(items)
+	m.fill("paths\x00"+with.Name, items)
 	m.list.Select(m.atPath)
 	m.list.SetSize(m.listWidth(), m.listHeight())
 }
@@ -1011,4 +1042,14 @@ func (m Model) peerFor(row int) int {
 		return m.atPeer
 	}
 	return m.ofUser[row]
+}
+
+// fill puts one screen's rows in the list. The one list is every screen in turn, and a filter typed
+// over one of them, carried to the next, hides everything on it; a screen drawn again keeps it.
+func (m *Model) fill(screen string, items []list.Item) {
+	if screen != m.listed {
+		m.list.ResetFilter()
+		m.listed = screen
+	}
+	m.list.SetItems(items)
 }

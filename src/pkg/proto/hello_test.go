@@ -1,6 +1,7 @@
 package proto
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -105,8 +106,9 @@ type pipeEnd struct {
 	io.Writer
 }
 
-func (pipeEnd) Close() error                    { return nil }
-func (pipeEnd) SetReadDeadline(time.Time) error { return nil }
+func (pipeEnd) Close() error                     { return nil }
+func (pipeEnd) SetReadDeadline(time.Time) error  { return nil }
+func (pipeEnd) SetWriteDeadline(time.Time) error { return nil }
 
 // deadlined is a stream that will never say anything, and unblocks only when a read deadline is set
 // on it — which is what a real one does to a peer that sent nothing.
@@ -120,6 +122,31 @@ func (d *deadlined) Write(p []byte) (int, error) { return len(p), nil }
 func (d *deadlined) Close() error                { return nil }
 
 func (d *deadlined) SetReadDeadline(at time.Time) error {
+	if !at.IsZero() {
+		d.once.Do(func() { close(d.set) })
+	}
+	return nil
+}
+
+func (d *deadlined) SetWriteDeadline(time.Time) error { return nil }
+
+type writeDeadlined struct {
+	read io.Reader
+	set  chan struct{}
+	once sync.Once
+}
+
+func (d *writeDeadlined) Read(p []byte) (int, error) { return d.read.Read(p) }
+func (d *writeDeadlined) Write([]byte) (int, error) {
+	<-d.set
+	return 0, os.ErrDeadlineExceeded
+}
+func (d *writeDeadlined) Close() error {
+	d.once.Do(func() { close(d.set) })
+	return nil
+}
+func (d *writeDeadlined) SetReadDeadline(time.Time) error { return nil }
+func (d *writeDeadlined) SetWriteDeadline(at time.Time) error {
 	if !at.IsZero() {
 		d.once.Do(func() { close(d.set) })
 	}
@@ -144,6 +171,71 @@ func TestAHelloThatSaysNothingIsNotHeldForever(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("AnswerHello is still reading a stream that will never say anything")
 	}
+}
+
+func TestAHelloAnswerThatCannotBeWrittenIsNotHeldForever(t *testing.T) {
+	blocked := &writeDeadlined{
+		read: bytes.NewReader([]byte{wire.KindPing, 0}),
+		set:  make(chan struct{}),
+	}
+	t.Cleanup(func() { _ = blocked.Close() })
+
+	done := make(chan error, 1)
+	go func() {
+		done <- AnswerHello(blocked, node.ID{}, func(Badged) Hello { return Hello{Name: "beta"} }, nil)
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a blocked hello answer was written")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AnswerHello is still writing to a peer that reads nothing")
+	}
+}
+
+func TestAHelloAskThatCannotBeWrittenIsNotHeldForever(t *testing.T) {
+	blocked := &writeDeadlined{read: &bytes.Buffer{}, set: make(chan struct{})}
+	t.Cleanup(func() { _ = blocked.Close() })
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := AskHello(blocked)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a blocked hello ask was written")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AskHello is still writing to a peer that reads nothing")
+	}
+}
+
+func TestHelloRefusesWrongFrameKinds(t *testing.T) {
+	t.Run("ask", func(t *testing.T) {
+		var framed bytes.Buffer
+		if err := wire.NewConn(&framed).WriteFrame(wire.KindItem, showable()); err != nil {
+			t.Fatal(err)
+		}
+		stream := pipeEnd{Reader: &framed, Writer: io.Discard}
+		if err := AnswerHello(stream, node.ID{}, func(Badged) Hello { return Hello{} }, nil); err == nil {
+			t.Fatal("AnswerHello() accepted a non-ask frame")
+		}
+	})
+
+	t.Run("answer", func(t *testing.T) {
+		var framed bytes.Buffer
+		if err := wire.NewConn(&framed).WriteFrame(wire.KindItem, Hello{}.encode()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readHello(wire.NewConn(&framed)); err == nil {
+			t.Fatal("readHello() accepted a non-answer frame")
+		}
+	})
 }
 
 // The client speaks first and the server answers. Getting this backwards deadlocks on a real QUIC

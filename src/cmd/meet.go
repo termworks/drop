@@ -34,7 +34,9 @@ func meeting(mounts *ns.Table, pinned *book.Book, told arch.Changed) func(proto.
 			return err
 		}
 
-		_ = pinned.Refresh()
+		if err := pinned.Refresh(); err != nil {
+			return fmt.Errorf("refreshing the address book: %w", err)
+		}
 		rule, _ := mounts.AccessFor(m.Mount.Path)
 
 		caught, err := meet.Answer(m.Conn, l, whoMet(m), among.Admits(rule, pinned, myKey()))
@@ -118,7 +120,10 @@ func reaching(ctx context.Context, over reaches, at string, mounts *ns.Table, pi
 	if !ok || mount.Path != at || !mount.Shared.Declared() {
 		return
 	}
-	_ = pinned.Refresh()
+	if err := pinned.Refresh(); err != nil {
+		trace(fmt.Sprintf("refreshing the address book: %v", err))
+		return
+	}
 
 	rule, _ := mounts.AccessFor(at)
 	for _, entry := range among.Holders(rule, pinned) {
@@ -153,6 +158,20 @@ func pushTo(ctx context.Context, over reaches, entry book.Entry, mounts *ns.Tabl
 	}
 }
 
+type heldReaches interface {
+	reaches
+	Reach(context.Context, book.Entry, string) error
+}
+
+// pushHeldTo sends a backlog only after its peer has one usable connection.
+func pushHeldTo(ctx context.Context, over heldReaches, entry book.Entry, mounts *ns.Table, pinned *book.Book) error {
+	if err := over.Reach(ctx, entry, node.ALPNSession); err != nil {
+		return err
+	}
+	pushTo(ctx, over, entry, mounts, pinned)
+	return nil
+}
+
 // catchUp opens a meeting with one peer about one namespace.
 func catchUp(ctx context.Context, over reaches, entry book.Entry, mount ns.Mount, rule ns.Access, pinned *book.Book) (meet.Caught, error) {
 	l, err := history.Open(mount.Shared.ID())
@@ -164,8 +183,9 @@ func catchUp(ctx context.Context, over reaches, entry book.Entry, mount ns.Mount
 	if err != nil {
 		return meet.Caught{}, err
 	}
-	defer done.Close()
-	defer s.Close()
+	defer func() { _ = done.Close() }()
+	defer func() { _ = s.Close() }()
+	defer stopStreamOnDone(ctx, s)()
 
 	conn, err := proto.Meet(s, mount.Shared, node.DisplayName())
 	if err != nil {

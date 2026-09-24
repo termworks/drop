@@ -4,11 +4,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
-
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"golang.org/x/crypto/hkdf"
 
@@ -21,6 +19,9 @@ const SecretBytes = 32
 
 // nonceBytes is each side's contribution to the derivation.
 const nonceBytes = 32
+
+// maxPairAddrs is how many direct addresses one pairing message carries.
+const maxPairAddrs = 32
 
 // mostName is as long a name as a far end may suggest for itself. It becomes a key in the address
 // book and something a person types, not somewhere to put a paragraph.
@@ -45,8 +46,12 @@ func (m pairMsg) encode() []byte {
 	w.String(m.From)
 	w.String(m.Name)
 	w.Bytes(m.Proof)
-	w.Uint(uint64(len(m.Addrs)))
-	for _, a := range m.Addrs {
+	addrs := m.Addrs
+	if len(addrs) > maxPairAddrs {
+		addrs = addrs[:maxPairAddrs]
+	}
+	w.Uint(uint64(len(addrs)))
+	for _, a := range addrs {
 		w.String(a)
 	}
 	w.Bytes(m.Nonce)
@@ -79,7 +84,7 @@ func decodePairMsg(body []byte) (pairMsg, error) {
 	if err != nil {
 		return out, err
 	}
-	if count > 32 {
+	if count > maxPairAddrs {
 		return out, fmt.Errorf("a pairing message claims %d addresses", count)
 	}
 	for i := uint64(0); i < count; i++ {
@@ -104,6 +109,9 @@ func decodePairMsg(body []byte) (pairMsg, error) {
 		return out, err
 	}
 	out.Badge, out.Signed = badge, signed
+	if !r.Done() {
+		return out, fmt.Errorf("a pairing message has trailing bytes")
+	}
 	return out, nil
 }
 
@@ -158,22 +166,26 @@ func deriveSecret(self, other node.ID, selfNonce, otherNonce []byte) ([]byte, er
 //
 // from is the id the transport authenticated for the far end. It is the id that is paired with;
 // what the message says about itself is only checked against it.
-func AnswerPairing(s Stream, self, from node.ID, name string, addrs []string) (Pairing, error) {
+//
+// accept is handed the outcome before the far end hears anything, and the far end is answered only
+// if it returns nil. That order is the point: what it accepts is written down here before the other
+// device learns it paired, so whatever that device opens next is met by somebody who knows it — and
+// what it refuses is refused to the other device too, rather than the other device believing it
+// paired with somebody who threw the attempt away.
+func AnswerPairing(s Stream, self, from node.ID, name string, addrs []string, accept func(Pairing) error) (Pairing, error) {
 	var out Pairing
-
 	conn := wire.NewConn(s)
+	err := conn.WithIdle(settleIn, func() error {
+		var err error
+		out, err = answerPairing(conn, self, from, name, addrs, accept)
+		return err
+	})
+	return out, err
+}
 
-	// A pairing window is open to whoever dials during it, so the request is bounded: a stream that
-	// says nothing is a goroutine held for the rest of the process's life.
-	_ = s.SetReadDeadline(time.Now().Add(settleIn))
-
-	_, body, err := conn.ReadFrame()
-	if err != nil {
-		return out, err
-	}
-	_ = s.SetReadDeadline(time.Time{})
-
-	theirs, err := decodePairMsg(body)
+func answerPairing(conn *wire.Conn, self, from node.ID, name string, addrs []string, accept func(Pairing) error) (Pairing, error) {
+	var out Pairing
+	theirs, err := readPairMsg(conn)
 	if err != nil {
 		return out, err
 	}
@@ -186,20 +198,38 @@ func AnswerPairing(s Stream, self, from node.ID, name string, addrs []string) (P
 	if _, err := rand.Read(mine.Nonce); err != nil {
 		return out, err
 	}
+
+	out, err = finishPairing(self, from, theirs, mine)
+	if err != nil {
+		return out, err
+	}
+	if accept != nil {
+		if err := accept(out); err != nil {
+			_ = conn.WriteFrame(wire.KindReject, wire.Reject{Reason: err.Error()}.Encode())
+			return out, err
+		}
+	}
 	if err := conn.WriteFrame(wire.KindOpen, mine.encode()); err != nil {
 		return out, err
 	}
-
-	return finishPairing(self, from, theirs, mine)
+	return out, nil
 }
 
 // Pair runs the exchange from the initiating side. from is the id the transport authenticated for
 // the device whose ticket is being answered.
 func Pair(s Stream, self, from node.ID, name string, proof []byte, addrs []string) (Pairing, error) {
 	var out Pairing
-
 	conn := wire.NewConn(s)
+	err := conn.WithIdle(settleIn, func() error {
+		var err error
+		out, err = pair(conn, self, from, name, proof, addrs)
+		return err
+	})
+	return out, err
+}
 
+func pair(conn *wire.Conn, self, from node.ID, name string, proof []byte, addrs []string) (Pairing, error) {
+	var out Pairing
 	mine := pairMsg{From: self.String(), Name: name, Proof: proof, Addrs: addrs, Nonce: make([]byte, nonceBytes)}
 	mine.Badge, mine.Signed = carried()
 	if _, err := rand.Read(mine.Nonce); err != nil {
@@ -209,11 +239,7 @@ func Pair(s Stream, self, from node.ID, name string, proof []byte, addrs []strin
 		return out, fmt.Errorf("sending the pairing request: %w", err)
 	}
 
-	_, body, err := conn.ReadFrame()
-	if err != nil {
-		return out, fmt.Errorf("reading the pairing response: %w", err)
-	}
-	theirs, err := decodePairMsg(body)
+	theirs, err := readPairMsg(conn)
 	if err != nil {
 		return out, fmt.Errorf("reading the pairing response: %w", err)
 	}
@@ -222,6 +248,24 @@ func Pair(s Stream, self, from node.ID, name string, proof []byte, addrs []strin
 	}
 
 	return finishPairing(self, from, theirs, mine)
+}
+
+func readPairMsg(conn *wire.Conn) (pairMsg, error) {
+	kind, body, err := conn.ReadFrame()
+	if err != nil {
+		return pairMsg{}, err
+	}
+	if kind == wire.KindReject {
+		reject, err := wire.DecodeReject(body)
+		if err != nil {
+			return pairMsg{}, err
+		}
+		return pairMsg{}, fmt.Errorf("the other device refused: %s", reject.Reason)
+	}
+	if kind != wire.KindOpen {
+		return pairMsg{}, fmt.Errorf("expected frame kind %d, got %d", wire.KindOpen, kind)
+	}
+	return decodePairMsg(body)
 }
 
 // finishPairing is the half both sides share: the remote id is the one the connection proved, so

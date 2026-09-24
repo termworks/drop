@@ -144,7 +144,7 @@ func (m *Model) showBrowse() {
 	for _, one := range m.held {
 		items = append(items, heldItem{held: one, at: folder(at.Path) + deeper(m.dir, one.Name), on: on})
 	}
-	m.list.SetItems(items)
+	m.fill("browse\x00"+on+"\x00"+at.Path+"\x00"+m.dir, items)
 	m.list.Select(0)
 	m.list.SetSize(m.listWidth(), m.listHeight())
 }

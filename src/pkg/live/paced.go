@@ -17,27 +17,36 @@ var ErrStalled = errors.New("the far end stopped reading")
 // quiet: the write simply never lands. What is behind it — a terminal shared with other watchers, a
 // command still running — is not free to wait for ever.
 type Paced struct {
-	to     io.Writer
+	to     interruptibleWriter
 	within time.Duration
 	chunks chan []byte
 	sent   chan error
 	// gone is closed once this writer has been given up on, so a caller that keeps writing is told
 	// rather than handing chunks to a goroutine that has left.
-	gone chan struct{}
-	once sync.Once
+	gone     chan struct{}
+	done     chan struct{}
+	once     sync.Once
+	stopOnce sync.Once
+}
+
+type interruptibleWriter interface {
+	io.Writer
+	StopWrite()
 }
 
 // Pacing runs a paced writer over to, giving up on any chunk that has not landed within.
-func Pacing(to io.Writer, within time.Duration) *Paced {
+func Pacing(to interruptibleWriter, within time.Duration) *Paced {
 	p := &Paced{
 		to:     to,
 		within: within,
 		chunks: make(chan []byte),
 		sent:   make(chan error, 1),
 		gone:   make(chan struct{}),
+		done:   make(chan struct{}),
 	}
 
 	go func() {
+		defer close(p.done)
 		for {
 			select {
 			case chunk := <-p.chunks:
@@ -47,6 +56,7 @@ func Pacing(to io.Writer, within time.Duration) *Paced {
 				default:
 				}
 				if err != nil {
+					p.Give()
 					return
 				}
 			case <-p.gone:
@@ -77,7 +87,7 @@ func (p *Paced) Write(chunk []byte) (int, error) {
 	select {
 	case p.chunks <- held:
 	case <-timer.C:
-		p.Give()
+		p.stall()
 		return 0, ErrStalled
 	}
 
@@ -88,9 +98,14 @@ func (p *Paced) Write(chunk []byte) (int, error) {
 		}
 		return len(chunk), nil
 	case <-timer.C:
-		p.Give()
+		p.stall()
 		return 0, ErrStalled
 	}
+}
+
+func (p *Paced) stall() {
+	p.Give()
+	p.stopOnce.Do(p.to.StopWrite)
 }
 
 // Give stops the writer, whether or not it stalled. It is safe to call twice.

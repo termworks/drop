@@ -1,11 +1,14 @@
 package vault
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/bresilla/drop/src/pkg/keep"
 )
 
 func TestNothingConfiguredIsNotAFailure(t *testing.T) {
@@ -20,6 +23,52 @@ func TestNothingConfiguredIsNotAFailure(t *testing.T) {
 	}
 	if len(v.Key()) != 0 {
 		t.Error("a node with no vault has a data key")
+	}
+}
+
+func TestKeyDoesNotExposeVaultStorage(t *testing.T) {
+	v := &Vault{key: bytes.Repeat([]byte{7}, KeyBytes)}
+	key := v.Key()
+	key[0] = 9
+
+	if got := v.Key()[0]; got != 7 {
+		t.Fatalf("mutating Key() changed the vault key to %d", got)
+	}
+}
+
+func TestPeekReportsEveryVaultStateWithoutCreatingOne(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	key := filepath.Join(dir, "vault.key")
+	configured := []string{key}
+
+	if state, err := Peek(nil); err != nil || state != Off {
+		t.Fatalf("Peek(nil) = %v, %v; want off", state, err)
+	}
+	if state, err := Peek(configured); err != nil || state != Fresh {
+		t.Fatalf("Peek(fresh) = %v, %v; want fresh", state, err)
+	}
+	wrapped, err := where()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, absent := range []string{key, wrapped} {
+		if _, err := os.Stat(absent); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Peek() created %s", absent)
+		}
+	}
+
+	if _, err := Open(configured); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := Peek(configured); err != nil || state != Unlocked {
+		t.Fatalf("Peek(open) = %v, %v; want unlocked", state, err)
+	}
+	if err := os.Remove(key); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := Peek(configured); err != nil || state != Locked {
+		t.Fatalf("Peek(no key) = %v, %v; want locked", state, err)
 	}
 }
 
@@ -160,5 +209,87 @@ func TestOneDataKeyHoweverManyDropsStartAtOnce(t *testing.T) {
 	}
 	if string(again.Key()) != keys[0] {
 		t.Fatal("the key on the disk is not the one that was handed out")
+	}
+}
+
+func TestMintDoesNotReplaceStateThatAppearedWhileWaiting(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	recipient := filepath.Join(dir, "recipient")
+	if _, err := newKeyFile(recipient); err != nil {
+		t.Fatal(err)
+	}
+	file, err := where()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	locked := make(chan error, 1)
+	go func() {
+		locked <- keep.While(file, func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mint(file, []string{recipient})
+		done <- err
+	}()
+	interloper := []byte("state that appeared while waiting")
+	if err := os.WriteFile(file, interloper, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-locked; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err == nil {
+		t.Fatal("Open() replaced unreadable state that appeared while it waited")
+	}
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw, interloper) {
+		t.Fatalf("the state that appeared was replaced with %q", raw)
+	}
+}
+
+func TestOneAgeKeyHoweverManyDropsCreateIt(t *testing.T) {
+	at := filepath.Join(t.TempDir(), "keys", "vault.key")
+
+	var wg sync.WaitGroup
+	keys := make([]string, 8)
+	for i := range keys {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			identity, err := newKeyFile(at)
+			if err != nil {
+				t.Errorf("newKeyFile(): %v", err)
+				return
+			}
+			keys[i] = identity.String()
+		}()
+	}
+	wg.Wait()
+
+	for i, key := range keys {
+		if key != keys[0] {
+			t.Fatalf("drop %d got a different age key from drop 0", i)
+		}
+	}
+	onDisk, err := keyFile(at, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onDisk.String() != keys[0] {
+		t.Fatal("the stored age key differs from the one returned")
 	}
 }

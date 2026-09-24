@@ -65,37 +65,156 @@ func (m Mount) Branch() bool { return m.Archetype == "" }
 type Table struct {
 	// One lock, because a serving node reads this from every connection it answers, and a cast
 	// arriving or ending adds and removes a path while they do.
-	mu     sync.RWMutex
-	mounts map[string]Mount
+	mu        sync.RWMutex
+	mounts    map[string]Mount
+	claims    map[string]uint64
+	nextClaim uint64
 	// granted is what the interface has allowed and refused, kept apart from the config so that
 	// editing one never rewrites the other.
 	granted Granting
 }
 
+// MaxMounts is how many namespaces one node may serve.
+const MaxMounts = 1 << 12
+
 func NewTable() *Table {
-	return &Table{mounts: map[string]Mount{}}
+	return &Table{mounts: map[string]Mount{}, claims: map[string]uint64{}}
+}
+
+// Lease holds one exact namespace entry for a transient service.
+type Lease struct {
+	table  *Table
+	path   string
+	claim  uint64
+	remove bool
+}
+
+// Release ends a lease and removes an entry installed by that lease.
+func (l Lease) Release() bool {
+	if l.table == nil || l.claim == 0 {
+		return false
+	}
+
+	l.table.mu.Lock()
+	defer l.table.mu.Unlock()
+
+	if l.table.claims[l.path] != l.claim {
+		return false
+	}
+	delete(l.table.claims, l.path)
+	if l.remove {
+		delete(l.table.mounts, l.path)
+	}
+	return true
 }
 
 // Add registers a namespace, replacing whatever was at that path.
 func (t *Table) Add(m Mount) error {
-	path, err := Clean(m.Path)
+	return t.add(m, MaxMounts)
+}
+
+func (t *Table) add(m Mount, most int) error {
+	m, err := prepare(m)
 	if err != nil {
 		return err
 	}
-	// A mount with no type is a branch: it serves nothing itself and exists to carry an access rule
-	// for the paths beneath it. One that is neither a type nor a rule is a typo, and saying so is
-	// better than quietly keeping a line that does nothing.
-	if m.Branch() && !m.Access.Declared() {
-		return fmt.Errorf("%s has neither a type nor an access rule, so it does nothing", path)
-	}
-
-	m.Path = path
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	t.mounts[path] = m
+	if t.claims[m.Path] != 0 {
+		return fmt.Errorf("%s is in use", m.Path)
+	}
+	if _, exists := t.mounts[m.Path]; !exists && len(t.mounts) >= most {
+		return fmt.Errorf("there are already %d namespaces", most)
+	}
+	t.mounts[m.Path] = m
 	return nil
+}
+
+// Claim installs an exact namespace until its lease is released.
+func (t *Table) Claim(m Mount) (Lease, error) {
+	m, err := prepare(m)
+	if err != nil {
+		return Lease{}, err
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if _, exists := t.mounts[m.Path]; exists || t.claims[m.Path] != 0 {
+		return Lease{}, fmt.Errorf("%s is already mounted", m.Path)
+	}
+	if len(t.mounts) >= MaxMounts {
+		return Lease{}, fmt.Errorf("there are already %d namespaces", MaxMounts)
+	}
+
+	claim := t.claimLocked(m.Path)
+	t.mounts[m.Path] = m
+	return Lease{table: t, path: m.Path, claim: claim, remove: true}, nil
+}
+
+// Reserve holds an existing exact namespace without removing it on release.
+func (t *Table) Reserve(path string) (Mount, Lease, bool) {
+	path, err := Clean(path)
+	if err != nil {
+		return Mount{}, Lease{}, false
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	mount, exists := t.mounts[path]
+	if !exists || t.claims[path] != 0 {
+		return Mount{}, Lease{}, false
+	}
+	claim := t.claimLocked(path)
+	return mount, Lease{table: t, path: path, claim: claim}, true
+}
+
+// ReplaceWritten installs a written namespace over an absent or written path.
+func (t *Table) ReplaceWritten(m Mount) error {
+	m, err := prepare(m)
+	if err != nil {
+		return err
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.claims[m.Path] != 0 {
+		return fmt.Errorf("%s is in use", m.Path)
+	}
+	current, exists := t.mounts[m.Path]
+	if exists && current.Source != Written {
+		return fmt.Errorf("%s is already mounted", m.Path)
+	}
+	if !exists && len(t.mounts) >= MaxMounts {
+		return fmt.Errorf("there are already %d namespaces", MaxMounts)
+	}
+	t.mounts[m.Path] = m
+	return nil
+}
+
+func prepare(m Mount) (Mount, error) {
+	path, err := Clean(m.Path)
+	if err != nil {
+		return Mount{}, err
+	}
+	if m.Branch() && !m.Access.Declared() {
+		return Mount{}, fmt.Errorf("%s has neither a type nor an access rule, so it does nothing", path)
+	}
+	m.Path = path
+	return m, nil
+}
+
+func (t *Table) claimLocked(path string) uint64 {
+	t.nextClaim++
+	if t.nextClaim == 0 {
+		t.nextClaim++
+	}
+	t.claims[path] = t.nextClaim
+	return t.nextClaim
 }
 
 // Drop removes a namespace, reporting whether it was there.
@@ -111,9 +230,33 @@ func (t *Table) Drop(path string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	if t.claims[path] != 0 {
+		return false
+	}
 	_, had := t.mounts[path]
 	delete(t.mounts, path)
 	return had
+}
+
+// DropIfSource removes an exact namespace only when it came from source.
+func (t *Table) DropIfSource(path string, source Source) bool {
+	path, err := Clean(path)
+	if err != nil {
+		return false
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.claims[path] != 0 {
+		return false
+	}
+	mount, had := t.mounts[path]
+	if !had || mount.Source != source {
+		return false
+	}
+	delete(t.mounts, path)
+	return true
 }
 
 // Lookup finds who serves a path, and what is left of it.

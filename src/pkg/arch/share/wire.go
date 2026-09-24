@@ -19,6 +19,14 @@ import (
 // maxItems caps how many entries one offer may carry, so a small frame cannot ask for a huge slice.
 const maxItems = 1 << 16
 
+const transferIDSize = 16
+
+type transferID [transferIDSize]byte
+
+func (id transferID) valid() bool {
+	return id != transferID{}
+}
+
 // Item describes one thing being sent. Name is a base name; a sender does not choose where on the
 // receiving machine its bytes land.
 type Item struct {
@@ -32,11 +40,13 @@ func (i Item) Known() bool { return i.Size >= 0 }
 
 // offer is everything the sender has.
 type offer struct {
+	ID    transferID
 	Items []Item
 }
 
 func (o offer) encode() []byte {
 	w := wire.NewWriter()
+	w.Bytes(o.ID[:])
 	w.Uint(uint64(len(o.Items)))
 	for _, item := range o.Items {
 		w.String(item.Name)
@@ -50,6 +60,17 @@ func decodeOffer(body []byte) (offer, error) {
 	var out offer
 
 	r := wire.NewReader(body)
+	rawID, err := r.Bytes(transferIDSize)
+	if err != nil {
+		return out, err
+	}
+	if len(rawID) != transferIDSize {
+		return out, fmt.Errorf("an offer has a %d-byte transfer id", len(rawID))
+	}
+	copy(out.ID[:], rawID)
+	if !out.ID.valid() {
+		return out, fmt.Errorf("an offer has an empty transfer id")
+	}
 	count, err := r.Uint()
 	if err != nil {
 		return out, err
@@ -72,22 +93,29 @@ func decodeOffer(body []byte) (offer, error) {
 		if err != nil {
 			return out, err
 		}
+		if mode > uint64(^uint32(0)) {
+			return out, fmt.Errorf("invalid mode %d", mode)
+		}
 		out.Items = append(out.Items, Item{Name: name, Size: size, Mode: uint32(mode)})
+	}
+	if !r.Done() {
+		return out, fmt.Errorf("an offer has trailing bytes")
 	}
 	return out, nil
 }
 
-// resume answers an offer: per item, how many bytes the receiver already holds. It is zero for an
-// item whose size is unknown, because there is nothing to resume against.
+// resume answers an offer with each held byte count and completed-receipt state.
 type resume struct {
-	At []int64
+	At   []int64
+	Done []bool
 }
 
 func (u resume) encode() []byte {
 	w := wire.NewWriter()
 	w.Uint(uint64(len(u.At)))
-	for _, at := range u.At {
+	for i, at := range u.At {
 		w.Int(at)
+		w.Bool(i < len(u.Done) && u.Done[i])
 	}
 	return w.Body()
 }
@@ -105,12 +133,24 @@ func decodeResume(body []byte) (resume, error) {
 	}
 
 	out.At = make([]int64, 0, wire.Hint(count, body, 1))
+	out.Done = make([]bool, 0, wire.Hint(count, body, 1))
 	for range count {
 		at, err := r.Int()
 		if err != nil {
 			return out, err
 		}
+		if at < 0 {
+			return out, fmt.Errorf("an answer resumes at negative offset %d", at)
+		}
+		done, err := r.Bool()
+		if err != nil {
+			return out, err
+		}
 		out.At = append(out.At, at)
+		out.Done = append(out.Done, done)
+	}
+	if !r.Done() {
+		return out, fmt.Errorf("an answer has trailing bytes")
 	}
 	return out, nil
 }

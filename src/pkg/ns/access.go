@@ -282,7 +282,7 @@ func (t *Table) AccessFor(path string) (Access, bool) {
 	for at, m := range t.mounts {
 		// A rule that only makes a path visible still governs it: it says nobody may open this,
 		// and these people may know it is here.
-		if !(m.Access.Declared() || m.Access.Shows()) || !covers(at, path) {
+		if !m.Access.Declared() && !m.Access.Shows() || !covers(at, path) {
 			continue
 		}
 		if len(at) > bestLen {

@@ -80,21 +80,21 @@ func (d rows) Render(w io.Writer, m list.Model, index int, item list.Item) {
 
 	switch it := item.(type) {
 	case dividerItem:
-		fmt.Fprint(w, divider(it, width, index, selected))
+		_, _ = fmt.Fprint(w, divider(it, width, index, selected))
 	case userItem:
-		fmt.Fprint(w, user(it, width, index, selected))
+		_, _ = fmt.Fprint(w, user(it, width, index, selected))
 	case deviceItem:
-		fmt.Fprint(w, device(it, width, index, selected))
+		_, _ = fmt.Fprint(w, device(it, width, index, selected))
 	case pathItem:
-		fmt.Fprint(w, path(it, width, index, selected))
+		_, _ = fmt.Fprint(w, path(it, width, index, selected))
 	case accessItem:
-		fmt.Fprint(w, access(it, width, index, selected))
+		_, _ = fmt.Fprint(w, access(it, width, index, selected))
 	case knockItem:
-		fmt.Fprint(w, knock(it, width, index, selected))
+		_, _ = fmt.Fprint(w, knock(it, width, index, selected))
 	case manageItem:
-		fmt.Fprint(w, manage(it, width, index, selected))
+		_, _ = fmt.Fprint(w, manage(it, width, index, selected))
 	case heldItem:
-		fmt.Fprint(w, held(it, width, index, selected))
+		_, _ = fmt.Fprint(w, held(it, width, index, selected))
 	}
 }
 

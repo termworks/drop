@@ -1,18 +1,25 @@
 package lua
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 
 	rt "github.com/arnodel/golua/runtime"
 
 	"github.com/bresilla/drop/src/pkg/arch"
 	"github.com/bresilla/drop/src/pkg/convo"
+	"github.com/bresilla/drop/src/pkg/keep"
 )
 
 // Beside is the directory a config keeps its own archetypes in, next to init.lua.
 const Beside = "archetypes"
+
+// MaxArchetypeEntries is how many entries the archetype directory may contain.
+const MaxArchetypeEntries = 256
 
 // newest is the version a registry gives back when it is asked for a name and no version, which is
 // what a mount that pinned none is asking for.
@@ -29,7 +36,7 @@ func Load(dir string, into *arch.Registry) error {
 		return nil
 	}
 
-	entries, err := os.ReadDir(dir)
+	entries, err := readArchetypeEntries(dir, MaxArchetypeEntries)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -59,12 +66,30 @@ func Load(dir string, into *arch.Registry) error {
 	return nil
 }
 
+func readArchetypeEntries(dir string, most int) ([]os.DirEntry, error) {
+	opened, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = opened.Close() }()
+
+	entries, err := opened.ReadDir(most + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if len(entries) > most {
+		return nil, fmt.Errorf("archetype directory has more than %d entries", most)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	return entries, nil
+}
+
 // compile reads one file, compiles it once, and runs it to find out what it declares.
 //
 // Once, and here: a chunk loads into a runtime in less time than it takes to read this sentence,
 // but compiling it is where a syntax error still has a file and a line attached to it.
 func compile(file, keeps string) ([]*Plugin, error) {
-	source, err := os.ReadFile(file)
+	source, err := keep.ReadFile(file, keep.MaxState)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", file, err)
 	}
@@ -97,7 +122,10 @@ func compile(file, keeps string) ([]*Plugin, error) {
 		}
 		shape, _ := said.Get(rt.StringValue("shape")).TryString()
 
-		out = append(out, &Plugin{file: file, name: name, version: version, shape: shape, unit: unit, keeps: keeps})
+		out = append(out, &Plugin{
+			file: file, name: name, version: version, shape: shape, unit: unit,
+			keeps: keeps, limits: processLimits,
+		})
 	}
 	return out, nil
 }

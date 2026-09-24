@@ -11,9 +11,9 @@ import (
 	"errors"
 	"net/netip"
 	"reflect"
+	"strings"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/netaddr"
 
@@ -90,29 +90,97 @@ func At(ctx context.Context, n *node.Node, wire Wire, moved Finder, entry book.E
 
 // nearbyWait is how long the addresses nobody had to be asked for get before somebody is.
 //
-// Every short attempt and one on the whole set. A device that is really at one of them answers in
+// The head start and one short attempt. A device that is really at one of them answers in
 // milliseconds; past this it is not there, and what remains to try is the relay.
-const nearbyWait = straightAway * (atMost + 1)
+const nearbyWait = headStart + straightAway
 
-// climb tries the nearest addresses one at a time and then everything at once.
+// climb tries the nearest addresses one at a time, and everything at once alongside them.
 //
-// One address at a time first, best guess downwards. A transport handed every address a machine has
+// One address at a time, best guess downwards. A transport handed every address a machine has
 // does not race them: the one that would answer waits behind the ones that never will, and a device
-// on the same wire takes ten seconds instead of five milliseconds. If every guess is wrong, the
-// whole set is still tried after.
+// on the same wire takes ten seconds instead of five milliseconds.
+//
+// But the whole set, relay included, starts after a head start rather than after every guess has
+// timed out. A device on the same wire answers inside the head start and nothing else is tried; a
+// phone on another network, whose private address from its own wifi is the best guess this side
+// has, is reached through its relay in a second or two instead of after six seconds of waiting on
+// an address that was never going to answer.
 func climb(ctx context.Context, n *node.Node, entry book.Entry, at netaddr.EndpointAddr, alpn string) (*iroh.Conn, *iroh.Stream, error) {
-	for _, best := range worthTrying(at, entry) {
-		quick, stop := context.WithTimeout(ctx, straightAway)
-		conn, s, err := openFresh(quick, n, node.AddrFor(entry.ID, best), alpn)
-		stop()
-
-		if err == nil {
-			remember(entry, best)
-			return conn, s, nil
-		}
+	near := worthTrying(at, entry)
+	if len(near) == 0 {
+		return openFresh(ctx, n, at, alpn)
 	}
-	return openFresh(ctx, n, at, alpn)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type reached struct {
+		conn *iroh.Conn
+		s    *iroh.Stream
+		err  error
+		// by is the one address that answered on its own, and empty for the whole set.
+		by netip.AddrPort
+	}
+	arrived := make(chan reached, 2)
+
+	go func() {
+		err := errors.New("no address answered on its own")
+		for _, best := range near {
+			quick, stop := context.WithTimeout(ctx, straightAway)
+			conn, s, tried := openFresh(quick, n, node.AddrFor(entry.ID, best), alpn)
+			stop()
+			if tried == nil {
+				arrived <- reached{conn: conn, s: s, by: best}
+				return
+			}
+			err = tried
+			if ctx.Err() != nil {
+				break
+			}
+		}
+		arrived <- reached{err: err}
+	}()
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			arrived <- reached{err: ctx.Err()}
+			return
+		case <-time.After(headStart):
+		}
+		conn, s, err := openFresh(ctx, n, at, alpn)
+		arrived <- reached{conn: conn, s: s, err: err}
+	}()
+
+	var last error
+	for heard := 1; heard <= 2; heard++ {
+		got := <-arrived
+		if got.err != nil {
+			last = got.err
+			continue
+		}
+		cancel()
+		if got.by.IsValid() {
+			remember(entry, got.by)
+		}
+		// The other attempt may land as well, and a second connection nobody uses is closed.
+		if heard == 1 {
+			go func() {
+				if other := <-arrived; other.err == nil {
+					_ = other.s.Close()
+					_ = other.conn.Close()
+				}
+			}()
+		}
+		return got.conn, got.s, nil
+	}
+	return nil, nil, last
 }
+
+// headStart is how long the nearest addresses have to themselves before everything is tried at
+// once. A machine on the same wire answers in milliseconds, and so does one across an overlay; a
+// second is room for both with plenty to spare.
+const headStart = time.Second
 
 // alsoAt adds addresses to one already built, keeping whatever else it carries.
 func alsoAt(at netaddr.EndpointAddr, more ...netip.AddrPort) netaddr.EndpointAddr {
@@ -138,7 +206,7 @@ func openFresh(ctx context.Context, n *node.Node, at netaddr.EndpointAddr, alpn 
 
 	for range spentTickets {
 		conn, s, err = open(ctx, n, at, alpn)
-		if !errors.Is(err, quic.Err0RTTRejected) {
+		if !refusedEarly(err) {
 			return conn, s, err
 		}
 	}
@@ -169,8 +237,9 @@ const atMost = 2
 // attempt, which has the relay as well and does not spend three seconds each finding out.
 func worthTrying(at netaddr.EndpointAddr, entry book.Entry) []netip.AddrPort {
 	ranked := Nearest(at.IPAddrs())
-	if len(ranked) < 2 {
-		// One address is already the whole attempt.
+	if len(ranked) < 2 && len(at.RelayURLs()) == 0 {
+		// One address and no relay is already the whole attempt. With a relay it is not: the
+		// relay is dialled first, and a device on the same wire would be reached through it.
 		return nil
 	}
 
@@ -259,17 +328,31 @@ func open(ctx context.Context, n *node.Node, at netaddr.EndpointAddr, alpn strin
 	select {
 	case <-conn.HandshakeComplete():
 	case <-ctx.Done():
-		conn.Close()
+		_ = conn.Close()
 		return nil, nil, ctx.Err()
 	}
 
 	s, err := conn.OpenStreamSync(ctx)
 	if err != nil {
-		conn.Close()
+		if refusedEarly(err) {
+			// The far end restarted since its ticket was cached, and refused it. The handshake goes
+			// on regardless and ends with a fresh ticket; closing at once threw that away, so the
+			// next attempt presented the same stale one and was refused the same way, every time,
+			// until this process restarted.
+			select {
+			case <-time.After(freshTicket):
+			case <-ctx.Done():
+			}
+		}
+		_ = conn.Close()
 		return nil, nil, err
 	}
 	return conn, s, nil
 }
+
+// freshTicket is how long a refused connection is kept for the ticket that replaces the refused
+// one: a round trip, with room for one through a relay.
+const freshTicket = 750 * time.Millisecond
 
 // Addrs reads the addresses a book wrote down, dropping any it cannot make sense of rather than
 // refusing the lot.
@@ -295,8 +378,16 @@ func usable(f Finder) bool {
 
 	at := reflect.ValueOf(f)
 	switch at.Kind() {
-	case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func:
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func:
 		return !at.IsNil()
 	}
 	return true
+}
+
+// refusedEarly says the far end refused a resumed session, which is how a device that restarted
+// answers a ticket from before. The transport's own error for it lives in a package of its own that
+// nothing outside may import, and it is not handed on, so it is known by what it says: matched as a
+// value, it never matched at all, and the retry this exists for never happened.
+func refusedEarly(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "0-RTT rejected")
 }

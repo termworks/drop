@@ -58,8 +58,7 @@ func beneath(at string, left int) []string {
 		return []string{serial}
 	}
 
-	// Something stacked on other devices: every one of them, so a mirror is named by both halves
-	// and does not change its mind when one is missing at boot.
+	// Something stacked on other devices: every present member contributes to the identity.
 	var out []string
 	slaves, err := os.ReadDir(filepath.Join(at, "slaves"))
 	if err == nil {

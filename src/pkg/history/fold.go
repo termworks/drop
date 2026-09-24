@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -54,32 +55,34 @@ func (l *Log) Seen(who string, heads []ID) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	kept, err := l.remembered()
-	if err != nil {
-		return err
-	}
-
-	out := make([]far, 0, len(kept)+1)
-	for _, p := range kept {
-		if p.who != who {
-			out = append(out, p)
+	return keep.While(l.seen, func() error {
+		kept, err := l.remembered()
+		if err != nil {
+			return err
 		}
-	}
-	out = append(out, far{who: who, at: time.Now().UnixMilli(), heads: tidy(heads)})
 
-	// Bounded by weight as well as by count, oldest word dropped first.
-	//
-	// Each peer is remembered along with every head it said it had, and a namespace being changed
-	// many ways at once has a great many. Counting only the peers lets a few of them carry a file
-	// that is rewritten and flushed on every meeting — so what one peer says costs every meeting
-	// after it, for everybody.
-	if len(out) > maxSeen {
-		out = out[len(out)-maxSeen:]
-	}
-	for len(out) > 1 && weighed(out) > maxSeenHeads {
-		out = out[1:]
-	}
-	return l.remember(out)
+		out := make([]far, 0, len(kept)+1)
+		for _, p := range kept {
+			if p.who != who {
+				out = append(out, p)
+			}
+		}
+		out = append(out, far{who: who, at: time.Now().UnixMilli(), heads: tidy(heads)})
+
+		// Bounded by weight as well as by count, oldest word dropped first.
+		//
+		// Each peer is remembered along with every head it said it had, and a namespace being changed
+		// many ways at once has a great many. Counting only the peers lets a few of them carry a file
+		// that is rewritten and flushed on every meeting — so what one peer says costs every meeting
+		// after it, for everybody.
+		if len(out) > maxSeen {
+			out = out[len(out)-maxSeen:]
+		}
+		for len(out) > 1 && weighed(out) > maxSeenHeads {
+			out = out[1:]
+		}
+		return l.remember(out)
+	})
 }
 
 // weighed is how many heads are remembered in all.
@@ -122,52 +125,42 @@ func (l *Log) Fold(body []byte) (ID, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if err := l.load(); err != nil {
-		return ID{}, err
-	}
-	if len(l.changes) == 0 {
-		return ID{}, fmt.Errorf("folding %s: there is nothing here to fold", brief(l.at))
-	}
-
-	heads := make([]ID, 0, len(l.tips))
-	for id := range l.tips {
-		heads = append(heads, id)
-	}
-	cover := make([]ID, 0, len(l.changes))
-	for id := range l.changes {
-		cover = append(cover, id)
-	}
-
-	c, err := sign(l.at, body, heads, cover)
-	if err != nil {
-		return ID{}, fmt.Errorf("folding %s: %w", brief(l.at), err)
-	}
-	id, err := l.take(c)
-	if err != nil {
-		return ID{}, fmt.Errorf("folding %s: %w", brief(l.at), err)
-	}
-	return id, nil
-}
-
-// fold drops what a snapshot stands in place of and writes the log back without it.
-//
-// Everything is dropped, not only what this machine was holding when the snapshot was made: a
-// snapshot taken from a peer replaces the same changes here that it replaced there, so two machines
-// that hold it hold the same shape whichever of them made it.
-func (l *Log) fold(c Change) error {
-	for _, was := range c.Fold {
-		if was != c.ID() {
-			delete(l.changes, was)
+	var id ID
+	err := keep.While(l.file, func() error {
+		l.read = false
+		if err := l.load(); err != nil {
+			return err
 		}
-	}
-	l.index()
-	return l.rewrite()
+		if len(l.changes) == 0 {
+			return fmt.Errorf("folding %s: there is nothing here to fold", brief(l.at))
+		}
+
+		heads := make([]ID, 0, len(l.tips))
+		for id := range l.tips {
+			heads = append(heads, id)
+		}
+		cover := make([]ID, 0, len(l.changes))
+		for id := range l.changes {
+			cover = append(cover, id)
+		}
+
+		c, err := sign(l.at, body, heads, cover)
+		if err != nil {
+			return fmt.Errorf("folding %s: %w", brief(l.at), err)
+		}
+		id, err = l.take(c)
+		if err != nil {
+			return fmt.Errorf("folding %s: %w", brief(l.at), err)
+		}
+		return nil
+	})
+	return id, err
 }
 
 // remembered is every peer still counted, oldest word first. One nobody has heard from in a long
 // time is dropped here rather than waited for.
 func (l *Log) remembered() ([]far, error) {
-	raw, err := os.ReadFile(l.seen)
+	raw, err := keep.ReadFile(l.seen, keep.MaxState)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -200,6 +193,9 @@ func (l *Log) remembered() ([]far, error) {
 			out = append(out, far{who: who, at: at, heads: heads})
 		}
 	}
+	if !r.Done() {
+		return nil, nil
+	}
 	return out, nil
 }
 
@@ -217,14 +213,7 @@ func (l *Log) remember(all []far) error {
 		}
 	}
 
-	scratch := l.seen + ".new"
-	if err := os.WriteFile(scratch, w.Body(), 0o600); err != nil {
-		return fmt.Errorf("writing %s: %w", scratch, err)
-	}
-	if err := os.Rename(scratch, l.seen); err != nil {
-		return fmt.Errorf("replacing %s: %w", l.seen, err)
-	}
-	return nil
+	return keep.Replace(l.seen, w.Body())
 }
 
 // maxSeenHeads bounds how many heads are remembered across every peer put together. A peer that

@@ -19,6 +19,7 @@ func showOwnTable(known *arch.Registry) error {
 	if err != nil {
 		return err
 	}
+	defer cfg.Close()
 	if _, err := cfg.Grants(); err != nil {
 		return err
 	}

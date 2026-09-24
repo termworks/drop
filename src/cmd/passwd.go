@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -47,11 +49,7 @@ func readPassword() (string, error) {
 	fd := int(os.Stdin.Fd())
 
 	if !term.IsTerminal(fd) {
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-		if err != nil && line == "" {
-			return "", fmt.Errorf("reading the password: %w", err)
-		}
-		return strings.TrimRight(line, "\r\n"), nil
+		return readPasswordLine(os.Stdin)
 	}
 
 	fmt.Fprint(os.Stderr, "password: ")
@@ -72,4 +70,20 @@ func readPassword() (string, error) {
 		return "", fmt.Errorf("the two did not match")
 	}
 	return string(first), nil
+}
+
+func readPasswordLine(from io.Reader) (string, error) {
+	limited := &io.LimitedReader{R: from, N: passwd.MaxPlain + 2}
+	line, err := bufio.NewReader(limited).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("reading the password: %w", err)
+	}
+	plain := strings.TrimRight(line, "\r\n")
+	if len(plain) > passwd.MaxPlain {
+		return "", fmt.Errorf("a password is %d bytes, over the %d-byte limit", len(plain), passwd.MaxPlain)
+	}
+	if err != nil && line == "" {
+		return "", fmt.Errorf("reading the password: %w", err)
+	}
+	return plain, nil
 }

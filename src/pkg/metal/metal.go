@@ -230,8 +230,8 @@ func (m Mark) Machine() ([32]byte, error) {
 func bound(h io.Writer, part []byte) {
 	var n [8]byte
 	binary.BigEndian.PutUint64(n[:], uint64(len(part)))
-	h.Write(n[:])
-	h.Write(part)
+	_, _ = h.Write(n[:])
+	_, _ = h.Write(part)
 }
 
 // derive is every key this machine has, made the same way and kept apart from each other.

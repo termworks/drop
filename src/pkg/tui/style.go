@@ -40,30 +40,12 @@ var (
 	goodStyle  = lipgloss.NewStyle().Foreground(green)
 	badStyle   = lipgloss.NewStyle().Foreground(red)
 	kindStyle  = lipgloss.NewStyle().Foreground(second)
-	pickStyle  = lipgloss.NewStyle().Foreground(accent).Bold(true)
 	sayStyle   = lipgloss.NewStyle().Foreground(muted)
 	peachStyle = lipgloss.NewStyle().Foreground(peach)
 
 	// A key named inside a sentence, as opposed to one in the footer, which gets a chip.
 	keyStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
 )
-
-// chip is one key in the footer: the key itself reversed out of the accent, then what it does.
-//
-// Reversed rather than merely coloured, because a footer of coloured words is a sentence nobody
-// reads. A block of background says "this is a thing you press" before any of it is read.
-func chip(key, does string) string {
-	return lipgloss.NewStyle().Foreground(sunken).Background(accent).Bold(true).Render(" "+key+" ") +
-		sayStyle.Render(" "+does)
-}
-
-// badge is a state, as a dot and a word: filled when it is on, hollow when it is not.
-func badge(on bool, yes, no string) string {
-	if on {
-		return goodStyle.Render("● " + yes)
-	}
-	return faintStyle.Render("○ " + no)
-}
 
 // panel is a screen with its name above it.
 //

@@ -16,10 +16,21 @@ for output that was recorded rather than a shell that is live.
 drop path cast bob:laptop:/watch < session.cast
 ```
 
-## One shell, however many watchers
+## One shell, or one each
 
-A tty namespace is one terminal, not one per watcher. Everybody looking at it sees the same thing,
-which is the point — it is for sitting beside somebody, not for handing out shells.
+A tty namespace is one terminal, not one per watcher, unless it says otherwise. Everybody looking at
+it sees the same thing and types into the same shell, which is the point — it is for sitting beside
+somebody. The listing says so before anybody opens it: *one shell, shared: everybody on it sees what
+you type*.
+
+`private = true` is the other thing: a shell of your own, which nobody else sees and which ends when
+you leave. It is what reaching your own machine from a phone wants.
+
+```lua
+drop.mount("/btop", { type = "tty", shell = "btop", access = "paired" })                  -- one, watched
+drop.mount("/pair", { type = "tty", input = true, access = { "bob" } })                  -- one, shared
+drop.mount("/me",   { type = "tty", input = true, private = true, access = { "me" } })   -- one each
+```
 
 When the shell exits, the terminal leaves the table so the next watcher starts a fresh one. Getting
 that wrong is how one watcher could finish the namespace for everybody; see
@@ -41,6 +52,32 @@ picture as it stands. However long the program has been running, that is one scr
                      (cells, not bytes)      ├──► watcher, joining now: the screen
                                              └──► the scrollback
 ```
+
+## How big it is
+
+A shared terminal is **as big as the smallest window watching it**, so everybody sees all of it and
+nobody a corner — the rule tmux uses. When the small window goes, it grows to the next smallest. Every
+watcher is told its shape each time it changes, and draws it at exactly that shape: a terminal held
+to somebody else's smaller window is drawn that size with the pane around it left empty, and one
+bigger than your window is cut at the edge rather than wrapped.
+
+It is never held below 80×24 while more than one is watching. One small window would otherwise take
+everybody else's with it — a phone held upright shrinking a program others are using to a size it
+refuses to draw at. The small window is the one that crops, or on a phone, the one that scales down.
+Watched by one, the terminal is that window's, whatever size it is.
+
+What the terminal is sits above it:
+
+```
+/term · live · shared, 2 watching · 100×30, held to a smaller window
+/mine · typing · your own shell · 146×35
+/btop · watching · shared, only you · 146×35
+```
+
+From a plain terminal, `drop connect` puts the same in the window's title, which is the one place a
+raw terminal has for it that does not draw over the far end's screen. A watcher that goes without
+saying so — a window closed, a laptop shut — is noticed within fifteen seconds by the pings it stops
+answering, and stops holding the terminal to its size.
 
 ## Watching, and typing
 

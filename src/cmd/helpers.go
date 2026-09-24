@@ -91,7 +91,7 @@ func greeting(pinned *book.Book, mounts *ns.Table, known *arch.Registry, from no
 		}
 	}
 
-	return proto.Hello{Name: node.DisplayName(), Version: version, Serves: serves}
+	return proto.Hello{Name: node.DisplayName(), Version: version, Serves: serves, Renewed: renewalFor(pinned, from, badge)}
 }
 
 // whoIs turns a caller into what the address book knows about it, for the access rules to judge.
@@ -108,6 +108,7 @@ func greeting(pinned *book.Book, mounts *ns.Table, known *arch.Registry, from no
 func whoIs(pinned *book.Book) func(node.ID, proto.Badged, proto.Stood) ns.Caller {
 	return func(from node.ID, badge proto.Badged, on proto.Stood) ns.Caller {
 		who := ns.Caller{ID: from.String()}
+		ambiguous := false
 
 		// What machine it is running on, which is a different question from whose it is: several
 		// people with accounts on one machine all stand on the same one.
@@ -119,29 +120,55 @@ func whoIs(pinned *book.Book) func(node.ID, proto.Badged, proto.Stood) ns.Caller
 			who.Name = entry.Name
 			who.Paired = entry.Paired()
 			who.Trusted = entry.Trusted
+			ambiguous = localLabelConflict(pinned, entry.Name, entry.User)
 		}
 
 		if !badge.Shown() {
-			return who
+			return withoutConflictingLabel(who, ambiguous)
 		}
 		who.User, who.Label = badge.Key, badge.As
 
 		// A machine of my own is filed under "me". Nobody writes it in the address book, because
 		// there is nothing to pair with: it is whatever my own user key has signed.
 		if mine := myKey(); mine != "" && badge.Key == mine {
+			learnMine(pinned, from)
 			who.UserName, who.Paired, who.Trusted = "me", true, true
 			return who
 		}
 
 		owner, known := pinned.ByUser(badge.Key)
 		if !known {
-			return who
+			return withoutConflictingLabel(who, ambiguous)
 		}
 		who.UserName = owner.Person
 		who.Paired = who.Paired || owner.Paired()
 		who.Trusted = who.Trusted || owner.Trusted
+		ambiguous = ambiguous || localLabelConflict(pinned, owner.Person, owner.User)
+		return withoutConflictingLabel(who, ambiguous)
+	}
+}
+
+func withoutConflictingLabel(who ns.Caller, ambiguous bool) ns.Caller {
+	if !ambiguous {
 		return who
 	}
+	who.Name = ""
+	who.UserName = ""
+	who.Paired = false
+	who.Trusted = false
+	return who
+}
+
+func localLabelConflict(pinned *book.Book, name, owner string) bool {
+	if name == "" {
+		return false
+	}
+	for _, entry := range pinned.All() {
+		if (entry.Name == name || entry.Person == name) && entry.User != owner {
+			return true
+		}
+	}
+	return false
 }
 
 // noting writes down a caller that was turned away, unless it is somebody already known.
@@ -150,9 +177,18 @@ func whoIs(pinned *book.Book) func(node.ID, proto.Badged, proto.Stood) ns.Caller
 // nothing to look up afterwards. A stranger is the case this exists for: it dialled, so its id is
 // known, and letting it in later should not mean copying sixty-four characters of hex out of a log.
 func noting(pinned *book.Book) func(node.ID, string, string) {
+	return notingWith(pinned, time.Now, seen.Knocked)
+}
+
+func notingWith(
+	pinned *book.Book,
+	now func() time.Time,
+	knocked func(node.ID, string, string, time.Time) error,
+) func(node.ID, string, string) {
 	var (
-		mu    sync.Mutex
-		noted = map[node.ID]time.Time{}
+		mu      sync.Mutex
+		noted   = map[node.ID]time.Time{}
+		written []time.Time
 	)
 
 	return func(from node.ID, asked, why string) {
@@ -166,23 +202,35 @@ func noting(pinned *book.Book) func(node.ID, string, string) {
 		// caller has been authenticated — so a stranger that dials in a loop makes this machine do
 		// synchronous disk work as fast as it can ask for it. Only the last knock from a device is
 		// kept anyway, so collapsing the repeats loses nothing that was going to be shown.
-		now := time.Now()
+		at := now()
 
 		mu.Lock()
-		last, seenBefore := noted[from]
-		if seenBefore && now.Sub(last) < notingEvery {
-			mu.Unlock()
-			return
-		}
-		noted[from] = now
 		for who, when := range noted {
-			if now.Sub(when) > notingEvery {
+			if at.Sub(when) >= notingEvery {
 				delete(noted, who)
 			}
 		}
+		last, seenBefore := noted[from]
+		if seenBefore && at.Sub(last) < notingEvery {
+			mu.Unlock()
+			return
+		}
+		first := 0
+		for first < len(written) && at.Sub(written[first]) >= notingEvery {
+			first++
+		}
+		written = append(written[:0], written[first:]...)
+		if len(written) >= seen.Most {
+			mu.Unlock()
+			return
+		}
+		noted[from] = at
+		written = append(written, at)
 		mu.Unlock()
 
-		_ = seen.Knocked(from, asked, why, now)
+		if err := knocked(from, asked, why, at); err != nil {
+			fmt.Fprintf(os.Stderr, "drop: remembering a refused caller: %v\n", err)
+		}
 	}
 }
 

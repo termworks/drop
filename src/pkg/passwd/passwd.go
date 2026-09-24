@@ -6,6 +6,7 @@
 package passwd
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -13,7 +14,12 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/argon2"
+
+	"github.com/bresilla/drop/src/pkg/wire"
 )
+
+// MaxPlain is the largest password carried by the session protocol.
+const MaxPlain = wire.MaxString
 
 // The cost of one guess. Deliberately expensive: the whole value of a hash is that trying the
 // dictionary takes longer than the attacker is willing to wait.
@@ -29,6 +35,9 @@ const (
 func Hash(plain string) (string, error) {
 	if plain == "" {
 		return "", fmt.Errorf("an empty password guards nothing")
+	}
+	if len(plain) > MaxPlain {
+		return "", fmt.Errorf("a password is %d bytes, over the %d-byte limit", len(plain), MaxPlain)
 	}
 
 	salt := make([]byte, saltLength)
@@ -48,15 +57,24 @@ func Hash(plain string) (string, error) {
 // A hash it cannot read is a failure, never a pass: a corrupted line in a config must close a path,
 // not open it.
 func Verify(hash, plain string) bool {
+	return verifyContext(context.Background(), hash, plain)
+}
+
+func verifyContext(ctx context.Context, hash, plain string) bool {
+	if len(plain) > MaxPlain {
+		return false
+	}
 	parsed, err := parse(hash)
 	if err != nil {
 		return false
 	}
 
 	var sum []byte
-	spend(func() {
+	if !spendContext(ctx, hashing, func() {
 		sum = argon2.IDKey([]byte(plain), parsed.salt, parsed.time, parsed.memory, parsed.threads, uint32(len(parsed.sum)))
-	})
+	}) {
+		return false
+	}
 	return subtle.ConstantTimeCompare(sum, parsed.sum) == 1
 }
 
@@ -80,15 +98,18 @@ func parse(hash string) (parts, error) {
 		return out, fmt.Errorf("not an argon2id hash")
 	}
 
-	var version int
-	if _, err := fmt.Sscanf(field[2], "v=%d", &version); err != nil {
-		return out, fmt.Errorf("unreadable version: %w", err)
+	if field[2] != fmt.Sprintf("v=%d", argon2.Version) {
+		return out, fmt.Errorf("unsupported argon2 version")
 	}
-	if version != argon2.Version {
-		return out, fmt.Errorf("argon2 version %d, expected %d", version, argon2.Version)
+	wantCost := fmt.Sprintf("m=%d,t=%d,p=%d", memoryCost, timeCost, threads)
+	if field[3] != wantCost {
+		return out, fmt.Errorf("unsupported argon2 cost")
 	}
-	if _, err := fmt.Sscanf(field[3], "m=%d,t=%d,p=%d", &out.memory, &out.time, &out.threads); err != nil {
-		return out, fmt.Errorf("unreadable cost: %w", err)
+	if len(field[4]) != base64.RawStdEncoding.EncodedLen(saltLength) {
+		return out, fmt.Errorf("unexpected salt length")
+	}
+	if len(field[5]) != base64.RawStdEncoding.EncodedLen(keyLength) {
+		return out, fmt.Errorf("unexpected hash length")
 	}
 
 	salt, err := decode(field[4])
@@ -99,10 +120,11 @@ func parse(hash string) (parts, error) {
 	if err != nil {
 		return out, fmt.Errorf("unreadable hash: %w", err)
 	}
-	if len(sum) == 0 {
-		return out, fmt.Errorf("the hash is empty")
+	if len(salt) != saltLength || len(sum) != keyLength {
+		return out, fmt.Errorf("unexpected decoded length")
 	}
 
+	out.memory, out.time, out.threads = memoryCost, timeCost, threads
 	out.salt, out.sum = salt, sum
 	return out, nil
 }

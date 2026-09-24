@@ -8,6 +8,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/proto"
+	"github.com/bresilla/drop/src/pkg/shares"
 )
 
 // The address book: which machines this one knows, whose they are, and what it thinks of them.
@@ -49,6 +50,12 @@ func newPeerListCmd() *cobra.Command {
 				fmt.Println("nothing known yet: run `drop peer pair` to link a machine")
 				return nil
 			}
+			// As wide as the longest name, so one a phone chose for itself does not push its row
+			// out of line with the rest.
+			names, people := 12, 12
+			for _, e := range entries {
+				names, people = max(names, len(e.Name)), max(people, len(e.Person))
+			}
 			for _, e := range entries {
 				state := "known"
 				if e.Paired() {
@@ -57,7 +64,7 @@ func newPeerListCmd() *cobra.Command {
 				if e.Trusted {
 					state += ", trusted"
 				}
-				fmt.Printf("  %-16s %-16s %-12s %s\n", e.Name, state, e.Person, e.ID)
+				fmt.Printf("  %-*s  %-15s  %-*s  %s\n", names, e.Name, state, people, e.Person, e.ID)
 			}
 			return nil
 		},
@@ -79,12 +86,13 @@ func newPeerTrustCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, known := pinned.Lookup(args[0]); !known {
-				return fmt.Errorf("%q is not a machine this one knows", args[0])
-			}
-
-			pinned.Trust(args[0], !undo)
-			if err := pinned.Save(); err != nil {
+			if err := pinned.Change(func() (bool, error) {
+				if _, known := pinned.Lookup(args[0]); !known {
+					return false, fmt.Errorf("%q is not a machine this one knows", args[0])
+				}
+				pinned.Trust(args[0], !undo)
+				return true, nil
+			}); err != nil {
 				return err
 			}
 
@@ -110,14 +118,7 @@ func newPeerForgetCmd() *cobra.Command {
 			"pair to reach each other by name. Nobody else is told.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			pinned, err := book.Load()
-			if err != nil {
-				return err
-			}
-			if !pinned.Remove(args[0]) {
-				return fmt.Errorf("%q is not known", args[0])
-			}
-			if err := pinned.Save(); err != nil {
+			if err := forgetKnown(args[0], false); err != nil {
 				return err
 			}
 
@@ -125,6 +126,32 @@ func newPeerForgetCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func forgetKnown(name string, personFirst bool) error {
+	pinned, err := book.Load()
+	if err != nil {
+		return err
+	}
+
+	return pinned.Change(func() (bool, error) {
+		targets, _, err := managedEntries(pinned, name, personFirst)
+		if err != nil {
+			return false, err
+		}
+		if len(targets) == 0 {
+			return false, fmt.Errorf("%q is not known", name)
+		}
+		for _, entry := range targets {
+			if err := shares.Forget(entry.ID); err != nil {
+				return false, fmt.Errorf("forgetting what %s shared: %w", entry.Name, err)
+			}
+		}
+		for _, entry := range targets {
+			pinned.Remove(entry.Name)
+		}
+		return true, nil
+	})
 }
 
 func newPeerWhoisCmd() *cobra.Command {

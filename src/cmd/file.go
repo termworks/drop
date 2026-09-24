@@ -249,7 +249,7 @@ func listOwnFiles(under string) error {
 	}
 
 	inside := filepath.Join(dir.Dir, filepath.FromSlash(strings.Trim(rest, "/")))
-	items, err := os.ReadDir(inside)
+	items, err := readDirUpTo(inside, files.MaxEntries)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", inside, err)
 	}

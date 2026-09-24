@@ -6,13 +6,18 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/bresilla/drop/src/pkg/convo"
+	"github.com/bresilla/drop/src/pkg/keep"
 )
 
 // What one thing's whole record may weigh.
@@ -29,6 +34,8 @@ const (
 	MaxNamed = 1 << 18
 	// MaxLog is how many bytes the file may reach.
 	MaxLog = 1 << 25
+	// MaxThings is how many shared histories one account may keep.
+	MaxThings = 1 << 12
 )
 
 // mark begins every record on disk, so a walk that loses its place can find the next one rather
@@ -59,6 +66,7 @@ type Log struct {
 	tips   map[ID]bool
 	named  int
 	size   int64
+	rev    os.FileInfo
 	read   bool
 }
 
@@ -106,6 +114,41 @@ func Open(at string) (*Log, error) {
 	return l, nil
 }
 
+// Things lists the valid shared-history directories in sorted order.
+func Things() ([]string, error) {
+	base, err := convo.DataDir()
+	if err != nil {
+		return nil, err
+	}
+	root := filepath.Join(base, "history")
+	opened, err := os.Open(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading shared histories: %w", err)
+	}
+	defer func() { _ = opened.Close() }()
+
+	entries, err := opened.ReadDir(MaxThings + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("reading shared histories: %w", err)
+	}
+	if len(entries) > MaxThings {
+		return nil, fmt.Errorf("shared-history directory has more than %d entries", MaxThings)
+	}
+
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || nameable(entry.Name()) != nil {
+			continue
+		}
+		out = append(out, entry.Name())
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // At is the thing this record is about. A change bound to anything else does not belong here.
 func (l *Log) At() string { return l.at }
 
@@ -139,10 +182,33 @@ func (l *Log) Add(c Change) (ID, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if err := l.load(); err != nil {
-		return ID{}, err
-	}
-	return l.take(c)
+	var id ID
+	err := keep.While(l.file, func() error {
+		if err := l.load(); err != nil {
+			return err
+		}
+		var err error
+		id, err = l.take(c)
+		return err
+	})
+	return id, err
+}
+
+// Rewrite writes every held change under the key given. An empty key writes in the clear.
+func (l *Log) Rewrite(to []byte) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return keep.While(l.file, func() error {
+		l.read = false
+		if err := l.load(); err != nil {
+			return err
+		}
+		if l.rev == nil || l.size == 0 {
+			return nil
+		}
+		return l.rewriteWith(to)
+	})
 }
 
 // take is Add with the log already read and locked.
@@ -156,6 +222,20 @@ func (l *Log) take(c Change) (ID, error) {
 	if err := l.takeable(c, len(plain)+sealCost); err != nil {
 		return ID{}, fmt.Errorf("taking change %s: %w", id, err)
 	}
+	if c.Whole() {
+		l.changes[id] = c
+		for _, was := range c.Fold {
+			if was != id {
+				delete(l.changes, was)
+			}
+		}
+		l.index()
+		if err := l.rewrite(); err != nil {
+			l.read = false
+			return id, errors.Join(err, l.load())
+		}
+		return id, nil
+	}
 	body, err := stored(plain, l.at, id)
 	if err != nil {
 		return ID{}, err
@@ -165,9 +245,6 @@ func (l *Log) take(c Change) (ID, error) {
 	}
 
 	l.changes[id] = c
-	if c.Whole() {
-		return id, l.fold(c)
-	}
 	for _, was := range l.after(c) {
 		delete(l.tips, was)
 	}
@@ -470,7 +547,7 @@ func framed(body []byte) []byte {
 func (l *Log) write(body []byte) error {
 	raw := framed(body)
 
-	was, err := l.length()
+	before, err := l.revision()
 	if err != nil {
 		return err
 	}
@@ -478,41 +555,85 @@ func (l *Log) write(body []byte) error {
 		return err
 	}
 
-	now, err := l.length()
-	if err == nil && was == l.size && now == was+int64(len(raw)) {
-		l.size = now
+	after, err := l.revision()
+	known := l.read && sameRevision(l.rev, before)
+	grew := after != nil && before == nil && after.Size() == int64(len(raw))
+	grew = grew || before != nil && after != nil && os.SameFile(before, after) &&
+		after.Size() == before.Size()+int64(len(raw))
+	if err == nil && known && grew {
+		l.size, l.rev = after.Size(), after
 	} else {
-		l.read = false
+		l.read, l.rev = false, nil
 	}
 	return nil
 }
 
-// length is how long the file is, and zero when there is none.
-func (l *Log) length() (int64, error) {
+func (l *Log) revision() (os.FileInfo, error) {
 	info, err := os.Stat(l.file)
 	switch {
 	case err == nil:
-		return info.Size(), nil
+		if info.Size() > MaxLog {
+			return nil, fmt.Errorf("reading %s: %d bytes, over the %d-byte limit", l.file, info.Size(), MaxLog)
+		}
+		return info, nil
 	case errors.Is(err, os.ErrNotExist):
-		return 0, nil
+		return nil, nil
 	default:
-		return 0, fmt.Errorf("reading %s: %w", l.file, err)
+		return nil, fmt.Errorf("reading %s: %w", l.file, err)
 	}
+}
+
+func sameRevision(left, right os.FileInfo) bool {
+	return left == nil && right == nil || left != nil && right != nil && os.SameFile(left, right) &&
+		left.Size() == right.Size() && left.ModTime().Equal(right.ModTime())
 }
 
 // append writes one record and flushes it, so a change reported taken is on the disk rather than in
 // a buffer.
 func (l *Log) append(raw []byte) error {
-	file, err := os.OpenFile(l.file, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	flags := os.O_WRONLY | os.O_APPEND | unix.O_NONBLOCK | unix.O_NOFOLLOW
+	file, err := os.OpenFile(l.file, flags|os.O_CREATE|os.O_EXCL, 0o600)
+	created := err == nil
+	if errors.Is(err, os.ErrExist) {
+		file, err = os.OpenFile(l.file, flags, 0o600)
+	}
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", l.file, err)
 	}
-	defer file.Close()
 
+	stat, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return fmt.Errorf("stating %s: %w", l.file, err)
+	}
+	rawStat, _ := stat.Sys().(*syscall.Stat_t)
+	if !stat.Mode().IsRegular() || (rawStat != nil && rawStat.Nlink > 1) {
+		_ = file.Close()
+		return fmt.Errorf("writing %s: it is not one regular file", l.file)
+	}
+	if stat.Size() > MaxLog-int64(len(raw)) {
+		_ = file.Close()
+		return fmt.Errorf("writing %s: it would exceed the %d-byte limit", l.file, MaxLog)
+	}
+	if err := keep.Room(file, int64(len(raw))); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("reserving room in %s: %w", l.file, err)
+	}
 	if _, err := file.Write(raw); err != nil {
+		_ = file.Close()
 		return fmt.Errorf("writing %s: %w", l.file, err)
 	}
-	return file.Sync()
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("syncing %s: %w", l.file, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("closing %s: %w", l.file, err)
+	}
+	if created {
+		return keep.SyncDir(filepath.Dir(l.file))
+	}
+	return nil
 }
 
 // rewrite puts the whole log back on disk, which is what folding it away needs.
@@ -520,6 +641,14 @@ func (l *Log) append(raw []byte) error {
 // Through a temporary file and a rename, so an interruption leaves the log as it was rather than
 // half of each. It is the one time a record already written is written again.
 func (l *Log) rewrite() error {
+	key, err := keyed()
+	if err != nil {
+		return err
+	}
+	return l.rewriteWith(key)
+}
+
+func (l *Log) rewriteWith(key []byte) error {
 	order, err := l.sorted()
 	if err != nil {
 		return err
@@ -527,22 +656,27 @@ func (l *Log) rewrite() error {
 
 	var raw []byte
 	for _, id := range order {
-		body, err := stored(record(l.changes[id]), l.at, id)
+		body, err := storedWith(record(l.changes[id]), l.at, id, key)
 		if err != nil {
 			return err
 		}
-		raw = append(raw, framed(body)...)
+		kept := framed(body)
+		if len(raw) > MaxLog-len(kept) {
+			return fmt.Errorf("rewriting %s: it would exceed the %d-byte limit", l.file, MaxLog)
+		}
+		raw = append(raw, kept...)
 	}
 
-	scratch := l.file + ".new"
-	if err := os.WriteFile(scratch, raw, 0o600); err != nil {
-		return fmt.Errorf("writing %s: %w", scratch, err)
-	}
-	if err := os.Rename(scratch, l.file); err != nil {
-		return fmt.Errorf("replacing %s: %w", l.file, err)
+	if err := keep.Replace(l.file, raw); err != nil {
+		return err
 	}
 
-	l.size, l.read = int64(len(raw)), true
+	seen, err := l.revision()
+	if err != nil {
+		l.read, l.rev = false, nil
+		return err
+	}
+	l.size, l.rev, l.read = int64(len(raw)), seen, true
 	return nil
 }
 
@@ -557,17 +691,21 @@ func (l *Log) rewrite() error {
 // names, so the only way one appears is a damaged record earlier in the file, and a change that
 // cannot be placed in an order cannot be part of a history.
 func (l *Log) load() error {
-	size, err := l.length()
+	current, err := l.revision()
 	if err != nil {
 		return err
 	}
-	if l.read && size == l.size {
+	if l.read && sameRevision(l.rev, current) {
 		return nil
 	}
 
-	raw, err := os.ReadFile(l.file)
+	raw, seen, err := keep.ReadFileInfo(l.file, MaxLog)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("reading %s: %w", l.file, err)
+	}
+	size := int64(0)
+	if seen != nil {
+		size = seen.Size()
 	}
 
 	changes := map[ID]Change{}
@@ -594,7 +732,7 @@ func (l *Log) load() error {
 		at = from + used + int(width)
 	}
 
-	l.changes, l.size, l.read = changes, size, true
+	l.changes, l.size, l.rev, l.read = changes, size, seen, true
 	l.index()
 	return nil
 }

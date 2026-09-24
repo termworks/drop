@@ -3,12 +3,14 @@ package conf
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/arnodel/golua/lib"
 	rt "github.com/arnodel/golua/runtime"
 
 	"github.com/bresilla/drop/src/pkg/arch"
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/passwd"
 	"github.com/bresilla/drop/src/pkg/user"
@@ -28,6 +30,17 @@ type runtime struct {
 	handlers *rt.Table
 }
 
+var luaLoading sync.Mutex
+
+// MaxHandlers is how many callbacks one configuration event may run.
+const MaxHandlers = 64
+
+const (
+	configSteps = 2_000_000
+	configBytes = 8 << 20
+	configSafe  = rt.ComplyCpuSafe | rt.ComplyMemSafe
+)
+
 func (r *runtime) close() {
 	if r == nil {
 		return
@@ -41,6 +54,20 @@ func (r *runtime) close() {
 	}
 	r.lua = nil
 	r.handlers = nil
+}
+
+// within runs one Lua call under the configuration resource limits.
+func (r *runtime) within(call func() error) (err error) {
+	defer func() {
+		if caught := recover(); caught != nil {
+			err = fmt.Errorf("lua runtime: %v", caught)
+		}
+	}()
+
+	_, err = r.lua.MainThread().CallContext(rt.RuntimeContextDef{
+		HardLimits: rt.RuntimeResources{Cpu: configSteps, Memory: configBytes},
+	}, call)
+	return err
 }
 
 // fire runs every handler registered for an event, in registration order.
@@ -59,15 +86,19 @@ func (r *runtime) fire(event string, arg rt.Value) {
 		return
 	}
 
-	for i := int64(1); ; i++ {
+	for i := int64(1); i <= MaxHandlers; i++ {
 		fn := list.Get(rt.IntValue(i))
 		if fn.IsNil() {
 			return
 		}
-		if _, err := rt.Call1(r.lua.MainThread(), fn, arg); err != nil {
+		if err := r.within(func() error {
+			_, err := rt.Call1(r.lua.MainThread(), fn, arg)
+			return err
+		}); err != nil {
 			fmt.Fprintf(os.Stderr, "drop: on.%s handler #%d: %v\n", event, i, err)
 		}
 	}
+	fmt.Fprintf(os.Stderr, "drop: on.%s has more than %d handlers; the rest were not run\n", event, MaxHandlers)
 }
 
 // Message is what a config's on.message handlers are given.
@@ -146,7 +177,7 @@ func (c *Config) Close() {
 // it can branch on the machine it is running on rather than describing one shape and hoping it
 // fits everywhere.
 func run(cfg *Config, path string) error {
-	source, err := os.ReadFile(path)
+	source, err := keep.ReadFile(path, keep.MaxState)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
@@ -154,7 +185,7 @@ func run(cfg *Config, path string) error {
 	// The config's own print goes to stderr, so it cannot be mistaken for the output of whatever
 	// command is running.
 	machine := rt.New(os.Stderr)
-	state := &runtime{lua: machine, release: lib.LoadAll(machine)}
+	state := &runtime{lua: machine, release: loadConfigLibraries(machine)}
 	cfg.rt = state
 
 	fail := func(err error) error {
@@ -165,7 +196,7 @@ func run(cfg *Config, path string) error {
 
 	module := rt.NewTable()
 	machine.SetEnv(machine.GlobalEnv(), "drop", rt.TableValue(module))
-	machine.SetEnvGoFunc(module, "mount", func(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
+	mountFunc := machine.SetEnvGoFunc(module, "mount", func(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		return mount(c, cfg)
 	}, 2, false)
 
@@ -182,12 +213,15 @@ func run(cfg *Config, path string) error {
 
 	on := rt.NewTable()
 	machine.SetEnv(module, "on", rt.TableValue(on))
-	machine.SetEnvGoFunc(on, "message", func(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
+	messageFunc := machine.SetEnvGoFunc(on, "message", func(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		return register(c, handlers, "message")
 	}, 1, false)
-	machine.SetEnvGoFunc(on, "file", func(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
+	fileFunc := machine.SetEnvGoFunc(on, "file", func(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		return register(c, handlers, "file")
 	}, 1, false)
+	if err := allowConfigFunctions(machine, mountFunc, messageFunc, fileFunc); err != nil {
+		return fail(err)
+	}
 
 	// `require("drop")` and the global reach the same table, so a config may be written either way
 	// without one of them being a different object.
@@ -201,15 +235,244 @@ func run(cfg *Config, path string) error {
 		return fail(err)
 	}
 	// Whatever the chunk evaluated to is discarded. It should be nothing.
-	if _, err := rt.Call1(machine.MainThread(), rt.FunctionValue(chunk)); err != nil {
+	if err := state.within(func() error {
+		_, err := rt.Call1(machine.MainThread(), rt.FunctionValue(chunk))
+		return err
+	}); err != nil {
 		return fail(err)
 	}
 
-	readSettings(cfg, module)
+	if err := readSettings(cfg, module); err != nil {
+		return fail(err)
+	}
 	if err := cfg.name(); err != nil {
 		return fail(err)
 	}
 	return nil
+}
+
+func loadConfigLibraries(machine *rt.Runtime) func() {
+	luaLoading.Lock()
+	defer luaLoading.Unlock()
+	return lib.LoadAll(machine)
+}
+
+// allowConfigFunctions marks the host calls available to trusted configuration code.
+func allowConfigFunctions(machine *rt.Runtime, own ...*rt.GoFunction) error {
+	functions := append([]*rt.GoFunction{}, own...)
+	for _, entry := range []struct {
+		table *rt.Table
+		name  string
+	}{
+		{machine.GlobalEnv(), "require"},
+		{machine.GlobalEnv(), "collectgarbage"},
+	} {
+		fn, err := configFunction(entry.table, entry.name)
+		if err != nil {
+			return err
+		}
+		functions = append(functions, fn)
+	}
+	packageTable, ok := machine.GlobalEnv().Get(rt.StringValue("package")).TryTable()
+	if !ok {
+		return fmt.Errorf("the package library is missing")
+	}
+	searchers, ok := packageTable.Get(rt.StringValue("searchers")).TryTable()
+	if !ok {
+		return fmt.Errorf("package.searchers is missing")
+	}
+	loader, err := configModuleLoader(machine)
+	if err != nil {
+		return err
+	}
+	preloadSearcher := rt.NewGoFunction(func(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
+		return searchConfigPreload(t, c, packageTable)
+	}, "config preload searcher", 1, false)
+	moduleSearcher := rt.NewGoFunction(func(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
+		return searchConfigModule(t, c, packageTable, loader)
+	}, "config module searcher", 1, false)
+	searchPath := machine.SetEnvGoFunc(packageTable, "searchpath", func(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
+		return searchConfigPath(t, c, packageTable)
+	}, 4, false)
+	rt.SolemnlyDeclareCompliance(configSafe, preloadSearcher, moduleSearcher, searchPath)
+	machine.SetTable(searchers, rt.IntValue(1), rt.FunctionValue(preloadSearcher))
+	machine.SetTable(searchers, rt.IntValue(2), rt.FunctionValue(moduleSearcher))
+
+	osTable, ok := machine.GlobalEnv().Get(rt.StringValue("os")).TryTable()
+	if !ok {
+		return fmt.Errorf("the os library is missing")
+	}
+	for _, name := range []string{"execute", "exit", "setlocale"} {
+		fn, err := configFunction(osTable, name)
+		if err != nil {
+			return err
+		}
+		functions = append(functions, fn)
+	}
+
+	rt.SolemnlyDeclareCompliance(configSafe, functions...)
+	return nil
+}
+
+func configFunction(table *rt.Table, name string) (*rt.GoFunction, error) {
+	return configFunctionValue(table.Get(rt.StringValue(name)), name)
+}
+
+func configFunctionValue(value rt.Value, name string) (*rt.GoFunction, error) {
+	callable, ok := value.TryCallable()
+	if !ok {
+		return nil, fmt.Errorf("lua function %s is missing", name)
+	}
+	fn, ok := callable.(*rt.GoFunction)
+	if !ok {
+		return nil, fmt.Errorf("lua function %s is not a host function", name)
+	}
+	return fn, nil
+}
+
+func configModuleLoader(machine *rt.Runtime) (rt.Value, error) {
+	chunk, err := machine.CompileAndLoadLuaChunk("config module loader", []byte(`
+		local loadfile, error = loadfile, error
+		return function(name, path)
+			local module, problem = loadfile(path)
+			if not module then error(problem) end
+			return module(name, path)
+		end
+	`), rt.TableValue(machine.GlobalEnv()))
+	if err != nil {
+		return rt.NilValue, err
+	}
+	loader, err := rt.Call1(machine.MainThread(), rt.FunctionValue(chunk))
+	if err != nil {
+		return rt.NilValue, err
+	}
+	return loader, nil
+}
+
+func searchConfigPreload(t *rt.Thread, c *rt.GoCont, pkg *rt.Table) (rt.Cont, error) {
+	if err := c.Check1Arg(); err != nil {
+		return nil, err
+	}
+	name, err := c.StringArg(0)
+	if err != nil {
+		return nil, err
+	}
+	preload, ok := pkg.Get(rt.StringValue("preload")).TryTable()
+	if !ok {
+		return nil, fmt.Errorf("package.preload must be a table")
+	}
+	return c.PushingNext1(t.Runtime, preload.Get(rt.StringValue(name))), nil
+}
+
+func searchConfigModule(t *rt.Thread, c *rt.GoCont, pkg *rt.Table, loader rt.Value) (rt.Cont, error) {
+	if err := c.Check1Arg(); err != nil {
+		return nil, err
+	}
+	name, err := c.StringArg(0)
+	if err != nil {
+		return nil, err
+	}
+	path, ok := pkg.Get(rt.StringValue("path")).TryString()
+	if !ok {
+		return nil, fmt.Errorf("package.path must be a string")
+	}
+	dirSep, pathSep, placeholder := configSeparators(pkg)
+	found := findConfigModule(t, name, path, ".", dirSep, pathSep, placeholder)
+	if found == "" {
+		message := fmt.Sprintf("no Lua file for package %q", name)
+		t.RequireBytes(len(message))
+		return c.PushingNext1(t.Runtime, rt.StringValue(message)), nil
+	}
+	return c.PushingNext(t.Runtime, loader, rt.StringValue(found)), nil
+}
+
+func searchConfigPath(t *rt.Thread, c *rt.GoCont, pkg *rt.Table) (rt.Cont, error) {
+	if err := c.CheckNArgs(2); err != nil {
+		return nil, err
+	}
+	name, err := c.StringArg(0)
+	if err != nil {
+		return nil, err
+	}
+	path, err := c.StringArg(1)
+	if err != nil {
+		return nil, err
+	}
+	dirSep, pathSep, placeholder := configSeparators(pkg)
+	nameSep := "."
+	if c.NArgs() >= 3 {
+		nameSep, err = c.StringArg(2)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if c.NArgs() >= 4 {
+		dirSep, err = c.StringArg(3)
+		if err != nil {
+			return nil, err
+		}
+	}
+	found := findConfigModule(t, name, path, nameSep, dirSep, pathSep, placeholder)
+	if found == "" {
+		message := fmt.Sprintf("no file for %q", name)
+		t.RequireBytes(len(message))
+		return c.PushingNext(t.Runtime, rt.NilValue, rt.StringValue(message)), nil
+	}
+	return c.PushingNext1(t.Runtime, rt.StringValue(found)), nil
+}
+
+func configSeparators(pkg *rt.Table) (string, string, string) {
+	dirSep, pathSep, placeholder := string(os.PathSeparator), ";", "?"
+	value, ok := pkg.Get(rt.StringValue("config")).TryString()
+	if !ok {
+		return dirSep, pathSep, placeholder
+	}
+	parts := strings.SplitN(value, "\n", 4)
+	if len(parts) > 0 && parts[0] != "" {
+		dirSep = parts[0]
+	}
+	if len(parts) > 1 && parts[1] != "" {
+		pathSep = parts[1]
+	}
+	if len(parts) > 2 && parts[2] != "" {
+		placeholder = parts[2]
+	}
+	return dirSep, pathSep, placeholder
+}
+
+func findConfigModule(t *rt.Thread, name, path, nameSep, dirSep, pathSep, placeholder string) string {
+	count := strings.Count(name, nameSep)
+	nameBytes := uint64(len(name)) + uint64(count)*uint64(len(dirSep))
+	nameBytes -= uint64(count * len(nameSep))
+	t.RequireMem(nameBytes)
+	t.RequireCPU(uint64(len(name)) + nameBytes + 1)
+	moduleName := strings.ReplaceAll(name, nameSep, dirSep)
+	defer t.ReleaseMem(nameBytes)
+
+	for {
+		template := path
+		more := false
+		if at := strings.Index(path, pathSep); at >= 0 {
+			template, path, more = path[:at], path[at+len(pathSep):], true
+		}
+		count := strings.Count(template, placeholder)
+		candidateBytes := uint64(len(template)) + uint64(count)*uint64(len(moduleName))
+		candidateBytes -= uint64(count * len(placeholder))
+		t.RequireCPU(candidateBytes + 1)
+		t.RequireMem(candidateBytes)
+		candidate := strings.ReplaceAll(template, placeholder, moduleName)
+		file, err := os.Open(candidate)
+		if file != nil {
+			_ = file.Close()
+		}
+		if err == nil {
+			return candidate
+		}
+		t.ReleaseMem(candidateBytes)
+		if !more {
+			return ""
+		}
+	}
 }
 
 // name works out what the namespaces declared as shared are called, now that the whole file has
@@ -249,40 +512,109 @@ func (c *Config) name() error {
 //
 // A key the config never mentioned is left unset rather than read as zero, so it does not silently
 // overwrite the environment with a blank.
-func readSettings(cfg *Config, module *rt.Table) {
-	if name, ok := optString(module, "name"); ok {
+func readSettings(cfg *Config, module *rt.Table) error {
+	if name, ok, err := settingString(module, "name"); err != nil {
+		return err
+	} else if ok {
 		cfg.Name, cfg.HasName = name, true
 	}
-	if open, ok := optBool(module, "open_links"); ok {
+	if open, ok, err := settingBool(module, "open_links"); err != nil {
+		return err
+	} else if ok {
 		cfg.OpenLinks, cfg.HasOpenLinks = open, true
 	}
-	if list, ok := optStrings(module, "bootstrap"); ok {
+	if list, ok, err := settingStrings(module, "bootstrap"); err != nil {
+		return err
+	} else if ok {
 		cfg.Bootstrap = list
 	}
-	if on, ok := optBool(module, "rendezvous"); ok {
+	if on, ok, err := settingBool(module, "rendezvous"); err != nil {
+		return err
+	} else if ok {
 		cfg.Rendezvous, cfg.HasRendezvous = on, true
 	}
-	if on, ok := optBool(module, "direct"); ok {
+	if on, ok, err := settingBool(module, "direct"); err != nil {
+		return err
+	} else if ok {
 		cfg.Direct, cfg.HasDirect = on, true
 	}
-	if list, ok := optStrings(module, "relays"); ok {
+	if list, ok, err := settingStrings(module, "relays"); err != nil {
+		return err
+	} else if ok {
 		cfg.Relays = list
 	}
 
 	// A vault is one recipient or several. A bare string is the common case -- a key file beside
 	// the config -- and writing it as a list of one is the sort of thing a config makes you do
 	// once and resent afterwards.
-	if key, ok := optString(module, "user_key"); ok {
+	if key, ok, err := settingString(module, "user_key"); err != nil {
+		return err
+	} else if ok {
 		cfg.UserKey = key
 	}
-	if command, ok := optString(module, "user_sign"); ok {
+	if command, ok, err := settingString(module, "user_sign"); err != nil {
+		return err
+	} else if ok {
 		cfg.UserSign = command
 	}
-	if list, ok := optStrings(module, "vault"); ok {
-		cfg.Vault = list
+	vault := module.Get(rt.StringValue("vault"))
+	if !vault.IsNil() {
+		if one, ok := vault.TryString(); ok {
+			cfg.Vault = []string{one}
+		} else if list, ok, err := settingStrings(module, "vault"); err != nil {
+			return err
+		} else if ok {
+			cfg.Vault = list
+		}
 	}
-	if one, ok := optString(module, "vault"); ok {
-		cfg.Vault = []string{one}
+	return nil
+}
+
+func settingString(t *rt.Table, key string) (string, bool, error) {
+	v := t.Get(rt.StringValue(key))
+	if v.IsNil() {
+		return "", false, nil
+	}
+	value, ok := v.TryString()
+	if !ok {
+		return "", false, fmt.Errorf("drop.%s must be a string", key)
+	}
+	return value, true, nil
+}
+
+func settingBool(t *rt.Table, key string) (bool, bool, error) {
+	v := t.Get(rt.StringValue(key))
+	if v.IsNil() {
+		return false, false, nil
+	}
+	value, ok := v.TryBool()
+	if !ok {
+		return false, false, fmt.Errorf("drop.%s must be true or false", key)
+	}
+	return value, true, nil
+}
+
+func settingStrings(t *rt.Table, key string) ([]string, bool, error) {
+	v := t.Get(rt.StringValue(key))
+	if v.IsNil() {
+		return nil, false, nil
+	}
+	list, ok := v.TryTable()
+	if !ok {
+		return nil, false, fmt.Errorf("drop.%s must be a list of strings", key)
+	}
+
+	var out []string
+	for i := int64(1); ; i++ {
+		item := list.Get(rt.IntValue(i))
+		if item.IsNil() {
+			return out, true, nil
+		}
+		value, ok := item.TryString()
+		if !ok {
+			return nil, false, fmt.Errorf("drop.%s item %d must be a string", key, i)
+		}
+		out = append(out, value)
 	}
 }
 
@@ -318,15 +650,19 @@ func register(c *rt.GoCont, handlers *rt.Table, event string) (rt.Cont, error) {
 		list = rt.NewTable()
 		handlers.Set(rt.StringValue(event), rt.TableValue(list))
 	}
-	list.Set(rt.IntValue(int64(listLen(list)+1)), rt.FunctionValue(fn))
+	n := listLen(list, MaxHandlers)
+	if n >= MaxHandlers {
+		return nil, fmt.Errorf("drop.on.%s has more than %d handlers", event, MaxHandlers)
+	}
+	list.Set(rt.IntValue(int64(n+1)), rt.FunctionValue(fn))
 
 	return c.Next(), nil
 }
 
 // listLen counts a Lua list, stopping at the first hole.
-func listLen(t *rt.Table) int {
+func listLen(t *rt.Table, most int) int {
 	n := 0
-	for !t.Get(rt.IntValue(int64(n + 1))).IsNil() {
+	for n < most && !t.Get(rt.IntValue(int64(n+1))).IsNil() {
 		n++
 	}
 	return n
@@ -467,7 +803,8 @@ func fieldInt(t *rt.Table, key string) int {
 }
 
 func fieldBool(t *rt.Table, key string) bool {
-	return rt.Truth(t.Get(rt.StringValue(key)))
+	b, _ := t.Get(rt.StringValue(key)).TryBool()
+	return b
 }
 
 func fieldStrings(t *rt.Table, key string) []string {

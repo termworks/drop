@@ -4,11 +4,17 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 
+	"golang.org/x/sys/unix"
+
+	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/wire"
 
 	"github.com/bresilla/drop/src/pkg/node"
@@ -25,12 +31,23 @@ type Store struct {
 	dir     string
 	history string
 	outbox  string
-	// ids is every message id in the history, and size is how long the file was when that set was
-	// built. Deciding whether an arriving message is a resend by rereading the log costs a read and
-	// a decrypt pass of everything said so far, per message.
-	ids  map[string]bool
-	size int64
+	// ids is every message id in the history, and size is the complete prefix of the revision that
+	// built it. Deciding whether an arriving message is a resend by rereading the log costs a read
+	// and a decrypt pass of everything said so far, per message.
+	ids   map[string]bool
+	size  int64
+	seen  os.FileInfo
+	reads int
 }
+
+// MaxLog is the largest conversation history or pending queue kept for one peer.
+const MaxLog int64 = 64 << 20
+
+// MaxConversations is how many peer histories may be kept on one account.
+const MaxConversations = 1 << 12
+
+// MaxConversationBytes is how much history and queued conversation data one account may keep.
+const MaxConversationBytes int64 = 4 << 30
 
 // DataDir is $XDG_DATA_HOME/drop, or ~/.local/share/drop. Conversations are data, not settings, so
 // they do not live beside the config.
@@ -58,16 +75,20 @@ func Open(id node.ID) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(base, "convo", id.String())
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("creating %s: %w", dir, err)
+	root := filepath.Join(base, "convo")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, fmt.Errorf("creating %s: %w", root, err)
 	}
+	dir := filepath.Join(root, id.String())
 
 	open.Lock()
 	defer open.Unlock()
 
 	if s, ok := open.stores[dir]; ok {
 		return s, nil
+	}
+	if err := prepareConversation(root, dir, MaxConversations); err != nil {
+		return nil, err
 	}
 	s := &Store{
 		peer:    id,
@@ -80,6 +101,55 @@ func Open(id node.ID) (*Store, error) {
 	}
 	open.stores[dir] = s
 	return s, nil
+}
+
+func prepareConversation(root, dir string, most int) error {
+	return keep.While(filepath.Join(root, ".conversations"), func() error {
+		if stat, err := os.Lstat(dir); err == nil {
+			if !stat.IsDir() {
+				return fmt.Errorf("opening %s: it is not a directory", dir)
+			}
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("opening %s: %w", dir, err)
+		}
+
+		entries, err := readConversationEntries(root, most+2)
+		if err != nil {
+			return err
+		}
+		count := 0
+		for _, entry := range entries {
+			if entry.IsDir() {
+				count++
+			}
+		}
+		if count >= most {
+			return fmt.Errorf("there are already %d peer conversations", most)
+		}
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			return fmt.Errorf("creating %s: %w", dir, err)
+		}
+		return keep.SyncDir(root)
+	})
+}
+
+func readConversationEntries(root string, most int) ([]os.DirEntry, error) {
+	opened, err := os.Open(root)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = opened.Close() }()
+
+	entries, err := opened.ReadDir(most + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if len(entries) > most {
+		return nil, fmt.Errorf("conversation directory has more than %d entries", most)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	return entries, nil
 }
 
 // Peer is who this conversation is with.
@@ -148,6 +218,9 @@ func plain(body []byte) (Message, error) {
 	if err != nil {
 		return Message{}, err
 	}
+	if !r.Done() {
+		return Message{}, fmt.Errorf("a conversation record has trailing bytes")
+	}
 	m, err := Decode(packed)
 	if err != nil {
 		return Message{}, err
@@ -159,18 +232,110 @@ func plain(body []byte) (Message, error) {
 // append writes one length-prefixed record and flushes it, so a message that was reported stored
 // is on the disk rather than in a buffer.
 func appendTo(path string, body []byte) error {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	return appendToLimit(path, body, MaxConversationBytes)
+}
+
+func appendToLimit(path string, body []byte, most int64) error {
+	var head [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(head[:], uint64(len(body)))
+	raw := make([]byte, 0, n+len(body))
+	raw = append(raw, head[:n]...)
+	raw = append(raw, body...)
+
+	root := filepath.Dir(filepath.Dir(path))
+	return keep.While(filepath.Join(root, ".conversation-bytes"), func() error {
+		used, err := conversationBytes(root, MaxConversations+2)
+		if err != nil {
+			return fmt.Errorf("measuring conversation storage: %w", err)
+		}
+		needed := int64(len(raw))
+		if most < needed || used > most-needed {
+			return fmt.Errorf("writing %s: conversations would exceed the %d-byte limit", path, most)
+		}
+		return appendRaw(path, raw)
+	})
+}
+
+func appendRaw(path string, raw []byte) error {
+	flags := os.O_WRONLY | os.O_APPEND | unix.O_NONBLOCK | unix.O_NOFOLLOW
+	file, err := os.OpenFile(path, flags|os.O_CREATE|os.O_EXCL, 0o600)
+	created := err == nil
+	if errors.Is(err, os.ErrExist) {
+		file, err = os.OpenFile(path, flags, 0o600)
+	}
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", path, err)
 	}
-	defer file.Close()
 
-	var head [binary.MaxVarintLen64]byte
-	n := binary.PutUvarint(head[:], uint64(len(body)))
-	if _, err := file.Write(append(head[:n], body...)); err != nil {
+	stat, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return fmt.Errorf("stating %s: %w", path, err)
+	}
+	if !oneRegularFile(stat) {
+		_ = file.Close()
+		return fmt.Errorf("writing %s: it is not one regular file", path)
+	}
+	if stat.Size() > MaxLog-int64(len(raw)) {
+		_ = file.Close()
+		return fmt.Errorf("writing %s: it would exceed the %d-byte limit", path, MaxLog)
+	}
+	if err := keep.Room(file, int64(len(raw))); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("reserving room in %s: %w", path, err)
+	}
+	if _, err := file.Write(raw); err != nil {
+		_ = file.Close()
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
-	return file.Sync()
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("syncing %s: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("closing %s: %w", path, err)
+	}
+	if created {
+		return keep.SyncDir(filepath.Dir(path))
+	}
+	return nil
+}
+
+func conversationBytes(root string, most int) (int64, error) {
+	entries, err := readConversationEntries(root, most)
+	if err != nil {
+		return 0, err
+	}
+
+	var used int64
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		for _, name := range []string{"history", "outbox"} {
+			at := filepath.Join(root, entry.Name(), name)
+			stat, err := os.Lstat(at)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return 0, err
+			}
+			if !oneRegularFile(stat) {
+				return 0, fmt.Errorf("measuring %s: it is not one regular file", at)
+			}
+			if stat.Size() > math.MaxInt64-used {
+				return 0, fmt.Errorf("conversation storage size overflows int64")
+			}
+			used += stat.Size()
+		}
+	}
+	return used, nil
+}
+
+func oneRegularFile(stat os.FileInfo) bool {
+	raw, _ := stat.Sys().(*syscall.Stat_t)
+	return stat.Mode().IsRegular() && (raw == nil || raw.Nlink == 1)
 }
 
 // readAll walks a log. A truncated tail — a crash mid-write — ends the walk rather than failing
@@ -180,16 +345,22 @@ func appendTo(path string, body []byte) error {
 // length prefix says where the next one starts, so one damaged entry costs one entry rather than
 // every message written after it.
 func readAll(path, peer string) ([]Message, error) {
-	raw, err := os.ReadFile(path)
+	out, _, _, err := readAllInfo(path, peer)
+	return out, err
+}
+
+func readAllInfo(path, peer string) ([]Message, os.FileInfo, int64, error) {
+	raw, info, err := keep.ReadFileInfo(path, MaxLog)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, nil, 0, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, nil, 0, fmt.Errorf("reading %s: %w", path, err)
 	}
 
 	var out []Message
-	for at := 0; at < len(raw); {
+	at := 0
+	for at < len(raw) {
 		size, used := binary.Uvarint(raw[at:])
 		// Weighed as it was written, before it is a length. A record that says it is longer than the
 		// file is a truncated tail; one that says it is longer than a number can hold turns negative
@@ -204,32 +375,31 @@ func readAll(path, peer string) ([]Message, error) {
 		if errors.Is(err, ErrLocked) {
 			// Not a truncated tail: the records are whole and the key is not here. Reporting an
 			// empty conversation would be a lie about the disk rather than a report about the key.
-			return nil, err
+			return nil, nil, 0, err
 		}
 		if err != nil {
 			continue
 		}
 		out = append(out, m)
 	}
-	return out, nil
+	return out, info, int64(at), nil
 }
 
 // known is the set of ids in the history, walking the log only when it has changed under this
 // process -- a chat window in another terminal appending to the same conversation.
 func (s *Store) known() error {
-	var size int64
-	at, err := os.Stat(s.history)
+	current, err := os.Stat(s.history)
 	switch {
 	case err == nil:
-		size = at.Size()
 	case !errors.Is(err, os.ErrNotExist):
 		return fmt.Errorf("reading %s: %w", s.history, err)
 	}
-	if s.ids != nil && size == s.size {
+	if s.ids != nil && sameRevision(s.seen, current) {
 		return nil
 	}
 
-	all, err := readAll(s.history, s.peer.String())
+	s.reads++
+	all, seen, complete, err := readAllInfo(s.history, s.peer.String())
 	if err != nil {
 		return err
 	}
@@ -237,8 +407,14 @@ func (s *Store) known() error {
 	for _, m := range all {
 		ids[m.ID] = true
 	}
-	s.ids, s.size = ids, size
+	s.ids, s.seen = ids, seen
+	s.size = complete
 	return nil
+}
+
+func sameRevision(left, right os.FileInfo) bool {
+	return left == nil && right == nil || left != nil && right != nil && os.SameFile(left, right) &&
+		left.Size() == right.Size() && left.ModTime().Equal(right.ModTime())
 }
 
 // Add records a message in the history, ignoring one already there. Returns whether it was new,
@@ -247,27 +423,37 @@ func (s *Store) Add(m Message) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.known(); err != nil {
-		return false, err
-	}
-	if s.ids[m.ID] {
-		return false, nil
-	}
-	body, err := record(m, s.peer.String())
-	if err != nil {
-		return false, err
-	}
-	if err := appendTo(s.history, body); err != nil {
-		return false, err
-	}
+	fresh := false
+	err := keep.While(s.history, func() error {
+		if err := s.known(); err != nil {
+			return err
+		}
+		if s.ids[m.ID] {
+			return nil
+		}
+		if s.seen != nil && s.size < s.seen.Size() {
+			if err := trimTail(s.history, s.seen, s.size); err != nil {
+				return err
+			}
+		}
+		body, err := record(m, s.peer.String())
+		if err != nil {
+			return err
+		}
+		if err := appendTo(s.history, body); err != nil {
+			return err
+		}
 
-	s.ids[m.ID] = true
-	if at, err := os.Stat(s.history); err == nil {
-		s.size = at.Size()
-	} else {
-		s.ids = nil
-	}
-	return true, nil
+		s.ids[m.ID] = true
+		if at, err := os.Stat(s.history); err == nil {
+			s.size, s.seen = at.Size(), at
+		} else {
+			s.ids, s.seen = nil, nil
+		}
+		fresh = true
+		return nil
+	})
+	return fresh, err
 }
 
 // History is everything that passed with this peer, oldest first.
@@ -302,7 +488,51 @@ func (s *Store) Queue(m Message) error {
 	if err != nil {
 		return err
 	}
-	return appendTo(s.outbox, body)
+	return keep.While(s.outbox, func() error {
+		waiting, seen, complete, err := readAllInfo(s.outbox, s.peer.String())
+		if err != nil {
+			return err
+		}
+		if seen != nil && complete < seen.Size() {
+			if err := trimTail(s.outbox, seen, complete); err != nil {
+				return err
+			}
+		}
+		for _, queued := range waiting {
+			if queued.ID == m.ID {
+				return nil
+			}
+		}
+		return appendTo(s.outbox, body)
+	})
+}
+
+func trimTail(path string, seen os.FileInfo, size int64) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("repairing %s: %w", path, err)
+	}
+	stat, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return fmt.Errorf("repairing %s: %w", path, err)
+	}
+	if !oneRegularFile(stat) || !sameRevision(seen, stat) {
+		_ = file.Close()
+		return fmt.Errorf("repairing %s: it changed after being read", path)
+	}
+	if err := file.Truncate(size); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("repairing %s: %w", path, err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("repairing %s: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("repairing %s: %w", path, err)
+	}
+	return nil
 }
 
 // Pending is what has not been delivered, oldest first.
@@ -310,7 +540,12 @@ func (s *Store) Pending() ([]Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	out, err := readAll(s.outbox, s.peer.String())
+	var out []Message
+	err := keep.While(s.outbox, func() error {
+		var err error
+		out, err = readAll(s.outbox, s.peer.String())
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -335,41 +570,28 @@ func (s *Store) Delivered(ids ...string) error {
 		gone[id] = true
 	}
 
-	waiting, err := readAll(s.outbox, s.peer.String())
-	if err != nil {
-		return err
-	}
-
-	var keep []byte
-	for _, m := range waiting {
-		if gone[m.ID] {
-			continue
-		}
-		body, err := record(m, s.peer.String())
+	return keep.While(s.outbox, func() error {
+		waiting, err := readAll(s.outbox, s.peer.String())
 		if err != nil {
 			return err
 		}
-		var head [binary.MaxVarintLen64]byte
-		n := binary.PutUvarint(head[:], uint64(len(body)))
-		keep = append(keep, head[:n]...)
-		keep = append(keep, body...)
-	}
 
-	if len(keep) == 0 {
-		if err := os.Remove(s.outbox); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("clearing %s: %w", s.outbox, err)
+		var raw []byte
+		for _, m := range waiting {
+			if gone[m.ID] {
+				continue
+			}
+			body, err := record(m, s.peer.String())
+			if err != nil {
+				return err
+			}
+			var head [binary.MaxVarintLen64]byte
+			n := binary.PutUvarint(head[:], uint64(len(body)))
+			raw = append(raw, head[:n]...)
+			raw = append(raw, body...)
 		}
-		return nil
-	}
-
-	scratch := s.outbox + ".new"
-	if err := os.WriteFile(scratch, keep, 0o600); err != nil {
-		return fmt.Errorf("writing %s: %w", scratch, err)
-	}
-	if err := os.Rename(scratch, s.outbox); err != nil {
-		return fmt.Errorf("replacing %s: %w", s.outbox, err)
-	}
-	return nil
+		return keep.Replace(s.outbox, raw)
+	})
 }
 
 // Note records something drop did, so the log reads as one story rather than only the chat half.
@@ -389,7 +611,7 @@ func Peers() ([]node.ID, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(filepath.Join(base, "convo"))
+	entries, err := readConversationEntries(filepath.Join(base, "convo"), MaxConversations+2)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -425,36 +647,66 @@ func (s *Store) Rewrite(to []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.ids = nil
+	s.ids, s.seen = nil, nil
 
 	for _, at := range []string{s.history, s.outbox} {
-		all, err := readAll(at, s.peer.String())
+		if err := rewriteLog(at, s.peer.String(), to, MaxLog); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func rewriteLog(at, peer string, to []byte, most int64) error {
+	return keep.While(at, func() error {
+		all, err := readAll(at, peer)
 		if err != nil {
 			return err
 		}
 		if len(all) == 0 {
-			continue
+			return nil
 		}
 
 		var out []byte
 		for _, m := range all {
-			body, err := recordWith(m, s.peer.String(), to)
+			body, err := recordWith(m, peer, to)
 			if err != nil {
 				return err
 			}
 			var head [binary.MaxVarintLen64]byte
 			n := binary.PutUvarint(head[:], uint64(len(body)))
+			if int64(len(out)) > most-int64(n)-int64(len(body)) {
+				return fmt.Errorf("rewriting %s: it would exceed the %d-byte limit", at, most)
+			}
 			out = append(out, head[:n]...)
 			out = append(out, body...)
 		}
 
-		scratch := at + ".new"
-		if err := os.WriteFile(scratch, out, 0o600); err != nil {
-			return fmt.Errorf("writing %s: %w", scratch, err)
+		return replaceConversationLog(at, out, MaxConversationBytes)
+	})
+}
+
+func replaceConversationLog(at string, out []byte, most int64) error {
+	root := filepath.Dir(filepath.Dir(at))
+	return keep.While(filepath.Join(root, ".conversation-bytes"), func() error {
+		used, err := conversationBytes(root, MaxConversations+2)
+		if err != nil {
+			return fmt.Errorf("measuring conversation storage: %w", err)
 		}
-		if err := os.Rename(scratch, at); err != nil {
-			return fmt.Errorf("replacing %s: %w", at, err)
+		stat, err := os.Lstat(at)
+		if err != nil {
+			return fmt.Errorf("stating %s: %w", at, err)
 		}
-	}
-	return nil
+		if !oneRegularFile(stat) {
+			return fmt.Errorf("rewriting %s: it is not one regular file", at)
+		}
+		growth := int64(len(out)) - stat.Size()
+		if growth > 0 && (most < growth || used > most-growth) {
+			return fmt.Errorf("rewriting %s: conversations would exceed the %d-byte limit", at, most)
+		}
+		if err := keep.Replace(at, out); err != nil {
+			return fmt.Errorf("rewriting %s: %w", at, err)
+		}
+		return nil
+	})
 }

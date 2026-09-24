@@ -160,6 +160,9 @@ func decodeOpen(body []byte) (Opening, error) {
 	if err != nil {
 		return out, err
 	}
+	if !r.Done() {
+		return out, fmt.Errorf("an open has trailing bytes")
+	}
 
 	out.Ask, out.Meet, out.Archetype, out.Version = ask, meet, archetype, int(version)
 	out.From, out.Path, out.Held, out.Secret = from, path, held, secret

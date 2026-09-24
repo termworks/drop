@@ -12,7 +12,6 @@ import (
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
-	"github.com/bresilla/drop/src/pkg/shares"
 	"github.com/bresilla/drop/src/pkg/tui"
 )
 
@@ -29,6 +28,9 @@ func (l *running) Access(path string) (tui.Rule, error) {
 		return tui.Rule{}, err
 	}
 	defer cfg.Close()
+	if err := created(cfg); err != nil {
+		return tui.Rule{}, err
+	}
 
 	// Read before the grants are attached, and again after.
 	written, _ := cfg.Mounts.AccessFor(path)
@@ -68,6 +70,10 @@ func (l *running) Access(path string) (tui.Rule, error) {
 
 // waiting is who has rung the bell on a path and not been answered.
 func waiting(path string) ([]tui.Wanting, error) {
+	path, err := ns.Clean(path)
+	if err != nil {
+		return nil, err
+	}
 	all, err := asked.All()
 	if err != nil {
 		return nil, err
@@ -192,11 +198,12 @@ func hasWho(all []tui.Who, name string) bool {
 
 // AskFor rings the bell on a path this machine can see but not open.
 func (l *running) AskFor(ctx context.Context, on book.Entry, path, why string) error {
-	stream, err := l.held.To(ctx, on, node.ALPNSession)
+	stream, done, err := l.open(ctx, on, node.ALPNSession)
 	if err != nil {
 		return err
 	}
-	defer stream.Close()
+	defer done()
+	defer stopStreamOnDone(ctx, stream)()
 
 	return proto.Ask(ctx, stream, path, why, node.DisplayName())
 }
@@ -212,19 +219,14 @@ func (l *running) Managed(name string) (tui.Managed, error) {
 		return tui.Managed{}, err
 	}
 
-	entry, ok := pinned.Lookup(name)
-	if !ok {
-		// A person's own heading rather than one machine: find any machine of theirs.
-		for _, one := range pinned.All() {
-			if one.Person == name {
-				entry, ok = one, true
-				break
-			}
-		}
+	entries, person, err := managedEntries(pinned, name, true)
+	if err != nil {
+		return tui.Managed{}, err
 	}
-	if !ok {
+	if len(entries) == 0 {
 		return tui.Managed{}, fmt.Errorf("%s is not in the address book", name)
 	}
+	entry := entries[0]
 
 	out := tui.Managed{
 		Name:     name,
@@ -232,17 +234,18 @@ func (l *running) Managed(name string) (tui.Managed, error) {
 		User:     entry.User,
 		Paired:   entry.Paired(),
 		Trusted:  entry.Trusted,
-		Reaching: l.held.Reaching(entry.ID),
+		Machines: len(entries),
 	}
 
-	// A row that stands for one machine names its device; a person's does not, because they have
-	// more than one.
-	if entry.Name == name {
+	if !person {
 		out.ID = entry.ID.String()
 	}
-	for _, one := range pinned.All() {
-		if one.User != "" && one.User == entry.User {
-			out.Machines++
+	reaching := l.reaching(context.Background())
+	for _, one := range entries {
+		out.Paired = out.Paired || one.Paired()
+		out.Trusted = out.Trusted || one.Trusted
+		if reaching(one.ID) {
+			out.Reaching = true
 		}
 	}
 
@@ -251,6 +254,32 @@ func (l *running) Managed(name string) (tui.Managed, error) {
 		return tui.Managed{}, err
 	}
 	return out, nil
+}
+
+func managedEntries(pinned *book.Book, name string, personFirst bool) ([]book.Entry, bool, error) {
+	if personFirst {
+		var theirs []book.Entry
+		owner, foundOwner := "", false
+		for _, entry := range pinned.All() {
+			if entry.Person == name {
+				if foundOwner && entry.User != owner {
+					return nil, false, fmt.Errorf("%q names more than one person in the address book", name)
+				}
+				owner, foundOwner = entry.User, true
+				theirs = append(theirs, entry)
+			}
+		}
+		if len(theirs) > 0 {
+			if exact, ok := pinned.Lookup(name); ok && exact.User != owner {
+				return nil, false, fmt.Errorf("%q names both a person and a machine in the address book", name)
+			}
+			return theirs, true, nil
+		}
+	}
+	if entry, ok := pinned.Lookup(name); ok {
+		return []book.Entry{entry}, false, nil
+	}
+	return nil, false, nil
 }
 
 // decided is every path somebody has been granted or refused here.
@@ -281,44 +310,25 @@ func (l *running) Trust(name string, trusted bool) error {
 		return err
 	}
 
-	pinned.Trust(name, trusted)
-	if _, ok := pinned.Lookup(name); !ok {
-		// A person's heading: trust every machine filed under them.
-		for _, one := range pinned.All() {
-			if one.Person == name {
-				pinned.Trust(one.Name, trusted)
+	return pinned.Change(func() (bool, error) {
+		entries, _, err := managedEntries(pinned, name, true)
+		if err != nil {
+			return false, err
+		}
+		if len(entries) == 0 {
+			return false, nil
+		}
+		for _, entry := range entries {
+			if entry.Trusted != trusted {
+				pinned.Trust(entries[0].Name, trusted)
+				return true, nil
 			}
 		}
-	}
-	return pinned.Save()
+		return false, nil
+	})
 }
 
 // Forget drops a pairing, and everything kept about it that is now meaningless.
 func (l *running) Forget(name string) error {
-	pinned, err := book.Load()
-	if err != nil {
-		return err
-	}
-
-	gone := []string{name}
-	if _, ok := pinned.Lookup(name); !ok {
-		gone = nil
-		for _, one := range pinned.All() {
-			if one.Person == name {
-				gone = append(gone, one.Name)
-			}
-		}
-	}
-
-	for _, at := range gone {
-		entry, ok := pinned.Lookup(at)
-		if !ok {
-			continue
-		}
-		pinned.Remove(at)
-
-		// What that device said it shares is worth nothing once it is a stranger again.
-		_ = shares.Forget(entry.ID)
-	}
-	return pinned.Save()
+	return forgetKnown(name, true)
 }

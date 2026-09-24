@@ -4,22 +4,49 @@ import "testing"
 
 // says is a declaration of a handful of settings, and nothing else.
 type says struct {
-	dir      string
-	writable bool
+	dir       string
+	writable  bool
+	text      map[string]string
+	mentioned map[string]bool
 }
 
 func (s says) String(key string) (string, bool) {
-	if key != "dir" || s.dir == "" {
-		return "", false
+	if key == "dir" && s.dir != "" {
+		return s.dir, true
 	}
-	return s.dir, true
+	value, ok := s.text[key]
+	return value, ok
 }
 
 func (s says) Bool(key string) (bool, bool) {
-	if key != "writable" {
-		return false, false
+	if key == "writable" {
+		return s.writable, true
 	}
-	return s.writable, true
+	return false, s.mentioned[key]
+}
+
+func TestFilesReadsTransferLimits(t *testing.T) {
+	read, err := (&Files{}).Read(says{dir: "/x", text: map[string]string{
+		"max_item": "2 MiB", "max_session": "3 GiB",
+	}})
+	if err != nil {
+		t.Fatalf("Read(): %v", err)
+	}
+	if read != (Config{Dir: "/x", MaxItemBytes: 2 << 20, MaxSessionBytes: 3 << 30}) {
+		t.Fatalf("Read() = %+v", read)
+	}
+}
+
+func TestFilesRefusesInvalidTransferLimits(t *testing.T) {
+	for _, declaration := range []says{
+		{dir: "/x", text: map[string]string{"max_item": "none"}},
+		{dir: "/x", text: map[string]string{"max_item": "2 GiB", "max_session": "1 GiB"}},
+		{dir: "/x", mentioned: map[string]bool{"max_item": true}},
+	} {
+		if _, err := (&Files{}).Read(declaration); err == nil {
+			t.Fatalf("Read(%+v) accepted invalid limits", declaration)
+		}
+	}
 }
 
 func (says) Strings(string) ([]string, bool) { return nil, false }

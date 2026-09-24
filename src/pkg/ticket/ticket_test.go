@@ -128,3 +128,31 @@ func TestWideKeepsItsQuietZone(t *testing.T) {
 		t.Fatal("the margin has something in it")
 	}
 }
+
+// Painted must say the same thing as Render, in colours the terminal's theme cannot turn around.
+func TestPaintedIsRenderInFixedColours(t *testing.T) {
+	code, err := Code(sample)
+	if err != nil {
+		t.Fatalf("encoding: %v", err)
+	}
+
+	plain := strings.Split(strings.TrimRight(Render(code), "\n"), "\n")
+	painted := strings.Split(strings.TrimRight(Painted(code), "\n"), "\n")
+	if len(painted) != len(plain) {
+		t.Fatalf("%d painted lines, %d plain", len(painted), len(plain))
+	}
+
+	for i, line := range painted {
+		inner, found := strings.CutPrefix(line, "\x1b[38;5;16;48;5;231m")
+		if !found {
+			t.Fatalf("line %d does not start by fixing its colours: %q", i, line)
+		}
+		inner, found = strings.CutSuffix(inner, "\x1b[0m")
+		if !found {
+			t.Fatalf("line %d leaves its colours on: %q", i, line)
+		}
+		if inner != plain[i] {
+			t.Fatalf("line %d says something else than Render does", i)
+		}
+	}
+}

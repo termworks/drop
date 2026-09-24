@@ -13,11 +13,12 @@ import (
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
-// Stream is what a session runs over: a bidirectional byte stream whose read side can be given a
-// deadline, and whose write side can be closed on its own.
+// Stream is what a session runs over: a bidirectional byte stream whose sides can be given
+// deadlines, and whose write side can be closed on its own.
 type Stream interface {
 	io.ReadWriteCloser
 	SetReadDeadline(t time.Time) error
+	SetWriteDeadline(t time.Time) error
 }
 
 // Policy decides what a receiving node does with an incoming session.
@@ -64,10 +65,16 @@ const settleIn = 10 * time.Second
 // endpoint underneath change without touching this.
 func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 	conn := wire.NewConn(s)
+	guessCtx, cancelGuess := streamContext(ctx, s)
+	defer cancelGuess()
 
-	_ = s.SetReadDeadline(time.Now().Add(settleIn))
-
-	kind, body, err := conn.ReadFrameUpTo(MaxUnknown)
+	var kind byte
+	var body []byte
+	err := conn.WithReadIdle(settleIn, func() error {
+		var err error
+		kind, body, err = conn.ReadFrameUpTo(MaxUnknown)
+		return err
+	})
 	if err != nil {
 		// A stream opened and closed without a word is a peer that changed its mind, not a fault.
 		if wire.Closed(err) {
@@ -84,16 +91,13 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 		return fmt.Errorf("reading the open from %s: %w", node.Brief(from), err)
 	}
 
-	// The session is settled, and what it does next takes as long as it takes.
-	_ = s.SetReadDeadline(time.Time{})
-
 	// A refusal a caller could do nothing about is answered as passing; one that is a decision
 	// about them is answered as settled, so a sender with something queued knows which.
 	refuse := func(reason string) error {
-		return conn.WriteFrame(wire.KindReject, wire.Reject{Reason: reason}.Encode())
+		return writeAnswer(conn, wire.KindReject, wire.Reject{Reason: reason}.Encode())
 	}
 	decided := func(reason string) error {
-		return conn.WriteFrame(wire.KindReject, wire.Reject{Reason: reason, Settled: true}.Encode())
+		return writeAnswer(conn, wire.KindReject, wire.Reject{Reason: reason, Settled: true}.Encode())
 	}
 
 	// A machine that has moved says so before anything is decided about it, so the entry that
@@ -151,7 +155,7 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 	// the same question of the same guess. Each asking costs 64 MiB and three passes, so without
 	// somewhere to remember the answer one guess is paid for as many times as there are rules in the
 	// way — the guess allowance counts six, and each of the six is worth several.
-	caller.Tried = passwd.NewTried()
+	caller.Tried = passwd.NewTriedContext(guessCtx)
 	if open.Secret != "" && !guessing.spare(from) {
 		turnedAway(policy, from, path, "too many password attempts")
 		return refuse("too many attempts, wait a while")
@@ -211,7 +215,7 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 		return decided(fmt.Sprintf("%s is a %s namespace", mount.Path, mount.Archetype))
 	}
 
-	if err := conn.WriteFrame(wire.KindAccept, nil); err != nil {
+	if err := writeAnswer(conn, wire.KindAccept, nil); err != nil {
 		return err
 	}
 	return answers.Serve(ctx, arch.Session{
@@ -223,6 +227,28 @@ func Handle(ctx context.Context, s Stream, from node.ID, policy Policy) error {
 		Conn:   conn,
 		Stream: s,
 	})
+}
+
+func streamContext(ctx context.Context, s Stream) (context.Context, context.CancelFunc) {
+	stream, ok := s.(interface{ Context() context.Context })
+	if !ok {
+		return context.WithCancel(ctx)
+	}
+
+	streamCtx := stream.Context()
+	if streamCtx == nil {
+		return context.WithCancel(ctx)
+	}
+	joined, cancel := context.WithCancel(ctx)
+	if streamCtx.Err() != nil {
+		cancel()
+		return joined, cancel
+	}
+	stop := context.AfterFunc(streamCtx, cancel)
+	return joined, func() {
+		stop()
+		cancel()
+	}
 }
 
 // unreadable is what a caller is told about a path this node cannot even spell.
@@ -266,10 +292,16 @@ func meeting(conn *wire.Conn, policy Policy, open Opening, caller ns.Caller, fro
 		return refuse("this node keeps no history")
 	}
 
-	if err := conn.WriteFrame(wire.KindAccept, nil); err != nil {
+	if err := writeAnswer(conn, wire.KindAccept, nil); err != nil {
 		return err
 	}
 	return policy.Met(Meeting{Mount: mount, Who: caller, From: from, Conn: conn})
+}
+
+func writeAnswer(conn *wire.Conn, kind byte, body []byte) error {
+	return conn.WithIdle(settleIn, func() error {
+		return conn.WriteFrame(kind, body)
+	})
 }
 
 // holding finds the namespace both machines call by one name.

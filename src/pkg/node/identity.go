@@ -63,6 +63,48 @@ func Written() (string, error) {
 	return filepath.Join(dir, "identity"), nil
 }
 
+const hardwareIdentitySize = key.PublicKeySize * 2
+
+type hardwareIdentity struct {
+	secret key.SecretKey
+	from   metal.Mark
+}
+
+// Rebinding is the completed transition from a stored identity to the hardware identity.
+type Rebinding struct {
+	Was  ID
+	Now  ID
+	From metal.Mark
+	Kept string
+}
+
+// RebindHardware retires the stored identity after pinning the hardware identity.
+func RebindHardware() (Rebinding, error) {
+	path, err := Written()
+	if err != nil {
+		return Rebinding{}, err
+	}
+	mark := metal.Read()
+	if !mark.Held() {
+		return Rebinding{}, fmt.Errorf("this machine says nothing about itself, so there is nothing to be named by")
+	}
+	seed, err := mark.Seed(filepath.Dir(path))
+	if err != nil {
+		return Rebinding{}, err
+	}
+	hardware := hardwareIdentity{secret: key.NewSecretKey(seed), from: mark}
+	was, kept, err := rebindHardware(path, hardware)
+	if err != nil {
+		return Rebinding{}, err
+	}
+	return Rebinding{
+		Was:  was,
+		Now:  hardware.secret.Public().EndpointID(),
+		From: mark,
+		Kept: kept,
+	}, nil
+}
+
 func identity() (key.SecretKey, metal.Mark, error) {
 	var empty key.SecretKey
 
@@ -71,49 +113,56 @@ func identity() (key.SecretKey, metal.Mark, error) {
 		return empty, metal.Mark{}, err
 	}
 
-	stored, err := os.ReadFile(path)
-	switch {
-	case err == nil:
-		if len(stored) != key.SeedSize {
-			return empty, metal.Mark{}, fmt.Errorf(
-				"%s is %d bytes, not a %d-byte key.\n"+
-					"Move it aside to start fresh; this machine's address will change and pairings must be redone",
-				path, len(stored), key.SeedSize)
-		}
-		var seed [key.SeedSize]byte
-		copy(seed[:], stored)
-		return key.NewSecretKey(seed), metal.Mark{}, nil
-
-	case !errors.Is(err, os.ErrNotExist):
-		return empty, metal.Mark{}, fmt.Errorf("reading %s: %w", path, err)
+	stored, exists, err := readIdentity(path)
+	if err != nil {
+		return empty, metal.Mark{}, err
+	}
+	if exists {
+		return stored, metal.Mark{}, nil
 	}
 
-	// Nothing written down: this is a machine that has not run before, or one that has been wiped
-	// and is meant to come back as itself.
+	var hardware *hardwareIdentity
 	if mark := metal.Read(); mark.Held() {
 		seed, err := mark.Seed(filepath.Dir(path))
 		if err != nil {
 			return empty, metal.Mark{}, err
 		}
-		return key.NewSecretKey(seed), mark, nil
+		hardware = &hardwareIdentity{secret: key.NewSecretKey(seed), from: mark}
 	}
+	return chooseIdentity(path, hardware)
+}
 
-	// Made exactly once, however many drops start at the same moment.
-	//
-	// Two processes reaching this together would each make a key and each write it, and the one
-	// whose write landed second would win the file while the other went on running its whole
-	// session — endpoint, badge, everything it signs — under a key that is not the one on disk.
-	// Every pairing a peer recorded during that session would name an address that vanishes at the
-	// next restart, with nothing to say so. `drop serve` and `drop peer pair` are separate
-	// processes sharing this directory, so this is the ordinary way to start, not a rare one.
-	var made key.SecretKey
-	err = keep.While(path, func() error {
-		// Somebody may have made one while this was waiting for the file.
-		if raw, err := os.ReadFile(path); err == nil && len(raw) == key.SeedSize {
-			var seed [key.SeedSize]byte
-			copy(seed[:], raw)
-			made = key.NewSecretKey(seed)
+func chooseIdentity(path string, hardware *hardwareIdentity) (key.SecretKey, metal.Mark, error) {
+	var selected key.SecretKey
+	var from metal.Mark
+	err := keep.While(path, func() error {
+		stored, exists, err := readIdentity(path)
+		if err != nil {
+			return err
+		}
+		if exists {
+			selected = stored
 			return nil
+		}
+
+		anchor := path + ".hardware"
+		if hardware != nil {
+			id := hardware.secret.Public().EndpointID()
+			if err := pinHardware(anchor, id); err != nil {
+				return err
+			}
+			selected, from = hardware.secret, hardware.from
+			return nil
+		}
+
+		anchored, exists, err := readHardware(anchor)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return fmt.Errorf(
+				"hardware identity %s recorded in %s is unavailable; refusing to replace it",
+				Brief(anchored), anchor)
 		}
 
 		fresh, err := key.GenerateSecretKey()
@@ -124,13 +173,95 @@ func identity() (key.SecretKey, metal.Mark, error) {
 		if err := keep.Replace(path, seed[:]); err != nil {
 			return err
 		}
-		made = fresh
+		selected = fresh
 		return nil
 	})
 	if err != nil {
-		return empty, metal.Mark{}, err
+		return key.SecretKey{}, metal.Mark{}, err
 	}
-	return made, metal.Mark{}, nil
+	return selected, from, nil
+}
+
+func rebindHardware(path string, hardware hardwareIdentity) (ID, string, error) {
+	var was ID
+	kept := path + ".was"
+	err := keep.While(path, func() error {
+		stored, exists, err := readIdentity(path)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("this machine is already named by %s", hardware.from.Says)
+		}
+		if _, err := os.Lstat(kept); err == nil {
+			return fmt.Errorf("%s already holds a recovery identity; move it aside before rebinding", kept)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("checking %s: %w", kept, err)
+		}
+
+		was = stored.Public().EndpointID()
+		now := hardware.secret.Public().EndpointID()
+		if err := keep.Replace(path+".hardware", []byte(now.String())); err != nil {
+			return err
+		}
+		if err := keep.Rename(path, kept); err != nil {
+			return fmt.Errorf("moving %s aside: %w", path, err)
+		}
+		return nil
+	})
+	return was, kept, err
+}
+
+func readIdentity(path string) (key.SecretKey, bool, error) {
+	raw, err := keep.ReadFile(path, key.SeedSize)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return key.SecretKey{}, false, nil
+	case err != nil:
+		return key.SecretKey{}, false, fmt.Errorf("reading %s: %w", path, err)
+	case len(raw) != key.SeedSize:
+		return key.SecretKey{}, false, fmt.Errorf(
+			"%s is %d bytes, not a %d-byte key.\n"+
+				"Move it aside to start fresh; this machine's address will change and pairings must be redone",
+			path, len(raw), key.SeedSize)
+	}
+	var seed [key.SeedSize]byte
+	copy(seed[:], raw)
+	return key.NewSecretKey(seed), true, nil
+}
+
+func readHardware(path string) (ID, bool, error) {
+	raw, err := keep.ReadFile(path, hardwareIdentitySize)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return ID{}, false, nil
+	case err != nil:
+		return ID{}, false, fmt.Errorf("reading %s: %w", path, err)
+	case len(raw) != hardwareIdentitySize:
+		return ID{}, false, fmt.Errorf(
+			"%s is %d bytes, not a %d-byte endpoint id", path, len(raw), hardwareIdentitySize)
+	}
+	id, err := ParseID(string(raw))
+	if err != nil {
+		return ID{}, false, fmt.Errorf("reading %s: invalid endpoint id: %w", path, err)
+	}
+	return id, true, nil
+}
+
+func pinHardware(path string, current ID) error {
+	anchored, exists, err := readHardware(path)
+	if err != nil {
+		return err
+	}
+	if exists {
+		if anchored != current {
+			return fmt.Errorf(
+				"hardware now derives identity %s, but %s records %s; refusing to change identity",
+				Brief(current), path, Brief(anchored))
+		}
+		return nil
+	}
+	return keep.Replace(path, []byte(current.String()))
 }
 
 // LocalID is the address derived from the stored identity.

@@ -1,13 +1,18 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"io"
+	"net"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bresilla/drop/src/pkg/asciicast"
 	"github.com/bresilla/drop/src/pkg/cast"
+	"github.com/bresilla/drop/src/pkg/made"
 	"github.com/bresilla/drop/src/pkg/ns"
 )
 
@@ -31,6 +36,56 @@ func castStarted(t *testing.T) *asciicast.Reader {
 		t.Fatalf("the header came out %dx%d", head.Width, head.Height)
 	}
 	return reader
+}
+
+func TestLocalCastIsAcknowledgedThroughItsLifetime(t *testing.T) {
+	host := newCastHost(ns.NewTable(), reading())
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+
+	done := make(chan error, 1)
+	go func() {
+		defer func() { _ = server.Close() }()
+		done <- takeCast(t.Context(), host, strings.NewReader(
+			`{"version":2,"width":80,"height":24}`+"\n"+`[0.1,"o","hello"]`+"\n"), server)
+	}()
+
+	replies := bufio.NewReader(client)
+	if line, err := replies.ReadString('\n'); err != nil || line != "ok\n" {
+		t.Fatalf("start reply = %q, %v", line, err)
+	}
+	if line, err := replies.ReadString('\n'); err != nil || line != "done\n" {
+		t.Fatalf("end reply = %q, %v", line, err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if host.live() != nil {
+		t.Fatal("an acknowledged cast remained live")
+	}
+}
+
+func TestCastHeaderSurvivesDeadlineResetFailure(t *testing.T) {
+	host := newCastHost(ns.NewTable(), reading())
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+
+	done := make(chan error, 1)
+	go func() {
+		defer func() { _ = server.Close() }()
+		done <- takeCast(t.Context(), host, strings.NewReader(
+			`{"version":2,"width":80,"height":24}`+"\n"), resetFailConn{server})
+	}()
+
+	replies := bufio.NewReader(client)
+	for _, want := range []string{"ok\n", "done\n"} {
+		if line, err := replies.ReadString('\n'); err != nil || line != want {
+			t.Fatalf("cast reply = %q, %v; want %q", line, err, want)
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("a complete cast header was discarded: %v", err)
+	}
 }
 
 // A cast waiting on standard input has to be interruptible: the read cannot be cancelled, so what
@@ -126,4 +181,88 @@ func TestADeclaredCastPathKeepsItsRule(t *testing.T) {
 	if _, _, ok := table.Lookup(CastPath); !ok {
 		t.Fatal("a cast ending took away a path the config declared")
 	}
+}
+
+func TestACastRefusesAPathOwnedByAnotherArchetype(t *testing.T) {
+	table := ns.NewTable()
+	if err := table.Add(ns.Mount{Path: CastPath, Archetype: "chat"}); err != nil {
+		t.Fatal(err)
+	}
+	host := newCastHost(table, reading())
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+
+	done := make(chan error, 1)
+	go func() {
+		defer func() { _ = server.Close() }()
+		done <- takeCast(t.Context(), host, strings.NewReader(`{"version":2,"width":80,"height":24}`+"\n"), server)
+	}()
+
+	line, err := bufio.NewReader(client).ReadString('\n')
+	if err != nil || !strings.Contains(line, "no /cast is already a chat namespace") {
+		t.Fatalf("cast refusal = %q, %v", line, err)
+	}
+	if err := <-done; err == nil {
+		t.Fatal("the conflicting cast reported success")
+	}
+	if host.live() != nil {
+		t.Fatal("the refused cast remained live")
+	}
+	if mount, _, ok := table.Lookup(CastPath); !ok || mount.Archetype != "chat" {
+		t.Fatalf("the refused cast changed the existing mount: %+v", mount)
+	}
+}
+
+func TestACastRefusesAFullNamespaceTable(t *testing.T) {
+	table := ns.NewTable()
+	for i := range ns.MaxMounts {
+		if err := table.Add(ns.Mount{Path: fmt.Sprintf("/path%d", i), Archetype: "chat"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	host := newCastHost(table, reading())
+	if _, err := host.begin(80, 24); err == nil || !strings.Contains(err.Error(), "already 4096 namespaces") {
+		t.Fatalf("begin() on a full table returned %v", err)
+	}
+	if host.live() != nil {
+		t.Fatal("the unmounted cast remained live")
+	}
+	if _, _, ok := table.Lookup(CastPath); ok {
+		t.Fatal("the full table unexpectedly gained a cast mount")
+	}
+}
+
+func TestACastAndACreatedNamespaceCannotReplaceEachOther(t *testing.T) {
+	table := ns.NewTable()
+	casts := newCastHost(table, reading())
+	created := newMountHost(table, reading())
+	line := made.Line{Path: CastPath, Entry: made.Entry{
+		Archetype: "chat",
+		Access:    made.Access{Paired: true},
+	}}
+
+	if err := created.begin(line); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := casts.begin(80, 24); err == nil {
+		t.Fatal("a cast replaced the held namespace")
+	}
+	if mount, _, ok := table.Lookup(CastPath); !ok || mount.Archetype != "chat" {
+		t.Fatal("the refused cast changed the held namespace")
+	}
+	created.end(CastPath)
+
+	stage, err := casts.begin(80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line.Keep = true
+	if err := created.begin(line); err == nil {
+		t.Fatal("a written namespace replaced the live cast")
+	}
+	if mount, _, ok := table.Lookup(CastPath); !ok || mount.Archetype != "tty" {
+		t.Fatal("the refused namespace changed the live cast mount")
+	}
+	casts.end(stage)
 }

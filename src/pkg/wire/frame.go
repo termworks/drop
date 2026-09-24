@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 )
 
 // Frame kinds. Control frames carry a codec body; DATA carries raw bytes.
@@ -25,6 +26,9 @@ const (
 	// namespace, and what came of it.
 	KindRequest byte = 11
 	KindReply   byte = 12
+	// KindCompany is who else is on a live terminal: how many are watching it, and whether it is
+	// one shell they all share or the watcher's own.
+	KindCompany byte = 13
 )
 
 // MaxFrame caps a single frame. Data is chunked well under this; a control frame never approaches
@@ -35,19 +39,125 @@ const MaxFrame = 1 << 22
 // against this, so the overhead is not worth measuring.
 const DataChunk = 256 << 10
 
+// FiniteIdle bounds a stalled finite protocol operation.
+const FiniteIdle = 2 * time.Minute
+
+// FiniteReadIdle is the read-only form of the finite operation limit.
+const FiniteReadIdle = FiniteIdle
+
+type readDeadliner interface {
+	SetReadDeadline(time.Time) error
+}
+
+type writeDeadliner interface {
+	SetWriteDeadline(time.Time) error
+}
+
 // Conn frames a bidirectional byte stream.
 //
 // Every read goes through one buffered reader. That is what makes it safe to mix framed control
 // messages with bulk data on the same stream: nothing else reads from the underlying stream, so
 // nothing can consume bytes that belong to the next frame.
 type Conn struct {
-	r   *bufio.Reader
-	w   io.Writer
-	hdr [1 + binary.MaxVarintLen64]byte
+	r             *bufio.Reader
+	w             io.Writer
+	readDeadline  readDeadliner
+	writeDeadline writeDeadliner
+	readIdle      time.Duration
+	writeIdle     time.Duration
+	hdr           [1 + binary.MaxVarintLen64]byte
 }
 
 func NewConn(rw io.ReadWriter) *Conn {
-	return &Conn{r: bufio.NewReaderSize(rw, 64<<10), w: rw}
+	c := &Conn{r: bufio.NewReaderSize(rw, 64<<10), w: rw}
+	c.readDeadline, _ = rw.(readDeadliner)
+	c.writeDeadline, _ = rw.(writeDeadliner)
+	return c
+}
+
+// WithReadIdle runs one finite read operation, refreshing its deadline before every frame part.
+func (c *Conn) WithReadIdle(idle time.Duration, read func() error) (err error) {
+	if idle <= 0 {
+		return fmt.Errorf("wire: invalid read idle %s", idle)
+	}
+	if c.readIdle != 0 {
+		return fmt.Errorf("wire: a read-idle guard is already active")
+	}
+	c.readIdle = idle
+	if err := c.refreshReadDeadline(); err != nil {
+		return c.endReadIdle(err)
+	}
+	defer func() {
+		err = c.endReadIdle(err)
+	}()
+	return read()
+}
+
+// WithIdle runs one finite operation, refreshing read and write deadlines at every frame part.
+func (c *Conn) WithIdle(idle time.Duration, operation func() error) (err error) {
+	if idle <= 0 {
+		return fmt.Errorf("wire: invalid idle limit %s", idle)
+	}
+	if c.readIdle != 0 || c.writeIdle != 0 {
+		return fmt.Errorf("wire: an idle guard is already active")
+	}
+	c.readIdle, c.writeIdle = idle, idle
+	if err := c.refreshReadDeadline(); err != nil {
+		return c.endIdle(err)
+	}
+	if err := c.refreshWriteDeadline(); err != nil {
+		return c.endIdle(err)
+	}
+	defer func() {
+		err = c.endIdle(err)
+	}()
+	return operation()
+}
+
+func (c *Conn) endReadIdle(err error) error {
+	c.readIdle = 0
+	if c.readDeadline != nil {
+		err = errors.Join(err, deadlineReset(c.readDeadline.SetReadDeadline(time.Time{})))
+	}
+	return err
+}
+
+func (c *Conn) endIdle(err error) error {
+	c.readIdle, c.writeIdle = 0, 0
+	if c.readDeadline != nil {
+		err = errors.Join(err, deadlineReset(c.readDeadline.SetReadDeadline(time.Time{})))
+	}
+	if c.writeDeadline != nil {
+		err = errors.Join(err, deadlineReset(c.writeDeadline.SetWriteDeadline(time.Time{})))
+	}
+	return err
+}
+
+func deadlineReset(err error) error {
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
+		return nil
+	}
+	return err
+}
+
+func (c *Conn) refreshReadDeadline() error {
+	if c.readDeadline == nil || c.readIdle == 0 {
+		return nil
+	}
+	if err := c.readDeadline.SetReadDeadline(time.Now().Add(c.readIdle)); err != nil {
+		return fmt.Errorf("wire: setting a read deadline: %w", err)
+	}
+	return nil
+}
+
+func (c *Conn) refreshWriteDeadline() error {
+	if c.writeDeadline == nil || c.writeIdle == 0 {
+		return nil
+	}
+	if err := c.writeDeadline.SetWriteDeadline(time.Now().Add(c.writeIdle)); err != nil {
+		return fmt.Errorf("wire: setting a write deadline: %w", err)
+	}
+	return nil
 }
 
 // WriteFrame writes one frame: a kind, a length, and the body.
@@ -65,7 +175,7 @@ func (c *Conn) WriteFrame(kind byte, body []byte) error {
 	if len(body) == 0 {
 		return nil
 	}
-	if _, err := c.w.Write(body); err != nil {
+	if err := c.writeAll(body); err != nil {
 		return fmt.Errorf("wire: writing a frame body: %w", err)
 	}
 	return nil
@@ -74,19 +184,45 @@ func (c *Conn) WriteFrame(kind byte, body []byte) error {
 func (c *Conn) writeHeader(kind byte, size int) error {
 	c.hdr[0] = kind
 	n := binary.PutUvarint(c.hdr[1:], uint64(size))
-	if _, err := c.w.Write(c.hdr[:1+n]); err != nil {
+	if err := c.writeAll(c.hdr[:1+n]); err != nil {
 		return fmt.Errorf("wire: writing a frame header: %w", err)
+	}
+	return nil
+}
+
+func (c *Conn) writeAll(p []byte) error {
+	for len(p) > 0 {
+		if err := c.refreshWriteDeadline(); err != nil {
+			return err
+		}
+		n, err := c.w.Write(p)
+		if n < 0 || n > len(p) {
+			return fmt.Errorf("invalid write count %d for %d bytes", n, len(p))
+		}
+		p = p[n:]
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
 	}
 	return nil
 }
 
 // WriteData writes one data frame without copying the payload.
 func (c *Conn) WriteData(payload []byte) error {
+	if len(payload) == 0 {
+		return fmt.Errorf("wire: empty data frame")
+	}
 	return c.WriteFrame(KindData, payload)
 }
 
 // ReadHeader reads the next frame's kind and body length, leaving the body on the stream.
 func (c *Conn) ReadHeader() (kind byte, size int, err error) {
+	if err := c.refreshReadDeadline(); err != nil {
+		return 0, 0, err
+	}
 	kind, err = c.r.ReadByte()
 	if err != nil {
 		return 0, 0, err
@@ -107,8 +243,14 @@ func (c *Conn) ReadHeader() (kind byte, size int, err error) {
 
 // ReadBody fills buf with exactly size bytes of frame body.
 func (c *Conn) ReadBody(buf []byte, size int) error {
+	if size < 0 {
+		return fmt.Errorf("wire: negative frame body size %d", size)
+	}
 	if size > len(buf) {
 		return fmt.Errorf("wire: frame body is %d bytes, buffer holds %d", size, len(buf))
+	}
+	if err := c.refreshReadDeadline(); err != nil {
+		return err
 	}
 	if _, err := io.ReadFull(c.r, buf[:size]); err != nil {
 		return fmt.Errorf("wire: reading a frame body: %w", err)
@@ -127,14 +269,20 @@ func (c *Conn) ReadFrame() (kind byte, body []byte, err error) {
 		return kind, nil, nil
 	}
 	body = make([]byte, size)
-	if _, err := io.ReadFull(c.r, body); err != nil {
-		return 0, nil, fmt.Errorf("wire: reading a frame body: %w", err)
+	if err := c.ReadBody(body, size); err != nil {
+		return 0, nil, err
 	}
 	return kind, body, nil
 }
 
 // Discard throws away a frame body that is not wanted.
 func (c *Conn) Discard(size int) error {
+	if size < 0 {
+		return fmt.Errorf("wire: negative frame body size %d", size)
+	}
+	if err := c.refreshReadDeadline(); err != nil {
+		return err
+	}
 	if _, err := c.r.Discard(size); err != nil {
 		return fmt.Errorf("wire: skipping a frame body: %w", err)
 	}
@@ -174,8 +322,8 @@ func (c *Conn) ReadFrameUpTo(most int) (kind byte, body []byte, err error) {
 	}
 
 	body = make([]byte, size)
-	if _, err := io.ReadFull(c.r, body); err != nil {
-		return 0, nil, fmt.Errorf("wire: reading a frame body: %w", err)
+	if err := c.ReadBody(body, size); err != nil {
+		return 0, nil, err
 	}
 	return kind, body, nil
 }

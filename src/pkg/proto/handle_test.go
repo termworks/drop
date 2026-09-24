@@ -33,7 +33,7 @@ func answering(t *testing.T, m ns.Mount, known *arch.Registry) net.Conn {
 	t.Helper()
 
 	caller, server := net.Pipe()
-	t.Cleanup(func() { caller.Close() })
+	t.Cleanup(func() { _ = caller.Close() })
 
 	table := ns.NewTable()
 	if err := table.Add(m); err != nil {
@@ -41,7 +41,7 @@ func answering(t *testing.T, m ns.Mount, known *arch.Registry) net.Conn {
 	}
 
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 		_ = Handle(t.Context(), stream{server}, who(3), Policy{
 			Mounts:     table,
 			Archetypes: known,
@@ -56,6 +56,50 @@ func answering(t *testing.T, m ns.Mount, known *arch.Registry) net.Conn {
 type stream struct{ net.Conn }
 
 func (s stream) SetReadDeadline(t time.Time) error { return s.Conn.SetReadDeadline(t) }
+
+type streamWithContext struct {
+	stream
+	ctx context.Context
+}
+
+func (s streamWithContext) Context() context.Context { return s.ctx }
+
+func TestStreamContextEndsWithEitherLifetime(t *testing.T) {
+	for _, ending := range []string{"server", "stream"} {
+		t.Run(ending, func(t *testing.T) {
+			serverCtx, stopServer := context.WithCancel(context.Background())
+			remoteCtx, stopRemote := context.WithCancel(context.Background())
+			defer stopServer()
+			defer stopRemote()
+			joined, stopJoined := streamContext(serverCtx, streamWithContext{ctx: remoteCtx})
+			defer stopJoined()
+
+			if ending == "server" {
+				stopServer()
+			} else {
+				stopRemote()
+			}
+			select {
+			case <-joined.Done():
+			case <-time.After(time.Second):
+				t.Fatalf("joined context did not end with the %s context", ending)
+			}
+		})
+	}
+}
+
+func TestStreamContextSeesAnAlreadyClosedStream(t *testing.T) {
+	remoteCtx, stopRemote := context.WithCancel(context.Background())
+	stopRemote()
+	joined, stopJoined := streamContext(context.Background(), streamWithContext{ctx: remoteCtx})
+	defer stopJoined()
+
+	select {
+	case <-joined.Done():
+	default:
+		t.Fatal("an already closed stream left its context live")
+	}
+}
 
 // The whole point of the boundary: an archetype nothing in this package knows about is registered,
 // mounted, opened and served, and Handle gains no case for it.
@@ -142,11 +186,11 @@ func handling(t *testing.T, from node.ID, table *ns.Table, policy Policy) net.Co
 	t.Helper()
 
 	caller, server := net.Pipe()
-	t.Cleanup(func() { caller.Close() })
+	t.Cleanup(func() { _ = caller.Close() })
 
 	policy.Mounts = table
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 		_ = Handle(t.Context(), stream{server}, from, policy)
 	}()
 	return caller
@@ -232,7 +276,8 @@ func TestAStrangerCannotGuessWithoutLimit(t *testing.T) {
 	}
 	table := served(t, ns.Mount{Path: "/handoff", Archetype: "echo", Access: ns.Access{Password: hash}})
 
-	stranger := who(7)
+	stranger, another := who(7), who(8)
+	isolateGuesses(t, stranger, another)
 	for i := range mostGuesses {
 		caller := handling(t, stranger, table, Policy{})
 		if _, err := Open(caller, "/handoff", "", 0, fmt.Sprintf("guess %d", i), "tester"); err == nil {
@@ -247,7 +292,7 @@ func TestAStrangerCannotGuessWithoutLimit(t *testing.T) {
 	}
 
 	// One peer's guessing must not be another's problem.
-	other := handling(t, who(8), table, Policy{})
+	other := handling(t, another, table, Policy{})
 	if _, err := Open(other, "/handoff", "", 0, "wrong as well", "tester"); err == nil {
 		t.Fatal("a wrong password opened the path")
 	} else if strings.Contains(err.Error(), "too many") {
@@ -268,7 +313,9 @@ func TestARefusedOpenCostsOneGuess(t *testing.T) {
 		Archetype: "echo",
 		Access:    ns.Access{Password: hash, AnyVisible: true},
 	})
-	caller := handling(t, who(9), table, Policy{
+	peer := who(9)
+	isolateGuesses(t, peer)
+	caller := handling(t, peer, table, Policy{
 		Who: func(from node.ID, _ Badged, _ Stood) ns.Caller { return ns.Caller{ID: from.String(), Paired: true} },
 	})
 
@@ -286,4 +333,16 @@ func TestARefusedOpenCostsOneGuess(t *testing.T) {
 	if paid := passwd.Spent() - before; paid != 1 {
 		t.Errorf("one refused open paid for %d guesses, want 1", paid)
 	}
+}
+
+func isolateGuesses(t *testing.T, peers ...node.ID) {
+	t.Helper()
+	for _, peer := range peers {
+		guessing.forget(peer)
+	}
+	t.Cleanup(func() {
+		for _, peer := range peers {
+			guessing.forget(peer)
+		}
+	})
 }

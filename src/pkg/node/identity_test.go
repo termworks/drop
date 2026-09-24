@@ -3,6 +3,7 @@ package node
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -29,14 +30,17 @@ func TestAMachineWithNothingWrittenDownComesBackAsItself(t *testing.T) {
 		t.Fatalf("LocalID(): %v", err)
 	}
 
-	// Nothing was written down, so there is nothing a backup could carry and nothing a wipe could
-	// take.
+	// The secret remains derived while its public identity is pinned.
 	path, err := Written()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); err == nil {
 		t.Fatalf("%s was written even though the machine names itself", path)
+	}
+	anchored, exists, err := readHardware(path + ".hardware")
+	if err != nil || !exists || anchored != was {
+		t.Fatalf("hardware anchor = %s, %t, %v", Brief(anchored), exists, err)
 	}
 
 	if err := os.RemoveAll(home); err != nil {
@@ -57,6 +61,201 @@ func TestAMachineWithNothingWrittenDownComesBackAsItself(t *testing.T) {
 	}
 	if !mark.Held() || mark.Says == "" {
 		t.Fatalf("the machine named itself but will not say from what: %+v", mark)
+	}
+}
+
+func testSecret(t *testing.T) key.SecretKey {
+	t.Helper()
+	secret, err := key.GenerateSecretKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return secret
+}
+
+func TestHardwareIdentityIsPinned(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity")
+	first := testSecret(t)
+	hardware := &hardwareIdentity{secret: first}
+
+	selected, _, err := chooseIdentity(path, hardware)
+	if err != nil {
+		t.Fatalf("chooseIdentity(): %v", err)
+	}
+	if selected.Public().EndpointID() != first.Public().EndpointID() {
+		t.Fatal("the selected identity differs from the hardware identity")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("hardware identity was written as a secret: %v", err)
+	}
+	anchored, exists, err := readHardware(path + ".hardware")
+	if err != nil || !exists || anchored != first.Public().EndpointID() {
+		t.Fatalf("hardware anchor = %s, %t, %v", Brief(anchored), exists, err)
+	}
+
+	if _, _, err := chooseIdentity(path, hardware); err != nil {
+		t.Fatalf("choosing the pinned identity again: %v", err)
+	}
+	other := &hardwareIdentity{secret: testSecret(t)}
+	if _, _, err := chooseIdentity(path, other); err == nil || !strings.Contains(err.Error(), "refusing to change identity") {
+		t.Fatalf("changed hardware identity = %v", err)
+	}
+}
+
+func TestMissingHardwareDoesNotReplaceAPinnedIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity")
+	hardware := &hardwareIdentity{secret: testSecret(t)}
+	if _, _, err := chooseIdentity(path, hardware); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := chooseIdentity(path, nil); err == nil || !strings.Contains(err.Error(), "is unavailable") {
+		t.Fatalf("missing hardware = %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("a replacement identity was written: %v", err)
+	}
+}
+
+func TestCorruptHardwareAnchorIsRefused(t *testing.T) {
+	for name, raw := range map[string][]byte{
+		"short":   []byte("broken"),
+		"invalid": []byte(strings.Repeat("z", hardwareIdentitySize)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "identity")
+			if err := os.WriteFile(path+".hardware", raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := chooseIdentity(path, &hardwareIdentity{secret: testSecret(t)}); err == nil {
+				t.Fatal("corrupt hardware anchor was accepted")
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("an identity was written after corruption: %v", err)
+			}
+		})
+	}
+}
+
+func TestWrittenIdentityWinsOverHardwareState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity")
+	written := testSecret(t)
+	seed := written.Bytes()
+	if err := os.WriteFile(path, seed[:], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".hardware", []byte("corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	selected, from, err := chooseIdentity(path, &hardwareIdentity{secret: testSecret(t)})
+	if err != nil {
+		t.Fatalf("chooseIdentity(): %v", err)
+	}
+	if selected.Public().EndpointID() != written.Public().EndpointID() || from.Held() {
+		t.Fatal("hardware state displaced the written identity")
+	}
+}
+
+func TestMixedConcurrentFirstStartsCannotSplitIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity")
+	first := &hardwareIdentity{secret: testSecret(t)}
+	second := &hardwareIdentity{secret: testSecret(t)}
+	choices := []*hardwareIdentity{nil, first, second}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var ids []ID
+	for i := 0; i < 24; i++ {
+		choice := choices[i%len(choices)]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			selected, _, err := chooseIdentity(path, choice)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			ids = append(ids, selected.Public().EndpointID())
+			mu.Unlock()
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if len(ids) == 0 {
+		t.Fatal("every concurrent identity selection failed")
+	}
+	for _, id := range ids[1:] {
+		if id != ids[0] {
+			t.Fatalf("concurrent starts selected %s and %s", Brief(ids[0]), Brief(id))
+		}
+	}
+	_, stored, storedErr := readIdentity(path)
+	_, anchored, anchorErr := readHardware(path + ".hardware")
+	if storedErr != nil || anchorErr != nil {
+		t.Fatalf("stored state = %v, anchor state = %v", storedErr, anchorErr)
+	}
+	if stored == anchored {
+		t.Fatalf("stored identity present = %t, hardware anchor present = %t", stored, anchored)
+	}
+}
+
+func TestRebindPinsHardwareBeforeRetiringStoredIdentity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "identity")
+	old := testSecret(t)
+	seed := old.Bytes()
+	if err := os.WriteFile(path, seed[:], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	current := hardwareIdentity{secret: testSecret(t)}
+
+	was, kept, err := rebindHardware(path, current)
+	if err != nil {
+		t.Fatalf("rebindHardware(): %v", err)
+	}
+	if was != old.Public().EndpointID() || kept != path+".was" {
+		t.Fatalf("rebind returned %s, %s", Brief(was), kept)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("stored identity remains: %v", err)
+	}
+	retired, exists, err := readIdentity(kept)
+	if err != nil || !exists || retired.Public().EndpointID() != was {
+		t.Fatalf("retired identity = %s, %t, %v", Brief(retired.Public().EndpointID()), exists, err)
+	}
+	anchored, exists, err := readHardware(path + ".hardware")
+	if err != nil || !exists || anchored != current.secret.Public().EndpointID() {
+		t.Fatalf("hardware anchor = %s, %t, %v", Brief(anchored), exists, err)
+	}
+}
+
+func TestRebindPreservesAnExistingRecoveryIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity")
+	old := testSecret(t)
+	seed := old.Bytes()
+	if err := os.WriteFile(path, seed[:], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".was", []byte("recovery"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := rebindHardware(path, hardwareIdentity{secret: testSecret(t)}); err == nil || !strings.Contains(err.Error(), "recovery identity") {
+		t.Fatalf("rebind with recovery identity = %v", err)
+	}
+	if raw, err := os.ReadFile(path + ".was"); err != nil || string(raw) != "recovery" {
+		t.Fatalf("recovery identity = %q, %v", raw, err)
+	}
+	stored, exists, err := readIdentity(path)
+	if err != nil || !exists || stored.Public().EndpointID() != old.Public().EndpointID() {
+		t.Fatalf("stored identity changed: %t, %v", exists, err)
+	}
+	if _, err := os.Stat(path + ".hardware"); !os.IsNotExist(err) {
+		t.Fatalf("hardware anchor was changed before refusal: %v", err)
 	}
 }
 

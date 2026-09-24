@@ -19,7 +19,7 @@ func catching(t *testing.T, m ns.Mount, met func(Meeting) error) net.Conn {
 	t.Helper()
 
 	caller, server := net.Pipe()
-	t.Cleanup(func() { caller.Close() })
+	t.Cleanup(func() { _ = caller.Close() })
 
 	table := ns.NewTable()
 	if err := table.Add(m); err != nil {
@@ -27,7 +27,7 @@ func catching(t *testing.T, m ns.Mount, met func(Meeting) error) net.Conn {
 	}
 
 	go func() {
-		defer server.Close()
+		defer func() { _ = server.Close() }()
 		_ = Handle(t.Context(), stream{server}, who(4), Policy{
 			Mounts:     table,
 			Archetypes: arch.NewRegistry(),

@@ -67,6 +67,7 @@ func runServe(parent context.Context, quiet bool) error {
 	if err != nil {
 		return err
 	}
+	defer cfg.Close()
 	doing.cfg = cfg
 	if _, err := cfg.Grants(); err != nil {
 		return err
@@ -84,7 +85,6 @@ func runServe(parent context.Context, quiet bool) error {
 	}
 	// Settings take effect before the endpoint starts, because the name is read while it comes up.
 	cfg.Apply()
-	defer cfg.Close()
 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -93,7 +93,20 @@ func runServe(parent context.Context, quiet bool) error {
 	if err != nil {
 		return err
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
+	if !n.Own() {
+		return fmt.Errorf("cannot serve: %s", n.Trouble())
+	}
+
+	local, err := openLocalServer(ctx)
+	if err != nil {
+		return fmt.Errorf("starting the local control socket: %w", err)
+	}
+	defer func() {
+		if err := local.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "drop: closing the local control socket: %v\n", err)
+		}
+	}()
 
 	startRendezvous(ctx, n)
 
@@ -108,6 +121,7 @@ func runServe(parent context.Context, quiet bool) error {
 	defer held.Close()
 
 	go keepConnected(ctx, held, pinned)
+	go keepBadged(ctx, held)
 	go backlog(ctx, pinned, held, cfg.Mounts)
 
 	// What an archetype calls when something in one of its namespaces moves. Set here rather than
@@ -119,8 +133,8 @@ func runServe(parent context.Context, quiet bool) error {
 	// And the archetypes that have something to do when nobody has opened anything: a note is a
 	// file somebody saves in their own editor, and a shared folder is a directory somebody saves
 	// into. Noticing that is a timer of its own.
-	doing.noting().Watch(ctx, cfg.Mounts)
-	doing.filing().Watch(ctx, cfg.Mounts)
+	notesStopped := doing.noting().Watch(ctx, cfg.Mounts)
+	filesStopped := doing.filing().Watch(ctx, cfg.Mounts)
 
 	// A cast feeds this node over a local socket rather than standing up a second one, so a
 	// terminal can be shared while the daemon is running.
@@ -128,7 +142,7 @@ func runServe(parent context.Context, quiet bool) error {
 	// A handoff is put up the same way: mounted while somebody is waiting for a file, and gone
 	// again the moment they are not.
 	shares := newShareHost(cfg.Mounts, known)
-	doing.took = shares.took
+	doing.completed = shares.finished
 	doing.shown = func(path string) (*cast.Caster, bool) {
 		if path != CastPath {
 			return nil, false
@@ -139,9 +153,13 @@ func runServe(parent context.Context, quiet bool) error {
 	// held up for as long as the command that asked for it is connected.
 	put := newMountHost(cfg.Mounts, known)
 	offers := newPairHost(n)
+	// And an interface open beside this hears what lands here, so its screen keeps up.
+	rung := newBell()
+	doing.noticed = rung.ring
 	go func() {
-		if err := hostLocal(ctx, casts, shares, put, offers, held); err != nil {
-			fmt.Fprintf(os.Stderr, "drop: casts unavailable: %v\n", err)
+		h := hosts{casts: casts, shares: shares, put: put, offers: offers, held: held, rung: rung, lan: lan}
+		if err := hostLocal(ctx, local, h); err != nil {
+			fmt.Fprintf(os.Stderr, "drop: local control unavailable: %v\n", err)
 		}
 	}()
 
@@ -170,51 +188,44 @@ func runServe(parent context.Context, quiet bool) error {
 	// its queue only ever emptied in one direction.
 	answer := map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
-			_ = pinned.Refresh()
-
-			// Which path this session was for, so an ephemeral mount learns when the transfer it
-			// was put up for is over. Nothing is asked of a caller that was turned away.
-			asked, watched := "", policy
-			watched.Allow = func(from node.ID, open proto.Opening) (bool, string) {
-				allowed, why := policy.Allow(from, open)
-				if allowed {
-					asked = open.Path
-				}
-				return allowed, why
+			defer func() { _ = s.Close() }()
+			if err := pinned.Refresh(); err != nil {
+				fmt.Fprintf(os.Stderr, "drop: refreshing the address book: %v\n", err)
+				return
 			}
 
-			if err := proto.Handle(ctx, s, from, watched); err != nil {
+			if err := proto.Handle(ctx, s, from, policy); err != nil {
 				fmt.Fprintf(os.Stderr, "drop: %v\n", err)
 			}
-			shares.finished(asked)
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
-			_ = pinned.Refresh()
+			defer func() { _ = s.Close() }()
+			if err := pinned.Refresh(); err != nil {
+				fmt.Fprintf(os.Stderr, "drop: refreshing the address book: %v\n", err)
+				return
+			}
 			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
 				return greeting(pinned, cfg.Mounts, known, from, badge)
 			}, moving(pinned, func(said string) { log.Printf("%s", said) }))
 		},
+		node.ALPNManage: managing(pinned, known),
 		// Pairing is answered by whoever holds the address, which is this. A separate `drop peer pair`
 		// process on this machine asks for a code to be shown; it cannot answer for the node.
 		node.ALPNPair: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 
 			code, _ := offers.asking()
 			if code == "" {
 				return
 			}
 
-			p, err := proto.AnswerPairing(s, n.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(n)))
-			if err != nil {
-				return
-			}
-			if !hmac.Equal(p.Proof, codeProof(code, from, n.ID())) {
-				fmt.Fprintf(os.Stderr, "drop: %s tried to pair without the code\n", node.Brief(from))
-				return
-			}
-			offers.answered(p)
+			_, _ = proto.AnswerPairing(s, n.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(n)), func(p proto.Pairing) error {
+				if !hmac.Equal(p.Proof, codeProof(code, from, n.ID())) {
+					fmt.Fprintf(os.Stderr, "drop: %s tried to pair without the code\n", node.Brief(from))
+					return errNotTheCode
+				}
+				return offers.answered(p)
+			})
 		},
 	}
 
@@ -229,7 +240,10 @@ func runServe(parent context.Context, quiet bool) error {
 	pushing := func(from node.ID) {
 		// Somebody just opened a connection to us. Whatever is waiting for them can go now, over
 		// the connection they are holding, rather than waiting for a dial that may never work.
-		_ = pinned.Refresh()
+		if err := pinned.Refresh(); err != nil {
+			trace(fmt.Sprintf("refreshing the address book: %v", err))
+			return
+		}
 
 		entry, known := pinned.ByID(from)
 		if !known || !entry.Paired() {
@@ -249,6 +263,8 @@ func runServe(parent context.Context, quiet bool) error {
 		select {
 		case <-ctx.Done():
 			fmt.Println("\nstopping")
+			<-notesStopped
+			<-filesStopped
 			return nil
 		case <-report.C:
 			if quiet {
@@ -283,16 +299,6 @@ func describe(cfg *conf.Config, known *arch.Registry, n *node.Node, skipped []ma
 		fmt.Println("  findable from other networks")
 	} else {
 		fmt.Println("  local networks only  (drop.rendezvous = true to be findable elsewhere)")
-	}
-
-	// A second drop on this machine already has the port this identity is reached at. This one can
-	// still ask questions, but nothing dialling the identity arrives here — it arrives there, which
-	// looks from the outside like this node answering with whatever that one happens to be running.
-	if !n.Own() {
-		fmt.Println()
-		fmt.Println("  ✗ another drop on this machine holds this identity's port")
-		fmt.Println("    nothing that dials this device will reach this process.")
-		fmt.Println("    stop the other one first:  pkill drop")
 	}
 
 	fmt.Println("\nready; ctrl-c to stop")
@@ -334,8 +340,12 @@ func backlog(ctx context.Context, pinned *book.Book, held *dial.Kept, mounts *ns
 		}
 
 		// Re-read first: a device paired since this started has a conversation too.
-		_ = pinned.Refresh()
+		if err := pinned.Refresh(); err != nil {
+			trace(fmt.Sprintf("refreshing the address book: %v", err))
+			continue
+		}
 
+		over := kept{held: held}
 		for _, entry := range pinned.Paired() {
 			select {
 			case <-ctx.Done():
@@ -343,14 +353,9 @@ func backlog(ctx context.Context, pinned *book.Book, held *dial.Kept, mounts *ns
 			default:
 			}
 
-			// A connection first, whether or not there is anything to send. This device may be
-			// one nothing can dial, and then the connection it opens is the only way anybody has
-			// of reaching it — including to hand it what they have been holding.
-			if err := held.Reach(ctx, entry, node.ALPNSession); err != nil {
+			if err := pushHeldTo(ctx, over, entry, mounts, pinned); err != nil {
 				trace(fmt.Sprintf("reaching %s: %v", entry.Name, err))
 			}
-
-			pushTo(ctx, kept{held: held}, entry, mounts, pinned)
 		}
 	}
 }

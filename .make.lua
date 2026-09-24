@@ -267,14 +267,14 @@ make.recipe{
 make.recipe{
   name = "fmt",
   desc = "format the source",
-  run = function() sh.gofmt("-w", "-s", "src") end,
+  run = function() sh.gofmt("-w", "-s", "src", "apps") end,
 }
 
 make.recipe{
   name = "fmt-check",
   desc = "fail if anything is unformatted",
   run = function()
-    local listed = oslo.run{ "gofmt", "-l", "-s", "src", capture = true }
+    local listed = oslo.run{ "gofmt", "-l", "-s", "src", "apps", capture = true }
     assert(listed.ok, "gofmt could not read the source")
     local unformatted = (listed.out or ""):gsub("%s+$", "")
     assert(unformatted == "", "gofmt needed on: " .. unformatted:gsub("\n", " "))
@@ -320,6 +320,172 @@ make.recipe{
     local dest = PREFIX .. "/bin/" .. NAME
     sh.rm("-f", dest)
     print("removed " .. dest)
+  end,
+}
+
+---------------------------------------------------------------------------- android
+
+local ANDROID = "apps/android"
+local AAR = ANDROID .. "/libs/mobile.aar"
+local APK = ANDROID .. "/app/build/outputs/apk/release/app-release.apk"
+
+-- Every Go file, because the AAR carries the whole core and not just the binding.
+local MOBILE = {
+  "apps/android/mobile/*.go",
+  "src/**/*.go",
+  "src/**/**/*.go",
+  "go.mod",
+  "go.sum",
+}
+
+-- Whether the Android SDK is here. The recipes below need the android shell, and saying so beats
+-- a gradle error forty lines deep.
+local function androidReady()
+  return os.getenv("ANDROID_HOME") ~= nil
+end
+
+make.recipe{
+  name = "aar",
+  desc = "the Go core as an Android library",
+  inputs = MOBILE,
+  outputs = { AAR },
+  stale = "content",
+  run = function()
+    assert(androidReady(),
+           "no Android SDK in this shell; enter it with `nix develop .#android`")
+
+    oslo.env.set("CGO_ENABLED", "1")
+
+    -- gomobile builds in a work tree of its own, where stamping the commit fails rather than
+    -- being merely absent. It passes no such flag through, so the go tool is told directly.
+    oslo.env.set("GOFLAGS", "-buildvcs=false")
+
+    sh.mkdir("-p", ANDROID .. "/libs")
+
+    assert(oslo.run{ "gomobile", "init" }.ok, "gomobile init failed")
+    assert(oslo.run{
+      "gomobile", "bind",
+      -- amd64 is for the emulator, which is x86_64 so KVM can carry it. It costs about ten
+      -- megabytes in the APK and is what makes the app testable without a phone.
+      "-target", "android/arm64,android/arm,android/amd64",
+      "-androidapi", "26",
+      "-trimpath",
+      "-ldflags", "-s -w",
+      "-o", AAR,
+      "./apps/android/mobile",
+    }.ok, "gomobile bind failed")
+
+    print("  aar  " .. AAR)
+  end,
+}
+
+make.recipe{
+  name = "apk",
+  desc = "the Android app, signed and installable",
+  deps = { "aar" },
+  run = function()
+    assert(androidReady(),
+           "no Android SDK in this shell; enter it with `nix develop .#android`")
+
+    assert(oslo.run{
+      "gradle", "--project-dir", ANDROID, "--no-daemon",
+      "-PdropVersion=" .. VERSION,
+      "assembleRelease",
+    }.ok, "gradle assembleRelease failed")
+
+    print("  apk  " .. APK)
+  end,
+}
+
+make.recipe{
+  name = "install-apk",
+  desc = "put the apk on a plugged-in device",
+  deps = { "apk" },
+  run = function()
+    assert(oslo.run{ "sh", "-c", "command -v adb" }.ok,
+           "adb is not here; enter the android shell")
+    oslo.run{ "adb", "install", "-r", APK }
+  end,
+}
+
+
+local AVD = "drop-test"
+
+make.recipe{
+  name = "emulator",
+  desc = "start an emulator to run the app on",
+  run = function()
+    assert(androidReady(),
+           "no Android SDK in this shell; enter it with `nix develop .#android`")
+
+    local home = os.getenv("HOME") .. "/.android/avd"
+    local made = oslo.run{ "sh", "-c", "test -d " .. home .. "/" .. AVD .. ".avd", capture = true }
+
+    if not made.ok then
+      print("making the " .. AVD .. " device")
+      assert(oslo.run{
+        "sh", "-c",
+        "echo no | avdmanager create avd -n " .. AVD ..
+        " -k 'system-images;android-35;google_apis;x86_64' --force",
+      }.ok, "could not make the avd")
+    end
+
+    -- No window and no audio: this is for running the app, not for looking at it. The console is
+    -- how a test drives it, and logcat is how it reports.
+    oslo.run{
+      "sh", "-c",
+      "emulator -avd " .. AVD .. " -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect &",
+    }
+    print("  waiting for it to come up")
+    assert(oslo.run{ "adb", "wait-for-device" }.ok, "the emulator never arrived")
+    oslo.run{ "sh", "-c", "adb shell 'while [ \"$(getprop sys.boot_completed)\" != 1 ]; do sleep 2; done'" }
+    print("  ready; `make install-apk` puts the app on it")
+  end,
+}
+
+-- The display a window should open on, found when the command runs rather than when the shell was
+-- entered: a compositor restart, or a shell opened over ssh, leaves the inherited variables pointing
+-- at a socket that is gone. Wayland when there is one, X otherwise; $_dr_backend says which, for the
+-- program to be told. The names are private because DISPLAY and friends can be readonly.
+local function onDisplay(cmd)
+  return [[
+_dr_runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+_dr_wl=""
+if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -S "$_dr_runtime/$WAYLAND_DISPLAY" ]; then
+  _dr_wl="$WAYLAND_DISPLAY"
+elif [ -S "$_dr_runtime/wayland-0" ]; then
+  _dr_wl="wayland-0"
+else
+  _dr_wl=$(ls -t "$_dr_runtime"/wayland-* 2>/dev/null | grep -v '\.lock$' | head -n1 | xargs -r basename)
+fi
+export XDG_RUNTIME_DIR="$_dr_runtime"
+if [ -n "$_dr_wl" ]; then
+  _dr_backend=wayland
+  export WAYLAND_DISPLAY="$_dr_wl"
+  unset DISPLAY
+else
+  _dr_backend=x11
+  export DISPLAY="${DISPLAY:-:0}"
+  unset WAYLAND_DISPLAY
+fi
+]] .. cmd
+end
+
+make.recipe{
+  name = "screen",
+  desc = "a window onto the emulator or a plugged-in phone",
+  run = function()
+    assert(oslo.run{ "sh", "-c", "command -v scrcpy && command -v nixGL" }.ok,
+           "scrcpy is not here; it is in the default shell, `nix develop`")
+    assert(oslo.run{ "sh", "-c", "adb get-state" }.ok,
+           "no device: `make emulator`, or plug a phone in")
+
+    -- scrcpy is built against the store's SDL and mesa, which cannot drive the host's GPU on
+    -- their own; nixGL puts the host driver under it. The emulator runs with no audio, so there
+    -- is none to forward.
+    oslo.run{ "sh", "-c", onDisplay(
+      "SDL_VIDEODRIVER=$_dr_backend nixGL scrcpy --window-title drop --stay-awake --no-audio"
+    ) }
   end,
 }
 

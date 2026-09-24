@@ -2,10 +2,12 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -101,7 +103,7 @@ func TestASecondNodeSaysThePortIsTaken(t *testing.T) {
 	if err != nil {
 		t.Skip("no sockets here")
 	}
-	defer daemon.Close()
+	defer func() { _ = daemon.Close() }()
 
 	port := daemon.LocalAddr().(*net.UDPAddr).Port
 	t.Setenv("DROP_PORT", strconv.Itoa(port))
@@ -117,6 +119,65 @@ func TestASecondNodeSaysThePortIsTaken(t *testing.T) {
 	}
 	if !strings.Contains(wrong, strconv.Itoa(port)) {
 		t.Errorf("it did not name the port that was taken: %q", wrong)
+	}
+}
+
+func TestOnlyAPortConflictCanBorrow(t *testing.T) {
+	if !portConflict(fmt.Errorf("binding: %w", syscall.EADDRINUSE)) {
+		t.Fatal("a wrapped port conflict was not recognised")
+	}
+	if portConflict(fmt.Errorf("binding: %w", syscall.EACCES)) {
+		t.Fatal("a permission failure was treated as a port conflict")
+	}
+}
+
+func TestAConfiguredPortMustBeValid(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	was := Rendezvous()
+	SetRendezvous(false)
+	t.Cleanup(func() { SetRendezvous(was) })
+
+	for _, invalid := range []string{"not-a-port", "-1", "65536"} {
+		t.Setenv("DROP_PORT", invalid)
+		n, err := Start(t.Context())
+		if n != nil {
+			_ = n.Close()
+			t.Errorf("DROP_PORT=%q started a node", invalid)
+		}
+		if err == nil || !strings.Contains(err.Error(), "DROP_PORT") {
+			t.Errorf("DROP_PORT=%q returned %v", invalid, err)
+		}
+	}
+}
+
+func TestCustomRelaysAreValidated(t *testing.T) {
+	t.Setenv("DROP_RELAYS", "")
+	SetRelays([]string{"/ip4/192.0.2.1/tcp/443"})
+	t.Cleanup(func() { SetRelays(nil) })
+
+	if _, err := relayMode(); err == nil {
+		t.Fatal("a relay without a URL host was accepted")
+	}
+
+	SetRelays([]string{"https://relay.example./"})
+	mode, err := relayMode()
+	if err != nil {
+		t.Fatalf("a valid relay was refused: %v", err)
+	}
+	if mode.Map().Len() != 1 {
+		t.Fatalf("custom relay map holds %d entries", mode.Map().Len())
+	}
+}
+
+func TestRelayEnvironmentOverridesConfig(t *testing.T) {
+	SetRelays([]string{"https://configured.example./"})
+	t.Cleanup(func() { SetRelays(nil) })
+	t.Setenv("DROP_RELAYS", "https://one.example./ https://two.example./")
+
+	got := configuredRelays()
+	if len(got) != 2 || got[0] != "https://one.example./" || got[1] != "https://two.example./" {
+		t.Fatalf("configured relays = %v", got)
 	}
 }
 
@@ -276,7 +337,7 @@ func started(t *testing.T) *Node {
 	if err != nil {
 		t.Fatalf("starting a node: %v", err)
 	}
-	t.Cleanup(func() { n.Close() })
+	t.Cleanup(func() { _ = n.Close() })
 
 	return n
 }

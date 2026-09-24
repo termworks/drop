@@ -2,11 +2,14 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/netaddr"
@@ -19,10 +22,11 @@ const (
 	ALPNSession = "drop/session/1"
 	ALPNHello   = "drop/hello/1"
 	ALPNPair    = "drop/pair/1"
+	ALPNManage  = "drop/manage/1"
 )
 
 // ALPNs is every protocol this node answers.
-var ALPNs = []string{ALPNSession, ALPNHello, ALPNPair}
+var ALPNs = []string{ALPNSession, ALPNHello, ALPNPair, ALPNManage}
 
 // Node is this machine on the drop network.
 type Node struct {
@@ -60,6 +64,18 @@ func (n *Node) Trouble() string {
 
 // Start brings up the endpoint under this node's persisted identity.
 func Start(ctx context.Context) (*Node, error) {
+	port, err := requestedPort()
+	if err != nil {
+		return nil, err
+	}
+	rendezvous := Rendezvous()
+	mode := relay.ModeDisabled()
+	if rendezvous {
+		mode, err = relayMode()
+		if err != nil {
+			return nil, err
+		}
+	}
 	sk, err := Identity()
 	if err != nil {
 		return nil, err
@@ -69,7 +85,7 @@ func Start(ctx context.Context) (*Node, error) {
 	// the next run. With an ephemeral port every restart moves the node and everything that
 	// remembered it is pointing at nothing.
 	opts := []iroh.Option{
-		iroh.WithBindAddr(netip.AddrPortFrom(netip.IPv4Unspecified(), Port())),
+		iroh.WithBindAddr(netip.AddrPortFrom(netip.IPv4Unspecified(), port)),
 		iroh.WithSecretKey(sk),
 		iroh.WithALPNs(ALPNs...),
 	}
@@ -77,8 +93,16 @@ func Start(ctx context.Context) (*Node, error) {
 	// Relays are what carry a connection when neither side can be dialled directly, and the
 	// address published for a rendezvous is a relay address. Off otherwise: a relay is a
 	// third party, and traffic should not start crossing one because a default said so.
-	if Rendezvous() {
-		opts = append(opts, iroh.WithRelayMode(relayMode()), iroh.WithNetReport())
+	if rendezvous {
+		opts = append(opts, iroh.WithRelayMode(mode), iroh.WithNetReport())
+
+		// The relay first, when a dial is handed both. The transport tries its targets one after
+		// another and gives each address the whole handshake timeout, so a public address that
+		// never answers — our own NAT's, for a phone behind it — cost five seconds before the relay
+		// was tried at all. The direct addresses stay candidates, and the connection moves onto
+		// one as soon as it answers. A machine on the same wire is still reached without a relay:
+		// the dial gives its nearby addresses a head start of their own.
+		opts = append(opts, iroh.WithRelayFirstDial())
 
 		// Being able to turn somebody else's id into an address. Costs them nothing and is what
 		// lets a ticket be pasted between two machines that are not on the same wire.
@@ -90,7 +114,7 @@ func Start(ctx context.Context) (*Node, error) {
 	borrowed := false
 
 	ep, err := iroh.Bind(ctx, opts...)
-	if err != nil && Port() != 0 {
+	if err != nil && port != 0 && portConflict(err) {
 		// The preferred port is taken. An address others wrote down will not reach this node
 		// until it is free again, but refusing to start would be worse: everything that does not
 		// depend on a remembered address still works.
@@ -102,7 +126,7 @@ func Start(ctx context.Context) (*Node, error) {
 		return nil, fmt.Errorf("starting the endpoint: %w", err)
 	}
 
-	n := &Node{Endpoint: ep, borrowed: borrowed, wanted: Port()}
+	n := &Node{Endpoint: ep, borrowed: borrowed, wanted: port}
 
 	// Before anything reads Addr(), so the first record written already carries somewhere a peer
 	// on the same wire can dial. Then again on a tick, because a machine moves between networks
@@ -112,6 +136,8 @@ func Start(ctx context.Context) (*Node, error) {
 
 	return n, nil
 }
+
+func portConflict(err error) bool { return errors.Is(err, syscall.EADDRINUSE) }
 
 // ID is this node's address.
 func (n *Node) ID() ID {
@@ -159,37 +185,50 @@ const DefaultPort = 47777
 // Zero is allowed and means "pick any", which is right for a one-off command that nobody has
 // written an address down for.
 func Port() uint16 {
+	port, err := requestedPort()
+	if err != nil {
+		return profilePort()
+	}
+	return port
+}
+
+func requestedPort() (uint16, error) {
 	written := os.Getenv("DROP_PORT")
 	if written == "" {
 		// A profile listens somewhere of its own, or two of them could not be up at once.
-		return profilePort()
+		return profilePort(), nil
 	}
 
 	chosen, err := strconv.ParseUint(written, 10, 16)
 	if err != nil {
-		return profilePort()
+		return 0, fmt.Errorf("DROP_PORT=%q: expected a port from 0 through 65535: %w", written, err)
 	}
-	return uint16(chosen)
+	return uint16(chosen), nil
 }
 
 // relayMode is the configured relays, or the defaults when the config named none.
-func relayMode() relay.Mode {
+func relayMode() (relay.Mode, error) {
 	configured := configuredRelays()
 	if len(configured) == 0 {
-		return relay.ModeDefault()
+		return relay.ModeDefault(), nil
 	}
 
 	urls := make([]netaddr.RelayURL, 0, len(configured))
 	for _, raw := range configured {
 		u, err := netaddr.ParseRelayURL(raw)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "drop: ignoring relay %q: %v\n", raw, err)
-			continue
+			return relay.Mode{}, fmt.Errorf("invalid relay %q: %w", raw, err)
+		}
+		parsed := u.URL()
+		if parsed == nil || parsed.Host == "" {
+			return relay.Mode{}, fmt.Errorf("invalid relay %q: it has no host", raw)
+		}
+		switch strings.ToLower(parsed.Scheme) {
+		case "http", "https", "ws", "wss":
+		default:
+			return relay.Mode{}, fmt.Errorf("invalid relay %q: scheme %q is not supported", raw, parsed.Scheme)
 		}
 		urls = append(urls, u)
 	}
-	if len(urls) == 0 {
-		return relay.ModeDefault()
-	}
-	return relay.ModeCustom(relay.MapFromURLs(urls...))
+	return relay.ModeCustom(relay.MapFromURLs(urls...)), nil
 }

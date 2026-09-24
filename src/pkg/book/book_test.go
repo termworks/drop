@@ -3,6 +3,7 @@ package book
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -67,6 +68,43 @@ func TestPairSurvivesReload(t *testing.T) {
 	}
 }
 
+func TestAddressBookStopsAtItsPeerLimit(t *testing.T) {
+	id := testID(t)
+	raw, err := json.Marshal(map[string]stored{
+		"one": {ID: id.String()},
+		"two": {ID: id.String()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decode(raw, 1); err == nil {
+		t.Fatal("decode() accepted more peers than its limit")
+	}
+}
+
+func TestAddressBookRefusesToSavePastItsPeerLimit(t *testing.T) {
+	config := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", config)
+	file := filepath.Join(config, "drop", "peers.json")
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("kept"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := &Book{entries: make(map[string]Entry, MaxEntries+1)}
+	entry := Entry{ID: testID(t)}
+	for i := range MaxEntries + 1 {
+		b.entries[fmt.Sprintf("peer-%d", i)] = entry
+	}
+	if err := b.Save(); err == nil {
+		t.Fatal("Save() accepted more peers than its limit")
+	}
+	if raw, err := os.ReadFile(file); err != nil || string(raw) != "kept" {
+		t.Fatalf("refused save left %q, %v", raw, err)
+	}
+}
+
 // A pinned peer has a name but no secret, and must not claim to be paired.
 func TestPinIsNotPaired(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -89,6 +127,38 @@ func TestPinIsNotPaired(t *testing.T) {
 	}
 	if len(reloaded.Paired()) != 0 {
 		t.Fatal("Paired() listed an entry that has no secret")
+	}
+}
+
+func TestEntrySlicesAreOwnedByTheBook(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	secret := testSecret(t)
+	wantSecret := append([]byte(nil), secret...)
+	addrs := []string{"192.0.2.1:47777"}
+	b, _ := Load()
+	b.Pair("laptop", testID(t), secret, addrs...)
+
+	secret[0] ^= 0xff
+	addrs[0] = "192.0.2.2:47777"
+	entry, _ := b.Lookup("laptop")
+	if !bytes.Equal(entry.Secret, wantSecret) || entry.Addrs[0] != "192.0.2.1:47777" {
+		t.Fatalf("Pair retained caller-owned slices: %+v", entry)
+	}
+
+	entry.Secret[0] ^= 0xff
+	entry.Addrs[0] = "192.0.2.3:47777"
+	again, _ := b.Lookup("laptop")
+	if !bytes.Equal(again.Secret, wantSecret) || again.Addrs[0] != "192.0.2.1:47777" {
+		t.Fatalf("Lookup exposed book-owned slices: %+v", again)
+	}
+
+	all := b.All()
+	all[0].Secret[0] ^= 0xff
+	all[0].Addrs[0] = "192.0.2.4:47777"
+	again, _ = b.ByID(again.ID)
+	if !bytes.Equal(again.Secret, wantSecret) || again.Addrs[0] != "192.0.2.1:47777" {
+		t.Fatalf("All or ByID exposed book-owned slices: %+v", again)
 	}
 }
 
@@ -175,6 +245,172 @@ func TestAPairingByAnotherProcessIsNoticed(t *testing.T) {
 	}
 	if _, ok := serving.ByID(beta); !ok {
 		t.Fatal("a pairing made by another process was still not seen after a refresh")
+	}
+}
+
+func TestRefreshNoticesAReplacementWithMatchingMetadata(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	initial, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.Pair("alpha", testID(t), testSecret(t))
+	if err := initial.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	serving, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := held.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	original, err := held.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed.Remove("alpha")
+	changed.Pair("bravo", testID(t), testSecret(t))
+	if err := changed.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(file, original.ModTime(), original.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.Size() != original.Size() || !replacement.ModTime().Equal(original.ModTime()) {
+		t.Fatalf("replacement metadata = (%d, %s), want (%d, %s)", replacement.Size(), replacement.ModTime(), original.Size(), original.ModTime())
+	}
+	if os.SameFile(original, replacement) {
+		t.Fatal("replacement reused the original file identity")
+	}
+
+	if err := serving.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := serving.Lookup("alpha"); ok {
+		t.Fatal("replaced entry remains after refresh")
+	}
+	if _, ok := serving.Lookup("bravo"); !ok {
+		t.Fatal("replacement entry is missing after refresh")
+	}
+}
+
+func TestRefreshNoticesAddressBookRemoval(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	written, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	written.Pair("alpha", testID(t), testSecret(t))
+	if err := written.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	serving, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := serving.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := serving.Lookup("alpha"); ok {
+		t.Fatal("removed address book remains loaded after refresh")
+	}
+}
+
+func TestAFailedChangeDoesNotRemainInMemory(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	b, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Pair("alpha", testID(t), testSecret(t))
+	if err := b.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(file)
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	err = b.Change(func() (bool, error) {
+		b.Pair("beta", testID(t), testSecret(t))
+		if err := os.Chmod(dir, 0o500); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
+	if chmodErr := os.Chmod(dir, 0o700); chmodErr != nil {
+		t.Fatal(chmodErr)
+	}
+	if err == nil {
+		t.Fatal("the address book was written in a read-only directory")
+	}
+	if _, ok := b.Lookup("beta"); ok {
+		t.Fatal("a failed change remained live in memory")
+	}
+	if _, ok := b.Lookup("alpha"); !ok {
+		t.Fatal("restoring a failed change lost the prior entry")
+	}
+
+	onDisk, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := onDisk.Lookup("beta"); ok {
+		t.Fatal("a failed change reached the disk")
+	}
+}
+
+func TestAnUncommittedChangeDoesNotRemainInMemory(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	b, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Change(func() (bool, error) {
+		b.Pair("beta", testID(t), testSecret(t))
+		return false, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := b.Lookup("beta"); ok {
+		t.Fatal("a change reported as uncommitted remained live in memory")
 	}
 }
 

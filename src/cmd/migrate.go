@@ -163,18 +163,18 @@ func carryHandover() {
 	if err != nil {
 		return
 	}
-	raw, err := os.ReadFile(at)
+	raw, err := keep.ReadFile(at, keep.MaxState)
 	if err != nil {
 		return
 	}
 
 	signed, sig, err := unpacked(strings.TrimSpace(string(raw)))
 	if err != nil {
-		os.Remove(at)
+		_ = keep.Remove(at)
 		return
 	}
 	if _, err := plate.Took(signed, sig, time.Now()); err != nil {
-		os.Remove(at)
+		_ = keep.Remove(at)
 		return
 	}
 	proto.Moving(signed, sig)

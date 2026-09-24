@@ -2,8 +2,11 @@ package proto
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -70,6 +73,33 @@ func TestPairMsgRoundTripsWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestPairMsgWritesOnlyWhatItsReaderAccepts(t *testing.T) {
+	addrs := make([]string, maxPairAddrs+10)
+	for i := range addrs {
+		addrs[i] = "192.168.1.1:47777"
+	}
+	want := pairMsg{From: "who", Name: "n", Addrs: addrs, Nonce: bytes.Repeat([]byte{1}, nonceBytes)}
+
+	got, err := decodePairMsg(want.encode())
+	if err != nil {
+		t.Fatalf("decodePairMsg(): %v", err)
+	}
+	if len(got.Addrs) != maxPairAddrs {
+		t.Fatalf("pairing message has %d addresses, want %d", len(got.Addrs), maxPairAddrs)
+	}
+}
+
+func TestPairingRefusesWrongFrameKinds(t *testing.T) {
+	var framed bytes.Buffer
+	message := pairMsg{From: "who", Name: "n", Nonce: bytes.Repeat([]byte{1}, nonceBytes)}
+	if err := wire.NewConn(&framed).WriteFrame(wire.KindItem, message.encode()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readPairMsg(wire.NewConn(&framed)); err == nil {
+		t.Fatal("readPairMsg() accepted a non-pairing frame")
+	}
+}
+
 // Both sides must derive the same secret whichever direction they see the exchange from.
 func TestDeriveSecretIsSymmetric(t *testing.T) {
 	a, b := testEndpointID(t, 1), testEndpointID(t, 2)
@@ -102,8 +132,8 @@ func TestAPeerClaimingSomebodyElsesIdIsRefused(t *testing.T) {
 	host, caller, victim := testEndpointID(t, 1), testEndpointID(t, 2), testEndpointID(t, 3)
 
 	ours, theirs := net.Pipe()
-	defer ours.Close()
-	defer theirs.Close()
+	defer func() { _ = ours.Close() }()
+	defer func() { _ = theirs.Close() }()
 
 	go func() {
 		conn := wire.NewConn(theirs)
@@ -112,7 +142,7 @@ func TestAPeerClaimingSomebodyElsesIdIsRefused(t *testing.T) {
 		_, _, _ = conn.ReadFrame()
 	}()
 
-	if _, err := AnswerPairing(ours, host, caller, "host", nil); err == nil {
+	if _, err := AnswerPairing(ours, host, caller, "host", nil, nil); err == nil {
 		t.Fatal("a device paired under an id it does not hold")
 	}
 }
@@ -123,8 +153,8 @@ func TestPairingKeepsTheIdTheTransportProved(t *testing.T) {
 	a, b := testEndpointID(t, 1), testEndpointID(t, 2)
 
 	one, two := net.Pipe()
-	defer one.Close()
-	defer two.Close()
+	defer func() { _ = one.Close() }()
+	defer func() { _ = two.Close() }()
 
 	type answer struct {
 		p   Pairing
@@ -132,7 +162,7 @@ func TestPairingKeepsTheIdTheTransportProved(t *testing.T) {
 	}
 	answered := make(chan answer, 1)
 	go func() {
-		p, err := AnswerPairing(two, b, a, "host", nil)
+		p, err := AnswerPairing(two, b, a, "host", nil, nil)
 		answered <- answer{p, err}
 	}()
 
@@ -208,7 +238,7 @@ func TestAPairingRequestThatSaysNothingIsNotHeldForever(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := AnswerPairing(silent, host, caller, "host", nil)
+		_, err := AnswerPairing(silent, host, caller, "host", nil, nil)
 		done <- err
 	}()
 
@@ -219,5 +249,106 @@ func TestAPairingRequestThatSaysNothingIsNotHeldForever(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("AnswerPairing is still reading a stream that will never say anything")
+	}
+}
+
+func TestAPairingResponseThatSaysNothingIsNotHeldForever(t *testing.T) {
+	host, caller := testEndpointID(t, 1), testEndpointID(t, 2)
+	silent := &deadlined{set: make(chan struct{})}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Pair(silent, caller, host, "caller", nil, nil)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a pairing response that said nothing was accepted")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Pair is still reading a stream that will never say anything")
+	}
+}
+
+func TestAPairingAnswerThatCannotBeWrittenIsNotHeldForever(t *testing.T) {
+	host, caller := testEndpointID(t, 1), testEndpointID(t, 2)
+	message := pairMsg{From: caller.String(), Name: "caller", Nonce: make([]byte, nonceBytes)}
+	var framed bytes.Buffer
+	if err := wire.NewConn(&framed).WriteFrame(wire.KindOpen, message.encode()); err != nil {
+		t.Fatal(err)
+	}
+	blocked := &writeDeadlined{read: &framed, set: make(chan struct{})}
+	t.Cleanup(func() { _ = blocked.Close() })
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := AnswerPairing(blocked, host, caller, "host", nil, nil)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a blocked pairing answer was written")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AnswerPairing is still writing to a peer that reads nothing")
+	}
+}
+
+// A pairing the offering side refuses has to fail on the joining side as well. Answering first and
+// deciding afterwards left the joiner with an address book entry for somebody who had thrown the
+// attempt away, and every message it sent after that was refused as a stranger's.
+func TestARefusedPairingFailsOnBothSides(t *testing.T) {
+	a, b := testEndpointID(t, 1), testEndpointID(t, 2)
+
+	one, two := net.Pipe()
+	defer func() { _ = one.Close() }()
+	defer func() { _ = two.Close() }()
+
+	refused := make(chan error, 1)
+	go func() {
+		_, err := AnswerPairing(two, b, a, "host", nil, func(Pairing) error {
+			return errors.New("that is not the code being shown")
+		})
+		refused <- err
+	}()
+
+	_, err := Pair(one, a, b, "laptop", []byte("wrong"), nil)
+	if err == nil || !strings.Contains(err.Error(), "not the code being shown") {
+		t.Fatalf("the joining side was not told it was refused: %v", err)
+	}
+	if err := <-refused; err == nil {
+		t.Fatal("the offering side reported a refused pairing as a success")
+	}
+}
+
+// What the offering side accepts is handed over before the far end hears it paired, so it can be
+// written down first.
+func TestAcceptSeesThePairingBeforeTheFarEndDoes(t *testing.T) {
+	a, b := testEndpointID(t, 1), testEndpointID(t, 2)
+
+	one, two := net.Pipe()
+	defer func() { _ = one.Close() }()
+	defer func() { _ = two.Close() }()
+
+	var accepted atomic.Bool
+	go func() {
+		_, _ = AnswerPairing(two, b, a, "host", nil, func(p Pairing) error {
+			if p.Peer != a {
+				return fmt.Errorf("accepting a pairing with %s", p.Peer)
+			}
+			accepted.Store(true)
+			return nil
+		})
+	}()
+
+	if _, err := Pair(one, a, b, "laptop", []byte("proof"), nil); err != nil {
+		t.Fatalf("Pair(): %v", err)
+	}
+	if !accepted.Load() {
+		t.Fatal("the joining side finished before the offering side had accepted")
 	}
 }

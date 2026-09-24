@@ -109,10 +109,22 @@ func TestPumpReportsAStreamThatDiesMidFrame(t *testing.T) {
 	}
 }
 
+func TestPumpRefusesAnEmptyDataFrame(t *testing.T) {
+	var buf bytes.Buffer
+	if err := wireConn(&buf).WriteFrame(wire.KindData, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	d := &Duplex{conn: wire.NewConn(readWriter{&buf, io.Discard})}
+	if err := d.Pump(io.Discard); err == nil {
+		t.Fatal("Pump() accepted an empty data frame")
+	}
+}
+
 // A terminal's shape is somebody else's number, and a grid is kept cell by cell at both ends of
 // this. A screen nobody could be looking at is not passed on as one.
 func TestAnEnormousResizeIsHeldToAScreen(t *testing.T) {
-	cols, rows, told := resized(t, 65535, 65535)
+	cols, rows, told := resized(t, 1<<20, 1<<20)
 
 	if !told {
 		t.Fatal("a resize was dropped entirely")
@@ -130,8 +142,24 @@ func TestAnEmptyResizeIsNotPassedOn(t *testing.T) {
 	}
 }
 
+func TestResizeDecoderRefusesValuesOutsideItsType(t *testing.T) {
+	w := wire.NewWriter()
+	w.Uint(uint64(^uint16(0)) + 1)
+	w.Uint(1)
+	if _, err := decodeResize(w.Body()); err == nil {
+		t.Fatal("decodeResize() accepted a column count wider than uint16")
+	}
+}
+
+func TestResizeDecoderRefusesTrailingBytes(t *testing.T) {
+	body := append(Resize{Cols: 80, Rows: 24}.encode(), 0)
+	if _, err := decodeResize(body); err == nil {
+		t.Fatal("decodeResize() accepted trailing bytes")
+	}
+}
+
 // resized sends one shape and reports what the far end was told.
-func resized(t *testing.T, cols, rows uint16) (uint16, uint16, bool) {
+func resized(t *testing.T, cols, rows int) (uint16, uint16, bool) {
 	t.Helper()
 
 	var buf bytes.Buffer
@@ -212,4 +240,36 @@ func (q *quiet) SetReadDeadline(t time.Time) error {
 		close(q.wake)
 	}
 	return nil
+}
+
+func (q *quiet) SetWriteDeadline(time.Time) error { return nil }
+
+// Who is on a terminal crosses the wire intact, and a count past any real one is refused rather
+// than believed.
+func TestDuplexCarriesCompany(t *testing.T) {
+	var buf bytes.Buffer
+
+	sender := &Duplex{conn: wireConn(&buf)}
+	if err := sender.Tell(Company{Watching: 3, Own: true}); err != nil {
+		t.Fatalf("Tell(): %v", err)
+	}
+	if err := sender.Close(); err != nil {
+		t.Fatalf("Close(): %v", err)
+	}
+
+	var got Company
+	receiver := &Duplex{conn: wireConn(&buf), OnCompany: func(c Company) { got = c }}
+	if err := receiver.Pump(io.Discard); err != nil {
+		t.Fatalf("Pump(): %v", err)
+	}
+	if got != (Company{Watching: 3, Own: true}) {
+		t.Fatalf("company came through as %+v", got)
+	}
+
+	w := wire.NewWriter()
+	w.Uint(mostWatching + 1)
+	w.Bool(false)
+	if _, err := decodeCompany(w.Body()); err == nil {
+		t.Fatal("an absurd count of watchers was believed")
+	}
 }

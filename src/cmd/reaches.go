@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/dial"
@@ -22,6 +24,21 @@ import (
 // point of holding it; a dialled one is finished with when the stream is.
 type reaches interface {
 	To(ctx context.Context, entry book.Entry, alpn string) (io.Closer, proto.Stream, error)
+}
+
+func stopStreamOnDone(ctx context.Context, s proto.Stream) func() {
+	if ctx == nil || s == nil {
+		return func() {}
+	}
+	stop := context.AfterFunc(ctx, func() {
+		now := time.Now()
+		_ = s.SetReadDeadline(now)
+		if write, ok := s.(interface{ SetWriteDeadline(time.Time) error }); ok {
+			_ = write.SetWriteDeadline(now)
+		}
+		_ = s.Close()
+	})
+	return func() { stop() }
 }
 
 // best is how a command should reach a device: through the node already running when there is one,
@@ -62,6 +79,10 @@ func (k kept) To(ctx context.Context, entry book.Entry, alpn string) (io.Closer,
 	return staysOpen{}, s, nil
 }
 
+func (k kept) Reach(ctx context.Context, entry book.Entry, alpn string) error {
+	return k.held.Reach(ctx, entry, alpn)
+}
+
 // staysOpen is what a held connection hands back in place of itself.
 type staysOpen struct{}
 
@@ -71,9 +92,9 @@ func (staysOpen) Close() error { return nil }
 type borrowed struct{ fallback reaches }
 
 func (b borrowed) To(ctx context.Context, entry book.Entry, alpn string) (io.Closer, proto.Stream, error) {
-	s, err := viaDaemon(entry, alpn)
+	s, err := viaDaemon(ctx, entry, alpn)
 	if err == nil {
-		return s, s, nil
+		return lentDone{s}, s, nil
 	}
 	if !errors.Is(err, errNoDaemon) {
 		// The daemon is there and said no. Dialling around it would take seconds to arrive at the
@@ -82,6 +103,10 @@ func (b borrowed) To(ctx context.Context, entry book.Entry, alpn string) (io.Clo
 	}
 	return b.fallback.To(ctx, entry, alpn)
 }
+
+type lentDone struct{ stream *lent }
+
+func (d lentDone) Close() error { return d.stream.Done() }
 
 // onlyHeld reaches a device only over a connection already open to it, and refuses otherwise.
 //
@@ -103,42 +128,57 @@ type noClose struct{}
 func (noClose) Close() error { return nil }
 
 // viaDaemon opens a stream over the running node's connection to a device.
-func viaDaemon(entry book.Entry, alpn string) (*lent, error) {
+func viaDaemon(ctx context.Context, entry book.Entry, alpn string) (*lent, error) {
 	path, err := castSocket()
 	if err != nil {
 		return nil, errNoDaemon
 	}
 
-	conn, err := net.Dial("unix", path)
+	conn, err := dialLocal(ctx, path)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, errNoDaemon
 	}
 
-	if _, err := fmt.Fprintf(conn, "via %s %s\n", entry.Name, alpn); err != nil {
-		conn.Close()
-		return nil, errNoDaemon
+	if err := writeLocal(conn, "via %s %s\n", entry.Name, alpn); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("asking this node to reach %s: %w", entry.Name, err)
 	}
+	return acceptLent(conn, entry.Name)
+}
 
-	// One line: whether there is a stream on the other side of this socket now.
-	said, err := bufio.NewReader(conn).ReadString('\n')
+func acceptLent(conn net.Conn, name string) (*lent, error) {
+	reading := bufio.NewReader(conn)
+	said, err := readLocalReply(conn, reading)
 	if err != nil {
-		conn.Close()
-		return nil, errNoDaemon
+		_ = conn.Close()
+		// The node is still trying, and the device is what has not answered.
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return nil, fmt.Errorf("%s did not answer", name)
+		}
+		return nil, fmt.Errorf("asking this node to reach %s: %w", name, err)
 	}
 
 	what, why, _ := strings.Cut(strings.TrimSpace(said), " ")
 	if what != "ok" {
-		conn.Close()
-		return nil, fmt.Errorf("reaching %s: %s", entry.Name, why)
+		_ = conn.Close()
+		return nil, fmt.Errorf("reaching %s: %s", name, why)
 	}
-	return &lent{conn}, nil
+	return &lent{Conn: conn, read: reading}, nil
 }
 
 // lent is a stream the daemon is holding on this command's behalf.
 //
 // Close half-closes, the way a real stream does: the far end reads an end of file and its own
 // writes keep working. Done closes the socket, which is what ends the borrowing.
-type lent struct{ net.Conn }
+type lent struct {
+	net.Conn
+	read io.Reader
+}
+
+func (l *lent) Read(p []byte) (int, error) { return l.read.Read(p) }
 
 func (l *lent) Close() error {
 	if half, ok := l.Conn.(interface{ CloseWrite() error }); ok {

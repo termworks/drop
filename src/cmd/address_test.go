@@ -3,6 +3,8 @@ package cmd
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,7 +60,7 @@ func TestAUserWithOneMachineResolvesToIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAddress(): %v", err)
 	}
-	entry, err := resolve(at)
+	entry, err := resolve(t.Context(), at)
 	if err != nil {
 		t.Fatalf("resolve(): %v", err)
 	}
@@ -76,7 +78,7 @@ func TestAUserWithSeveralMachinesIsNotGuessedAt(t *testing.T) {
 		t.Fatalf("ParseAddress(): %v", err)
 	}
 
-	_, err = resolve(at)
+	_, err = resolve(t.Context(), at)
 	if err == nil {
 		t.Fatal("one of two machines was picked silently")
 	}
@@ -84,6 +86,44 @@ func TestAUserWithSeveralMachinesIsNotGuessedAt(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("%q is not named in %q", want, err)
 		}
+	}
+}
+
+func conflictingPersonBook(t *testing.T) *book.Book {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	pinned, err := book.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned.Pair("alice", idFor(24), make([]byte, book.SecretBytes))
+	pinned.Belongs("alice", aliceKey)
+	pinned.Pair("desktop", idFor(25), make([]byte, book.SecretBytes))
+	pinned.Belongs("desktop", aliceKey)
+	pinned.Remove("alice")
+	pinned.Pair("alice", idFor(26), make([]byte, book.SecretBytes))
+	pinned.Belongs("alice", carolKey)
+	if err := pinned.Save(); err != nil {
+		t.Fatal(err)
+	}
+	return pinned
+}
+
+func TestConflictingPersonNamesDoNotResolve(t *testing.T) {
+	pinned := conflictingPersonBook(t)
+
+	at, err := ns.ParseAddress("alice::/chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolve(t.Context(), at); err == nil || !strings.Contains(err.Error(), "more than one person") {
+		t.Fatalf("resolving conflicting people returned %v", err)
+	}
+	theirs, err := machinesOf(pinned, aliceKey)
+	if err != nil || len(theirs) != 1 || theirs[0].Name != "desktop" {
+		t.Fatalf("resolving by user key = %+v, %v", theirs, err)
 	}
 }
 
@@ -95,7 +135,7 @@ func TestAMachineTheBookDoesNotHaveIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAddress(): %v", err)
 	}
-	if _, err := resolve(at); err == nil {
+	if _, err := resolve(t.Context(), at); err == nil {
 		t.Fatal("a machine nobody has heard of resolved")
 	}
 }
@@ -112,7 +152,7 @@ func TestThisMachineIsNotResolvedToAPeer(t *testing.T) {
 		t.Fatal("/chat is not this machine")
 	}
 
-	_, err = resolve(at)
+	_, err = resolve(t.Context(), at)
 	if err == nil {
 		t.Fatal("this machine resolved to an entry in the address book")
 	}
@@ -142,3 +182,36 @@ func TestAFilenameUnderAnAddressIsLeftAlone(t *testing.T) {
 		}
 	}
 }
+
+func TestHeldReplyMustFinishBeforeItNarrowsAnAddress(t *testing.T) {
+	alice, bob := idFor(21), idFor(22)
+	complete := fmt.Sprintf("%s\n%s\n%s\n", alice, bob, heldReplyEnd)
+
+	held, err := readHeldReply(strings.NewReader(complete))
+	if err != nil || !held[alice] || !held[bob] || len(held) != 2 {
+		t.Fatalf("complete reply = %v, %v", held, err)
+	}
+
+	partial := fmt.Sprintf("%s\n", alice)
+	if held, err := readHeldReply(strings.NewReader(partial)); err == nil || held != nil {
+		t.Fatalf("partial reply = %v, %v", held, err)
+	}
+}
+
+func TestHeldReplyRefusesMalformedDevices(t *testing.T) {
+	held, err := readHeldReply(strings.NewReader("not-a-device\n" + heldReplyEnd + "\n"))
+	if err == nil || held != nil {
+		t.Fatalf("malformed reply = %v, %v", held, err)
+	}
+}
+
+func TestHeldReplyReportsReaderFailure(t *testing.T) {
+	held, err := readHeldReply(io.MultiReader(strings.NewReader(idFor(23).String()+"\n"), brokenReader{}))
+	if err == nil || held != nil {
+		t.Fatalf("broken reply = %v, %v", held, err)
+	}
+}
+
+type brokenReader struct{}
+
+func (brokenReader) Read([]byte) (int, error) { return 0, io.ErrClosedPipe }

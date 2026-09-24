@@ -66,7 +66,7 @@ func checkSegment(part string) error {
 		case r >= '0' && r <= '9':
 		case r == '-' || r == '_' || r == '.':
 		default:
-			return fmt.Errorf("%q is not allowed in a path: use lowercase letters, digits, - _ .", string(r))
+			return fmt.Errorf("%q is not allowed in a path: use lowercase letters, digits, dash, underscore, or dot", string(r))
 		}
 	}
 	return nil

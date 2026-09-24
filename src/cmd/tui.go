@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -32,126 +33,36 @@ import (
 	"github.com/bresilla/drop/src/pkg/seen"
 	"github.com/bresilla/drop/src/pkg/shares"
 	"github.com/bresilla/drop/src/pkg/tui"
+	"github.com/bresilla/drop/src/pkg/wire"
 )
 
 func runTUI(parent context.Context) error {
-	pinned, err := book.Load()
-	if err != nil {
-		return err
-	}
-
-	doing := &doings{pinned: pinned}
-	known := doing.serving()
-	defer doing.stop()
-
-	cfg, err := conf.Load(known)
-	if err != nil {
-		return err
-	}
-	if _, err := cfg.Grants(); err != nil {
-		return err
-	}
-	if err := unlock(cfg); err != nil {
-		return err
-	}
-	cfg.Apply()
-	defer cfg.Close()
-
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	n, err := node.Start(ctx)
+	back, down, err := Interface(ctx, Hooks{
+		Trouble: func(text string) { fmt.Fprintf(os.Stderr, "drop: %s\n", text) },
+	})
 	if err != nil {
 		return err
 	}
-	defer n.Close()
+	defer down()
 
-	lan, _ := discovery.StartLAN(ctx, n)
-	startRendezvous(ctx, n)
-
-	// Depth one, and a full channel is left alone: the signal carries nothing, so one pending
-	// knock means the same as ten, and a device that says a great deal at once still redraws once.
-	arriving := make(chan struct{}, 1)
-
-	// What arrives while the interface is open belongs in the conversation the same way it would
-	// with the daemon running, and the screen is nudged so it is drawn as it happens.
-	doing.cfg = cfg
-	doing.noticed = func() { knock(arriving) }
-
-	// One connection per device, kept for as long as the interface is open.
-	held := dial.Hold(n, lan, finder(n))
-	defer held.Close()
-
-	// The interface serves while it is open, so a device that pairs with it can reach it — and
-	// so what arrives lands in a conversation rather than being refused.
-	answer := map[string]func(node.ID, *iroh.Stream){
-		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
-
-			// Re-read before answering, the way the daemon does. Pairing happens while this is
-			// open — from this very interface — and without it a device that just paired stays a
-			// stranger until the interface is restarted, which looks exactly like pairing failing.
-			_ = pinned.Refresh()
-
-			_ = proto.Handle(ctx, s, from, proto.Policy{
-				Mounts:     cfg.Mounts,
-				Archetypes: known,
-				Allow:      accepting(pinned, false),
-				Who:        whoIs(pinned),
-				Moved:      moving(pinned, func(string) {}),
-				Refused:    noting(pinned),
-				Asked:      taking(),
-			})
-		},
-		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
-			_ = pinned.Refresh()
-
-			_ = proto.AnswerHello(s, from, func(badge proto.Badged) proto.Hello {
-				return greeting(pinned, cfg.Mounts, known, from, badge)
-			}, moving(pinned, func(string) {}))
-		},
-	}
-
-	// The same as the daemon: answer whatever a device opens on a connection we made, keep the
-	// ones it opens to us, and push what is waiting the moment it appears. Without this the
-	// interface is only reachable by devices that can be dialled, and every message it sends costs
-	// a handshake instead of a stream.
-	//
-	// A snapshot of its own, never the map the listener is given: the listener adds and removes
-	// protocols while this reads, and a map being written to while it is read takes the program
-	// down. What a connection we dialled carries is a session or a hello, both of which are here.
-	dialled := make(map[string]func(node.ID, *iroh.Stream), len(answer))
-	for alpn, handle := range answer {
-		dialled[alpn] = handle
-	}
-
-	held.Serving(ctx, func(from node.ID, alpn string, s *iroh.Stream) {
-		if handle, ok := dialled[alpn]; ok {
-			handle(from, s)
-		}
-	})
-
-	ears := listenKeeping(ctx, n, answer, held, func(from node.ID) {
-		_ = pinned.Refresh()
-
-		entry, known := pinned.ByID(from)
-		if !known || !entry.Paired() {
-			return
-		}
-		if _, err := deliverOver(ctx, onlyHeld{held: held}, entry, "/chat", "chat"); err == nil {
-			knock(arriving)
-		}
-	})
-
-	go holding(ctx, pinned, held)
-
+	model, shown := tui.Seen(tui.New(back))
 	program := tea.NewProgram(
-		tui.New(&running{node: n, lan: lan, ears: ears, arriving: arriving, held: held, known: known}),
+		model,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 		tea.WithContext(ctx),
 	)
+
+	// Drivable from another terminal, which is `drop tui`. An interface that cannot offer that
+	// still works, so a failure here is said and not fatal.
+	if stop, err := steer(ctx, program, shown); err == nil {
+		defer stop()
+	} else {
+		fmt.Fprintf(os.Stderr, "drop: this interface cannot be driven from elsewhere: %v\n", err)
+	}
 
 	_, err = program.Run()
 	return err
@@ -168,6 +79,54 @@ type running struct {
 	held *dial.Kept
 	// known is what this machine's own namespaces are, for describing them back to itself.
 	known *arch.Registry
+	// put is what puts up a namespace taken up while this runs; nil while the daemon serves.
+	put *mountHost
+	// id is this device, whichever process holds its address.
+	id node.ID
+	// daemon says the daemon holds it, and this has no endpoint of its own: everything that
+	// reaches another device is the daemon reaching it, over the connections it keeps.
+	daemon bool
+}
+
+// open is a stream to a device, and what hands it back once the caller is done with it.
+func (l *running) open(ctx context.Context, to book.Entry, alpn string) (proto.Stream, func(), error) {
+	if l.daemon {
+		s, err := viaDaemon(ctx, to, alpn)
+		if err != nil {
+			return nil, nil, err
+		}
+		return s, func() { _ = s.Done() }, nil
+	}
+	s, err := l.held.To(ctx, to, alpn)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s, func() { _ = s.Close() }, nil
+}
+
+// reaches is how a queue is pushed: over the daemon's connections, or this interface's own.
+func (l *running) reaches() reaches {
+	if l.daemon {
+		return borrowed{fallback: nobody{}}
+	}
+	return kept{held: l.held}
+}
+
+// reaching says whether a connection to a device is open right now.
+func (l *running) reaching(ctx context.Context) func(node.ID) bool {
+	if l.daemon {
+		held := heldHere(ctx)
+		return func(id node.ID) bool { return held[id] }
+	}
+	return l.held.Reaching
+}
+
+// nobody is what a view onto the daemon falls back to when the daemon has gone: it has no endpoint
+// of its own to dial with.
+type nobody struct{}
+
+func (nobody) To(context.Context, book.Entry, string) (io.Closer, proto.Stream, error) {
+	return nil, nil, errors.New("the daemon stopped, and this interface has no way out without it")
 }
 
 // Arrivals is how the interface learns that something landed while it was sitting there.
@@ -188,6 +147,7 @@ func knock(at chan struct{}) {
 // spend a handshake per device per redraw, and a device that answered a moment ago is the useful
 // thing to say anyway.
 func (l *running) Reaching() map[string]bool {
+	reaching := l.reaching(context.Background())
 	pinned, err := book.Load()
 	if err != nil {
 		return nil
@@ -195,7 +155,7 @@ func (l *running) Reaching() map[string]bool {
 
 	out := map[string]bool{}
 	for _, entry := range pinned.All() {
-		if l.held.Reaching(entry.ID) {
+		if reaching(entry.ID) {
 			out[entry.Name] = true
 		}
 	}
@@ -218,24 +178,40 @@ func (l *running) Peers() ([]book.Entry, error) {
 // memory rather than from the device.
 func (l *running) Serves(ctx context.Context, with book.Entry) ([]proto.Served, error) {
 	asked, err := l.askShares(ctx, with)
-	if err == nil {
-		_ = shares.Remember(with.ID, asked)
+	return availableServes(with, asked, err)
+}
+
+type currentServesError struct{ err error }
+
+func (e currentServesError) Error() string     { return e.err.Error() }
+func (e currentServesError) Unwrap() error     { return e.err }
+func (e currentServesError) CurrentData() bool { return true }
+
+func availableServes(with book.Entry, asked []proto.Served, askErr error) ([]proto.Served, error) {
+	if askErr == nil {
+		if err := shares.Remember(with.ID, asked); err != nil {
+			return asked, currentServesError{fmt.Errorf("showing current namespaces from %s, but caching them: %w", with.Name, err)}
+		}
 		return asked, nil
 	}
 
-	remembered, kept := shares.Recall(with.ID)
-	if kept != nil || len(remembered) == 0 {
-		return nil, err
+	remembered, err := shares.Recall(with.ID)
+	if err != nil {
+		return nil, errors.Join(askErr, fmt.Errorf("reading cached namespaces for %s: %w", with.Name, err))
 	}
-	return remembered, err
+	if len(remembered) == 0 {
+		return nil, askErr
+	}
+	return remembered, askErr
 }
 
 func (l *running) askShares(ctx context.Context, with book.Entry) ([]proto.Served, error) {
-	s, err := l.held.To(ctx, with, node.ALPNHello)
+	s, done, err := l.open(ctx, with, node.ALPNHello)
 	if err != nil {
 		return nil, err
 	}
-	defer s.Close()
+	defer done()
+	defer stopStreamOnDone(ctx, s)()
 
 	hello, err := proto.AskHello(s)
 	if err != nil {
@@ -261,7 +237,7 @@ func (l *running) Compose(to book.Entry, body string) error {
 
 // Deliver sends whatever is queued for a device, over the connection this interface is holding.
 func (l *running) Deliver(ctx context.Context, to book.Entry) error {
-	_, err := deliverOver(ctx, kept{held: l.held}, to, "/chat", "chat")
+	_, err := deliverOver(ctx, l.reaches(), to, "/chat", "chat")
 	return err
 }
 
@@ -287,17 +263,15 @@ func (l *running) Waiting(with book.Entry) (map[string]bool, error) {
 // Mine is what this device serves. No network: it is this machine's own config, and asking the
 // wire what this machine shares would be asking somebody else what is in your own pocket.
 func (l *running) Mine() ([]proto.Served, error) {
-	cfg, err := conf.Load(l.known)
+	cfg, err := l.ours()
 	if err != nil {
 		return nil, err
 	}
-	if _, err := cfg.Grants(); err != nil {
-		return nil, err
-	}
+	defer cfg.Close()
 
 	// Described as they would be to somebody paired, which is what the list is for: seeing what a
 	// device you have paired with would be offered.
-	return proto.Describe(cfg.Mounts, l.known, ns.Caller{ID: l.node.ID().String(), Paired: true}), nil
+	return proto.Describe(cfg.Mounts, l.known, ns.Caller{ID: l.id.String(), Paired: true}), nil
 }
 
 // Send copies files to a path on the far device.
@@ -309,22 +283,35 @@ func (l *running) Send(ctx context.Context, to book.Entry, path string, files []
 	if err != nil {
 		return err
 	}
-
-	s, err := l.held.To(ctx, to, node.ALPNSession)
+	transfer, err := share.NewTransfer(sources)
 	if err != nil {
 		return err
 	}
-	defer s.Close()
-
-	conn, err := proto.Open(s, path, "share", 0, "", node.DisplayName())
-	if err != nil {
-		return err
+	defer func() { _ = transfer.Close() }()
+	open := func(ctx context.Context) (*wire.Conn, func(), error) {
+		s, done, err := l.open(ctx, to, node.ALPNSession)
+		if err != nil {
+			return nil, nil, err
+		}
+		stop := stopStreamOnDone(ctx, s)
+		close := func() {
+			stop()
+			done()
+		}
+		conn, err := proto.Open(s, path, "share", 0, "", node.DisplayName())
+		if err != nil {
+			close()
+			return nil, nil, err
+		}
+		return conn, close, nil
 	}
-	if err := share.Send(conn, sources, progress); err != nil {
+	if err := retryTransfer(ctx, transfer, progress, open); err != nil {
 		return err
 	}
 	for _, src := range sources {
-		noteFile(to.ID, convo.Out, src.Name, src.Size)
+		if err := noteFile(to.ID, convo.Out, src.Name, src.Size); err != nil {
+			return fmt.Errorf("sent %d item(s) to %s, but %w", len(sources), to.Name, err)
+		}
 	}
 	return nil
 }
@@ -336,11 +323,12 @@ func (l *running) Post(ctx context.Context, to book.Entry, path, archetype strin
 		return err
 	}
 
-	s, err := l.held.To(ctx, to, node.ALPNSession)
+	s, done, err := l.open(ctx, to, node.ALPNSession)
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer done()
+	defer stopStreamOnDone(ctx, s)()
 
 	conn, err := proto.Open(s, path, archetype, 0, "", node.DisplayName())
 	if err != nil {
@@ -352,10 +340,11 @@ func (l *running) Post(ctx context.Context, to book.Entry, path, archetype strin
 
 // Watch reads a live path into a screen, nudging the interface whenever the picture changes.
 func (l *running) Watch(ctx context.Context, w tui.Watching) error {
-	s, err := l.held.To(ctx, w.On, node.ALPNSession)
+	s, release, err := l.open(ctx, w.On, node.ALPNSession)
 	if err != nil {
 		return err
 	}
+	defer release()
 
 	conn, err := proto.Open(s, w.Path, w.Archetype, 0, "", node.DisplayName())
 	if err != nil {
@@ -363,6 +352,9 @@ func (l *running) Watch(ctx context.Context, w tui.Watching) error {
 	}
 	d := live.New(conn, s)
 	d.OnResize = func(cols, rows uint16) { w.Sized(int(cols), int(rows)) }
+	if w.Told != nil {
+		d.OnCompany = func(c live.Company) { w.Told(c.Watching, c.Own) }
+	}
 
 	// The write side stays open. Closing it here used to be how a viewer was kept from typing, but
 	// it also threw away the only way to say how big the window is — and what may be typed is the
@@ -379,23 +371,20 @@ func (l *running) Watch(ctx context.Context, w tui.Watching) error {
 		return err
 
 	case <-ctx.Done():
-		// The stream goes, the connection stays: it is shared with everything else this device is
-		// doing, and closing it here would drop a conversation to end a watch.
-		s.Close()
-
-		// And the pump is waited for. It writes into a screen the interface is about to take down,
-		// and returning while it is still writing leaves two goroutines racing over it — which is
-		// a panic on whichever one loses.
-		select {
-		case <-done:
-		case <-time.After(stopWithin):
-		}
+		stopLive(d, done)
 		return ctx.Err()
 	}
 }
 
-// stopWithin bounds the wait for a watch to notice its stream has gone. A read already in flight
-// lands or fails quickly; anything longer is not worth holding the interface for.
+func stopLive(d *live.Duplex, done <-chan error) {
+	d.Stop()
+	select {
+	case <-done:
+	case <-time.After(stopWithin):
+	}
+}
+
+// stopWithin bounds the wait for a live read pump to stop.
 const stopWithin = 2 * time.Second
 
 // speaking is a live path the interface can speak to.
@@ -405,7 +394,7 @@ func (s speaking) Resize(cols, rows int) error {
 	if cols < 1 || rows < 1 {
 		return nil
 	}
-	return s.d.Resize(uint16(cols), uint16(rows))
+	return s.d.Resize(cols, rows)
 }
 
 func (s speaking) Type(p []byte) error {
@@ -422,13 +411,13 @@ func (l *running) Self() (tui.Identity, error) {
 	// Which process is the node matters to whoever is reading: if the daemon holds the address,
 	// this is a view onto something that goes on running after the interface is closed.
 	reach := tui.ReachServing
-	if !l.node.Own() {
+	if l.daemon {
 		reach = tui.ReachDaemon
 	}
 
 	return tui.Identity{
 		Name:  node.DisplayName(),
-		ID:    l.node.ID().String(),
+		ID:    l.id.String(),
 		User:  myKey(),
 		Reach: reach,
 	}, nil
@@ -444,8 +433,30 @@ func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
 		return "", nil, err
 	}
 
-	invite := ticketFor(l.node.ID(), code)
+	invite := ticketFor(l.id, code)
 	done := make(chan string, 1)
+
+	// Whoever takes the code dials this identity, and the daemon is what answers it. A code this
+	// process answered for itself would be one nobody could ever reach.
+	if l.daemon {
+		said, closeOffer, err := offerAtDaemon(ctx, code, "", false)
+		if err != nil {
+			return "", nil, err
+		}
+		go func() {
+			defer closeOffer()
+			select {
+			case <-ctx.Done():
+			case line, ok := <-said:
+				what, rest, _ := strings.Cut(line, " ")
+				if ok && what == "paired" {
+					name, _, _ := strings.Cut(rest, " ")
+					done <- name
+				}
+			}
+		}()
+		return invite, done, nil
+	}
 
 	// Findable by whoever holds the ticket, for as long as it is being offered. The rendezvous
 	// cannot help: it publishes under a key derived from a shared secret, and pairing is what
@@ -457,29 +468,29 @@ func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
 	// Registered on the interface's own listener rather than starting a second one. Two accept
 	// loops on one endpoint race, and the loser hangs up on a connection it does not know.
 	l.ears.Handle(node.ALPNPair, func(from node.ID, s *iroh.Stream) {
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 
-		p, err := proto.AnswerPairing(s, l.node.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(l.node)))
-		if err != nil {
-			return
-		}
-		// The far end has to prove it was given the code, not merely the address.
-		if !hmac.Equal(p.Proof, codeProof(code, from, l.node.ID())) {
-			return
-		}
+		_, _ = proto.AnswerPairing(s, l.node.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(l.node)), func(p proto.Pairing) error {
+			// The far end has to prove it was given the code, not merely the address.
+			if !hmac.Equal(p.Proof, codeProof(code, from, l.node.ID())) {
+				return errNotTheCode
+			}
 
-		// Written down the one way every pairing is written down. A name that is already somebody
-		// else's is refused here as it is on the command line, rather than handed, with every rule
-		// that mentions it, to whoever paired last.
-		name, err := filed(p, "", false)
-		if err != nil {
-			return
-		}
+			// Written down the one way every pairing is written down, and before the far end is
+			// answered. A name that is already somebody else's is refused here as it is on the
+			// command line, rather than handed, with every rule that mentions it, to whoever paired
+			// last.
+			name, err := filed(p, "", false)
+			if err != nil {
+				return err
+			}
 
-		select {
-		case done <- name:
-		default:
-		}
+			select {
+			case done <- name:
+			default:
+			}
+			return nil
+		})
 	})
 
 	go func() {
@@ -496,6 +507,11 @@ func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
 // second implementation: when it was one, the two drifted and pairing worked from one and not the
 // other.
 func (l *running) Join(ctx context.Context, ticket string) (string, error) {
+	// The daemon, when it holds the address, is what the other device reaches afterwards.
+	if l.daemon {
+		name, _, _, err := joinThroughDaemon(ctx, ticket, "", false, nil)
+		return name, err
+	}
 	_, name, err := join(ctx, l.node, l.lan, ticket, "", false, nil)
 	return name, err
 }
@@ -506,7 +522,7 @@ func (l *running) Join(ctx context.Context, ticket string) (string, error) {
 // is in your own pocket would be a strange way to find out. The same screen walks it as walks
 // somebody else's, so the answer has the same shape.
 func (l *running) Holding(path, dir string) ([]tui.Held, error) {
-	cfg, err := conf.Load(l.known)
+	cfg, err := l.ours()
 	if err != nil {
 		return nil, err
 	}
@@ -527,7 +543,7 @@ func (l *running) Holding(path, dir string) ([]tui.Held, error) {
 		return nil, err
 	}
 
-	entries, err := os.ReadDir(full)
+	entries, err := readDirUpTo(full, files.MaxEntries)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -585,26 +601,32 @@ func arrange(held []tui.Held) {
 // browsing opens a files namespace on another device, over the connection this interface is already
 // holding to it.
 func (l *running) browsing(ctx context.Context, on book.Entry, path string) (*files.Browsing, func(), error) {
-	s, err := l.held.To(ctx, on, node.ALPNSession)
+	s, done, err := l.open(ctx, on, node.ALPNSession)
 	if err != nil {
 		return nil, nil, err
 	}
+	stop := stopStreamOnDone(ctx, s)
 
 	conn, err := proto.Open(s, path, "files", 0, "", node.DisplayName())
 	if err != nil {
-		s.Close()
+		stop()
+		done()
 		return nil, nil, err
 	}
 
 	walk, err := files.Browse(conn)
 	if err != nil {
-		s.Close()
+		stop()
+		done()
 		return nil, nil, err
 	}
 
 	// The stream goes when the caller is done; the connection stays, because everything else this
 	// device is doing is on it.
-	return walk, func() { s.Close() }, nil
+	return walk, func() {
+		stop()
+		done()
+	}, nil
 }
 
 // Listing is what is in a files namespace on another device, at one directory inside it.
@@ -622,7 +644,7 @@ func (l *running) Listing(ctx context.Context, on book.Entry, path, dir string) 
 
 	out := make([]tui.Held, 0, len(entries))
 	for _, at := range entries {
-		out = append(out, tui.Held{Name: at.Name, Size: at.Size, At: time.Unix(at.At, 0), Dir: at.Dir})
+		out = append(out, tui.Held{Name: at.Name, Size: at.Size, At: time.Unix(0, at.At), Dir: at.Dir})
 	}
 	arrange(out)
 	return out, nil
@@ -648,8 +670,12 @@ func (l *running) Fetch(ctx context.Context, from book.Entry, path, dir, name st
 		return "", err
 	}
 
-	if at, err := os.Stat(into); err == nil {
-		noteFile(from.ID, convo.In, filepath.Base(name), at.Size())
+	at, err := os.Stat(into)
+	if err != nil {
+		return into, fmt.Errorf("downloaded %s, but could not record it: %w", into, err)
+	}
+	if err := noteFile(from.ID, convo.In, filepath.Base(name), at.Size()); err != nil {
+		return into, fmt.Errorf("downloaded %s, but %w", into, err)
 	}
 	return into, nil
 }
@@ -667,8 +693,12 @@ func (l *running) Put(ctx context.Context, to book.Entry, path, dir, from string
 		return err
 	}
 
-	if at, err := os.Stat(from); err == nil {
-		noteFile(to.ID, convo.Out, name, at.Size())
+	at, err := os.Stat(from)
+	if err != nil {
+		return fmt.Errorf("uploaded %s, but could not record it: %w", name, err)
+	}
+	if err := noteFile(to.ID, convo.Out, name, at.Size()); err != nil {
+		return fmt.Errorf("uploaded %s, but %w", name, err)
 	}
 	return nil
 }

@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -43,6 +45,7 @@ func newUserCmd() *cobra.Command {
 			return nil
 		},
 	})
+	cmd.AddCommand(newVouchCmd(), newExportCmd(), newTakeCmd())
 
 	return cmd
 }
@@ -63,12 +66,15 @@ func showUser() error {
 	fmt.Printf("  as       %s\n\n", user.Fingerprint(pub))
 
 	badge, _, err := user.Mine(time.Now())
-	if err != nil {
+	if err != nil && !errors.Is(err, user.ErrStale) {
 		return fmt.Errorf("this machine has no badge: %w", err)
 	}
 
 	fmt.Printf("  this machine is %q, until %s\n",
 		badge.Name, badge.Until.UTC().Format("2006-01-02"))
+	if err != nil {
+		fmt.Printf("  %v\n", err)
+	}
 
 	return nil
 }
@@ -79,27 +85,46 @@ func showUser() error {
 // stranger for no reason anybody could see. Identity is not optional, so failing to get a badge is
 // an error and not a quieter kind of node — the key is generated on first run if there is none, and
 // what is left after that is a real failure worth saying out loud.
+//
+// The one exception is a machine another one vouched for, whose badge ran out before they met
+// again: it wears the stale one and says so, because it cannot sign another and a node that will
+// not start is no way to get one.
 func wearBadge() error {
 	badge, signed, err := user.Mine(time.Now())
-	if err != nil {
+	switch {
+	case errors.Is(err, user.ErrStale):
+		fmt.Fprintf(os.Stderr, "drop: %v\n", err)
+	case err != nil:
 		return err
 	}
-	proto.Carry(badge.Bytes(), signed)
+	wear(badge, signed)
 
-	mine.Lock()
-	mine.key = user.Text(badge.User)
-	mine.Unlock()
+	// And one signed again by another machine of this user's is worn the moment it arrives.
+	proto.OnRenewed(func(bundle []byte) {
+		if fresh, sig, err := user.Renewed(bundle, time.Now()); err == nil {
+			wear(fresh, sig)
+		}
+	})
 
 	showPlate()
 	carryHandover()
 	return nil
 }
 
+func wear(badge user.Badge, signed []byte) {
+	proto.Carry(badge.Bytes(), signed)
+
+	mine.Lock()
+	mine.key, mine.until = user.Text(badge.User), badge.Until
+	mine.Unlock()
+}
+
 // mine is this machine's own user key, kept because it is looked at on every connection and
-// reading it from disk each time would be a file read per caller.
+// reading it from disk each time would be a file read per caller, and when its badge runs out.
 var mine struct {
 	sync.Mutex
-	key string
+	key   string
+	until time.Time
 }
 
 // myKey is the user key this machine belongs to, and empty when it has none.

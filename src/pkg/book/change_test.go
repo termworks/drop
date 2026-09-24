@@ -74,6 +74,50 @@ func TestTwoWritersDoNotLoseEachOther(t *testing.T) {
 	}
 }
 
+func TestRememberingAnAddressKeepsANewerPairing(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	orin := testID(t)
+	first, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Pair("orin", orin, testSecret(t))
+	if err := first.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	learning, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairing, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	laptop := testID(t)
+	if err := pairing.Change(func() (bool, error) {
+		pairing.Pair("laptop", laptop, testSecret(t))
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := learning.Reached(orin, "192.168.1.9:47777"); err != nil || !changed {
+		t.Fatalf("Reached() = %v, %v", changed, err)
+	}
+
+	after, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := after.Lookup("laptop"); !ok {
+		t.Fatal("remembering the address overwrote the newer pairing")
+	}
+	if entry, ok := after.Lookup("orin"); !ok || len(entry.Addrs) != 1 {
+		t.Fatalf("orin after remembering = %+v, %v", entry, ok)
+	}
+}
+
 // A change that changed nothing must not rewrite the file: most connections carry a handover
 // nobody here has an entry for, and every one of them would otherwise be a write.
 func TestAChangeThatChangedNothingWritesNothing(t *testing.T) {

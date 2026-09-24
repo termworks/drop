@@ -36,6 +36,9 @@ drop me machine rebind         stop using a written-down key, be named by the ha
 drop me machine migrate <id>   say this machine became another one
 drop me machine took <line>    on the new machine: take that statement up
 drop me user                   who this machine belongs to
+drop me user vouch <machine>   make a machine yours, keeping your key here
+drop me user export            your key as a code, to carry to another machine
+drop me user take <code>       on that machine: become yours from the code
 drop me vault                  whether what is kept on this disk is encrypted
 drop me passwd                 hash a password, to guard a path with
 drop me log [name]             a conversation, or all of them
@@ -61,6 +64,7 @@ drop path rm <path>            take one off
 drop path join <address>       hold a namespace somebody else holds
 drop path grant <path> <who>   let somebody reach it
 drop path revoke <path> <who>  stop them
+drop path level <path> [step]   only me, trusted, paired, anyone, or back to the config
 drop path ask <address>        ask to be let into a path you can see and cannot open
 drop path requests             who has asked
 drop path share <address>      take a file from somebody, once
@@ -89,6 +93,19 @@ drop connect tron:/logs        a stream
 It asks what is there and picks the right client. That is what `Shape` in
 [namespaces](namespaces.md) is for: an archetype this build has never heard of still opens, as
 whatever it says it speaks like.
+
+**`drop tui`** — an interface open in another terminal, looked at and typed into from this one.
+
+```console
+drop tui ls                    the interfaces open on this machine
+drop tui show [--to x]         print what one is showing
+drop tui keys [--to x] <key>…  press keys: enter, esc, down, tab, ctrl+], or one character
+drop tui type [--to x] <text>  type text into it, a key at a time
+```
+
+With more than one open, `--to` picks one by process id, device name, profile or id. It works over
+ssh as well as it does here, so one person can walk another through both ends of a pairing while
+both watch their own screens.
 
 ## Putting a namespace up without editing the config
 

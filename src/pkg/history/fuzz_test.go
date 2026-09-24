@@ -1,8 +1,25 @@
 package history
 
 import (
+	"bytes"
 	"testing"
 )
+
+func FuzzDecodeChange(f *testing.F) {
+	f.Add(record(Change{About: "notes", Author: "somebody", Body: []byte("hello"), Signed: []byte("signature")}))
+	f.Add([]byte{})
+	f.Add([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f})
+
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		got, err := Decode(raw)
+		if err != nil {
+			return
+		}
+		if !bytes.Equal(got.Encode(), raw) {
+			t.Fatal("accepted a change that does not encode identically")
+		}
+	})
+}
 
 // A change arrives from whoever else holds the same namespace, is stored, and is replayed every
 // time the thing is read back. Whatever a peer sends, unpack must answer rather than panic, and

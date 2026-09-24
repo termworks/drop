@@ -3,7 +3,6 @@ package proto
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/bresilla/drop/src/pkg/wire"
 )
@@ -30,37 +29,37 @@ func Ask(ctx context.Context, s Stream, path, why, from string) error {
 	open.Plate, open.Stamped = stamping()
 	open.Moved, open.Handed = handing()
 
-	// Bounded the way the other half of this handshake is. A far end that takes the ask and then
-	// says nothing would otherwise hold this for as long as it liked, and a command that never
-	// returns is a command somebody has to notice and kill.
-	_ = s.SetReadDeadline(time.Now().Add(settleIn))
-	defer func() { _ = s.SetReadDeadline(time.Time{}) }()
-
-	if err := conn.WriteFrame(wire.KindOpen, open.encode()); err != nil {
-		return fmt.Errorf("asking for %s: %w", path, err)
-	}
-
-	kind, body, err := conn.ReadFrame()
-	if err != nil {
-		return fmt.Errorf("asking for %s: %w", path, err)
-	}
-	if kind == wire.KindReject {
-		reject, err := wire.DecodeReject(body)
-		if err != nil {
-			return err
+	return conn.WithIdle(settleIn, func() error {
+		if err := conn.WriteFrame(wire.KindOpen, open.encode()); err != nil {
+			return fmt.Errorf("asking for %s: %w", path, err)
 		}
-		return Declined{Reason: reject.Reason, Settled: reject.Settled}
-	}
-	return nil
+
+		kind, body, err := conn.ReadFrame()
+		if err != nil {
+			return fmt.Errorf("asking for %s: %w", path, err)
+		}
+		switch kind {
+		case wire.KindAccept:
+			return nil
+		case wire.KindReject:
+			reject, err := wire.DecodeReject(body)
+			if err != nil {
+				return err
+			}
+			return Declined{Reason: reject.Reason, Settled: reject.Settled}
+		default:
+			return fmt.Errorf("asking for %s: expected an answer, got frame kind %d", path, kind)
+		}
+	})
 }
 
 // TakeAsk answers a request: it is heard, written down, and nothing is opened.
 func TakeAsk(conn *wire.Conn, policy Policy, from Asker) error {
 	if policy.Asked == nil {
-		return conn.WriteFrame(wire.KindReject, wire.Reject{Reason: "not taking requests"}.Encode())
+		return writeAnswer(conn, wire.KindReject, wire.Reject{Reason: "not taking requests"}.Encode())
 	}
 	if err := policy.Asked(from); err != nil {
-		return conn.WriteFrame(wire.KindReject, wire.Reject{Reason: err.Error()}.Encode())
+		return writeAnswer(conn, wire.KindReject, wire.Reject{Reason: err.Error()}.Encode())
 	}
-	return conn.WriteFrame(wire.KindAccept, nil)
+	return writeAnswer(conn, wire.KindAccept, nil)
 }

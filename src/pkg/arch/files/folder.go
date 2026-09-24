@@ -300,7 +300,7 @@ func Snapshot(f Folder) ([]byte, bool) {
 	}
 
 	for i := range full {
-		full[i].Held.Body = nil
+		full[i].Body = nil
 	}
 	body := encodeEdits(full)
 	return body, len(body) <= history.MaxBody

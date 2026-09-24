@@ -38,8 +38,10 @@ import (
 // Config is what a files namespace was told: the directory it serves, and whether anything may be
 // written into it.
 type Config struct {
-	Dir      string
-	Writable bool
+	Dir             string
+	Writable        bool
+	MaxItemBytes    int64
+	MaxSessionBytes int64
 }
 
 // Into is what the process running a files namespace hands it.
@@ -85,7 +87,19 @@ func (f *Files) Read(d arch.Declared) (arch.Config, error) {
 		return nil, fmt.Errorf("a files namespace needs a dir")
 	}
 	writable, _ := d.Bool("writable")
-	return Config{Dir: dir, Writable: writable}, nil
+	maxItem, err := configuredLimit(d, "max_item")
+	if err != nil {
+		return nil, err
+	}
+	maxSession, err := configuredLimit(d, "max_session")
+	if err != nil {
+		return nil, err
+	}
+	limits := quotaFor(Config{MaxItemBytes: maxItem, MaxSessionBytes: maxSession})
+	if limits.session < limits.item {
+		return nil, fmt.Errorf("max_session must not be smaller than max_item")
+	}
+	return Config{Dir: dir, Writable: writable, MaxItemBytes: maxItem, MaxSessionBytes: maxSession}, nil
 }
 
 func (f *Files) Note(c arch.Config) arch.Note {
@@ -111,6 +125,11 @@ func (f *Files) Serve(ctx context.Context, at arch.Session) error {
 		reject := wire.Reject{Reason: "this namespace has no directory"}
 		return at.Conn.WriteFrame(wire.KindReject, reject.Encode())
 	}
+	quota := quotaFor(cfg)
+	if cfg.MaxItemBytes < 0 || cfg.MaxSessionBytes < 0 || quota.session < quota.item {
+		reject := wire.Reject{Reason: "this namespace has invalid transfer limits"}
+		return at.Conn.WriteFrame(wire.KindReject, reject.Encode())
+	}
 
 	// Every name this session is given is resolved through the open directory, one component at a
 	// time, and leaves it for nothing: no link out, no dot-dot, and nothing that appears between the
@@ -120,7 +139,7 @@ func (f *Files) Serve(ctx context.Context, at arch.Session) error {
 		reject := wire.Reject{Reason: "this namespace's directory cannot be opened"}
 		return at.Conn.WriteFrame(wire.KindReject, reject.Encode())
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 
 	conn := at.Conn
 	if err := conn.WriteFrame(wire.KindReply, ready{Writable: cfg.Writable}.encode()); err != nil {
@@ -145,7 +164,7 @@ func (f *Files) Serve(ctx context.Context, at arch.Session) error {
 		if err != nil {
 			return err
 		}
-		if err := f.answer(conn, at, dir, cfg.Writable, q); err != nil {
+		if err := f.answer(conn, at, dir, cfg.Writable, &quota, q); err != nil {
 			return err
 		}
 	}
@@ -157,47 +176,91 @@ func (f *Files) Serve(ctx context.Context, at arch.Session) error {
 // The table is read again every time round, so a namespace created while this is running is picked
 // up without anything having to say so. A files namespace nobody else holds is left alone: it is a
 // directory this machine serves, and there is nothing for it to be level with.
-func (f *Files) Watch(ctx context.Context, mounts *ns.Table) {
+func (f *Files) Watch(ctx context.Context, mounts *ns.Table) <-chan struct{} {
 	// A nudge makes somebody's edit quick; the timer is what makes every edit eventually seen. A
 	// machine with no inotify, or one at its watch limit, keeps the timer and loses the quickness.
 	ear, err := nudge.Listen(ctx)
 	if err != nil {
 		ear = nil
 	}
+	return f.watch(ctx, mounts, ear, Every)
+}
 
+type changeEar interface {
+	Heard() <-chan struct{}
+	Dirty() ([]string, bool)
+	Mind([]string)
+}
+
+type watchedFolder struct {
+	dir  string
+	dirs []string
+}
+
+type watchedFolders map[string]watchedFolder
+
+func (w watchedFolders) all() []string {
+	total := 0
+	for _, folder := range w {
+		total += len(folder.dirs)
+	}
+	dirs := make([]string, 0, total)
+	for _, folder := range w {
+		dirs = append(dirs, folder.dirs...)
+	}
+	return dirs
+}
+
+func (f *Files) watch(ctx context.Context, mounts *ns.Table, ear changeEar, every time.Duration) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
-		tick := time.NewTicker(Every)
+		defer close(done)
+		tick := time.NewTicker(every)
 		defer tick.Stop()
 
 		var heard <-chan struct{}
 		if ear != nil {
 			heard = ear.Heard()
 		}
+		watched := watchedFolders{}
+		full := true
+		var dirty []string
 		for {
-			dirs := f.round(mounts)
+			f.round(ctx, mounts, watched, dirty, full)
 			if ear != nil {
-				ear.Mind(dirs)
+				ear.Mind(watched.all())
 			}
+			full, dirty = false, nil
 			select {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-			case <-heard:
+				full = true
+			case _, open := <-heard:
+				if !open {
+					heard, ear = nil, nil
+					full = true
+				} else {
+					dirty, full = ear.Dirty()
+				}
 			}
 		}
 	}()
+	return done
 }
 
-// round brings every shared folder level with its history once, and says which directories are
-// worth listening to until the next one.
-func (f *Files) round(mounts *ns.Table) []string {
-	if mounts == nil {
-		return nil
+// round brings selected shared folders level with their histories and updates their watched paths.
+func (f *Files) round(ctx context.Context, mounts *ns.Table, watched watchedFolders, dirty []string, full bool) {
+	if mounts == nil || ctx.Err() != nil {
+		return
 	}
 
-	var dirs []string
+	present := map[string]string{}
 
 	for _, mount := range mounts.All() {
+		if ctx.Err() != nil {
+			return
+		}
 		if mount.Archetype != f.Name() || !mount.Shared.Declared() {
 			continue
 		}
@@ -205,10 +268,21 @@ func (f *Files) round(mounts *ns.Table) []string {
 		if !ok || cfg.Dir == "" {
 			continue
 		}
-		dirs = append(dirs, under(cfg.Dir)...)
+		present[mount.Path] = cfg.Dir
+		previous, known := watched[mount.Path]
+		if !needsReconciliation(full, cfg.Dir, previous, known, dirty) {
+			continue
+		}
+		watched[mount.Path] = watchedFolder{dir: cfg.Dir, dirs: under(ctx, cfg.Dir)}
+		if ctx.Err() != nil {
+			return
+		}
 
-		made, err := f.keep(mount, cfg)
+		made, err := f.keep(ctx, mount, cfg)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			f.say(mount.Path, fmt.Sprintf("%s: %v", mount.Path, err))
 			continue
 		}
@@ -217,16 +291,52 @@ func (f *Files) round(mounts *ns.Table) []string {
 			f.into.Changed(mount.Path)
 		}
 	}
-	return dirs
+	for path := range watched {
+		if _, ok := present[path]; !ok {
+			delete(watched, path)
+		}
+	}
+	f.retain(present)
+}
+
+func (f *Files) retain(present map[string]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	for path, k := range f.kept {
+		dir, exists := present[path]
+		if !exists || k.dir != dir {
+			delete(f.kept, path)
+		}
+	}
+	for path := range f.said {
+		if _, exists := present[path]; !exists {
+			delete(f.said, path)
+		}
+	}
+}
+
+func needsReconciliation(full bool, root string, previous watchedFolder, known bool, dirty []string) bool {
+	return full || !known || previous.dir != root || dirtied(root, dirty)
+}
+
+func dirtied(root string, dirs []string) bool {
+	for _, dir := range dirs {
+		rel, err := filepath.Rel(root, dir)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // keep runs one folder's turn, and says whether a change of this machine's own was recorded.
-func (f *Files) keep(mount ns.Mount, cfg Config) (bool, error) {
+func (f *Files) keep(ctx context.Context, mount ns.Mount, cfg Config) (bool, error) {
 	k, err := f.keeper(mount, cfg)
 	if err != nil {
 		return false, err
 	}
-	return k.once(f.into.Fetch)
+	return k.once(ctx, f.into.Fetch)
 }
 
 // keeper is the one keeper for a namespace, made the first time it is wanted and thrown away when
@@ -289,7 +399,7 @@ func (f *Files) Amiss(c arch.Config) string {
 			beside++
 			return nil
 		}
-		raw, err := os.ReadFile(at)
+		raw, err := readInline(at)
 		if err != nil || !weave.Textual(raw) {
 			return nil
 		}
@@ -329,9 +439,12 @@ const Enough = 64
 // Bounded, because a watch is a kernel resource with a per-user limit and a deep tree would spend
 // the lot, leaving every other namespace on this machine with none. A folder too deep to watch is
 // watched as far down as the bound goes and noticed the rest of the way by the timer.
-func under(dir string) []string {
+func under(ctx context.Context, dir string) []string {
 	out := []string{dir}
 	walk := func(at string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		switch {
 		case err != nil, !d.IsDir(), at == dir:
 			return nil

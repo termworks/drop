@@ -59,12 +59,20 @@ func (c *Chat) Serve(ctx context.Context, at arch.Session) error {
 // Exported because a link travels the way a message travels: what differs between the two is what
 // the far end does with what arrives, not how it gets there.
 func Take(conn *wire.Conn, from node.ID, store func(node.ID, convo.Message) error) error {
+	return conn.WithIdle(wire.FiniteIdle, func() error {
+		return take(conn, from, store)
+	})
+}
+
+func take(conn *wire.Conn, from node.ID, store func(node.ID, convo.Message) error) error {
 	if store == nil {
 		return conn.WriteFrame(wire.KindReject, wire.Reject{Reason: "not accepting messages"}.Encode())
 	}
 
 	var stored []string
 	seen := 0
+	weight := 0
+	seenIDs := make(map[string]bool)
 
 	for {
 		kind, body, err := conn.ReadFrame()
@@ -78,10 +86,21 @@ func Take(conn *wire.Conn, from node.ID, store func(node.ID, convo.Message) erro
 			if seen > MaxBatch {
 				return fmt.Errorf("%s sent more than %d messages in one session", from, MaxBatch)
 			}
+			weight += len(body)
+			if weight > MaxBatchBytes {
+				return fmt.Errorf("%s sent more than %d bytes of messages in one session", from, MaxBatchBytes)
+			}
 			m, err := convo.Decode(body)
 			if err != nil {
 				return fmt.Errorf("reading a message from %s: %w", from, err)
 			}
+			if m.ID == "" {
+				return fmt.Errorf("reading a message from %s: it has no id", from)
+			}
+			if seenIDs[m.ID] {
+				return fmt.Errorf("%s sent message %s twice in one session", from, m.ID)
+			}
+			seenIDs[m.ID] = true
 			m.Dir = convo.In
 			if err := store(from, m); err != nil {
 				// Not stored, so not acknowledged: the sender keeps it and tries again.
@@ -90,6 +109,13 @@ func Take(conn *wire.Conn, from node.ID, store func(node.ID, convo.Message) erro
 			stored = append(stored, m.ID)
 
 		case wire.KindEnd:
+			end, err := wire.DecodeEnd(body)
+			if err != nil {
+				return fmt.Errorf("reading the end of messages from %s: %w", from, err)
+			}
+			if end.Size != int64(seen) || len(end.Digest) != 0 {
+				return fmt.Errorf("%s ended %d messages after sending %d", from, end.Size, seen)
+			}
 			return conn.WriteFrame(wire.KindAck, encodeStored(stored))
 
 		default:

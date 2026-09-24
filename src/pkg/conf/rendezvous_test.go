@@ -34,9 +34,8 @@ func configured(t *testing.T, body string) *Config {
 	return cfg
 }
 
-// Publishing writes to a relay the user does not own. A config that never mentions it must leave
-// it off, because the alternative is a device quietly announcing itself because a default said so.
-func TestRendezvousIsOffUnlessAsked(t *testing.T) {
+// A config without a rendezvous setting leaves the current node setting alone.
+func TestUnmentionedRendezvousIsLeftAlone(t *testing.T) {
 	cfg := configured(t, mounted+`drop.name = "here"`)
 
 	if cfg.HasRendezvous {

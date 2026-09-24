@@ -23,18 +23,24 @@ import (
 // Resolving is always on. Reading a published address costs its owner nothing, and a device that
 // cannot resolve is one that can only ever pair over its own wire.
 
-// lookup is the registry the endpoint resolves through, shared by everything this process starts.
-var lookup = &iroh.AddressLookupServices{}
-
 // resolving registers the public lookup, so an endpoint id can be turned into somewhere to dial.
 func resolving() (iroh.Option, error) {
+	lookup, err := publicLookup()
+	if err != nil {
+		return nil, err
+	}
+	return iroh.WithAddressLookup(lookup), nil
+}
+
+// publicLookup is one endpoint's public address resolver.
+func publicLookup() (*iroh.AddressLookupServices, error) {
 	resolver, err := iroh.NewPkarrResolver(iroh.N0DNSPkarrRelayProd, nil)
 	if err != nil {
 		return nil, err
 	}
+	lookup := &iroh.AddressLookupServices{}
 	lookup.AddResolver(resolver)
-
-	return iroh.WithAddressLookup(lookup), nil
+	return lookup, nil
 }
 
 // How often the record is written again, and how often the address is looked at.

@@ -1,16 +1,19 @@
 package node
 
-import "sync"
+import (
+	"os"
+	"strings"
+	"sync"
+)
 
 // Settings a config may override.
 //
 // A setting the config never mentions is left alone, so the environment or a flag still decides
 // it. That is why these are set rather than defaulted: there is no value here meaning "unset".
 var (
-	settingsMu   sync.RWMutex
-	nameSet      string
-	bootstrapSet []string
-	relaysSet    []string
+	settingsMu sync.RWMutex
+	nameSet    string
+	relaysSet  []string
 	// On unless a config turns it off. A device that has moved to another network cannot be found
 	// any other way, and a program that only works while both machines are on one wire is not the
 	// program this is meant to be. What it publishes is derived from a pairing secret and rotates
@@ -28,20 +31,12 @@ func SetName(name string) {
 	nameSet = name
 }
 
-// SetBootstrap replaces the nodes used to join the DHT.
-func SetBootstrap(addrs []string) {
-	settingsMu.Lock()
-	defer settingsMu.Unlock()
-
-	bootstrapSet = addrs
-}
-
 // SetRelays replaces the relays this node reserves on.
 func SetRelays(addrs []string) {
 	settingsMu.Lock()
 	defer settingsMu.Unlock()
 
-	relaysSet = addrs
+	relaysSet = append([]string(nil), addrs...)
 }
 
 func configuredName() string {
@@ -51,18 +46,15 @@ func configuredName() string {
 	return nameSet
 }
 
-func configuredBootstrap() []string {
-	settingsMu.RLock()
-	defer settingsMu.RUnlock()
-
-	return bootstrapSet
-}
-
 func configuredRelays() []string {
+	if fromEnv := strings.Fields(os.Getenv("DROP_RELAYS")); len(fromEnv) > 0 {
+		return fromEnv
+	}
+
 	settingsMu.RLock()
 	defer settingsMu.RUnlock()
 
-	return relaysSet
+	return append([]string(nil), relaysSet...)
 }
 
 // SetRendezvous turns publishing this device's address on or off.

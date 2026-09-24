@@ -26,15 +26,12 @@ const Relay = iroh.N0DNSPkarrRelayProd
 const Refresh = 5 * time.Minute
 
 // Service keeps this device findable by the devices it has paired with.
-//
-// It is off unless drop.rendezvous is turned on, because it writes to a relay this machine does
-// not own, and that is not something to start doing on a user's behalf without being asked.
 type Service struct {
 	node *node.Node
 
 	mu         sync.Mutex
 	publishers map[string]*iroh.PkarrPublisher
-	resolver   *iroh.PkarrResolver
+	resolver   iroh.AddressResolver
 	relay      string
 }
 
@@ -94,12 +91,20 @@ func (s *Service) Run(ctx context.Context) {
 			return
 		}
 		said = now
-		s.publishRound(time.Now())
+		if err := s.publishRound(time.Now()); err != nil {
+			fmt.Fprintf(os.Stderr, "drop: rendezvous: %v\n", err)
+		}
 	}
 
 	say(true)
 
 	moved := node.Moved(ctx, s.node)
+
+	// Somebody paired a moment ago, from this process or from another one, has nothing to find this
+	// device under until a record is published for the two of them. Waiting for the slow round
+	// would leave a new pairing unable to reach it for minutes.
+	pinned, _ := book.Load()
+	pairs := pairedIn(pinned)
 
 	for {
 		select {
@@ -108,11 +113,31 @@ func (s *Service) Run(ctx context.Context) {
 		case <-moved:
 			say(false)
 		case <-watch.C:
+			if pinned != nil && pinned.Refresh() == nil {
+				if now := pairedIn(pinned); now != pairs {
+					pairs = now
+					say(true)
+					continue
+				}
+			}
 			say(false)
 		case <-slow.C:
 			say(true)
 		}
 	}
+}
+
+// pairedIn is who a book holds a pair secret for, as something comparable.
+func pairedIn(b *book.Book) string {
+	if b == nil {
+		return ""
+	}
+	var ids []string
+	for _, entry := range b.Paired() {
+		ids = append(ids, entry.ID.String())
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ",")
 }
 
 // whereNow is an address as something comparable, so a change can be noticed.
@@ -130,10 +155,11 @@ func whereNow(at netaddr.EndpointAddr) string {
 //
 // One record per pair is the whole point: a single shared record would be one identity that every
 // peer, and the relay, could watch.
-func (s *Service) publishRound(now time.Time) {
+func (s *Service) publishRound(now time.Time) error {
 	b, err := book.Load()
 	if err != nil {
-		return
+		s.closeAll()
+		return fmt.Errorf("reading the address book: %w", err)
 	}
 
 	data := dns.EndpointDataFromAddr(s.node.Endpoint.Addr())
@@ -166,6 +192,7 @@ func (s *Service) publishRound(now time.Time) {
 	}
 
 	s.retire(live)
+	return nil
 }
 
 // retire stops publishers whose epoch has passed, so an old identity stops being refreshed rather
@@ -197,26 +224,63 @@ func (s *Service) closeAll() {
 // The returned address carries the peer's real identity, not the derived one: the derived identity
 // exists only to name the record, and dialling it would reach nothing.
 func (s *Service) Find(ctx context.Context, entry book.Entry) (netaddr.EndpointAddr, bool) {
+	return s.findAt(ctx, entry, time.Now())
+}
+
+func (s *Service) findAt(ctx context.Context, entry book.Entry, now time.Time) (netaddr.EndpointAddr, bool) {
 	if !entry.Paired() {
 		return netaddr.EndpointAddr{}, false
 	}
 
-	for _, epoch := range ResolveEpochs(time.Now()) {
+	lookupCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	epochs := ResolveEpochs(now)
+	results := make(chan resolveResult, len(epochs))
+	pending := 0
+	for _, epoch := range epochs {
 		sk, err := Derive(entry.Secret, entry.ID, epoch)
 		if err != nil {
 			continue
 		}
+		pending++
 
-		for item, err := range s.resolver.Resolve(ctx, sk.Public().EndpointID()) {
-			if err != nil {
-				continue
+		go func(id node.ID) {
+			for item, err := range s.resolver.Resolve(lookupCtx, id) {
+				if err != nil {
+					continue
+				}
+				if addr, ok := rebind(item.EndpointInfo(), entry.ID); ok {
+					select {
+					case results <- resolveResult{addr: addr, found: true}:
+					case <-lookupCtx.Done():
+					}
+					return
+				}
 			}
-			if addr, ok := rebind(item.EndpointInfo(), entry.ID); ok {
-				return addr, true
+			select {
+			case results <- resolveResult{}:
+			case <-lookupCtx.Done():
 			}
+		}(sk.Public().EndpointID())
+	}
+
+	for range pending {
+		select {
+		case result := <-results:
+			if result.found {
+				return result.addr, true
+			}
+		case <-ctx.Done():
+			return netaddr.EndpointAddr{}, false
 		}
 	}
 	return netaddr.EndpointAddr{}, false
+}
+
+type resolveResult struct {
+	addr  netaddr.EndpointAddr
+	found bool
 }
 
 // rebind moves the addresses out of a record and onto the identity they actually belong to.

@@ -1,6 +1,7 @@
 package passwd
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -67,9 +68,88 @@ func TestAnUnreadableHashNeverVerifies(t *testing.T) {
 	}
 }
 
+func TestAHashCannotChooseItsResourceCost(t *testing.T) {
+	hash, err := Hash("bounded")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := map[string]string{
+		"too much memory":  strings.Replace(hash, "m=65536", "m=4294967295", 1),
+		"too much time":    strings.Replace(hash, "t=3", "t=4294967295", 1),
+		"too many threads": strings.Replace(hash, "p=4", "p=255", 1),
+		"weak memory":      strings.Replace(hash, "m=65536", "m=1", 1),
+		"trailing cost":    strings.Replace(hash, "p=4", "p=4junk", 1),
+	}
+
+	before := Spent()
+	for name, hostile := range cases {
+		t.Run(name, func(t *testing.T) {
+			if Verify(hostile, "bounded") {
+				t.Fatal("a hash with a foreign cost verified")
+			}
+		})
+	}
+	if got := Spent() - before; got != 0 {
+		t.Fatalf("invalid costs ran %d expensive hashes", got)
+	}
+}
+
+func TestAHashMustHaveGeneratedSizedParts(t *testing.T) {
+	hash, err := Hash("bounded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(hash, "$")
+
+	cases := map[string]string{}
+	for name, replacement := range map[string]string{
+		"short salt": encode(make([]byte, saltLength-1)),
+		"long salt":  encode(make([]byte, saltLength+1)),
+	} {
+		changed := append([]string(nil), parts...)
+		changed[4] = replacement
+		cases[name] = strings.Join(changed, "$")
+	}
+	for name, replacement := range map[string]string{
+		"short sum": encode(make([]byte, keyLength-1)),
+		"long sum":  encode(make([]byte, keyLength+1)),
+	} {
+		changed := append([]string(nil), parts...)
+		changed[5] = replacement
+		cases[name] = strings.Join(changed, "$")
+	}
+
+	before := Spent()
+	for name, malformed := range cases {
+		t.Run(name, func(t *testing.T) {
+			if Verify(malformed, "bounded") {
+				t.Fatal("a hash with a foreign part size verified")
+			}
+		})
+	}
+	if got := Spent() - before; got != 0 {
+		t.Fatalf("invalid part sizes ran %d expensive hashes", got)
+	}
+}
+
 func TestAnEmptyPasswordIsRefused(t *testing.T) {
 	if _, err := Hash(""); err == nil {
 		t.Fatal("an empty password was hashed")
+	}
+}
+
+func TestAnOversizedPasswordCostsNothing(t *testing.T) {
+	plain := strings.Repeat("x", MaxPlain+1)
+	before := Spent()
+	if _, err := Hash(plain); err == nil {
+		t.Fatal("Hash() accepted an oversized password")
+	}
+	if Verify("not a hash", plain) {
+		t.Fatal("Verify() accepted an oversized password")
+	}
+	if got := Spent() - before; got != 0 {
+		t.Fatalf("an oversized password ran %d expensive hashes", got)
 	}
 }
 
@@ -160,5 +240,98 @@ func TestOnlySoManyGuessesRunAtOnce(t *testing.T) {
 	case <-done:
 	case <-time.After(60 * time.Second):
 		t.Fatal("twenty-four guesses did not finish; the queue is not draining")
+	}
+}
+
+func TestACanceledGuessLeavesTheHashQueue(t *testing.T) {
+	slots := make(chan struct{}, 1)
+	slots <- struct{}{}
+	ctx, cancel := context.WithCancel(context.Background())
+	ran := make(chan struct{})
+	done := make(chan bool)
+
+	go func() {
+		done <- spendContext(ctx, slots, func() { close(ran) })
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("the queued hash finished while its slot was occupied")
+	case <-time.After(10 * time.Millisecond):
+	}
+	cancel()
+
+	select {
+	case completed := <-done:
+		if completed {
+			t.Fatal("the canceled hash reported that it ran")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the canceled hash stayed in the queue")
+	}
+	select {
+	case <-ran:
+		t.Fatal("the canceled hash ran")
+	default:
+	}
+	if len(slots) != 1 {
+		t.Fatalf("the canceled hash disturbed the occupied slot: %d", len(slots))
+	}
+
+	<-slots
+	if !spendContext(context.Background(), slots, func() {}) {
+		t.Fatal("the queue did not accept work after cancellation")
+	}
+}
+
+func TestAnAlreadyCanceledGuessDoesNotTakeAHashSlot(t *testing.T) {
+	slots := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if spendContext(ctx, slots, func() { t.Error("the canceled hash ran") }) {
+		t.Fatal("the canceled hash reported that it ran")
+	}
+	if len(slots) != 0 {
+		t.Fatal("the canceled hash retained a slot")
+	}
+}
+
+func TestTriedStopsAQueuedHashWhenItsContextEnds(t *testing.T) {
+	hash, err := Hash("bounded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range cap(hashing) {
+		hashing <- struct{}{}
+	}
+	defer func() {
+		for range cap(hashing) {
+			<-hashing
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan bool)
+	before := Spent()
+	go func() { done <- NewTriedContext(ctx).Says(hash, "bounded") }()
+
+	select {
+	case <-done:
+		t.Fatal("the guess finished while every hash slot was occupied")
+	case <-time.After(10 * time.Millisecond):
+	}
+	cancel()
+
+	select {
+	case accepted := <-done:
+		if accepted {
+			t.Fatal("the canceled guess was accepted")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the canceled guess stayed in the hash queue")
+	}
+	if got := Spent() - before; got != 0 {
+		t.Fatalf("the canceled guess ran %d hashes", got)
 	}
 }

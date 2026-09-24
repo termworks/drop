@@ -26,7 +26,11 @@ const (
 	stalledAfter = 10 * time.Second
 	// partingWithin bounds the wait for the read side to come back once the command is done.
 	partingWithin = 5 * time.Second
+	// MaxCommands bounds command processes across stream namespaces.
+	MaxCommands = 16
 )
+
+var commandSlots = make(chan struct{}, MaxCommands)
 
 // Config is what a stream namespace was told: the command it runs and reads.
 type Config struct {
@@ -41,10 +45,11 @@ type Into struct {
 
 // Stream serves the output of a command.
 type Stream struct {
-	into Into
+	into      Into
+	processes chan struct{}
 }
 
-func New(into Into) *Stream { return &Stream{into: into} }
+func New(into Into) *Stream { return &Stream{into: into, processes: commandSlots} }
 
 func (s *Stream) Name() string { return "stream" }
 func (s *Stream) Version() int { return 1 }
@@ -72,6 +77,16 @@ func (s *Stream) Serve(ctx context.Context, at arch.Session) error {
 	cfg, ok := at.Config.(Config)
 	if !ok || cfg.Command == "" {
 		return fmt.Errorf("%s has no command to run", at.Path)
+	}
+	processes := s.processes
+	if processes == nil {
+		processes = commandSlots
+	}
+	select {
+	case processes <- struct{}{}:
+		defer func() { <-processes }()
+	default:
+		return fmt.Errorf("%d stream commands are running already", cap(processes))
 	}
 	if s.into.Opened != nil {
 		s.into.Opened(at.Path, at.From)
@@ -101,10 +116,6 @@ func (s *Stream) Serve(ctx context.Context, at arch.Session) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("running %q: %w", cfg.Command, err)
 	}
-	defer func() {
-		_ = ending(cmd)
-		_ = cmd.Wait()
-	}()
 
 	// And the read side is closed when the session ends, so the copy stops waiting even if
 	// something out there is still holding the pipe open.
@@ -112,14 +123,15 @@ func (s *Stream) Serve(ctx context.Context, at arch.Session) error {
 	defer close(over)
 	go func() {
 		select {
-		case <-over:
 		case <-ctx.Done():
+			_ = ending(cmd)
+			_ = out.Close()
+		case <-over:
 		}
-		_ = ending(cmd)
-		_ = out.Close()
 	}()
 	defer func() {
-		_ = cmd.Process.Kill()
+		_ = ending(cmd)
+		_ = out.Close()
 		_ = cmd.Wait()
 	}()
 
@@ -155,7 +167,12 @@ func (s *Stream) Serve(ctx context.Context, at arch.Session) error {
 // the kernel does that for a pty, and a stream namespace has none. What arrives at the far end is
 // drawn on a terminal screen, where a line feed moves down without moving back, and the result is
 // each line starting further right than the last.
-type asTerminal struct{ to io.Writer }
+type liveWriter interface {
+	io.Writer
+	StopWrite()
+}
+
+type asTerminal struct{ to liveWriter }
 
 func (a asTerminal) Write(p []byte) (int, error) {
 	// Only newlines that are not already part of a pair, so a command that does its own
@@ -173,6 +190,8 @@ func (a asTerminal) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+func (a asTerminal) StopWrite() { a.to.StopWrite() }
 
 // ending sends a command's whole process group away. A group that has already gone is the command
 // having finished of its own accord, which is not a failure to cancel it.

@@ -5,11 +5,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"lukechampine.com/blake3"
 
 	"github.com/bresilla/drop/src/pkg/history"
@@ -31,7 +33,7 @@ import (
 
 // busy is a file somebody is writing while it is being read. Merging half a save is worse than
 // waiting a second, so it waits a second.
-var busy = errors.New("it was being written while it was read")
+var errBusy = errors.New("it was being written while it was read")
 
 // Still is how long a file has to have been left alone before what is in it is taken for a save.
 //
@@ -43,10 +45,7 @@ const Still = Every / 2
 // keeper holds one note: the file, its history, and what has passed between them.
 type keeper struct {
 	file string
-	// at is the thing the history is about, so a namespace made again at the same path with the
-	// same file is not written into the history of the one it replaced.
-	at  string
-	log *history.Log
+	log  *history.Log
 	// wrote is what this machine last put in the file or last took out of it, by digest, and heads
 	// is what the history said when it did. Both outlive the process, because a file edited while
 	// drop was not running has to be told from one drop itself wrote before it stopped, and a save
@@ -67,7 +66,7 @@ func (k *keeper) once() (bool, error) {
 	// A file still being put down is not trouble and not a save. It is looked at again next round,
 	// which is what the settling is for — and the file drop itself has just written is the ordinary
 	// way to meet one.
-	case errors.Is(err, busy):
+	case errors.Is(err, errBusy):
 		return false, nil
 	case err != nil:
 		return false, err
@@ -78,20 +77,26 @@ func (k *keeper) once() (bool, error) {
 
 	made := false
 	var trouble error
-	if there && !(k.known && k.wrote == blake3.Sum256(raw)) {
-		switch err := k.record(raw); {
-		case err == nil:
-			made = true
-		default:
-			if err := k.spare(raw); err != nil {
-				return false, err
+	if there && (!k.known || k.wrote != blake3.Sum256(raw)) {
+		level, err := k.fromHistory(raw)
+		switch {
+		case err != nil:
+			return false, err
+		case !level:
+			switch err := k.record(raw); err {
+			case nil:
+				made = true
+			default:
+				if err := k.spare(raw); err != nil {
+					return false, err
+				}
+				trouble = err
 			}
-			trouble = err
 		}
 	}
 
 	heads := k.log.Heads()
-	if k.built && there && same(heads, k.heads) {
+	if !made && k.built && there && same(heads, k.heads) {
 		return made, trouble
 	}
 	if !there && len(heads) == 0 {
@@ -120,7 +125,9 @@ func (k *keeper) once() (bool, error) {
 		if _, err := k.log.Fold(body); err != nil {
 			return made, fmt.Errorf("folding the history of %s: %w", k.file, err)
 		}
-		k.heads = k.log.Heads()
+		if err := k.remember(body, k.log.Heads(), true); err != nil {
+			return made, err
+		}
 	}
 	return made, trouble
 }
@@ -162,10 +169,36 @@ func (k *keeper) record(raw []byte) error {
 	if err != nil {
 		return fmt.Errorf("recording %s: %w", k.file, err)
 	}
-	if _, err := k.log.Add(c); err != nil {
+	id, err := k.log.Add(c)
+	if err != nil {
 		return fmt.Errorf("recording %s: %w", k.file, err)
 	}
-	return k.remember(raw, k.heads, k.built)
+	return k.remember(raw, []history.ID{id}, true)
+}
+
+// fromHistory repairs the mark when the file already is what the history makes.
+func (k *keeper) fromHistory(raw []byte) (bool, error) {
+	changes, err := k.log.Ordered()
+	if err != nil {
+		return false, fmt.Errorf("reading the history of %s: %w", k.file, err)
+	}
+	if len(changes) == 0 {
+		return false, nil
+	}
+
+	body, _, err := Whole(changes)
+	if err != nil {
+		return false, fmt.Errorf("keeping %s: %w", k.file, err)
+	}
+	if !bytes.Equal(raw, body) {
+		return false, nil
+	}
+
+	heads := weave.Heads(changes)
+	if err := k.remember(raw, heads, true); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // seen is the history the file on disk was written from, and nothing at all until this machine has
@@ -182,7 +215,7 @@ func (k *keeper) seen() []history.ID {
 // over it. It cannot be signed and it cannot stay, and losing it as well would be gratuitous.
 func (k *keeper) spare(raw []byte) error {
 	beside := k.file + ".unrecorded"
-	if held, err := os.ReadFile(beside); err == nil && bytes.Equal(held, raw) {
+	if held, err := keep.ReadFile(beside, MaxSize); err == nil && bytes.Equal(held, raw) {
 		return nil
 	}
 	if err := keep.Replace(beside, raw); err != nil {
@@ -202,7 +235,7 @@ func (k *keeper) write(body []byte, aside []weave.Aside, raw []byte, there bool,
 	}
 	for _, a := range aside {
 		beside := k.file + "." + weave.Safe(a.Who)
-		if held, err := os.ReadFile(beside); err == nil && bytes.Equal(held, a.Body) {
+		if held, err := keep.ReadFile(beside, MaxSize); err == nil && bytes.Equal(held, a.Body) {
 			continue
 		}
 		if err := keep.Replace(beside, a.Body); err != nil {
@@ -213,11 +246,19 @@ func (k *keeper) write(body []byte, aside []weave.Aside, raw []byte, there bool,
 	if there && bytes.Equal(raw, body) {
 		return k.remember(body, heads, true)
 	}
+	if !there {
+		if err := k.remember(body, heads, true); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(k.file), 0o700); err != nil {
 		return fmt.Errorf("writing %s: %w", k.file, err)
 	}
 	if err := keep.Replace(k.file, body); err != nil {
 		return fmt.Errorf("writing %s: %w", k.file, err)
+	}
+	if !there {
+		return nil
 	}
 	return k.remember(body, heads, true)
 }
@@ -247,7 +288,7 @@ func (k *keeper) recall() error {
 	}
 
 	at := k.mark()
-	raw, err := os.ReadFile(at)
+	raw, err := keep.ReadFile(at, maxMarkSize)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -277,6 +318,8 @@ func (k *keeper) recall() error {
 	k.said = stamp(k.wrote, heads, true)
 	return nil
 }
+
+const maxMarkSize int64 = 64 + history.MaxHeads*65
 
 // stamp is a mark as it is written down: what the file holds, and the changes it was written from,
 // one to a line.
@@ -324,25 +367,51 @@ func steady(file string) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("reading %s: it is not a file", file)
 	}
 	if time.Since(before.ModTime()) < Still {
-		return nil, false, fmt.Errorf("reading %s: %w", file, busy)
+		return nil, false, fmt.Errorf("reading %s: %w", file, errBusy)
 	}
 
-	raw, err := os.ReadFile(file)
+	raw, readAt, err := readRegular(file, MaxSize)
 	if err != nil {
 		return nil, false, fmt.Errorf("reading %s: %w", file, err)
 	}
-
-	after, err := os.Lstat(file)
-	if err != nil {
-		return nil, false, fmt.Errorf("reading %s: %w", file, err)
-	}
-	if !after.Mode().IsRegular() {
-		return nil, false, fmt.Errorf("reading %s: %w", file, busy)
-	}
-	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
-		return nil, false, fmt.Errorf("reading %s: %w", file, busy)
+	if !os.SameFile(before, readAt) {
+		return nil, false, fmt.Errorf("reading %s: %w", file, errBusy)
 	}
 	return raw, true, nil
+}
+
+func readRegular(file string, limit int64) ([]byte, os.FileInfo, error) {
+	opened, err := os.OpenFile(file, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = opened.Close() }()
+
+	before, err := opened.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !before.Mode().IsRegular() {
+		return nil, nil, errors.New("it is not a file")
+	}
+	raw, err := io.ReadAll(io.LimitReader(opened, limit+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	after, err := opened.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	landed, err := os.Lstat(file)
+	if err != nil {
+		return nil, nil, errBusy
+	}
+	if !landed.Mode().IsRegular() || !os.SameFile(before, landed) ||
+		after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) ||
+		landed.Size() != before.Size() || !landed.ModTime().Equal(before.ModTime()) {
+		return nil, nil, errBusy
+	}
+	return raw, before, nil
 }
 
 // same reports whether a history is where it was.

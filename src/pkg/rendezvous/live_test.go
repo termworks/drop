@@ -35,7 +35,7 @@ func TestLiveRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("starting the node: %v", err)
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	// A relay address is what gets published, and there is none until the endpoint has reached one.
 	if err := n.Endpoint.Online(ctx); err != nil {
@@ -66,7 +66,7 @@ func TestLiveRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the publisher: %v", err)
 	}
-	defer publisher.Close()
+	defer func() { _ = publisher.Close() }()
 
 	publisher.Publish(dns.EndpointDataFromAddr(addr))
 

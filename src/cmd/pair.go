@@ -7,17 +7,17 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"os"
 	"os/signal"
-	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tmc/go-iroh/iroh"
+	"golang.org/x/term"
 
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/dial"
@@ -31,7 +31,6 @@ import (
 func newPairCmd() *cobra.Command {
 	var (
 		as      string
-		showQR  bool
 		code    string
 		wait    time.Duration
 		machine bool
@@ -53,13 +52,12 @@ func newPairCmd() *cobra.Command {
 			if len(args) == 1 {
 				return joinPairing(cmd.Context(), args[0], as, wait, machine, at)
 			}
-			return offerPairing(cmd.Context(), as, code, wait, showQR, machine)
+			return offerPairing(cmd.Context(), as, code, wait, machine)
 		},
 	}
 
 	cmd.Flags().StringVar(&as, "as", "", "the local name to file the other device under")
 	cmd.Flags().StringVar(&code, "code", "", "use this pairing code instead of a generated one")
-	cmd.Flags().BoolVar(&showQR, "qr", false, "draw the ticket as a code a phone can read")
 	cmd.Flags().DurationVarP(&wait, "wait", "w", 5*time.Minute, "how long to keep pairing open")
 	cmd.Flags().BoolVar(&machine, "machine", false, "pair with this device alone, not with whoever owns it")
 	cmd.Flags().StringSliceVar(&at, "at", nil, "where to reach the other device, when finding it fails (host:port)")
@@ -75,55 +73,6 @@ func newPairCmd() *cobra.Command {
 // the ticket twice as long to type and its code too big to draw.
 func ticketFor(id node.ID, code string) string {
 	return id.String() + "#" + code
-}
-
-// likeliest sorts addresses by how likely they are to reach this machine from another one.
-//
-// An ordinary home or office network first, then anything else. A virtual bridge is put last:
-// libvirt and docker hand out 192.168.122.x and 172.17.x on every machine that runs them, so
-// the address is real here and means nothing there.
-func likeliest(addrs []netip.AddrPort) []netip.AddrPort {
-	out := make([]netip.AddrPort, 0, len(addrs))
-	for _, at := range addrs {
-		// Dropped rather than ranked last: it is the same address on the far machine as on this
-		// one, so offering it sends them to themselves. A slot spent on it is a slot wasted.
-		if virtual(at.Addr()) {
-			continue
-		}
-		out = append(out, at)
-	}
-
-	sort.SliceStable(out, func(i, j int) bool { return rank(out[i]) < rank(out[j]) })
-	return out
-}
-
-func rank(at netip.AddrPort) int {
-	ip := at.Addr()
-
-	switch {
-	case ip.IsPrivate():
-		return 1
-	case ip.IsLoopback() || ip.IsLinkLocalUnicast():
-		return 4
-	default:
-		return 2
-	}
-}
-
-// virtual spots the ranges a hypervisor or a container runtime hands out on every host.
-func virtual(ip netip.Addr) bool {
-	if !ip.Is4() {
-		return false
-	}
-	b := ip.As4()
-
-	switch {
-	case b[0] == 192 && b[1] == 168 && b[2] == 122: // libvirt
-		return true
-	case b[0] == 172 && b[1] >= 17 && b[1] <= 31: // docker
-		return true
-	}
-	return false
 }
 
 func readTicket(text string) (node.ID, string, error) {
@@ -167,14 +116,17 @@ func asAddrs(written []string) ([]netip.AddrPort, error) {
 	return out, nil
 }
 
+// errNotTheCode is what a device that did not hold the code is told.
+var errNotTheCode = errors.New("that is not the code being shown")
+
 // codeProof binds an attempt to the code, so a device that was not invited cannot complete one.
 func codeProof(code string, initiator, responder node.ID) []byte {
 	mac := hmac.New(sha256.New, []byte(code))
-	fmt.Fprintf(mac, "drop:pair:proof:v1:%s:%s", initiator, responder)
+	_, _ = fmt.Fprintf(mac, "drop:pair:proof:v1:%s:%s", initiator, responder)
 	return mac.Sum(nil)
 }
 
-func offerPairing(parent context.Context, as, code string, wait time.Duration, showQR, machine bool) error {
+func offerPairing(parent context.Context, as, code string, wait time.Duration, machine bool) error {
 	// A given code makes pairing scriptable: the ticket can be built by the caller rather than
 	// scraped out of this output.
 	if code == "" {
@@ -192,7 +144,7 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, s
 
 	// Through the daemon when one is running: it holds this identity's address, so it is the one
 	// anybody dialling the ticket will reach, and only it can answer them.
-	if err := offerThroughDaemon(ctx, as, code, wait, showQR, machine); err == nil {
+	if err := offerThroughDaemon(ctx, as, code, wait, machine); err == nil {
 		return nil
 	} else if !errors.Is(err, errNoDaemon) {
 		return err
@@ -203,7 +155,7 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, s
 	if err != nil {
 		return err
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	if _, err := discovery.StartLAN(ctx, n); err != nil {
 		fmt.Fprintf(os.Stderr, "drop: mDNS unavailable: %v\n", err)
@@ -217,34 +169,50 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, s
 
 	invite := ticketFor(n.ID(), code)
 
-	showTicket(invite, wait, showQR)
+	showTicket(invite, wait)
 
-	paired := make(chan proto.Pairing, 1)
+	// One pairing per code. The first that proves it holds the code is written down, and only then
+	// answered, so whatever it opens straight afterwards is met by somebody who knows it.
+	type filedAs struct {
+		p    proto.Pairing
+		name string
+	}
+	var once sync.Mutex
+	taken := false
+	paired := make(chan filedAs, 1)
 	go serveLoop(ctx, n, map[string]func(node.ID, *iroh.Stream){
 		node.ALPNPair: func(from node.ID, s *iroh.Stream) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 
-			p, err := proto.AnswerPairing(s, n.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(n)))
-			if err != nil {
-				return
-			}
-			// The far end has to prove it was given the code, not merely the address.
-			if !hmac.Equal(p.Proof, codeProof(code, from, n.ID())) {
-				fmt.Fprintf(os.Stderr, "drop: %s tried to pair without the code\n", node.Brief(from))
-				return
-			}
-			select {
-			case paired <- p:
-			default:
-			}
+			_, _ = proto.AnswerPairing(s, n.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(n)), func(p proto.Pairing) error {
+				// The far end has to prove it was given the code, not merely the address.
+				if !hmac.Equal(p.Proof, codeProof(code, from, n.ID())) {
+					fmt.Fprintf(os.Stderr, "drop: %s tried to pair without the code\n", node.Brief(from))
+					return errNotTheCode
+				}
+
+				once.Lock()
+				defer once.Unlock()
+				if taken {
+					return errors.New("that code has already been used")
+				}
+				name, err := filed(p, as, machine)
+				if err != nil {
+					return err
+				}
+				taken = true
+				paired <- filedAs{p: p, name: name}
+				return nil
+			})
 		},
 	})
 
 	select {
 	case <-ctx.Done():
 		return fmt.Errorf("nobody paired within %s", wait)
-	case p := <-paired:
-		return record(p, as, machine)
+	case at := <-paired:
+		announce(at.p, at.name, machine)
+		return nil
 	}
 }
 
@@ -254,12 +222,27 @@ func joinPairing(parent context.Context, ticket, as string, wait time.Duration, 
 	ctx, cancel := context.WithTimeout(parent, wait)
 	defer cancel()
 
+	// Through the daemon when one is running: it is the node the other device will reach from now
+	// on, so it is the one whose address the pairing has to carry.
+	name, id, called, err := joinThroughDaemon(ctx, ticket, as, machine, at)
+	if err == nil {
+		fmt.Printf("\npaired with %s\n  %s\n", name, id)
+		if called != "" && !machine {
+			fmt.Printf("  a machine of theirs, called %q\n", called)
+		}
+		fmt.Printf("\neither device can now reach the other by name.\n")
+		return nil
+	}
+	if !errors.Is(err, errNoDaemon) {
+		return err
+	}
+
 	trace("node.Start")
 	n, err := node.Start(ctx)
 	if err != nil {
 		return err
 	}
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	trace("node started; StartLAN")
 	lan, err := discovery.StartLAN(ctx, n)
@@ -296,19 +279,39 @@ func filed(p proto.Pairing, as string, machine bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	// A name is this machine's own label, and the far end suggested one. Letting a pairing take a
-	// name that is already somebody else's would hand that name, and every rule written against
-	// it, to whoever paired last.
-	if held, taken := b.Lookup(name); taken && held.ID != p.Peer {
-		return "", fmt.Errorf("%q is already %s here; pair with --as to choose another name", name, node.Brief(held.ID))
-	}
-
-	b.Pair(name, p.Peer, p.Secret, p.Addrs...)
+	nextUser := ""
 	if !machine {
-		b.Belongs(name, p.User)
+		nextUser = p.User
 	}
-	return name, b.Save()
+
+	err = b.Change(func() (bool, error) {
+		// Refuse to reassign a name held by another machine.
+		if held, taken := b.Lookup(name); taken && held.ID != p.Peer {
+			return false, fmt.Errorf("%q is already %s here; pair with --as to choose another name", name, node.Brief(held.ID))
+		}
+		for _, held := range b.All() {
+			if held.Person == name && held.User != nextUser && held.ID != p.Peer {
+				return false, fmt.Errorf("%q already names a person here; pair with --as to choose another name", name)
+			}
+			if held.ID == p.Peer && held.Name != name {
+				return false, fmt.Errorf("%s is already filed as %q; forget %q before pairing it as %q",
+					node.Brief(p.Peer), held.Name, held.Name, name)
+			}
+		}
+
+		held, replacing := b.Lookup(name)
+		keepTrust := replacing && held.ID == p.Peer && held.Trusted && held.User == nextUser
+
+		b.Pair(name, p.Peer, p.Secret, p.Addrs...)
+		if !machine {
+			b.Belongs(name, p.User)
+		}
+		if keepTrust {
+			b.Trust(name, true)
+		}
+		return true, nil
+	})
+	return name, err
 }
 
 // announce says who was paired with, for the interfaces that print rather than draw.
@@ -388,8 +391,8 @@ func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as stri
 	if err != nil {
 		return proto.Pairing{}, "", err
 	}
-	defer conn.Close()
-	defer s.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = s.Close() }()
 
 	p, err := proto.Pair(s, n.ID(), id, node.DisplayName(), codeProof(code, n.ID(), id), written(discovery.LocalAddrs(n)))
 	if err != nil {
@@ -401,49 +404,18 @@ func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as stri
 }
 
 // offerThroughDaemon asks the running node to show a code, and waits for somebody to take it.
-func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration, showQR, machine bool) error {
-	path, err := castSocket()
+func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration, machine bool) error {
+	said, done, err := offerAtDaemon(ctx, code, as, machine)
 	if err != nil {
-		return errNoDaemon
+		return err
 	}
-
-	conn, err := net.Dial("unix", path)
-	if err != nil {
-		return errNoDaemon
-	}
-	defer conn.Close()
+	defer done()
 
 	id, err := node.LocalID()
 	if err != nil {
 		return err
 	}
-
-	// A dash for a name that was not given, and always a kind, so the line is three fields.
-	name := as
-	if name == "" {
-		name = "-"
-	}
-	kind := "person"
-	if machine {
-		kind = "machine"
-	}
-	if _, err := fmt.Fprintf(conn, "pair %s %s %s\n", code, name, kind); err != nil {
-		return err
-	}
-
-	showTicket(ticketFor(id, code), wait, showQR)
-
-	// The daemon answers with one line: who paired, or why nobody did. Closing this connection is
-	// what takes the code back down, so a cancelled command does not leave one live.
-	said := make(chan string, 1)
-	go func() {
-		line, err := bufio.NewReader(conn).ReadString('\n')
-		if err != nil {
-			close(said)
-			return
-		}
-		said <- strings.TrimSpace(line)
-	}()
+	showTicket(ticketFor(id, code), wait)
 
 	select {
 	case <-ctx.Done():
@@ -467,10 +439,13 @@ func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration
 }
 
 // showTicket prints an invitation the same way whoever is answering it happens to be arranged.
-func showTicket(invite string, wait time.Duration, showQR bool) {
-	if showQR {
+//
+// The code is drawn whenever a person is reading, because the other device is as likely to be a
+// phone with a camera as a machine with a keyboard. Piped, it is only the text a script wants.
+func showTicket(invite string, wait time.Duration) {
+	if term.IsTerminal(int(os.Stdout.Fd())) {
 		if qrCode, err := tickets.Code(invite); err == nil {
-			fmt.Printf("\n%s", tickets.Render(qrCode))
+			fmt.Printf("\n%s", tickets.Painted(qrCode))
 		} else {
 			fmt.Fprintf(os.Stderr, "drop: could not draw a code: %v\n", err)
 		}
@@ -479,4 +454,47 @@ func showTicket(invite string, wait time.Duration, showQR bool) {
 	fmt.Printf("\n  ticket:  %s\n", invite)
 	fmt.Printf("  link:    %s\n\n", tickets.Link(invite))
 	fmt.Printf("run this on the other machine, within %s:\n\n  drop peer pair %s\n\nwaiting...\n", wait, invite)
+}
+
+// offerAtDaemon asks the running node to show a code, and yields the one line it answers with: who
+// paired, or why nobody did. What it hands back closes the connection, which is what takes the code
+// back down, so an offer that is abandoned does not leave one live.
+func offerAtDaemon(ctx context.Context, code, as string, machine bool) (<-chan string, func(), error) {
+	path, err := castSocket()
+	if err != nil {
+		return nil, nil, errNoDaemon
+	}
+
+	conn, err := dialLocal(ctx, path)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+		return nil, nil, errNoDaemon
+	}
+
+	// A dash for a name that was not given, and always a kind, so the line is three fields.
+	name := as
+	if name == "" {
+		name = "-"
+	}
+	kind := "person"
+	if machine {
+		kind = "machine"
+	}
+	if err := writeLocal(conn, "pair %s %s %s\n", code, name, kind); err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+
+	said := make(chan string, 1)
+	go func() {
+		line, err := readLocalLine(bufio.NewReader(conn))
+		if err != nil {
+			close(said)
+			return
+		}
+		said <- strings.TrimSpace(line)
+	}()
+	return said, func() { _ = conn.Close() }, nil
 }

@@ -2,17 +2,23 @@ package share
 
 import (
 	"bytes"
-	"github.com/tmc/go-iroh/key"
 	"io"
+	"math"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/tmc/go-iroh/key"
 	"lukechampine.com/blake3"
 
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
+
+var testTransferID = transferID{1}
 
 // spoke is one item as a sender puts it on the wire: what it sends now, and everything the item is,
 // which is what the digest covers.
@@ -33,7 +39,7 @@ func spoken(t *testing.T, items ...spoke) *bytes.Buffer {
 			}
 		}
 		digest := blake3.New(32, nil)
-		digest.Write(item.whole)
+		_, _ = digest.Write(item.whole)
 		end := wire.End{Size: int64(len(item.whole)), Digest: digest.Sum(nil)}
 		if err := conn.WriteFrame(wire.KindEnd, end.Encode()); err != nil {
 			t.Fatalf("writing the end: %v", err)
@@ -49,7 +55,7 @@ func taking(t *testing.T, dir string, items []Item, sent *bytes.Buffer, done *[]
 	t.Helper()
 
 	var offering bytes.Buffer
-	if err := wire.NewConn(readWriter{&offering, &offering}).WriteFrame(wire.KindItem, offer{Items: items}.encode()); err != nil {
+	if err := wire.NewConn(readWriter{&offering, &offering}).WriteFrame(wire.KindItem, offer{ID: testTransferID, Items: items}.encode()); err != nil {
 		t.Fatalf("writing the offer: %v", err)
 	}
 	offering.Write(sent.Bytes())
@@ -68,6 +74,74 @@ func taking(t *testing.T, dir string, items []Item, sent *bytes.Buffer, done *[]
 type readWriter struct {
 	io.Reader
 	io.Writer
+}
+
+type liveTaking struct {
+	conn *wire.Conn
+	peer net.Conn
+	done <-chan error
+}
+
+func offerLive(t *testing.T, dir string, from node.ID, item Item) liveTaking {
+	t.Helper()
+
+	receiver, sender := net.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		done <- receive(wire.NewConn(receiver), dir, from, Into{})
+		_ = receiver.Close()
+	}()
+	if err := sender.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	conn := wire.NewConn(sender)
+	if err := conn.WriteFrame(wire.KindItem, offer{ID: testTransferID, Items: []Item{item}}.encode()); err != nil {
+		t.Fatalf("writing live offer: %v", err)
+	}
+	return liveTaking{conn: conn, peer: sender, done: done}
+}
+
+func (l liveTaking) answer(t *testing.T) (byte, []byte) {
+	t.Helper()
+	kind, body, err := l.conn.ReadFrame()
+	if err != nil {
+		t.Fatalf("reading live answer: %v", err)
+	}
+	return kind, body
+}
+
+func (l liveTaking) wait(t *testing.T) error {
+	t.Helper()
+	select {
+	case err := <-l.done:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("live receive did not return")
+		return nil
+	}
+}
+
+func (l liveTaking) finish(t *testing.T, sent, whole []byte) {
+	t.Helper()
+	if err := l.conn.WriteData(sent); err != nil {
+		t.Fatalf("writing live data: %v", err)
+	}
+	digest := blake3.Sum256(whole)
+	if err := l.conn.WriteFrame(wire.KindEnd, wire.End{Size: int64(len(whole)), Digest: digest[:]}.Encode()); err != nil {
+		t.Fatalf("writing live end: %v", err)
+	}
+	kind, ackBody := l.answer(t)
+	if kind != wire.KindAck {
+		t.Fatalf("live transfer answered with kind %d, expected ack", kind)
+	}
+	ack, err := wire.DecodeAck(ackBody)
+	if err != nil || !ack.OK {
+		t.Fatalf("live transfer ack = %+v (%v)", ack, err)
+	}
+	if err := l.wait(t); err != nil {
+		t.Fatalf("live receive: %v", err)
+	}
+	_ = l.peer.Close()
 }
 
 // answered reads back the frames a receiving session wrote.
@@ -98,6 +172,122 @@ func read(t *testing.T, path string) []byte {
 	return body
 }
 
+func TestOnlyOneSessionLandsInADirectory(t *testing.T) {
+	dir := t.TempDir()
+	from := idFor(1)
+	item := Item{Name: "same.bin", Size: 3, Mode: 0o600}
+
+	first := offerLive(t, dir, from, item)
+	defer func() { _ = first.peer.Close() }()
+	if kind, _ := first.answer(t); kind != wire.KindAccept {
+		t.Fatalf("first session answered with kind %d", kind)
+	}
+
+	blocked := offerLive(t, dir, from, item)
+	defer func() { _ = blocked.peer.Close() }()
+	if err := blocked.peer.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	kind, body := blocked.answer(t)
+	if kind != wire.KindReject {
+		t.Fatalf("competing session answered with kind %d, expected reject", kind)
+	}
+	reject, err := wire.DecodeReject(body)
+	if err != nil || !strings.Contains(reject.Reason, "another transfer") {
+		t.Fatalf("competing session refusal = %+v (%v)", reject, err)
+	}
+	if err := blocked.wait(t); err == nil || !strings.Contains(err.Error(), "another transfer") {
+		t.Fatalf("competing receive returned %v", err)
+	}
+	first.finish(t, []byte("one"), []byte("one"))
+
+	retry := offerLive(t, dir, from, item)
+	defer func() { _ = retry.peer.Close() }()
+	if kind, _ := retry.answer(t); kind != wire.KindAccept {
+		t.Fatalf("retry answered with kind %d", kind)
+	}
+	retry.finish(t, []byte("two"), []byte("two"))
+
+	if got := read(t, filepath.Join(dir, "same.bin")); string(got) != "one" {
+		t.Fatalf("first file = %q", got)
+	}
+	if got := read(t, filepath.Join(dir, "same-1.bin")); string(got) != "two" {
+		t.Fatalf("second file = %q", got)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".part") {
+			t.Fatalf("orphaned part %s", entry.Name())
+		}
+	}
+}
+
+func TestSessionsLandInDifferentDirectoriesTogether(t *testing.T) {
+	from := idFor(1)
+	item := Item{Name: "same.bin", Size: 3, Mode: 0o600}
+	leftDir, rightDir := t.TempDir(), t.TempDir()
+	left := offerLive(t, leftDir, from, item)
+	right := offerLive(t, rightDir, from, item)
+	defer func() { _ = left.peer.Close() }()
+	defer func() { _ = right.peer.Close() }()
+
+	if kind, _ := left.answer(t); kind != wire.KindAccept {
+		t.Fatalf("left session answered with kind %d", kind)
+	}
+	if kind, _ := right.answer(t); kind != wire.KindAccept {
+		t.Fatalf("right session answered with kind %d", kind)
+	}
+	left.finish(t, []byte("one"), []byte("one"))
+	right.finish(t, []byte("two"), []byte("two"))
+
+	if got := read(t, filepath.Join(leftDir, "same.bin")); string(got) != "one" {
+		t.Fatalf("left file = %q", got)
+	}
+	if got := read(t, filepath.Join(rightDir, "same.bin")); string(got) != "two" {
+		t.Fatalf("right file = %q", got)
+	}
+}
+
+func TestInterruptedSessionReleasesTheDirectoryForResume(t *testing.T) {
+	dir := t.TempDir()
+	from := idFor(1)
+	whole := []byte("0123456789")
+	item := Item{Name: "resume.bin", Size: int64(len(whole)), Mode: 0o600}
+
+	interrupted := offerLive(t, dir, from, item)
+	if kind, _ := interrupted.answer(t); kind != wire.KindAccept {
+		t.Fatalf("interrupted session answered with kind %d", kind)
+	}
+	if err := interrupted.conn.WriteData(whole[:4]); err != nil {
+		t.Fatalf("writing partial data: %v", err)
+	}
+	if err := interrupted.peer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := interrupted.wait(t); err == nil {
+		t.Fatal("interrupted receive returned no error")
+	}
+
+	retry := offerLive(t, dir, from, item)
+	defer func() { _ = retry.peer.Close() }()
+	kind, body := retry.answer(t)
+	if kind != wire.KindAccept {
+		t.Fatalf("resume answered with kind %d", kind)
+	}
+	picked, err := decodeResume(body)
+	if err != nil || len(picked.At) != 1 || picked.At[0] != 4 {
+		t.Fatalf("resume offsets = %v (%v)", picked.At, err)
+	}
+	retry.finish(t, whole[4:], whole)
+
+	if got := read(t, filepath.Join(dir, "resume.bin")); !bytes.Equal(got, whole) {
+		t.Fatalf("resumed file = %q", got)
+	}
+}
+
 // A .part left behind by a transfer that stopped is longer than the item that comes next. Without
 // truncation its tail stays under the new bytes, and the digest -- taken over the stream -- passes.
 func TestAStalePartIsNotLeftUnderTheItem(t *testing.T) {
@@ -105,7 +295,7 @@ func TestAStalePartIsNotLeftUnderTheItem(t *testing.T) {
 	item := Item{Name: "notes", Size: wire.SizeUnknown, Mode: 0o644}
 
 	stale := bytes.Repeat([]byte("x"), 4096)
-	if err := os.WriteFile(filepath.Join(dir, partName(node.ID{}, item)), stale, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, partName(node.ID{}, transferID{2}, item)), stale, 0o600); err != nil {
 		t.Fatalf("planting a stale part: %v", err)
 	}
 
@@ -123,7 +313,7 @@ func TestAStalePartIsNotLeftUnderTheItem(t *testing.T) {
 func TestResumeOnlyPicksUpTheSameOffer(t *testing.T) {
 	dir := t.TempDir()
 	earlier := Item{Name: "a.txt", Size: 10}
-	if err := os.WriteFile(filepath.Join(dir, partName(node.ID{}, earlier)), []byte("0123456789"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, partName(node.ID{}, testTransferID, earlier)), []byte("0123456789"), 0o600); err != nil {
 		t.Fatalf("planting an earlier part: %v", err)
 	}
 
@@ -153,7 +343,7 @@ func TestResumeContinuesTheSameOffer(t *testing.T) {
 	whole := []byte("0123456789abcdef")
 	item := Item{Name: "b.bin", Size: int64(len(whole))}
 
-	if err := os.WriteFile(filepath.Join(dir, partName(node.ID{}, item)), whole[:6], 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, partName(node.ID{}, testTransferID, item)), whole[:6], 0o600); err != nil {
 		t.Fatalf("planting a part: %v", err)
 	}
 
@@ -228,6 +418,108 @@ func TestAnOfferCannotNameOneFileTwice(t *testing.T) {
 	}
 }
 
+func TestAnOfferCannotUseAnInvalidUnknownSize(t *testing.T) {
+	dir := t.TempDir()
+	item := Item{Name: "a.txt", Size: wire.SizeUnknown - 1}
+
+	if _, err := taking(t, dir, []Item{item}, spoken(t), nil); err == nil {
+		t.Fatal("an offer with an invalid negative size was taken")
+	}
+	left, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("the refused offer left %d files", len(left))
+	}
+}
+
+func TestAnOfferLargerThanFreeSpaceIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	item := Item{Name: "too-large", Size: math.MaxInt64}
+	config := Config{
+		Dir: dir, MaxItemBytes: math.MaxInt64, MaxSessionBytes: math.MaxInt64, instance: newConfigInstance(),
+	}
+
+	var out bytes.Buffer
+	err := serveBatch(t, New(Into{}), config, "/share", []Item{item}, spoken(t), &out)
+	if err == nil || !strings.Contains(err.Error(), "stay free") {
+		t.Fatalf("the oversized offer was answered with %v", err)
+	}
+
+	conn := wire.NewConn(readWriter{&out, &bytes.Buffer{}})
+	kind, body, err := conn.ReadFrame()
+	if err != nil {
+		t.Fatalf("reading the refusal: %v", err)
+	}
+	if kind != wire.KindReject {
+		t.Fatalf("answered with frame kind %d, expected a reject", kind)
+	}
+	reject, err := wire.DecodeReject(body)
+	if err != nil || !strings.Contains(reject.Reason, "free space") {
+		t.Fatalf("the refusal says %q (%v)", reject.Reason, err)
+	}
+}
+
+func TestAKnownSizeCannotBeExceeded(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("too long")
+	item := Item{Name: "a.txt", Size: 3}
+
+	if _, err := taking(t, dir, []Item{item}, spoken(t, spoke{sent: body, whole: body}), nil); err == nil {
+		t.Fatal("an item larger than its offer was taken")
+	}
+	left, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("the oversized item left %d files", len(left))
+	}
+}
+
+func TestAnOversizedItemNeedsNoEndFrameToStop(t *testing.T) {
+	dir := t.TempDir()
+	item := Item{Name: "a.txt", Size: 3}
+	var sent bytes.Buffer
+	if err := wire.NewConn(readWriter{&sent, &sent}).WriteData([]byte("too long")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := taking(t, dir, []Item{item}, &sent, nil); err == nil || !strings.Contains(err.Error(), "more than the announced") {
+		t.Fatalf("oversized item ended as %v", err)
+	}
+}
+
+func TestAnEmptyDataFrameStopsAnItem(t *testing.T) {
+	var sent bytes.Buffer
+	if err := wire.NewConn(readWriter{&sent, &sent}).WriteFrame(wire.KindData, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	item := Item{Name: "a.txt", Size: wire.SizeUnknown}
+	if _, err := taking(t, t.TempDir(), []Item{item}, &sent, nil); err == nil || !strings.Contains(err.Error(), "empty data frame") {
+		t.Fatalf("empty data frame ended as %v", err)
+	}
+}
+
+func TestAKnownSizeMustBeReached(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("short")
+	item := Item{Name: "a.txt", Size: 8}
+
+	if _, err := taking(t, dir, []Item{item}, spoken(t, spoke{sent: body, whole: body}), nil); err == nil {
+		t.Fatal("an item smaller than its offer was taken")
+	}
+	left, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("the undersized item left %d files", len(left))
+	}
+}
+
 // The sender's permission bits are a stranger's opinion: all that survives is whether it is a
 // program, and the directory is this user's alone.
 func TestWhatLandsIsNotTheSendersMode(t *testing.T) {
@@ -273,7 +565,7 @@ func TestASymlinkedPartIsNotWrittenThrough(t *testing.T) {
 	}
 
 	item := Item{Name: "notes", Size: wire.SizeUnknown}
-	if err := os.Symlink(outside, filepath.Join(dir, partName(node.ID{}, item))); err != nil {
+	if err := os.Symlink(outside, filepath.Join(dir, partName(node.ID{}, testTransferID, item))); err != nil {
 		t.Fatalf("planting a symlink: %v", err)
 	}
 
@@ -356,10 +648,10 @@ func TestAPartPlantedInsideIsNotWrittenThrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 
 	item := Item{Name: "report.txt", Size: 4, Mode: 0o644}
-	part := partName(node.ID{}, item)
+	part := partName(node.ID{}, testTransferID, item)
 	if err := os.Symlink("already-here", filepath.Join(base, part)); err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +660,7 @@ func TestAPartPlantedInsideIsNotWrittenThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening: %v", err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	if at != 0 {
 		t.Errorf("carried on at %d in a file it had just made", at)
@@ -391,10 +683,10 @@ func TestResumeOnlyCarriesOnInAPlainFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 
 	item := Item{Name: "report.txt", Size: 40, Mode: 0o644}
-	part := partName(node.ID{}, item)
+	part := partName(node.ID{}, testTransferID, item)
 
 	if err := os.WriteFile(filepath.Join(base, "elsewhere"), []byte("0123456789"), 0o600); err != nil {
 		t.Fatal(err)
@@ -407,7 +699,7 @@ func TestResumeOnlyCarriesOnInAPlainFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening: %v", err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	if at != 0 {
 		t.Errorf("carried on at %d through a name it did not make", at)
@@ -434,19 +726,22 @@ func idFor(n byte) node.ID {
 func TestTwoSendersDoNotShareOnePartFile(t *testing.T) {
 	item := Item{Name: "report.pdf", Size: 4096}
 
-	one, two := partName(idFor(1), item), partName(idFor(2), item)
+	one := partName(idFor(1), transferID{1}, item)
+	two := partName(idFor(2), transferID{1}, item)
 	if one == two {
 		t.Fatalf("two senders offering %q at %d bytes both wait in %s", item.Name, item.Size, one)
 	}
 
 	// And one sender coming back to the same offer finds its own file again, or a dropped
 	// connection would start from nothing every time.
-	if again := partName(idFor(1), item); again != one {
+	if again := partName(idFor(1), transferID{1}, item); again != one {
 		t.Fatalf("the same sender came back to %s, having left %s", again, one)
 	}
 
-	// A different offer from the same sender is still a different file.
-	if other := partName(idFor(1), Item{Name: "report.pdf", Size: 8192}); other == one {
+	if other := partName(idFor(1), transferID{2}, item); other == one {
+		t.Fatal("two transfers from one sender share a part file")
+	}
+	if other := partName(idFor(1), transferID{1}, Item{Name: "report.pdf", Size: 8192}); other == one {
 		t.Fatal("two different offers from one sender share a part file")
 	}
 }

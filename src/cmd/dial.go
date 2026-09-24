@@ -65,58 +65,174 @@ func serveLoopKeeping(
 	held *dial.Kept,
 	arrived func(node.ID),
 ) {
+	var waiting time.Duration
+	connections := make(chan struct{}, maxServingConnections)
+	streams := make(chan struct{}, maxServingStreams)
+	pushes := make(chan struct{}, maxArrivalPushes)
+	peerConnections := newPeerLimit(maxConnectionsPerPeer)
+	peerStreams := newPeerLimit(maxStreamsPerPeer)
+
 	for {
 		conn, err := n.Accept(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
+			if waiting == 0 {
+				fmt.Fprintf(os.Stderr, "drop: cannot accept endpoint connection: %v\n", err)
+			}
+			waiting = nextAcceptWait(waiting)
+			if !waitForAcceptRetry(ctx, waiting) {
+				return
+			}
 			continue
 		}
-
-		// Only a session connection is worth keeping. A hello is one question from a command that
-		// exits straight after, and holding it means the next question goes down a pipe whose far
-		// end left — which answers nothing, slowly.
-		if held != nil && conn.ALPN() == node.ALPNSession {
-			held.Adopt(conn.RemoteID(), conn.ALPN(), conn)
-		}
-		if arrived != nil {
-			go arrived(conn.RemoteID())
+		if waiting != 0 {
+			fmt.Fprintln(os.Stderr, "drop: accepting endpoint connections again")
+			waiting = 0
 		}
 
-		go serveConn(ctx, conn, handlers)
+		from := conn.RemoteID()
+		if !startPeerBounded(peerConnections, from, connections, func() {
+			// Only a session connection is worth keeping. A hello is one question from a command that
+			// exits straight after, and holding it means the next question goes down a pipe whose far
+			// end left — which answers nothing, slowly.
+			if held != nil && conn.ALPN() == node.ALPNSession {
+				held.Adopt(conn.RemoteID(), conn.ALPN(), conn)
+			}
+			if arrived != nil {
+				_ = startBounded(pushes, func() { arrived(conn.RemoteID()) })
+			}
+			serveConn(ctx, conn, handlers, streams, peerStreams)
+		}) {
+			_ = conn.Close()
+		}
 	}
 }
 
-func serveConn(ctx context.Context, conn *iroh.Conn, handlers map[string]func(node.ID, *iroh.Stream)) {
-	defer conn.Close()
+func serveConn(ctx context.Context, conn *iroh.Conn, handlers map[string]func(node.ID, *iroh.Stream), allStreams chan struct{}, peerStreams *peerLimit) {
+	defer func() { _ = conn.Close() }()
 
 	handle, ok := handlers[conn.ALPN()]
 	if !ok {
 		return
 	}
 	from := conn.RemoteID()
+	streams := make(chan struct{}, maxStreamsPerConnection)
 
 	for {
 		s, err := conn.AcceptStream(ctx)
 		if err != nil {
 			return
 		}
-		go handle(from, s)
+		if !startPeerBoundedWithin(peerStreams, from, streams, allStreams, func() { handle(from, s) }) {
+			_ = s.Close()
+		}
 	}
 }
 
-// parseAddrs reads what the address book wrote down, skipping anything unreadable.
-func parseAddrs(written []string) []netip.AddrPort {
-	out := make([]netip.AddrPort, 0, len(written))
-	for _, text := range written {
-		ap, err := netip.ParseAddrPort(text)
-		if err != nil {
-			continue
-		}
-		out = append(out, ap)
+const (
+	maxServingConnections   = 256
+	maxConnectionsPerPeer   = 16
+	maxServingStreams       = 64
+	maxStreamsPerPeer       = 16
+	maxStreamsPerConnection = 16
+	maxArrivalPushes        = 64
+)
+
+type peerLimit struct {
+	mu   sync.Mutex
+	most int
+	used map[node.ID]int
+}
+
+func newPeerLimit(most int) *peerLimit {
+	return &peerLimit{most: most, used: make(map[node.ID]int)}
+}
+
+func (p *peerLimit) take(id node.ID) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.used[id] >= p.most {
+		return false
 	}
-	return out
+	p.used[id]++
+	return true
+}
+
+func (p *peerLimit) give(id node.ID) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.used[id] <= 1 {
+		delete(p.used, id)
+		return
+	}
+	p.used[id]--
+}
+
+func startBounded(slots chan struct{}, work func()) bool {
+	select {
+	case slots <- struct{}{}:
+		go func() {
+			defer func() { <-slots }()
+			work()
+		}()
+		return true
+	default:
+		return false
+	}
+}
+
+func startPeerBounded(peers *peerLimit, id node.ID, slots chan struct{}, work func()) bool {
+	if !peers.take(id) {
+		return false
+	}
+	if startBounded(slots, func() {
+		defer peers.give(id)
+		work()
+	}) {
+		return true
+	}
+	peers.give(id)
+	return false
+}
+
+func startBoundedWithin(slots, all chan struct{}, work func()) bool {
+	select {
+	case slots <- struct{}{}:
+	default:
+		return false
+	}
+	select {
+	case all <- struct{}{}:
+	default:
+		<-slots
+		return false
+	}
+	go func() {
+		defer func() {
+			<-all
+			<-slots
+		}()
+		work()
+	}()
+	return true
+}
+
+func startPeerBoundedWithin(peers *peerLimit, id node.ID, slots, all chan struct{}, work func()) bool {
+	if !peers.take(id) {
+		return false
+	}
+	if startBoundedWithin(slots, all, func() {
+		defer peers.give(id)
+		work()
+	}) {
+		return true
+	}
+	peers.give(id)
+	return false
 }
 
 // startRendezvous begins publishing this device's address, when the config asked for it.
@@ -187,10 +303,6 @@ type listener struct {
 	handlers map[string]func(node.ID, *iroh.Stream)
 }
 
-func listenOn(ctx context.Context, n *node.Node, handlers map[string]func(node.ID, *iroh.Stream)) *listener {
-	return listenKeeping(ctx, n, handlers, nil, nil)
-}
-
 // listenKeeping is the same, keeping every session connection that arrives.
 //
 // The interface serves while it is open, so it needs what the daemon needs: a device that cannot be
@@ -208,27 +320,78 @@ func listenKeeping(
 	l := &listener{handlers: handlers}
 
 	go func() {
+		var waiting time.Duration
+		connections := make(chan struct{}, maxServingConnections)
+		streams := make(chan struct{}, maxServingStreams)
+		pushes := make(chan struct{}, maxArrivalPushes)
+		peerConnections := newPeerLimit(maxConnectionsPerPeer)
+		peerStreams := newPeerLimit(maxStreamsPerPeer)
+
 		for {
 			conn, err := n.Accept(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
+				if waiting == 0 {
+					fmt.Fprintf(os.Stderr, "drop: cannot accept endpoint connection: %v\n", err)
+				}
+				waiting = nextAcceptWait(waiting)
+				if !waitForAcceptRetry(ctx, waiting) {
+					return
+				}
 				continue
 			}
-
-			if held != nil && conn.ALPN() == node.ALPNSession {
-				held.Adopt(conn.RemoteID(), conn.ALPN(), conn)
-			}
-			if arrived != nil {
-				go arrived(conn.RemoteID())
+			if waiting != 0 {
+				fmt.Fprintln(os.Stderr, "drop: accepting endpoint connections again")
+				waiting = 0
 			}
 
-			go l.answer(ctx, conn)
+			from := conn.RemoteID()
+			if !startPeerBounded(peerConnections, from, connections, func() {
+				if held != nil && conn.ALPN() == node.ALPNSession {
+					held.Adopt(conn.RemoteID(), conn.ALPN(), conn)
+				}
+				if arrived != nil {
+					_ = startBounded(pushes, func() { arrived(conn.RemoteID()) })
+				}
+				l.answer(ctx, conn, streams, peerStreams)
+			}) {
+				_ = conn.Close()
+			}
 		}
 	}()
 
 	return l
+}
+
+const (
+	// firstAcceptWait is the initial delay after an accept failure.
+	firstAcceptWait = 10 * time.Millisecond
+	// slowestAcceptWait caps the delay between accept attempts.
+	slowestAcceptWait = 2 * time.Second
+)
+
+func nextAcceptWait(current time.Duration) time.Duration {
+	if current == 0 {
+		return firstAcceptWait
+	}
+	if current >= slowestAcceptWait/2 {
+		return slowestAcceptWait
+	}
+	return current * 2
+}
+
+func waitForAcceptRetry(ctx context.Context, waiting time.Duration) bool {
+	timer := time.NewTimer(waiting)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // holding keeps a connection to everybody paired, so a device that nothing can dial is reachable
@@ -238,15 +401,15 @@ func holding(ctx context.Context, pinned *book.Book, held *dial.Kept) {
 	defer tick.Stop()
 
 	for {
-		_ = pinned.Refresh()
-
-		for _, entry := range pinned.Paired() {
-			select {
-			case <-ctx.Done():
-				return
-			default:
+		if err := pinned.Refresh(); err == nil {
+			for _, entry := range pinned.Paired() {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				_ = held.Reach(ctx, entry, node.ALPNSession)
 			}
-			_ = held.Reach(ctx, entry, node.ALPNSession)
 		}
 
 		select {
@@ -270,8 +433,8 @@ func (l *listener) Handle(alpn string, handle func(node.ID, *iroh.Stream)) {
 	l.handlers[alpn] = handle
 }
 
-func (l *listener) answer(ctx context.Context, conn *iroh.Conn) {
-	defer conn.Close()
+func (l *listener) answer(ctx context.Context, conn *iroh.Conn, allStreams chan struct{}, peerStreams *peerLimit) {
+	defer func() { _ = conn.Close() }()
 
 	l.mu.Lock()
 	handle, ok := l.handlers[conn.ALPN()]
@@ -281,12 +444,15 @@ func (l *listener) answer(ctx context.Context, conn *iroh.Conn) {
 		return
 	}
 	from := conn.RemoteID()
+	streams := make(chan struct{}, maxStreamsPerConnection)
 
 	for {
 		s, err := conn.AcceptStream(ctx)
 		if err != nil {
 			return
 		}
-		go handle(from, s)
+		if !startPeerBoundedWithin(peerStreams, from, streams, allStreams, func() { handle(from, s) }) {
+			_ = s.Close()
+		}
 	}
 }

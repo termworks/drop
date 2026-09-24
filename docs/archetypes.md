@@ -22,16 +22,32 @@ A drop box. Things are pushed in and land in a directory; nothing in that direct
 readable from the other side.
 
 ```lua
-drop.mount("/inbox", { type = "share", dir = "~/Downloads" })
+drop.mount("/inbox", {
+  type = "share", dir = "~/Downloads",
+  max_item = "4 GiB", max_session = "16 GiB",
+})
 ```
 
 A push carries files, not whole directories. Each item is offered with its name and size, accepted
 with how much is already held, then sent and verified against a blake3 digest.
 
+Incoming items are limited to 4 GiB each and 16 GiB over one session by default. `max_item` and
+`max_session` use the same positive whole-byte sizes as [`files`](#files), including streamed input
+whose size was not known before it started.
+
 An item waits in a `.part` file while it arrives, so a dropped connection resumes rather than
-starting again. The sender is folded into that name along with the name and the size, because two
-peers offering a file of the same name and size would otherwise write into one file and each be told
-theirs had arrived.
+starting again. The sender and a random identity for the logical transfer are folded into that
+name. Retrying the transfer finds the same partial file, while a separate send of identical bytes
+gets a different identity.
+
+Receiver-owned partials use the reserved `.drop-<digest>.part` shape. Before another transfer is
+accepted, the oldest of those files are removed until their retained bytes fit `max_session` and
+no more than 1,024 remain. An active transfer can add no more than one further part and session
+limit. Other hidden `.part` files are not treated as drop's property.
+
+A verified landing is retained as a bounded receipt. If the final acknowledgement is lost, the
+sender reopens the namespace with the same identity and the receiver verifies and acknowledges the
+receipt instead of landing a numbered duplicate.
 
 `share` and `files` are not the same thing, and the difference is the point. A share appears and
 disappears: one side sends, the other receives, and afterwards there is nothing to open. A files
@@ -44,11 +60,19 @@ otherwise.
 
 ```lua
 drop.mount("/papers", { type = "files", dir = "~/papers" })
-drop.mount("/scratch", { type = "files", dir = "~/scratch", writable = true, access = { "me" } })
+drop.mount("/scratch", {
+  type = "files", dir = "~/scratch", writable = true, access = { "me" },
+  max_item = "4 GiB", max_session = "16 GiB",
+})
 ```
 
 `writable` is one flag, not one per operation: whoever it admits may upload, make directories, move
 things and **delete** them. Write it against a rule you would say out loud.
+
+Incoming files are limited to 4 GiB each and 16 GiB over one open session by default. Set
+`max_item` and `max_session` to positive whole-byte sizes using `B`, `KiB`, `MiB`, `GiB`, or
+`TiB`. The session limit cannot be smaller than the item limit. These bounds also apply when
+standard input or another stream did not know its size before it started.
 
 Rounds, one request and one reply at a time, for as long as the caller keeps asking. Every path is
 resolved through `os.Root`, so a name that climbs out — with `..`, an absolute path, a backslash, a
@@ -119,7 +143,11 @@ hand over, and it is off unless you say otherwise.
 
 One shell per path, not per watcher: somebody arriving late is handed the screen as it stands,
 rebuilt from the scrollback, and sees the same thing everybody else does. When the shell exits the
-terminal leaves the table so the next watcher starts a fresh one.
+terminal leaves the table so the next watcher starts a fresh one. It is as big as the smallest window
+watching it, and never below 80×24 while it is shared — see [sharing a terminal](terminal.md).
+
+`private = true` gives every watcher a shell of their own instead, which nobody else sees and which
+ends when they leave.
 
 `drop path cast` is the other half: a terminal read from standard input and served as an asciicast,
 for output that was recorded rather than a shell that is live.

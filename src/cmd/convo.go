@@ -2,10 +2,13 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/arch/chat"
 	"github.com/bresilla/drop/src/pkg/book"
@@ -50,8 +53,9 @@ func deliverOver(ctx context.Context, over reaches, entry book.Entry, path, arch
 	if err != nil {
 		return 0, err
 	}
-	defer done.Close()
-	defer s.Close()
+	defer func() { _ = done.Close() }()
+	defer func() { _ = s.Close() }()
+	defer stopStreamOnDone(ctx, s)()
 
 	conn, err := proto.Open(s, path, archetype, 0, "", node.DisplayName())
 	if err == nil {
@@ -67,7 +71,9 @@ func deliverOver(ctx context.Context, over reaches, entry book.Entry, path, arch
 	// will serve again a minute later, and that is not settled.
 	if proto.Settled(err) {
 		if done := ids(waiting); len(done) > 0 {
-			_ = store.Delivered(done...)
+			if clearErr := store.Delivered(done...); clearErr != nil {
+				return 0, errors.Join(err, fmt.Errorf("clearing messages after the refusal: %w", clearErr))
+			}
 		}
 	}
 	return 0, err
@@ -116,9 +122,16 @@ func receiving(pinned *book.Book, openLinks bool, show func(node.ID, convo.Messa
 
 // openInBrowser hands a link to the desktop. Detached, because drop is not the thing that should
 // die if a browser does.
-func openInBrowser(link string) {
-	if !strings.HasPrefix(link, "http://") && !strings.HasPrefix(link, "https://") {
-		return
+func openInBrowser(link string) bool {
+	return openWithBrowser(link, browserOpeners)
+}
+
+func openWithBrowser(link string, gate *browserGate) bool {
+	if len(link) > maxOpenedLink || (!strings.HasPrefix(link, "http://") && !strings.HasPrefix(link, "https://")) {
+		return false
+	}
+	if !gate.take(time.Now()) {
+		return false
 	}
 
 	opener := os.Getenv("DROP_OPENER")
@@ -127,11 +140,63 @@ func openInBrowser(link string) {
 	}
 	cmd := exec.Command(opener, link)
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "drop: could not open %s: %v\n", link, err)
-		return
+		gate.give()
+		fmt.Fprintf(os.Stderr, "drop: could not open %s: %v\n", plain.Text(link, MaxSaid), err)
+		return false
 	}
-	go cmd.Wait()
+	go func() {
+		defer gate.give()
+		_ = cmd.Wait()
+	}()
+	return true
 }
+
+const (
+	maxOpenedLink       = 8 << 10
+	maxBrowserProcesses = 4
+	maxBrowserStarts    = 8
+	browserWindow       = time.Minute
+)
+
+type browserGate struct {
+	processes chan struct{}
+	mu        sync.Mutex
+	started   []time.Time
+}
+
+func newBrowserGate() *browserGate {
+	return &browserGate{processes: make(chan struct{}, maxBrowserProcesses)}
+}
+
+func (g *browserGate) take(now time.Time) bool {
+	select {
+	case g.processes <- struct{}{}:
+	default:
+		return false
+	}
+
+	g.mu.Lock()
+	cutoff := now.Add(-browserWindow)
+	kept := g.started[:0]
+	for _, at := range g.started {
+		if at.After(cutoff) {
+			kept = append(kept, at)
+		}
+	}
+	g.started = kept
+	if len(g.started) >= maxBrowserStarts {
+		g.mu.Unlock()
+		<-g.processes
+		return false
+	}
+	g.started = append(g.started, now)
+	g.mu.Unlock()
+	return true
+}
+
+func (g *browserGate) give() { <-g.processes }
+
+var browserOpeners = newBrowserGate()
 
 // nameFor is what to call a peer in a listing.
 func nameFor(pinned *book.Book, id node.ID) string {
@@ -172,12 +237,15 @@ func render(who string, m convo.Message) string {
 const MaxSaid = 2000
 
 // noteFile records a file changing hands, so `drop me log` reads as the whole story.
-func noteFile(with node.ID, dir byte, name string, size int64) {
+func noteFile(with node.ID, dir byte, name string, size int64) error {
 	store, err := convo.Open(with)
 	if err != nil {
-		return
+		return fmt.Errorf("recording %s in the conversation: %w", name, err)
 	}
-	_ = store.Note(convo.KindFile, dir, name, bytes(size))
+	if err := store.Note(convo.KindFile, dir, name, bytes(size)); err != nil {
+		return fmt.Errorf("recording %s in the conversation: %w", name, err)
+	}
+	return nil
 }
 
 // kindName is what a config sees a message kind as.
