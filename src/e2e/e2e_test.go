@@ -19,6 +19,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	tickets "github.com/bresilla/drop/src/pkg/ticket"
 )
 
 // node is one drop installation: its own identity, address book, conversations and config.
@@ -270,9 +272,10 @@ func pairing(t *testing.T, showing, taking *node, flags ...string) {
 
 // ticketIn finds the ticket in what `drop peer pair` printed.
 func ticketIn(said string) string {
+	// The whole ticket, out of the link: the code alone is looked up, and these run offline.
 	for _, line := range strings.Split(said, "\n") {
-		if _, rest, found := strings.Cut(line, "ticket:"); found {
-			return strings.TrimSpace(rest)
+		if _, rest, found := strings.Cut(line, "link:"); found {
+			return tickets.FromLink(strings.TrimSpace(rest))
 		}
 	}
 	return ""
