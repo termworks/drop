@@ -15,6 +15,7 @@ import (
 
 	"github.com/bresilla/drop/src/pkg/conf"
 	"github.com/bresilla/drop/src/pkg/keep"
+	"github.com/bresilla/drop/src/pkg/tui"
 	"github.com/bresilla/drop/src/pkg/user"
 )
 
@@ -74,14 +75,68 @@ func newKeyCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
 			fmt.Printf("  your key  %s\n", keySays())
-			if _, quiet := user.Quiet(); quiet && !user.Named() {
-				fmt.Println("\n  drop made this one. To be your SSH key or your YubiKey instead:")
-				fmt.Println("    drop me key use ~/.ssh/id_ed25519")
-				fmt.Println("    drop me key use ~/.ssh/id_ed25519_sk.pub")
+			if svc := ringingWith(); svc != nil && svc.Ringing() {
+				fmt.Println("            looking for your other machines that hold it")
+			}
+			var others []tui.KeyChoice
+			for _, k := range keyChoices() {
+				if !k.Current {
+					others = append(others, k)
+				}
+			}
+			if len(others) > 0 {
+				fmt.Println("\n  keys you could be instead:")
+				for _, k := range others {
+					fmt.Printf("    %-9s %s  %s\n", k.Kind, k.Print, tildePath(k.Path))
+					if k.Note != "" {
+						fmt.Printf("              %s\n", k.Note)
+					}
+				}
+			}
+			fmt.Println("\n  drop me key use <file> --yes    be one of them")
+			fmt.Println("  drop me key yubikey             be the key in your YubiKey")
+			return nil
+		},
+	}
+
+	var fresh bool
+	yubikey := &cobra.Command{
+		Use:   "yubikey",
+		Short: "Be the key in your YubiKey: its handles fetched, and it signs from then on",
+		Long: "Takes the handles of the keys your YubiKey holds into ~/.ssh — its PIN, and a touch — and\n" +
+			"becomes the one made for drop, or the only one. --new makes a key for drop on it first.\n\n" +
+			"Every machine of yours that fetches the same key from the YubiKey finds the others by itself.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			pubs, err := fetchYubiKey(fresh)
+			if err != nil {
+				return err
+			}
+			at, ok := pickFetched(pubs)
+			if !ok {
+				fmt.Println("your YubiKey holds more than one key:")
+				for _, p := range pubs {
+					fmt.Printf("  drop me key use %s --yes\n", tildePath(p))
+				}
+				return nil
+			}
+			pub, err := keyAt(at)
+			if err != nil {
+				return err
+			}
+			fmt.Println("signing this machine's badge — touch the YubiKey once more")
+			if _, err := becomeKey(at, pub); err != nil {
+				return err
+			}
+			fmt.Printf("you are %s now, the key in your YubiKey\n  %s\n", user.Fingerprint(pub), tildePath(at))
+			if said := rekeyDaemon(cmd.Context()); said != "" {
+				fmt.Println("  " + said)
 			}
 			return nil
 		},
 	}
+	yubikey.Flags().BoolVar(&fresh, "new", false, "make a key for drop on the YubiKey first")
+	cmd.AddCommand(yubikey)
 
 	var sure bool
 	use := &cobra.Command{
@@ -255,4 +310,24 @@ func rekeyDaemon(ctx context.Context) string {
 		return "the running drop could not take up the key: " + strings.TrimPrefix(said, "failed ")
 	}
 	return "the running drop took it up"
+}
+
+// Keys is every key on this machine its user could be.
+func (l *running) Keys() []tui.KeyChoice { return keyChoices() }
+
+// Rekey takes up the key the config names now, here and in the daemon this is a view onto.
+func (l *running) Rekey() error {
+	if err := conf.ApplySettings(reading()); err != nil {
+		return err
+	}
+	badge, signed, err := user.Mine(time.Now())
+	if err != nil && !errors.Is(err, user.ErrStale) {
+		return err
+	}
+	wear(badge, signed)
+	nudgeDoorbell()
+	if l.daemon {
+		_ = rekeyDaemon(context.Background())
+	}
+	return nil
 }
