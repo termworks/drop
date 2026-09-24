@@ -7,7 +7,10 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/tmc/go-iroh/iroh"
@@ -19,6 +22,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/live"
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/plain"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
@@ -217,9 +221,29 @@ func readLive(parent context.Context, o opening, raw bool) error {
 		if err == nil {
 			defer func() { _ = term.Restore(local, state) }()
 		}
+		shape := &watchingIn{where: o.where()}
 		if w, h, err := term.GetSize(local); err == nil {
+			shape.window(w, h)
 			_ = d.Resize(w, h)
 		}
+
+		// What the terminal is goes in the window's title, which is the one place a raw terminal
+		// has for it that does not draw over the far end's screen.
+		d.OnResize = func(cols, rows uint16) { shape.sized(int(cols), int(rows)) }
+		d.OnCompany = shape.company
+
+		// And a window that changes shape says so, the way any terminal program's does.
+		changes := make(chan os.Signal, 1)
+		signal.Notify(changes, syscall.SIGWINCH)
+		defer signal.Stop(changes)
+		go func() {
+			for range changes {
+				if w, h, err := term.GetSize(local); err == nil {
+					shape.window(w, h)
+					_ = d.Resize(w, h)
+				}
+			}
+		}()
 	}
 
 	// Closed when standard input runs out, so a piped-in script ends the far side's shell rather
@@ -413,4 +437,61 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// watchingIn is a far terminal as a plain one shows it: in the window's title, which says whose it
+// is, how many are on it, and whether this window is big enough for it.
+type watchingIn struct {
+	mu                    sync.Mutex
+	where                 string
+	cols, rows            int
+	windowCols, windowRow int
+	watching              int
+	own, told             bool
+}
+
+func (w *watchingIn) window(cols, rows int) {
+	w.mu.Lock()
+	w.windowCols, w.windowRow = cols, rows
+	w.mu.Unlock()
+}
+
+func (w *watchingIn) sized(cols, rows int) {
+	w.mu.Lock()
+	w.cols, w.rows = cols, rows
+	w.mu.Unlock()
+	w.title()
+}
+
+func (w *watchingIn) company(c live.Company) {
+	w.mu.Lock()
+	w.watching, w.own, w.told = c.Watching, c.Own, true
+	w.mu.Unlock()
+	w.title()
+}
+
+// title writes what the terminal is into the window's title. Called from the reading side only, so
+// it never lands in the middle of the far end's own escapes.
+func (w *watchingIn) title() {
+	w.mu.Lock()
+	parts := []string{"drop " + w.where}
+	switch {
+	case !w.told:
+	case w.own:
+		parts = append(parts, "your own shell")
+	case w.watching > 1:
+		parts = append(parts, fmt.Sprintf("shared, %d watching", w.watching))
+	default:
+		parts = append(parts, "shared, only you")
+	}
+	if w.cols > 0 {
+		shape := fmt.Sprintf("%d×%d", w.cols, w.rows)
+		if w.cols > w.windowCols || w.rows > w.windowRow {
+			shape += fmt.Sprintf(" — bigger than this %d×%d window", w.windowCols, w.windowRow)
+		}
+		parts = append(parts, shape)
+	}
+	w.mu.Unlock()
+
+	_, _ = fmt.Fprintf(os.Stdout, "\x1b]2;%s\x07", plain.Line(strings.Join(parts, " · ")))
 }
