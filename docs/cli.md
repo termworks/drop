@@ -36,6 +36,9 @@ drop me machine rebind         stop using a written-down key, be named by the ha
 drop me machine migrate <id>   say this machine became another one
 drop me machine took <line>    on the new machine: take that statement up
 drop me user                   who this machine belongs to
+drop me user vouch <machine>   make a machine yours, keeping your key here
+drop me user export            your key as a code, to carry to another machine
+drop me user take <code>       on that machine: become yours from the code
 drop me vault                  whether what is kept on this disk is encrypted
 drop me passwd                 hash a password, to guard a path with
 drop me log [name]             a conversation, or all of them

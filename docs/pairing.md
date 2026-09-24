@@ -81,6 +81,26 @@ signed by `ssh-keygen -Y sign`, which every machine with SSH already has and whi
 key directly — no agent involved. A key drop was *pointed at* and cannot find is an error: it will
 not answer a typo by inventing a second identity.
 
+## Making a machine yours
+
+A machine that made its own key — a phone, most of all — pairs as a person of its own. Two ways
+make it one of yours, and both end in a code the other machine takes:
+
+```console
+drop me user vouch phone      # your key stays here; the phone wears a badge this signs
+drop me user export           # the key itself, carried over; the phone signs its own
+drop me user take <code>      # on the other machine, or This phone → Whose phone this is
+```
+
+| | |
+|---|---|
+| vouch | the code is a badge for that machine and no other. When it has under sixty days left, the next time it reaches a machine of yours that signs without a touch, that machine hands it a fresh one on the hello — so it lasts as long as the two keep meeting |
+| export | the code is the key: whoever reads it is you, everywhere. Only an ed25519 key drop can read can leave; one in hardware cannot, which is the point of it |
+
+Either way the key the machine had is set aside beside the new one, and every machine of yours
+files it under *me* the first time it shows your badge. A vouched machine whose badge runs out
+before it meets one of yours still starts, wearing the stale badge, which proves nothing to anyone.
+
 ## Being found without being findable
 
 A device that moved cannot be found at the address its peers wrote down. So drop publishes where it
@@ -126,6 +146,7 @@ Expiry and a local refusal, and nothing more honest is possible without a server
 | | |
 |---|---|
 | a badge | lasts ninety days, so a lost machine stops being trusted within ninety days rather than today |
+| a vouched badge | is signed again only by a machine that still has the phone in its address book: forget it there, and it runs out |
 | `drop peer forget bob@laptop` | stops this machine trusting it immediately, and tells nobody else |
 | `drop path revoke` | stops one path, immediately, on this machine |
 

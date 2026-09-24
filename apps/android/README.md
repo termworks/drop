@@ -31,6 +31,7 @@ slices and interfaces, so a list crosses as JSON and a callback is an interface 
 | **Chats, People, This phone** | three tabs: every conversation newest first with what is unread, everybody paired, and what the phone itself serves |
 | **People, then machines, then paths** | the same arrangement as the terminal interface: who, which of their machines, and what it shares with you |
 | **Pairing** | *My code* shows a QR the other device scans; *Scan* reads one off a computer's `drop peer pair` or another phone. A `drop://pair/…` link opens the same way |
+| **One of your machines** | *This phone → Whose phone this is* takes the code `drop me user vouch <phone>` or `drop me user export` shows on your computer, and the phone is filed under *me* from then on. See [pairing](../../docs/pairing.md#making-a-machine-yours) |
 | **Chat** | a conversation per machine, kept on both devices. A message for a machine that is off waits and goes when it is back; a message that arrives while the app is closed is a notification |
 | **Files** | walk a `files` namespace, download with a tap, upload into one that is writable; long press to rename or delete, and make folders in it |
 | **Notes** | read a `note` where it is held, or keep a copy on the phone and write in it. The copy is kept level with every other machine holding it, and what two people type at once is merged |
