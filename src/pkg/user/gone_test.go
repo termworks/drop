@@ -29,7 +29,7 @@ func TestTheLaterMarkStands(t *testing.T) {
 		t.Fatal("a machine put back still reads as taken out")
 	}
 
-	gone, err = Merge(map[string]Mark{"phone": {At: 2000, Gone: true}, "laptop": {At: 5, Gone: true}})
+	gone, err = Merge(map[string]Mark{"phone": {At: time.Unix(2000, 0).UnixNano(), Gone: true}, "laptop": {At: 5, Gone: true}})
 	if err != nil || len(gone) != 2 || !Removed("phone") || !Removed("laptop") {
 		t.Fatalf("newer marks taking machines out did not stand (%v, %v)", gone, err)
 	}

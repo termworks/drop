@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"golang.org/x/net/ipv4"
 
 	"github.com/bresilla/drop/src/pkg/node"
+	"github.com/bresilla/drop/src/pkg/plain"
 	"github.com/bresilla/drop/src/pkg/wire"
 )
 
@@ -28,7 +30,12 @@ const (
 )
 
 // Magic marks a packet as drop's, so anything else on the group is ignored rather than misparsed.
-const Magic = "drop-lan-1"
+// Named carries the device's name as well, so the machines on this network can be listed by name;
+// it goes out beside the first, which a drop that predates it goes on reading.
+const (
+	Magic = "drop-lan-1"
+	Named = "drop-lan-2"
+)
 
 // AnnounceEvery is how often a node says where it is, so a peer that starts later still hears it.
 const AnnounceEvery = 2 * time.Second
@@ -64,6 +71,36 @@ type LAN struct {
 type sighting struct {
 	addrs []netip.AddrPort
 	seen  time.Time
+	name  string
+}
+
+// Near is a device heard on this network: who it is, what it calls itself, and when it last said.
+type Near struct {
+	ID   node.ID
+	Name string
+	Seen time.Time
+}
+
+// Nearby is every device heard on this network lately, newest first. What each calls itself is its
+// own word, and nothing about who it is — the connection that follows proves that.
+func (l *LAN) Nearby() []Near {
+	if l == nil {
+		return nil
+	}
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	var out []Near
+	for at, s := range l.peers {
+		if time.Since(s.seen) >= Stale {
+			continue
+		}
+		if id, err := node.ParseID(at); err == nil {
+			out = append(out, Near{ID: id, Name: s.name, Seen: s.seen})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Seen.After(out[j].Seen) })
+	return out
 }
 
 // StartLAN begins announcing and listening. It stops when ctx is done.
@@ -129,7 +166,11 @@ func (l *LAN) announce(ctx context.Context, n *node.Node, group *net.UDPAddr) {
 	for {
 		// Rebuilt each time, so a node that changed network announces where it is now rather than
 		// repeating where it used to be.
-		if packet := encodeAnnounce(l.self, LocalAddrs(n)); len(packet) > 0 {
+		addrs := LocalAddrs(n)
+		if packet := encodeAnnounce(l.self, addrs); len(packet) > 0 {
+			l.say(packet, group)
+		}
+		if packet := encodeNamed(l.self, node.DisplayName(), addrs); len(packet) > 0 {
 			l.say(packet, group)
 		}
 
@@ -183,6 +224,10 @@ func (l *LAN) listen(ctx context.Context) {
 // announcement stays a hint — the dial that follows is what proves anything.
 func (l *LAN) heard(packet []byte, from netip.Addr) {
 	id, addrs, ok := decodeAnnounce(packet)
+	name := ""
+	if !ok {
+		id, name, addrs, ok = decodeNamed(packet)
+	}
 	if !ok || id == l.self {
 		return
 	}
@@ -209,7 +254,11 @@ func (l *LAN) heard(packet []byte, from netip.Addr) {
 			return
 		}
 	}
-	l.peers[id] = sighting{addrs: addrs, seen: now}
+	// A name heard once is kept through the announcements that carry none.
+	if name == "" {
+		name = l.peers[id].name
+	}
+	l.peers[id] = sighting{addrs: addrs, seen: now, name: name}
 }
 
 func usable(addrs []netip.AddrPort) []netip.AddrPort {
@@ -326,6 +375,65 @@ func decodeAnnounce(packet []byte) (string, []netip.AddrPort, bool) {
 		return "", nil, false
 	}
 	return id, addrs, true
+}
+
+// maxName bounds the name an announcement may carry.
+const maxName = 64
+
+// encodeNamed packs who this node is, what it calls itself, and where it can be reached.
+func encodeNamed(id, name string, addrs []netip.AddrPort) []byte {
+	if len(addrs) == 0 {
+		return nil
+	}
+	if len(addrs) > maxAddrs {
+		addrs = addrs[:maxAddrs]
+	}
+	if len(name) > maxName {
+		name = name[:maxName]
+	}
+	w := wire.NewWriter()
+	w.String(Named)
+	w.String(id)
+	w.String(name)
+	w.Uint(uint64(len(addrs)))
+	for _, a := range addrs {
+		w.String(a.String())
+	}
+	return w.Body()
+}
+
+func decodeNamed(packet []byte) (string, string, []netip.AddrPort, bool) {
+	r := wire.NewReader(packet)
+	magic, err := r.String(len(Named))
+	if err != nil || magic != Named {
+		return "", "", nil, false
+	}
+	id, err := r.String(256)
+	if err != nil {
+		return "", "", nil, false
+	}
+	name, err := r.String(maxName)
+	if err != nil {
+		return "", "", nil, false
+	}
+	count, err := r.Uint()
+	if err != nil || count > maxAddrs {
+		return "", "", nil, false
+	}
+	addrs := make([]netip.AddrPort, 0, count)
+	for i := uint64(0); i < count; i++ {
+		written, err := r.String(64)
+		if err != nil {
+			return "", "", nil, false
+		}
+		if ap, err := netip.ParseAddrPort(written); err == nil {
+			addrs = append(addrs, ap)
+		}
+	}
+	if !r.Done() {
+		return "", "", nil, false
+	}
+	return id, plain.Line(name), addrs, true
 }
 
 // LocalAddrs is where this node can be reached on this network: its own interface addresses at the

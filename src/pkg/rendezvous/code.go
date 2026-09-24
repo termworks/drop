@@ -36,14 +36,14 @@ func NormalCode(code string) string {
 	return strings.ToLower(strings.Join(strings.Fields(code), "-"))
 }
 
-// PublishCode says, under the code's key, that this is the machine showing it, for as long as ctx
-// lasts.
-func PublishCode(ctx context.Context, code string, id node.ID) error {
+// PublishCode says, under the code's key, that this is the machine showing it and what the code is
+// for, for as long as ctx lasts.
+func PublishCode(ctx context.Context, code string, id node.ID, kind string) error {
 	publisher, err := iroh.N0PkarrPublisher(codeKey(code), &iroh.PkarrPublisherConfig{})
 	if err != nil {
 		return err
 	}
-	said, err := dns.NewUserData(id.String())
+	said, err := dns.NewUserData(strings.TrimSpace(id.String() + " " + kind))
 	if err != nil {
 		_ = publisher.Close()
 		return err
@@ -56,9 +56,10 @@ func PublishCode(ctx context.Context, code string, id node.ID) error {
 	return nil
 }
 
-// FindCode is the machine showing a code, looked up for as long as ctx allows: a record a moment
-// old may not have reached the relay yet.
-func (o *Openly) FindCode(ctx context.Context, code string) (node.ID, bool) {
+// FindCode is the machine showing a code and what it said the code is for, empty from one that
+// predates saying so, looked up for as long as ctx allows: a record a moment old may not have
+// reached the relay yet.
+func (o *Openly) FindCode(ctx context.Context, code string) (node.ID, string, bool) {
 	at := codeKey(code).Public().EndpointID()
 	for delay := o.retryMin; ; delay = min(2*delay, o.retryMax) {
 		for item, err := range o.resolver.Resolve(ctx, at) {
@@ -66,8 +67,9 @@ func (o *Openly) FindCode(ctx context.Context, code string) (node.ID, bool) {
 				continue
 			}
 			if said := item.EndpointInfo().Data.UserData(); said != nil {
-				if id, err := node.ParseID(said.String()); err == nil {
-					return id, true
+				who, kind, _ := strings.Cut(said.String(), " ")
+				if id, err := node.ParseID(who); err == nil {
+					return id, kind, true
 				}
 			}
 		}
@@ -76,7 +78,7 @@ func (o *Openly) FindCode(ctx context.Context, code string) (node.ID, bool) {
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return node.ID{}, false
+			return node.ID{}, "", false
 		case <-timer.C:
 		}
 	}

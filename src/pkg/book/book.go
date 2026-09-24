@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/bresilla/drop/src/pkg/keep"
 	"github.com/bresilla/drop/src/pkg/node"
@@ -48,6 +49,9 @@ type Entry struct {
 	// named it, rather than paired by hand. Its secret is worked out from the secret all of this
 	// user's machines share, and is worked out again when that changes.
 	Circle bool `json:"circle,omitempty"`
+	// At is when anything was last decided about this machine, which is how two of this user's
+	// machines holding different words about it know whose is newer.
+	At int64
 }
 
 // Owned reports whether this entry is somebody's machine, rather than a machine on its own.
@@ -132,6 +136,7 @@ type stored struct {
 	Person  string   `json:"person,omitempty"`
 	Trusted bool     `json:"trusted,omitempty"`
 	Circle  bool     `json:"circle,omitempty"`
+	At      int64    `json:"at,omitempty"`
 }
 
 func path() (string, error) {
@@ -189,7 +194,7 @@ func Load() (*Book, error) {
 				continue
 			}
 		}
-		b.entries[name] = Entry{Name: name, ID: id, Secret: secret, Addrs: entry.Addrs, User: entry.User, Person: entry.Person, Trusted: entry.Trusted, Circle: entry.Circle}
+		b.entries[name] = Entry{Name: name, ID: id, Secret: secret, Addrs: entry.Addrs, User: entry.User, Person: entry.Person, Trusted: entry.Trusted, Circle: entry.Circle, At: entry.At}
 	}
 	return b, nil
 }
@@ -214,7 +219,7 @@ func (b *Book) Save() error {
 
 	onDisk := make(map[string]stored, len(b.entries))
 	for name, entry := range b.entries {
-		out := stored{ID: entry.ID.String(), Addrs: entry.Addrs, User: entry.User, Person: entry.Person, Trusted: entry.Trusted, Circle: entry.Circle}
+		out := stored{ID: entry.ID.String(), Addrs: entry.Addrs, User: entry.User, Person: entry.Person, Trusted: entry.Trusted, Circle: entry.Circle, At: entry.At}
 		if entry.Paired() {
 			out.Secret = base64.StdEncoding.EncodeToString(entry.Secret)
 		}
@@ -281,15 +286,32 @@ func (b *Book) Pin(name string, id node.ID) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.entries[name] = Entry{Name: name, ID: id}
+	b.entries[name] = Entry{Name: name, ID: id, At: Now()}
 }
+
+// Now is the moment a decision is written down at, as entries carry it.
+func Now() int64 { return time.Now().UnixNano() }
 
 // Pair records a name, a peer id and the secret the two derived together.
 func (b *Book) Pair(name string, id node.ID, secret []byte, addrs ...string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.entries[name] = cloneEntry(Entry{Name: name, ID: id, Secret: secret, Addrs: addrs})
+	b.entries[name] = cloneEntry(Entry{Name: name, ID: id, Secret: secret, Addrs: addrs, At: Now()})
+}
+
+// Put writes down an entry another machine of this user's holds, as it holds it and with its time,
+// under its name. Whoever calls this has decided it is the newer of the two.
+func (b *Book) Put(entry Entry) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for name, held := range b.entries {
+		if held.ID == entry.ID {
+			delete(b.entries, name)
+		}
+	}
+	b.entries[entry.Name] = cloneEntry(entry)
 }
 
 // Belongs records whose machine an entry is. Pairing learns the person from the ticket; this is
@@ -305,6 +327,7 @@ func (b *Book) Belongs(name, key string) {
 	entry.User = key
 	entry.Person = b.personFor(key, entry.Name)
 	entry.Trusted = entry.Trusted || b.trustedFor(key)
+	entry.At = Now()
 	b.entries[name] = entry
 }
 
@@ -346,7 +369,8 @@ func (b *Book) Trust(name string, trusted bool) {
 		return
 	}
 
-	entry.Trusted = trusted
+	when := Now()
+	entry.Trusted, entry.At = trusted, when
 	b.entries[name] = entry
 
 	if entry.User == "" {
@@ -354,7 +378,7 @@ func (b *Book) Trust(name string, trusted bool) {
 	}
 	for at, other := range b.entries {
 		if other.User == entry.User {
-			other.Trusted = trusted
+			other.Trusted, other.At = trusted, when
 			b.entries[at] = other
 		}
 	}
@@ -651,7 +675,7 @@ func (b *Book) Rename(old, name string) error {
 		return fmt.Errorf("%s is a name already taken here", name)
 	}
 	delete(b.entries, old)
-	entry.Name = name
+	entry.Name, entry.At = name, Now()
 	if entry.Person == old {
 		entry.Person = name
 	}
@@ -664,12 +688,12 @@ func (b *Book) RenamePerson(old, name string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	found := false
+	found, when := false, Now()
 	for at, entry := range b.entries {
 		if entry.User == "" || entry.Person != old {
 			continue
 		}
-		entry.Person, found = name, true
+		entry.Person, entry.At, found = name, when, true
 		b.entries[at] = entry
 	}
 	if !found {
@@ -699,6 +723,7 @@ func (b *Book) Join(name string, id node.ID, secret []byte, user string) string 
 		Person:  b.personFor(user, at),
 		Trusted: true,
 		Circle:  true,
+		At:      Now(),
 	})
 	return at
 }

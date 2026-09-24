@@ -88,6 +88,26 @@ type Reachable struct {
 	Err string `json:"err,omitempty"`
 }
 
+// Near is a device on this network that nobody here has connected with yet: what it calls itself,
+// and whose it says it is when its badge is one this machine knows.
+type Near struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Whose is who it belongs to as the address book knows them, empty for a stranger.
+	Whose string `json:"whose"`
+}
+
+// Invited is a device asking this one to connect, waiting for a yes: what it asks, and the number
+// both screens show.
+type Invited struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Whose string `json:"whose"`
+	Kind  string `json:"kind"`
+	Check string `json:"check"`
+	When  int64  `json:"when"`
+}
+
 // A step on the ladder, as both interfaces name it.
 type ladderStep struct{ level, title, says string }
 
@@ -402,30 +422,22 @@ func removingIt(back Backend, name, said string) tea.Cmd {
 	}
 }
 
-// joinMachine makes this machine one of the machines of whoever is showing a code.
-func joinMachine(back Backend, code string) tea.Cmd {
+// leftOrWiped is this machine having left its user's, or started over: whatever the interface
+// holds describes a machine that is gone, so it closes.
+type leftOrWiped struct{ err error }
+
+func leaving(back Backend) tea.Cmd {
 	return func() tea.Msg {
 		ctx, stop := context.WithTimeout(context.Background(), time.Minute)
 		defer stop()
-
-		with, err := back.JoinMachine(ctx, code)
-		if err != nil {
-			return adminDone{err: err}
-		}
-		return adminDone{said: "this machine is one of yours now, alongside " + with, gone: true}
+		return leftOrWiped{err: back.Leave(ctx)}
 	}
 }
 
-// offerMachine shows a code another machine of yours joins with.
-func offerMachine(back Backend) tea.Cmd {
+func startingOver(back Backend) tea.Cmd {
 	return func() tea.Msg {
-		ctx, stop := context.WithCancel(context.Background())
-
-		ticket, waited, err := back.OfferMachine(ctx)
-		if err != nil {
-			stop()
-			return pairStarted{err: err}
-		}
-		return pairStarted{at: drawn(&pairing{ticket: ticket, waited: waited, stop: stop, machine: true})}
+		ctx, stop := context.WithTimeout(context.Background(), time.Minute)
+		defer stop()
+		return leftOrWiped{err: back.StartOver(ctx)}
 	}
 }

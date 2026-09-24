@@ -42,10 +42,14 @@ as a menu to pick from — so nothing here has to be known to be found.
 
 | where | what you can do |
 |---|---|
-| users | `a` add a machine of yours (shows a code), `c` join your machines with a code, `p` pair with somebody, `t` take their code, `m` manage somebody, `n` rename them, `x` remove them |
-| your machines | `n` rename one, `x` take it out of your machines, `a` add one |
-| somebody's machines | `n` rename one, `x` forget it, `t` trust them, `m` manage them |
+| users | `a` add a device (shows a code), `t` take the code another device shows, `m` manage somebody — or, on your own row, leave or start over — `n` rename them, `x` remove them |
+| nearby | a device on this network: `enter` adds it, `o` makes it one of your machines, `i` makes this one one of its; its person says yes |
+| your machines | `n` rename one, `x` take it out of your machines, `a` add a device |
+| somebody's machines | `o` make it one of your machines, `i` make this one one of its, `n` rename, `x` forget, `t` trust them, `m` manage them |
 | paths on a machine of yours | `w` who may open it — this machine or any other of yours |
+
+A device asking this one to connect is asked along the bottom line, wherever the interface is
+standing, with the number its screen shows too: `y` says yes, `n` says no.
 
 Taking a machine out of yours is a mark every machine of yours takes from the others: from then on
 all of them turn it away as a stranger, whatever badge it still wears, and `drop machine add` puts

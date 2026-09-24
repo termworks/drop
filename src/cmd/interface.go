@@ -146,6 +146,8 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 
 	// The interface serves while it is open, so a device that pairs with it can reach it — and
 	// so what arrives lands in a conversation rather than being refused.
+	// Built below, and reached through the handlers before it is: nothing is answered until then.
+	var invites *inviting
 	answer := map[string]func(node.ID, *iroh.Stream){
 		node.ALPNSession: func(from node.ID, s *iroh.Stream) {
 			defer func() { _ = s.Close() }()
@@ -178,8 +180,18 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 				return greeting(pinned, cfg.Mounts, known, from, badge)
 			}, moving(pinned, func(string) {}))
 		},
-		node.ALPNManage: managing(pinned, known),
+		node.ALPNManage: managing(pinned, known, func() *inviting { return invites }),
+		node.ALPNSync:   syncing(pinned),
 	}
+
+	// Asked by a device nearby to connect, and asking them: the code an invite hands over is shown
+	// by this interface's own endpoint, which is set up below.
+	var self *running
+	invites = &inviting{node: n, lan: lan, held: held, box: newInbox(func() { knock(arriving) })}
+	invites.offer = func(ctx context.Context, code string, kind offerKind) (<-chan string, error) {
+		return self.offerCode(ctx, code, kind)
+	}
+	answer[node.ALPNInvite] = invites.answering(pinned)
 
 	// The same as the daemon: answer whatever a device opens on a connection we made, keep the
 	// ones it opens to us, and push what is waiting the moment it appears. Without this the
@@ -215,13 +227,15 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 
 	go holding(ctx, pinned, held)
 	go keepMine(ctx, held)
+	go keepRenewing(ctx)
 
 	// With the daemon holding the address, what arrives lands there rather than here.
 	if !n.Own() {
 		go hearDaemon(ctx, arriving)
 	}
 
-	return &running{node: n, id: n.ID(), lan: lan, ears: ears, arriving: arriving, held: held, known: known, put: put}, down, nil
+	self = &running{node: n, id: n.ID(), lan: lan, ears: ears, arriving: arriving, held: held, known: known, put: put, invites: invites}
+	return self, down, nil
 }
 
 // Entry finds somebody in the address book by the name they are filed under, or by their id.

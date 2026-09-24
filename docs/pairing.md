@@ -81,60 +81,85 @@ signed by `ssh-keygen -Y sign`, which every machine with SSH already has and whi
 key directly — no agent involved. A key drop was *pointed at* and cannot find is an error: it will
 not answer a typo by inventing a second identity.
 
-## Making a machine yours
+## Adding a device, and making it yours
 
-One code, the way a phone is linked to a messenger. On a machine that is already yours:
+Every device comes in the same way, whoever's it is: added. On one of them `drop add` shows a code
+and a QR, and on the other `drop add <code>` takes it — or *Add* on a phone, which shows your code
+and scans theirs. The two are paired from then on.
 
 ```console
-$ drop machine add
+$ drop add
   code:    tevp-spsd-uyle
 
 on the other machine, within 5m0s, run
 
-  drop machine join tevp-spsd-uyle
+  drop add tevp-spsd-uyle
 ```
 
-On the new one, type that — or on a phone, *Add a machine → Scan*. The two pair and the new one
-becomes yours in the same exchange: the machine showing the code signs it a badge and hands it
-over, and every other machine of yours hears about it within a few minutes. A phone that holds
-your key can show the code instead, for a computer to join.
-
 The code is all anybody types. It is looked up under a key only the code works out, which says
-which machine is showing it, so the sixty-four-character id never leaves the screen; the relay
-holding that record learns neither the code nor who asked. A code shown for adding a machine
-is refused to a device that came to pair with a person, and the other way round.
+which machine is showing it and what the code is for, so the sixty-four-character id never leaves
+the screen, and the relay holding the record learns neither the code nor who asked.
+
+A device on the same network needs no code at all. Every drop says on the local wire who it is and
+what it is called, so each lists the devices around it nobody has connected with yet — `drop
+nearby`, or *Nearby* on the phone — and picking one asks it. Its person sees the ask, says yes or
+no, and both screens show the same six-digit number, so the yes is for this device and not for
+another one next to it. Underneath it is the pairing a code makes, with the code handed over on the
+connection the two already share instead of by a person.
+
+What a device you added is to you comes afterwards, and is asked of it the same way:
 
 | | |
 |---|---|
-| `drop machine add` | the new machine wears a badge this one signs, for it and no other. When it has under sixty days left, the next time it reaches a machine of yours that signs without a touch, that machine hands it a fresh one on the hello — so it lasts as long as the two keep meeting |
-| `drop machine add --key` | it is handed the key itself: whoever holds it is you, everywhere. Only an ed25519 key drop can read can leave; one in hardware cannot, which is the point of it |
+| `drop promote <name>` | it becomes one of your machines: it wears a badge one of yours signs, and every other machine of yours learns of it |
+| `drop join <name>` | this machine becomes one of its machines |
+
+A machine that wears a badge cannot sign one for another, so a phone promoting something has one
+of your machines that holds your key do the asking; the number is worked out from your key rather
+than from whichever machine asked, so it is the same on all of them. Joining with `--key` from
+`drop machine add` hands over the key itself instead: whoever holds it is you, everywhere, and only
+an ed25519 key drop can read can leave; one in hardware cannot, which is the point of it.
 
 Either way the key the machine had is set aside beside the new one. A machine whose badge runs out
 before it meets one of yours still starts, wearing the stale badge, which proves nothing to anyone.
-A machine wearing a badge cannot sign one, so `drop machine add` is run on one that holds the key.
 
-### Taking one out
+A badge lasts ninety days, and one with under sixty left is signed again the next time its machine
+says hello to one of yours that holds the key. With the key in a file that is the whole of it. With
+the key in a YubiKey a hello is no moment to wait for a touch, so the machine is written down, its
+badge signed the moment the key can — at once for a key made with `-O no-touch-required`, with a
+blink and a touch otherwise, tried twice a day — and handed over at its next hello. `drop machine
+renew` signs every one running low now, a touch each, and so does *renew* on your own screen in the
+interface.
 
-A machine of yours is recognised by the badge it wears, so forgetting it on one machine would
-change nothing: it still shows your badge everywhere, and the machines that still know it would
-name it to this one again. `drop machine rm <name>` — or *Remove from my machines* on the phone, or
-`x` in the interface — writes a mark instead, and your machines hand marks to each other on every
-hello, the way they hand each other the rest of your machines. From then on every one of them turns
-that machine away as a stranger, whatever badge it still wears, and none of them names it to
-another. `drop machine add` puts it back: the later of two marks for one machine is the one that
-stands.
+### A YubiKey on the phone
 
-A machine that was handed the key itself (`--key`) can still sign for itself; taking it out keeps
-it from being taken for yours, and the key it holds is still yours.
+A phone has no ssh-keygen, but it can talk to a YubiKey held to its back or plugged into it, and all a
+YubiKey is ever asked for is a FIDO assertion: a signature over the application's hash, a counter and
+a hash the caller chooses. That is exactly what an `sk-ssh-ed25519` signature is. So the phone asks
+the key for one assertion and builds the rest — the same OpenSSH signature `ssh-keygen -Y sign`
+would have written on a computer, which `ssh-keygen -Y verify` accepts as it is.
 
-The same, a step at a time, for a machine that is already paired:
+The phone needs to know which credential on the key is yours, and that is the handle ssh-keygen keeps
+in the file beside the public half. It does nothing without the YubiKey, so the machine that has the
+file hands it to the rest of your machines with everything else they share, and a phone that is one
+of them signs with a tap and nothing to set up. Without it, the phone has a machine of yours that
+holds the key do the signing instead.
 
-```console
-drop me user vouch phone      # a badge for it, as a code
-drop me user export           # the key itself, as a code
-drop me user take <code>      # on the other machine
-```
+### One address book
 
+Your machines keep one address book between them. Somebody added from the phone is known to the
+laptop, a name or a trust changed on one is changed on all of them, and whatever is removed anywhere
+is removed everywhere. Each machine keeps its own book — the secrets it made, where it last saw
+everybody — and hands the rest of its machines everything in it the moment anything changes: every
+entry says when it was last decided about, every removal is a mark with a time, and of two words
+about one machine the newer stands, whichever machine it came from and in whichever order.
+
+A machine you took out of yours is turned away as a stranger by every one of them, whatever badge it
+still wears, and none of them writes it back in. Adding it again puts it back.
+
+`drop me leave` takes this machine back out of yours, and `drop me reset --yes` — *Delete everything*
+on the phone — deletes everything drop knows on it. Both tell the rest of your machines first, and
+each of them forgets it.
 ### All of them, through any one
 
 Pair a machine with one of yours and it is one of yours to all of them — but it only knows the one

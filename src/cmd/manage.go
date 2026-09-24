@@ -301,7 +301,7 @@ func waitingAll() (map[string]int, error) {
 }
 
 // managing answers a machine of this user's asking about this machine's paths.
-func managing(pinned *book.Book, known *arch.Registry) func(node.ID, *iroh.Stream) {
+func managing(pinned *book.Book, known *arch.Registry, invites func() *inviting) func(node.ID, *iroh.Stream) {
 	return func(from node.ID, s *iroh.Stream) {
 		defer func() { _ = s.Close() }()
 		if err := pinned.Refresh(); err != nil {
@@ -311,9 +311,29 @@ func managing(pinned *book.Book, known *arch.Registry) func(node.ID, *iroh.Strea
 			if who := whoIs(pinned)(from, badge, proto.Stood{}); who.UserName != ns.LevelMe {
 				return nil, errNotMine
 			}
+			if m.Op == proto.ManageInvite {
+				return inviteFor(invites(), m)
+			}
 			return ManageHere(known, m)
 		})
 	}
+}
+
+// inviteFor asks a device something on behalf of another machine of this user's that cannot: a
+// phone wearing a badge cannot sign one for a machine it wants to make yours, and this one can.
+func inviteFor(invites *inviting, m proto.Manage) ([]byte, error) {
+	if invites == nil {
+		return nil, errors.New("this machine does not ask devices anything")
+	}
+	to, err := node.ParseID(m.Who)
+	if err != nil {
+		return nil, err
+	}
+	with, err := invites.send(context.Background(), to, m.Level)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(with)
 }
 
 // Ask asks a machine of this user's, by name, about its paths; this one when the name is empty.

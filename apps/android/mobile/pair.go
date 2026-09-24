@@ -7,6 +7,7 @@ import (
 
 	"github.com/bresilla/drop/src/cmd"
 	tickets "github.com/bresilla/drop/src/pkg/ticket"
+	"github.com/bresilla/drop/src/pkg/user"
 )
 
 // offerFor is how long a code stays up when nobody takes it.
@@ -148,4 +149,76 @@ func MachineCode(ticket string, scale int) ([]byte, error) {
 	}
 	code.Scale = scale
 	return code.PNG(), nil
+}
+
+// Nearby is every drop on this phone's network nobody here has connected with yet, as JSON.
+func (n *Node) Nearby() (string, error) {
+	near, err := n.back.Nearby()
+	if err != nil {
+		return "", err
+	}
+	return encode(near), nil
+}
+
+// Invite asks one of them to connect — kind "mine" to make it one of your machines, "pair" to pair
+// with whoever owns it, "join" to make this phone one of theirs — and says what it was filed as
+// once its person says yes.
+func (n *Node) Invite(id, kind string) (string, error) {
+	ctx, cancel := context.WithTimeout(n.ctx, 4*time.Minute)
+	defer cancel()
+
+	with, err := n.back.Invite(ctx, id, kind)
+	changed(n.events)
+	return with, err
+}
+
+// Invited is every device waiting for a yes from this phone, as JSON.
+func (n *Node) Invited() (string, error) {
+	asking, err := n.back.Invited()
+	if err != nil {
+		return "", err
+	}
+	return encode(asking), nil
+}
+
+// Decide says yes or no to one of them.
+func (n *Node) Decide(id string, yes bool) error {
+	return n.changed(n.back.Decide(id, yes))
+}
+
+// LeaveMine takes this phone back out of your machines, telling the rest of them first.
+func (n *Node) LeaveMine() error {
+	ctx, cancel := context.WithTimeout(n.ctx, time.Minute)
+	defer cancel()
+	return n.changed(n.back.Leave(ctx))
+}
+
+// StartOver deletes everything drop knows on this phone, telling the rest of your machines first.
+func (n *Node) StartOver() error {
+	ctx, cancel := context.WithTimeout(n.ctx, time.Minute)
+	defer cancel()
+	return n.changed(n.back.StartOver(ctx))
+}
+
+// CheckWith is the number this phone's screen shows when it asks a device something, the same the
+// other device shows.
+func CheckWith(id string) (string, error) { return cmd.CheckWith(id) }
+
+// Hardware is how the phone reaches a security key: held to its back over NFC, or plugged into it.
+type Hardware interface {
+	// Sign has the key make one assertion over clientDataHash, for the credential handle under
+	// application, and hands back the authenticator data followed by the signature.
+	Sign(application string, handle []byte, clientDataHash []byte) ([]byte, error)
+}
+
+// UseHardware lets the phone sign with a security key whenever the user key is one it knows the
+// handle of: badges for machines it makes yours, and its own.
+func UseHardware(h Hardware) {
+	if h == nil {
+		user.AssertWith(nil)
+		return
+	}
+	user.AssertWith(func(application string, handle, clientDataHash []byte) ([]byte, error) {
+		return h.Sign(application, handle, clientDataHash)
+	})
 }

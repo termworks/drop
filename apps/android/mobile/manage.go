@@ -3,7 +3,6 @@ package mobile
 import (
 	"context"
 
-	"github.com/bresilla/drop/src/cmd"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/proto"
 )
@@ -45,9 +44,6 @@ func (n *Node) Rename(old, name string) error {
 	}
 	return n.changed(more.Rename(old, name))
 }
-
-// Leave takes this phone back out of whoever's machines it became. It is its own from the next start.
-func Leave() error { return cmd.Leave() }
 
 // Reachable is what somebody — a person, or a machine that belongs to nobody — may open on this
 // phone and on every other machine of its owner's, as JSON: one entry per machine, the empty one

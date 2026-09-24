@@ -145,7 +145,7 @@ fun AddMachineScreen(given: String?, back: () -> Unit) {
                     WayIn(
                         title = "Add a computer to this phone",
                         says = "Show a code here, and on the computer run",
-                        command = "drop machine join <code>",
+                        command = "drop add <code>",
                         after = "It becomes one of your machines, signed for by this phone.",
                     ) {
                         if (showing) MachineCode() else FilledTonalButton(onClick = { showing = true }) { Text("Show a code") }
@@ -171,7 +171,7 @@ fun AddMachineScreen(given: String?, back: () -> Unit) {
 
 /** This phone's code for a computer to join with, up for as long as it is on screen. */
 @Composable
-private fun MachineCode() {
+internal fun MachineCode() {
     val context = LocalContext.current
     var code by remember { mutableStateOf<String?>(null) }
     var drawn by remember { mutableStateOf<ImageBitmap?>(null) }
@@ -195,7 +195,7 @@ private fun MachineCode() {
         code?.let { c ->
             Text(c, style = MaterialTheme.typography.headlineSmall.copy(fontFamily = Mono.fontFamily), color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.height(8.dp))
-            OutlinedButton(onClick = { copy(context, "drop machine code", "drop machine join $c") }) {
+            OutlinedButton(onClick = { copy(context, "drop machine code", "drop add $c") }) {
                 Icon(Icons.Filled.ContentCopy, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
                 Text("Copy the command")

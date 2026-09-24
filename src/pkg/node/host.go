@@ -23,10 +23,14 @@ const (
 	ALPNHello   = "drop/hello/1"
 	ALPNPair    = "drop/pair/1"
 	ALPNManage  = "drop/manage/1"
+	// ALPNSync is two machines of one user handing each other their address books, and ALPNInvite
+	// is one device asking another nearby to connect.
+	ALPNSync   = "drop/sync/1"
+	ALPNInvite = "drop/invite/1"
 )
 
 // ALPNs is every protocol this node answers.
-var ALPNs = []string{ALPNSession, ALPNHello, ALPNPair, ALPNManage}
+var ALPNs = []string{ALPNSession, ALPNHello, ALPNPair, ALPNManage, ALPNSync, ALPNInvite}
 
 // Node is this machine on the drop network.
 type Node struct {

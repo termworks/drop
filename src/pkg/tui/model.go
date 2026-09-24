@@ -64,6 +64,22 @@ type Backend interface {
 	// one: either way the other becomes one of this user's machines.
 	OfferMachine(ctx context.Context) (ticket string, done <-chan string, err error)
 	JoinMachine(ctx context.Context, code string) (with string, err error)
+	// Nearby is every device on this network nobody here has connected with yet.
+	Nearby() ([]Near, error)
+	// Invite asks one of them to connect — to become one of this user's machines, to pair, or to
+	// have this one join theirs — and waits for their yes.
+	Invite(ctx context.Context, id, kind string) (with string, err error)
+	// Invited is every device waiting for a yes from here, and Decide gives one.
+	Invited() ([]Invited, error)
+	Decide(id string, yes bool) error
+	// Leave takes this machine back out of its user's machines, and StartOver deletes everything
+	// drop knows here. Both tell the rest of this user's machines first.
+	Leave(ctx context.Context) error
+	StartOver(ctx context.Context) error
+	// Renewing is how many of this user's machines have badges running low that wait for the key,
+	// and Renew signs them now, a touch each for a key that wants one.
+	Renewing() int
+	Renew(ctx context.Context) (int, error)
 	// History is a conversation as it stands.
 	History(with book.Entry) ([]convo.Message, error)
 	// Compose writes a message into the conversation without sending it. It returns as fast as a
@@ -164,6 +180,12 @@ type Model struct {
 	prompt  *prompting
 	confirm *confirming
 	menu    *menuState
+	// near is the devices on this network nobody here has connected with yet, and asked the devices
+	// waiting for a yes from here.
+	near  []Near
+	asked []Invited
+	// renewing is how many machines of yours wait for your key to sign them a fresh badge.
+	renewing int
 	// under is where in a device's paths the list is standing, "/" being the top.
 	under string
 	// steps is what is at that level: namespaces, and the ways further down.
@@ -234,7 +256,7 @@ func New(back Backend) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadSelf(m.back), loadPeers(m.back), listenFor(m.back.Arrivals()))
+	return tea.Batch(loadSelf(m.back), loadPeers(m.back), listenFor(m.back.Arrivals()), poll(m.back))
 }
 
 // ---------------------------------------------------------------- what arrives

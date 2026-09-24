@@ -54,6 +54,7 @@ type fake struct {
 	self      Identity
 	details   map[string]PathDetail
 	admin     adminFake
+	nearby    nearFake
 	// remembered is what a device said last time, handed back when it cannot be reached.
 	remembered   map[string][]proto.Served
 	refuseServes error
@@ -611,7 +612,7 @@ func TestPairingCanBeStartedFromTheInterface(t *testing.T) {
 	if m.linking == nil {
 		t.Fatal("p did not start a pairing")
 	}
-	if !strings.Contains(m.View(), "drop peer pair") {
+	if !strings.Contains(m.View(), "drop add") {
 		t.Fatalf("the pairing screen does not show the ticket:\n%s", m.View())
 	}
 }

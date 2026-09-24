@@ -68,6 +68,7 @@ import dev.bresilla.drop.Machine
 import dev.bresilla.drop.PathOpen
 import dev.bresilla.drop.Reachable
 import dev.bresilla.drop.Me
+import dev.bresilla.drop.Near
 import dev.bresilla.drop.Person
 import dev.bresilla.drop.Settings
 import kotlinx.coroutines.launch
@@ -92,9 +93,12 @@ fun PeopleScreen(go: (Screen) -> Unit) {
     var unread by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
     var asking by remember { mutableStateOf(0) }
     var knocks by remember { mutableStateOf<List<Knock>>(emptyList()) }
+    var near by remember { mutableStateOf<List<Near>>(emptyList()) }
+    var connecting by remember { mutableStateOf<Near?>(null) }
     var menu by remember { mutableStateOf(false) }
+    val said = remember { SnackbarHostState() }
 
-    Pulse()
+    Pulse(2_000)
     LaunchedEffect(tick) {
         me = Drop.self() ?: me
         Drop.people()
@@ -103,28 +107,20 @@ fun PeopleScreen(go: (Screen) -> Unit) {
         unread = unreadBy(context)
         asking = Drop.levels("").getOrNull()?.sumOf { it.asked } ?: asking
         knocks = Drop.knocked().getOrNull() ?: knocks
+        near = Drop.nearby()
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(said) },
         topBar = {
             TopAppBar(
                 title = { Text("drop", style = MaterialTheme.typography.headlineSmall) },
                 actions = {
-                    IconButton(onClick = { go(Screen.Pair(scan = true)) }) { Icon(Icons.Filled.QrCodeScanner, "Scan a code") }
                     IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text("Show my code") }, onClick = { menu = false; go(Screen.Pair()) })
-                        DropdownMenuItem(text = { Text("Add a machine of mine") }, onClick = { menu = false; go(Screen.AddMachine()) })
                         DropdownMenuItem(text = { Text("Settings") }, onClick = { menu = false; go(Screen.Settings) })
                     }
                 },
-            )
-        },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { go(Screen.Pair()) },
-                icon = { Icon(Icons.Filled.PersonAdd, null) },
-                text = { Text("Add person") },
             )
         },
     ) { pad ->
@@ -152,11 +148,32 @@ fun PeopleScreen(go: (Screen) -> Unit) {
                 ) { go(Screen.Person(ME)) }
             }
 
+            // The one way in, for every device: added first, and made one of yours afterwards.
+            item {
+                Button(onClick = { go(Screen.Add) }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth().height(52.dp)) {
+                    Icon(Icons.Filled.Add, null, Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Add")
+                }
+            }
+
+            if (near.isNotEmpty()) {
+                item { Section("Nearby") }
+                items(near, key = { "n:" + it.id }) { n ->
+                    Entry(
+                        title = n.name,
+                        subtitle = "on this network · tap to add",
+                        online = true,
+                        trusted = false,
+                    ) { connecting = n }
+                }
+            }
+
             val others = all.filter { !it.me }.flatMap { p ->
                 if (p.anon) p.machines.map { m -> Person(m.name, false, true, m.trusted, listOf(m)) } else listOf(p)
             }
             item { Section("People") }
-            if (others.isEmpty()) item { Nobody(go) }
+            if (others.isEmpty()) item { Nobody() }
             items(others, key = { "p:" + it.name }) { p ->
                 val one = p.machines.singleOrNull()
                 Entry(
@@ -195,38 +212,16 @@ fun PeopleScreen(go: (Screen) -> Unit) {
             }
         }
     }
-}
 
-@Composable
-private fun Nobody(go: (Screen) -> Unit) {
-    Card(
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp).fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        shape = RoundedCornerShape(24.dp),
-    ) {
-        Column(Modifier.padding(24.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Nobody else yet", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Pair once with a friend's phone or computer, and you can reach each other from anywhere after that.",
-                style = MaterialTheme.typography.bodyMedium,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(16.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                Button(onClick = { go(Screen.Pair()) }, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Filled.QrCode2, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Show my code")
-                }
-                FilledTonalButton(onClick = { go(Screen.Pair(scan = true)) }, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Filled.QrCodeScanner, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Scan theirs")
-                }
-            }
-        }
+    connecting?.let { n ->
+        AskDialog(
+            id = n.id,
+            name = n.name,
+            kind = "pair",
+            title = "Add ${n.name}?",
+            says = "It is added as a device of its own. Afterwards you can make it one of your machines from its screen.",
+            dismiss = { connecting = null },
+        ) { text -> scope.launch { said.showSnackbar(text) } }
     }
 }
 
@@ -296,16 +291,15 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
     var reachFailed by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf<String?>(null) }
     var askAgain by remember { mutableStateOf(0) }
+    var promoting by remember { mutableStateOf<Pair<Machine, String>?>(null) }
 
     Pulse()
     LaunchedEffect(tick) {
         val all = Drop.people().getOrNull()
         person = (if (itsMe) all?.firstOrNull { it.me } else all?.firstOrNull { it.name == name && !it.me }) ?: person
         unread = unreadBy(context)
-        if (itsMe) {
-            me = Drop.self() ?: me
-            asking = Drop.levels("").getOrNull()?.sumOf { it.asked } ?: asking
-        }
+        me = Drop.self() ?: me
+        if (itsMe) asking = Drop.levels("").getOrNull()?.sumOf { it.asked } ?: asking
     }
     // Asked once and after each change rather than on every tick: it is a question to every machine of yours.
     LaunchedEffect(name, askAgain) {
@@ -372,6 +366,16 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
                         OutlinedButton(onClick = { removing = true }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
                     }
                 }
+                // What this device is to you, for somebody with one: with several it is on each one's row.
+                machines.singleOrNull()?.let { only ->
+                    item {
+                        Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // Whether this phone signs itself, with a YubiKey, or has a machine of yours that holds the key do it.
+                            Button(onClick = { promoting = only to "mine" }, modifier = Modifier.fillMaxWidth()) { Text("Make it one of my machines") }
+                            OutlinedButton(onClick = { promoting = only to "join" }, modifier = Modifier.fillMaxWidth()) { Text("Join their machines") }
+                        }
+                    }
+                }
                 person?.let { p ->
                     item {
                         Toggle(
@@ -401,14 +405,20 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
                     m.reaching,
                     false,
                     unread = unread[m.name] ?: 0,
-                    actions = if (itsMe) {
-                        {
-                            MachineActions(
-                                rename = { renaming = m.name },
-                                remove = { takingOut = m.name },
-                            )
+                    actions = when {
+                        itsMe -> {
+                            {
+                                MachineActions(
+                                    rename = { renaming = m.name },
+                                    remove = { takingOut = m.name },
+                                )
+                            }
                         }
-                    } else null,
+                        machines.size > 1 -> {
+                            { PeerActions(promote = { promoting = m to "mine" }, join = { promoting = m to "join" }) }
+                        }
+                        else -> null
+                    },
                 ) { go(Screen.Machine(m.name)) }
             }
 
@@ -461,6 +471,21 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
                     .onFailure { said.showSnackbar(it.message ?: "Could not rename") }
             }
         }
+    }
+
+    promoting?.let { (m, kind) ->
+        AskDialog(
+            id = m.id,
+            name = m.name,
+            kind = kind,
+            title = if (kind == "mine") "Make ${m.name} one of your machines?" else "Join ${m.name}'s machines?",
+            says = if (kind == "mine") {
+                "Its person says yes on its screen. It carries your identity from then on, and every other machine of yours learns of it."
+            } else {
+                "Its person says yes on its screen. This phone becomes one of their machines, and stops being yours."
+            },
+            dismiss = { promoting = null },
+        ) { text -> scope.launch { said.showSnackbar(text) } }
     }
 
     takingOut?.let { machine ->
@@ -521,6 +546,39 @@ private fun MachineActions(rename: () -> Unit, remove: () -> Unit) {
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             DropdownMenuItem(text = { Text("Rename") }, onClick = { open = false; rename() })
             DropdownMenuItem(text = { Text("Remove from my machines") }, onClick = { open = false; remove() })
+        }
+    }
+}
+
+@Composable
+private fun Nobody() {
+    Card(
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp).fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        shape = RoundedCornerShape(24.dp),
+    ) {
+        Column(Modifier.padding(24.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("Nobody else yet", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "A device on this network shows up under Nearby: tap it. Anywhere else, one of you shows a code and the other joins with it.",
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** The ⋮ on somebody else's machine: make it one of yours, or make this phone one of theirs. */
+@Composable
+private fun PeerActions(promote: () -> Unit, join: () -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) { Icon(Icons.Filled.MoreVert, "Machine actions") }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(text = { Text("Make it one of my machines") }, onClick = { open = false; promote() })
+            DropdownMenuItem(text = { Text("Join their machines") }, onClick = { open = false; join() })
         }
     }
 }

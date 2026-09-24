@@ -61,6 +61,8 @@ func (m Model) notice() string {
 	switch {
 	case m.confirm != nil:
 		return " " + peachStyle.Render("? ") + fit(m.confirm.ask+" — y does it, anything else leaves it", m.width-4)
+	case m.askHasKeys():
+		return " " + peachStyle.Render("? ") + fit(m.askedLine(), m.width-4)
 	case m.removing != "":
 		return " " + peachStyle.Render("? ") + fit("remove "+m.removing+" over there? y takes it off, anything else leaves it", m.width-4)
 	case m.offering != nil && m.at == levelBrowse:
@@ -567,8 +569,15 @@ func (m Model) keys() []hint {
 		keys = []hint{{"esc", "cancel"}}
 
 	case m.at == levelUsers:
-		keys = []hint{{"enter", "machines"}, {"a", "add a machine"}, {"p", "pair with somebody"}, {"t", "take a code"},
-			{"c", "join your machines"}}
+		if near, ok := m.list.SelectedItem().(manageItem); ok && near.act == actNear {
+			keys = []hint{{"enter", "add it"}, {"o", "make it one of your machines"}, {"i", "make this one of its machines"},
+				{"a", "show a code"}, {"t", "take a code"}, {"q", "quit"}}
+			break
+		}
+		keys = []hint{{"enter", "machines"}, {"a", "add a device"}, {"t", "take a code"}}
+		if it, ok := m.list.SelectedItem().(userItem); ok && it.mine {
+			keys = append(keys, hint{"m", "you: leave, or start over"})
+		}
 		if it, ok := m.list.SelectedItem().(userItem); ok && !it.mine {
 			keys = append(keys, hint{"m", "manage " + it.name})
 			if !it.anon {
@@ -587,12 +596,13 @@ func (m Model) keys() []hint {
 				keys = append(keys, hint{"x", "forget"})
 			}
 		}
-		if m.atUser == Me {
-			keys = append(keys, hint{"a", "add a machine"})
-		} else {
+		if it, ok := m.list.SelectedItem().(deviceItem); ok && !it.self && m.atUser != Me {
+			keys = append(keys, hint{"o", "make it one of your machines"}, hint{"i", "make this one of its machines"})
+		}
+		if m.atUser != Me {
 			keys = append(keys, hint{"m", "manage"}, hint{"t", "trust, or stop"})
 		}
-		keys = append(keys, hint{"r", "reload"}, hint{"esc", "back"})
+		keys = append(keys, hint{"a", "add a device"}, hint{"r", "reload"}, hint{"esc", "back"})
 
 	case m.at == levelPaths:
 		keys = []hint{{"enter", "open"}}
@@ -946,17 +956,18 @@ func (m Model) nothingPaired() string {
 		"",
 		nameStyle.Render("No devices yet"),
 		"",
-		dimStyle.Render("drop talks to devices you have paired with, and nothing else."),
+		dimStyle.Render("drop talks to devices you have added, and nothing else."),
 		"",
-		keyStyle.Render("p") + sayStyle.Render("  show a code for the other device to scan or type in"),
-		keyStyle.Render("t") + sayStyle.Render("  take a code the other device is showing"),
+		keyStyle.Render("a") + sayStyle.Render("  add a device: show a code for it to scan or type in"),
+		keyStyle.Render("t") + sayStyle.Render("  take the code another device is showing"),
 		"",
-		faintStyle.Render("or run ") + kindStyle.Render("drop peer pair") + faintStyle.Render(" on both, from a terminal"),
-		faintStyle.Render("a machine of your own: ") + kindStyle.Render("drop machine add"),
+		faintStyle.Render("from a terminal: ") + kindStyle.Render("drop add") + faintStyle.Render(" on one, ") +
+			kindStyle.Render("drop add <code>") + faintStyle.Render(" on the other"),
+		faintStyle.Render("then, on a device you added: ") + kindStyle.Render("o") + faintStyle.Render(" makes it one of your machines"),
 		"",
 	}, "\n")
 
-	return m.middle(panel("pair a device", m.panelWidth(), 0, body))
+	return m.middle(panel("add a device", m.panelWidth(), 0, body))
 }
 
 // pairingView is the code, the ticket, and the wait.
@@ -972,9 +983,9 @@ func (m Model) pairingView() string {
 	if _, code, found := strings.Cut(typed, "#"); found {
 		typed = code
 	}
-	command, title := "drop peer pair ", "pair with somebody"
+	command, title := "drop add ", "add a device"
 	if m.linking.machine {
-		command, title = "drop machine join ", "add a machine of yours"
+		title = "add a machine of yours"
 	}
 	folded := fold(command+typed, width-4)
 

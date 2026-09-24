@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"os"
@@ -171,6 +172,60 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, ticking()
+
+	case polled:
+		redraw := len(msg.near) != len(m.near)
+		account := msg.renewing != m.renewing
+		m.near, m.asked, m.renewing = msg.near, msg.asked, msg.renewing
+		if redraw && m.at == levelUsers && m.list.FilterState() == list.Unfiltered {
+			m.showUsers()
+		}
+		if account && m.at == levelManage && m.managed.Name == Me {
+			m.showManage()
+		}
+		return m, poll(m.back)
+
+	case renewed:
+		m.loading = false
+		if msg.err != nil {
+			m.trouble = msg.err.Error()
+		}
+		if msg.n > 0 {
+			m.said = fmt.Sprintf("signed %d fresh badges — each machine takes its own the next time it says hello", msg.n)
+		}
+		return m, nil
+
+	case invitedDone:
+		m.loading = false
+		if msg.err != nil {
+			m.trouble, m.said = msg.err.Error(), ""
+			return m, nil
+		}
+		switch msg.kind {
+		case askMine:
+			m.trouble, m.said = "", msg.with+" is one of your machines now"
+		case askJoin:
+			m.trouble, m.said = "", "this machine is one of "+msg.with+"'s now"
+		default:
+			m.trouble, m.said = "", "added "+msg.with
+		}
+		return m, tea.Batch(loadPeers(m.back), loadSelf(m.back))
+
+	case leftOrWiped:
+		m.loading = false
+		if msg.err != nil {
+			m.trouble = msg.err.Error()
+			return m, nil
+		}
+		m.stop()
+		return m, tea.Quit
+
+	case decided:
+		if msg.err != nil {
+			m.trouble = msg.err.Error()
+			return m, nil
+		}
+		return m, tea.Batch(loadPeers(m.back), loadSelf(m.back))
 
 	case putDone:
 		m.offering = nil
@@ -399,6 +454,16 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			_ = m.typingAt.Type(keyBytes(msg))
 		}
 		return m, nil
+	}
+
+	// A device asking to connect is answered with y or n, wherever the interface is standing.
+	if m.askHasKeys() && (msg.String() == "y" || msg.String() == "n") {
+		first := m.asked[0]
+		m.asked = m.asked[1:]
+		if msg.String() == "y" {
+			m.said = "saying yes to " + first.Name + "…"
+		}
+		return m, decide(m.back, first.ID, msg.String() == "y")
 	}
 
 	// A question waits for a yes, and anything else leaves things as they are.
@@ -796,7 +861,8 @@ func (m *Model) showMachines() {
 
 func (m *Model) showUsers() {
 	m.rows = group(m.me, m.peers, m.reaching, m.knocked)
-	m.fill("users", m.rows.items)
+	items := append(append([]list.Item{}, m.rows.items...), nearRows(m.near)...)
+	m.fill("users", items)
 	m.list.Select(m.rowFor(m.atPeer))
 	m.list.SetSize(m.listWidth(), m.listHeight())
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
-	"github.com/bresilla/drop/src/pkg/user"
 )
 
 // More is what an interface can do beyond what the full-screen one draws. A phone has room for more
@@ -289,6 +288,3 @@ func renameHolders(old, name string) error {
 	}
 	return nil
 }
-
-// Leave takes this machine back out of whoever's it became, from its next start.
-func Leave() error { return user.Leave() }

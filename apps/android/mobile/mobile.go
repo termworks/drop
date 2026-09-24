@@ -167,7 +167,8 @@ func (n *Node) Self() string {
 	if pub, err := user.Public(); err == nil {
 		out.Owner = user.Fingerprint(pub)
 	}
-	_, out.Signs = user.Quiet()
+	_, quiet := user.Quiet()
+	out.Signs = quiet || user.CanAssert()
 	out.Took = user.Took()
 	if badge, _, err := user.Mine(time.Now()); err == nil || errors.Is(err, user.ErrStale) {
 		out.Until = badge.Until.UnixMilli()

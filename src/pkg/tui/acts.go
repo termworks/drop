@@ -35,20 +35,37 @@ func (m Model) usersKey(key string) (tea.Model, tea.Cmd, bool) {
 	it, onUser := m.list.SelectedItem().(userItem)
 	person := onUser && !it.mine && !it.anon
 
+	// A device on this network: added with enter or a, made one of yours with o, or this one made one
+	// of its with i. Its person says yes on its screen.
+	if near, ok := m.list.SelectedItem().(manageItem); ok && near.act == actNear {
+		kind := ""
+		switch key {
+		case "enter", "a":
+			kind = askPair
+		case "o":
+			kind = askMine
+		case "i":
+			kind = askJoin
+		}
+		if kind != "" {
+			m.trouble, m.said, m.loading = "", "asking "+near.label+" — say yes on it", true
+			return m, inviteTo(m.back, near.who, kind), true
+		}
+	}
+
 	switch key {
 	case "a":
 		if m.linking == nil {
-			return m, offerMachine(m.back), true
+			return m, offer(m.back), true
 		}
-	case "c":
-		m.prompt = &prompting{
-			title: "join your machines",
-			says:  "On a machine of yours run `drop machine add`, and type the code it shows. This machine becomes one of yours.",
-			done:  func(code string) tea.Cmd { return joinMachine(m.back, code) },
-		}
-		return m, nil, true
 	case "m":
-		if onUser && !it.mine {
+		if onUser && it.mine {
+			m.at, m.trouble, m.said = levelManage, "", ""
+			m.managed = Managed{Name: Me}
+			m.showManage()
+			return m, nil, true
+		}
+		if onUser {
 			return m.manageOf(it.name)
 		}
 	case "n":
@@ -73,9 +90,20 @@ func (m Model) machinesKey(key string) (tea.Model, tea.Cmd, bool) {
 
 	switch key {
 	case "a":
-		if m.atUser == Me && m.linking == nil {
-			return m, offerMachine(m.back), true
+		if m.linking == nil {
+			return m, offer(m.back), true
 		}
+	case "o", "i":
+		// What a device you added is to you: one of your machines, or this one one of theirs.
+		if !other || m.atUser == Me {
+			return m, nil, true
+		}
+		kind, says := askMine, "asking "+it.entry.Name+" to become one of your machines — say yes on it"
+		if key == "i" {
+			kind, says = askJoin, "asking "+it.entry.Name+" to take this machine into theirs — say yes on it"
+		}
+		m.trouble, m.said, m.loading = "", says, true
+		return m, inviteTo(m.back, it.entry.ID.String(), kind), true
 	case "n":
 		if other {
 			return m.renamePrompt(it.entry.Name), nil, true
@@ -211,6 +239,23 @@ func (m Model) accessKey(key string) (tea.Model, tea.Cmd, bool) {
 func (m Model) manageKey(key string) (tea.Model, tea.Cmd, bool) {
 	row, onRow := m.onManaged()
 	who := m.managed.Name
+
+	// Your own screen does two things, each asked about first.
+	if who == Me {
+		if key != "enter" || !onRow {
+			return m, nil, key != "esc" && key != "q" && key != "?" && key != " " && key != "up" && key != "down" && key != "k" && key != "j"
+		}
+		switch row.act {
+		case actRenew:
+			m.loading, m.trouble, m.said = true, "", "touch your key when it blinks, once for each machine"
+			return m, renew(m.back), true
+		case actLeave:
+			m.confirm = &confirming{ask: "leave your machines? this machine goes back to its own", yes: leaving(m.back)}
+		case actStartOver:
+			m.confirm = &confirming{ask: "delete everything drop knows on this machine? it cannot be brought back", yes: startingOver(m.back)}
+		}
+		return m, nil, true
+	}
 
 	switch key {
 	case "r":

@@ -339,28 +339,123 @@ func TestAMachineOfYoursIsRenamedAndTakenOut(t *testing.T) {
 	}
 }
 
-// Adding a machine of yours and joining yours are each one key from the first screen.
-func TestYourMachinesAreAddedAndJoinedFromTheFirstScreen(t *testing.T) {
+// nearFake is what the fake says is nearby and asking, and what it was asked to do about them.
+type nearFake struct {
+	near    []Near
+	asking  []Invited
+	invited []string
+	decided []string
+	left    bool
+	over    bool
+}
+
+func (f *fake) Nearby() ([]Near, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nearby.near, nil
+}
+
+func (f *fake) Invite(ctx context.Context, id, kind string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nearby.invited = append(f.nearby.invited, kind+":"+id)
+	return "box-x", nil
+}
+
+func (f *fake) Invited() ([]Invited, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nearby.asking, nil
+}
+
+func (f *fake) Decide(id string, yes bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	answer := "no"
+	if yes {
+		answer = "yes"
+	}
+	f.nearby.decided = append(f.nearby.decided, id+":"+answer)
+	f.nearby.asking = nil
+	return nil
+}
+
+func (f *fake) Leave(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nearby.left = true
+	return nil
+}
+
+func (f *fake) StartOver(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nearby.over = true
+	return nil
+}
+
+// Adding is one key from the first screen, and so is taking somebody's code.
+func TestADeviceIsAddedFromTheFirstScreen(t *testing.T) {
 	back := &fake{self: Identity{Name: "tron", User: "ssh-ed25519 MINE"}, peers: []book.Entry{{Name: "bob", ID: idFor(3)}}}
 
 	m := press(t, start(t, back), "a")
-	if m.linking == nil || !m.linking.machine || !strings.Contains(m.View(), "drop machine join abcd-efgh-ijkl") {
-		t.Fatalf("a did not show a code for a machine of yours:\n%s", m.View())
+	if m.linking == nil || !strings.Contains(m.View(), "drop add code") {
+		t.Fatalf("a did not show a code:\n%s", m.View())
 	}
 	m = press(t, m, "esc")
 
-	m = press(t, m, "c")
-	if m.prompt == nil {
-		t.Fatal("c did not ask for a code")
+	m = press(t, m, "t")
+	if !m.joining {
+		t.Fatal("t did not ask for a code")
 	}
 	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("abcd-efgh-ijkl")})
 	m = press(t, m, "enter")
 
 	back.mu.Lock()
-	joined := back.admin.joinedMachine
+	took := back.took
 	back.mu.Unlock()
-	if joined != "abcd-efgh-ijkl" {
-		t.Errorf("joined your machines with %q", joined)
+	if took != "abcd-efgh-ijkl" {
+		t.Errorf("took %q", took)
+	}
+}
+
+// A device on this network is a row of its own: enter adds it, o makes it one of your machines, i
+// makes this one one of its.
+func TestADeviceNearbyIsAddedOrPromoted(t *testing.T) {
+	back := &fake{self: Identity{Name: "tron", User: "ssh-ed25519 MINE"}, peers: []book.Entry{{Name: "bob", ID: idFor(3)}}}
+	back.nearby.near = []Near{{ID: "x1", Name: "box-x"}}
+
+	m := start(t, back)
+	m = settle(t, m, polled{near: back.nearby.near})
+	onRow(t, &m, "box-x")
+	m = press(t, m, "enter")
+	onRow(t, &m, "box-x")
+	m = press(t, m, "o")
+
+	back.mu.Lock()
+	invited := append([]string(nil), back.nearby.invited...)
+	back.mu.Unlock()
+	if len(invited) != 2 || invited[0] != "pair:x1" || invited[1] != "mine:x1" {
+		t.Errorf("asked %v", invited)
+	}
+}
+
+// A device asking to connect is answered with y or n from wherever the interface stands.
+func TestADeviceAskingIsAnswered(t *testing.T) {
+	back := &fake{self: Identity{Name: "tron", User: "ssh-ed25519 MINE"}, peers: []book.Entry{{Name: "bob", ID: idFor(3)}}}
+	asking := []Invited{{ID: "x1", Name: "box-x", Kind: "mine", Check: "123456"}}
+
+	m := settle(t, start(t, back), polled{asked: asking})
+	if shown := m.View(); !strings.Contains(shown, "box-x asks") || !strings.Contains(shown, "123456") {
+		t.Fatalf("the ask is not on the screen:\n%s", shown)
+	}
+	press(t, m, "y")
+
+	back.mu.Lock()
+	decided := append([]string(nil), back.nearby.decided...)
+	back.mu.Unlock()
+	if len(decided) != 1 || decided[0] != "x1:yes" {
+		t.Errorf("decided %v", decided)
 	}
 }
 
@@ -379,7 +474,7 @@ func TestEveryActionIsOnTheScreen(t *testing.T) {
 		t.Fatal("space did not open the actions")
 	}
 	shown := m.View()
-	for _, want := range []string{"pair with somebody", "add a machine", "join your machines"} {
+	for _, want := range []string{"add a device", "take a code"} {
 		if !strings.Contains(shown, want) {
 			t.Errorf("the actions are missing %q:\n%s", want, shown)
 		}
@@ -390,9 +485,13 @@ func TestEveryActionIsOnTheScreen(t *testing.T) {
 	}
 	m = press(t, m, "enter")
 	back.mu.Lock()
-	offered := back.admin.offeredMachine
+	offered := back.offered
 	back.mu.Unlock()
 	if !offered {
 		t.Error("picking an action from the menu did not do it")
 	}
 }
+
+func (f *fake) Renewing() int { return 0 }
+
+func (f *fake) Renew(ctx context.Context) (int, error) { return 0, nil }

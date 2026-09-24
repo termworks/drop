@@ -99,7 +99,7 @@ fun PairScreen(ticket: String?, scan: Boolean, back: () -> Unit, paired: (String
 
 /** This device's code, up for as long as it is on screen and no longer. */
 @Composable
-private fun ShowCode() {
+internal fun ShowCode() {
     val context = LocalContext.current
     var ticket by remember { mutableStateOf<String?>(null) }
     var drawn by remember { mutableStateOf<ImageBitmap?>(null) }
@@ -123,7 +123,7 @@ private fun ShowCode() {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            "Point the other phone's camera here — in drop, Scan a code.",
+            "Point the other phone's camera here — in drop, tap Add, then Their code.",
             style = MaterialTheme.typography.bodyLarge,
             textAlign = TextAlign.Center,
         )
@@ -163,16 +163,16 @@ private fun ShowCode() {
                 shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("drop peer pair $t", style = Mono, modifier = Modifier.padding(12.dp))
+                Text("drop add $t", style = Mono, modifier = Modifier.padding(12.dp))
             }
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(onClick = { copy(context, "drop code", "drop peer pair $t") }) {
+                OutlinedButton(onClick = { copy(context, "drop code", "drop add $t") }) {
                     Icon(Icons.Filled.ContentCopy, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Copy")
                 }
-                OutlinedButton(onClick = { share(context, "drop peer pair $t") }) {
+                OutlinedButton(onClick = { share(context, "drop add $t") }) {
                     Icon(Icons.Filled.Share, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Share")
