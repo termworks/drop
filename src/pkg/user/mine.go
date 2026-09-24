@@ -53,6 +53,16 @@ func Mine(now time.Time) (Badge, []byte, error) {
 		}
 
 		badge, sig, err = renew(where, now)
+		if err == nil || readErr != nil {
+			return err
+		}
+
+		// A machine vouched for by another cannot sign its own. When the one it wears has run out
+		// it still wears it, and says so, until one of its user's machines signs another.
+		if was, perr := parse(signed); perr == nil && was.Device == deviceID() && sameUser(was) {
+			badge, sig = was, stored
+			return fmt.Errorf("%w: %v", ErrStale, err)
+		}
 		return err
 	})
 	return badge, sig, err
@@ -60,7 +70,7 @@ func Mine(now time.Time) (Badge, []byte, error) {
 
 // renew signs a fresh badge for this machine and writes it down.
 func renew(where string, now time.Time) (Badge, []byte, error) {
-	badge, sig, err := mineNow(now)
+	badge, sig, err := signFor(deviceID(), node.DisplayName(), now)
 	if err != nil {
 		return Badge{}, nil, err
 	}
@@ -100,32 +110,6 @@ func sameUser(badge Badge) bool {
 }
 
 // deviceID is this machine's own identity, read without starting anything.
-// mineNow makes this machine's badge, whichever way the key can be reached.
-//
-// A key drop can read is signed here and now. A key it cannot -- one in hardware, or held by an
-// agent -- is signed by the command that can reach it, which is the config's to name and
-// `ssh-keygen -Y sign` by default.
-func mineNow(now time.Time) (Badge, []byte, error) {
-	where, err := Where()
-	if err != nil {
-		return Badge{}, nil, err
-	}
-
-	if command := signCommand(where); command != "" {
-		who, err := Public()
-		if err != nil {
-			return Badge{}, nil, err
-		}
-		return SignBy(command, who, deviceID(), node.DisplayName(), now)
-	}
-
-	by, err := Signer()
-	if err != nil {
-		return Badge{}, nil, err
-	}
-	return Sign(by, deviceID(), node.DisplayName(), now)
-}
-
 func deviceID() string {
 	id, err := node.LocalID()
 	if err != nil {

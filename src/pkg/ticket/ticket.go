@@ -130,3 +130,35 @@ func Wide(code *qr.Code) string {
 	}
 	return out.String()
 }
+
+// A pairing ticket is one thing a camera carries between two machines. A badge one machine signs
+// for another is a second, and a user key carried over is a third; each is a link of its own kind,
+// so whatever reads a code knows which it was handed.
+const (
+	KindBadge = "badge"
+	KindKey   = "key"
+)
+
+// LinkAs is a code of one kind as a link.
+func LinkAs(kind, text string) string { return Scheme + "://" + kind + "/" + text }
+
+// Kind says what a link is and hands back what it carries. A pairing ticket, linked or bare, is
+// "pair".
+func Kind(text string) (string, string) {
+	text = strings.TrimSpace(text)
+	for _, kind := range []string{KindBadge, KindKey} {
+		if rest, found := strings.CutPrefix(text, LinkAs(kind, "")); found {
+			return kind, strings.Trim(rest, "/")
+		}
+	}
+	return "pair", FromLink(text)
+}
+
+// CodeOf draws a whole link as a QR code, the way Code draws a ticket.
+func CodeOf(link string) (*qr.Code, error) {
+	code, err := qr.Encode(link, qr.L)
+	if err != nil {
+		return nil, fmt.Errorf("encoding the code: %w", err)
+	}
+	return code, nil
+}
