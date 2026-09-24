@@ -1,5 +1,287 @@
 # Changelog
 
+## [0.4.0] - 2026-09-24
+
+### <!-- 0 -->⛰️  Features
+
+- Title the home screen drop
+- Call the home screen Orbit
+- Open on people, me first
+- Four tabs and one access screen
+- Manage steps remotely, rename, leave
+- Ask a machine of yours who reaches it
+- Leave, and say a key was taken
+- Rename a machine or a person
+- Put a path on a step
+- Make the phone one of your machines
+- Vouch, export and take a user
+- Hand a running-low badge a fresh one
+- Vouch for a machine or carry the key
+- Keep copies of notes and folders
+- Hold shared namespaces from an app
+- Chats, this phone, access and notes
+- Bind access, notes and file edits
+- Hear arriving files, notes and folders
+- Name the typing keys above a terminal
+- Say who is on a terminal
+- Say what a terminal is in the title
+- Own shells, one shape for shared ones
+- Say who is on a terminal, and ping
+- Drive an interface from elsewhere
+- Stay reachable all day and after boot
+- A real app, in Compose
+- Always draw the code, black on white
+- Open the device in a window
+- The node as an app
+- Add atomic resealing
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Never tell a watcher fewer than itself
+- Chmod synced files through the file
+- Draw a far terminal at its own size
+- Open the row a filter shows
+- No second endpoint beside the daemon
+- Let a device that came back reconnect
+- Retry a refused resumption
+- Make filtering work, and stay put
+- Line the listing up with long names
+- Reach a far device in under a second
+- Count the window from listening
+- Name the tab the way it is labelled
+- Release the APK with the binaries
+- Ask a machine again as it refreshes
+- Quiet a local client leaving early
+- Take a ticket through the daemon
+- Publish as soon as somebody pairs
+- Read listing times as nanoseconds
+- Write a pairing down before answering
+- Say plainly why a message is queued
+- Show what lands while the daemon runs
+- Bind the AAR before building the APK
+- Check the environment is set
+- Reject ambiguous routing
+- Distinguish cache failures
+- Report transfer failures
+- Reserve person names
+- Forget complete state
+- Release normalized mounts
+- Bound knock persistence
+- Normalize request paths
+- Lease transient mounts
+- Unmount startup namespaces
+- Refuse unavailable paths
+- Keep endpoint names unique
+- Prune retired state
+- Honor session cancellation
+- Pin hardware identity
+- Isolate retained keys
+- Preserve corrupt state
+- Filter unusable peers
+- Bound retained parts
+- Bound transfer bytes
+- Retry lost acknowledgements
+- Bound incoming transfer bytes
+- Stop failed backlog fanout
+- Commit free landings atomically
+- Cancel folder reconciliation
+- Wait for rendezvous record
+- Interrupt stalled writes
+- Disable closed nudge channels
+- Fail on listener conflicts
+- Guard concurrent replacements
+- Reseal shared histories
+- Complete handoffs per session
+- Serialize directory landings
+- Bound lua execution
+- Bound and verify transfers
+- Bound handshake writes
+- Bound handshake stalls
+- Bound finite write stalls
+- Bound stalled exchanges
+- Bound finite read stalls
+- Bound plaintext input
+- Report input read failures
+- Reject partial held replies
+- Retry concurrent replacements
+- Limit work per peer
+- Reject empty data frames
+- Harden transfer sources
+- Repair truncated log tails
+- Report outbox clear failures
+- Recover null activity logs
+- Harden source reads
+- Bound signing commands
+- Bound SSH agent requests
+- Bound local IPC connections
+- Prevent false deletion records
+- Cap account storage
+- Bound rewritten logs
+- Bound event handlers
+- Bound served namespaces
+- Bound archetype discovery
+- Bound peer histories
+- Bound path completion reads
+- Bound local directory reads
+- Preserve stream capacity
+- Enforce operation cancellation
+- Stop canceled read pumps
+- Cancel abandoned hashes
+- Reject foreign hash costs
+- Bound shell shutdown
+- Bound terminal shells
+- Bound command processes
+- Bound browser openers
+- Bound browser openers
+- Answer early connections
+- Bound host inputs
+- Bound process resources
+- Tighten peer ceiling
+- Tighten stream ceiling
+- Cap total answers
+- Cap total streams
+- Detect replaced reads
+- Cap peer entries
+- Reject stale peer cache
+- Bound held state memory
+- Retire stale publishers
+- Close loaded runtimes
+- Isolate entry storage
+- Allow settings-only commands
+- Reject stale address books
+- Validate setting types
+- Honor environment name
+- Validate custom relays
+- Fail on unreadable settings
+- Reject invalid listen ports
+- Expose non-conflict bind errors
+- Restore failed changes
+- Reject unsendable paths
+- Resolve epochs together
+- Bound sidecar reads
+- Keep complete local requests
+- Bound held stream work
+- Bound local connections
+- Require exclusive resealing
+- Keep buffered local replies
+- Bound incoming work
+- Bound critical state reads
+- Refuse linked log files
+- Track exact log revision
+- Track exact log revision
+- Bound persistent logs
+- Bound small state reads
+- Preserve free disk reserve
+- Fold logs atomically
+- Sync removals and moves
+- Refuse linked sparse files
+- Detect replaced folder files
+- Bound shared file reads
+- Reject oversized logs
+- Bound stable file reads
+- Detect every policy update
+- Bound local replies
+- Forget closed held links
+- Replace dead held links
+- Serialize queued delivery
+- Back off failed accepts
+- Release canceled readers
+- Detect every address update
+- Report connected failures
+- Close borrowed sockets
+- Retain buffered stream bytes
+- Sync namespace mutations
+- Sync new log entries
+- Sync shared folder writes
+- Create age keys atomically
+- Harden history rewrites
+- Isolate address resolvers
+- Lock resumable downloads
+- Cap advertised addresses
+- Cap session payloads
+- Fail fast on transfer overflow
+- Confirm daemon lifecycle
+- Harden local socket
+- Reject special upload sources
+- Clamp reported dimensions
+- Drain final shell output
+- Allow unknown directory size
+- Bound remembered paths
+- Validate reply metadata
+- Bind receipts to messages
+- Lock request updates
+- Complete short writes
+- Reject unclaimed bytes
+- Validate decoded messages
+- Reject ambiguous control bodies
+- Validate batch boundaries
+- Preserve free disk space
+- Drain persistence on shutdown
+- Persist initial provenance first
+- Clear static reliability findings
+- Reject obsolete bootstrap
+- Serialize log rewrites
+- Serialize persistent queues
+- Store badges atomically
+- Serialize keys and close agents
+- Enforce durable size bounds
+- Preserve folding after saves
+- Serialize persistent changes
+- Recover stale provenance
+- Avoid coroutine teardown race
+
+### <!-- 2 -->🚜 Refactor
+
+- One entry point for an interface
+
+### <!-- 3 -->📚 Documentation
+
+- People first, settings in the menu
+- Steps on a ladder
+- Making a machine yours
+- What the app does now
+- One shell or one each, and its size
+- Driving one, and the daemon beside it
+- The code, the daemon, and the phone
+- Document state bounds
+- Correct default
+- Correct name precedence
+- A walkthrough for one identity across three machines
+- The readme is a landing page, not the manual
+
+### <!-- 4 -->⚡ Performance
+
+- Scan only dirty folders
+
+### <!-- 6 -->🧪 Testing
+
+- Keys, typing and the screen seen
+- Cover relay lifecycle
+- Allow concurrent write latency
+- Allow durable write latency
+- Wait for lock cleanup
+- Isolate guess budgets
+- Account for race overhead
+- Benchmark quota scans
+- Fuzz stream parsing
+- Cover remaining wire decoders
+- Cover file growth
+- Require graceful shutdown
+- Cover atomic file writes
+- Cover delivery contract
+- Isolate address ranking
+- Remove timing assertion
+- Synchronize output capture
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Shuffle race suite
+- Run decoder fuzz smoke
+- Pin action revisions
+- Validate published tags
+- Enforce lint gate
+- Gate releases on reliability suite
+
 ## [0.3.3] - 2026-08-27
 
 ### <!-- 0 -->⛰️  Features
