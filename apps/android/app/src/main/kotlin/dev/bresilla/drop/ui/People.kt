@@ -67,6 +67,7 @@ import dev.bresilla.drop.Knock
 import dev.bresilla.drop.Machine
 import dev.bresilla.drop.Me
 import dev.bresilla.drop.Person
+import dev.bresilla.drop.Settings
 import kotlinx.coroutines.launch
 
 /** What "me" is called in the address book, the way the node arranges it. */
@@ -138,13 +139,13 @@ fun PeopleScreen(go: (Screen) -> Unit) {
             val mine = all.firstOrNull { it.me }?.machines ?: emptyList()
             item {
                 Entry(
-                    title = "Me",
+                    title = Settings.me(context),
                     subtitle = (listOf(me?.name ?: "this phone") + mine.map { it.name }).joinToString(" · ") +
                         if (asking > 0) " · $asking asking" else "",
                     online = true,
                     trusted = false,
                     unread = mine.sumOf { unread[it.name] ?: 0 },
-                    avatar = me?.name ?: ME,
+                    avatar = Settings.me(context),
                     highlight = true,
                 ) { go(Screen.Person(ME)) }
             }
@@ -300,7 +301,7 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
         snackbarHost = { SnackbarHost(said) },
         topBar = {
             TopAppBar(
-                title = { Text(if (itsMe) "Me" else name) },
+                title = { Text(if (itsMe) Settings.me(context) else name) },
                 navigationIcon = { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 actions = {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
@@ -320,10 +321,10 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
         LazyColumn(contentPadding = PaddingValues(top = pad.calculateTopPadding(), bottom = 32.dp)) {
             item {
                 Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(if (itsMe) me?.name ?: ME else name, size = 64.dp, online = if (itsMe) true else person?.let { it.reaching > 0 })
+                    Avatar(if (itsMe) Settings.me(context) else name, size = 64.dp, online = if (itsMe) true else person?.let { it.reaching > 0 })
                     Spacer(Modifier.width(16.dp))
                     Column {
-                        Text(if (itsMe) "Me" else name, style = MaterialTheme.typography.headlineSmall)
+                        Text(if (itsMe) Settings.me(context) else name, style = MaterialTheme.typography.headlineSmall)
                         val count = machines.size + if (itsMe) 1 else 0
                         Text(
                             "$count machine" + (if (count == 1) "" else "s") +

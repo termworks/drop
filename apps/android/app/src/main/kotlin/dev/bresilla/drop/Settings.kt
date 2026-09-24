@@ -11,6 +11,7 @@ object Settings {
     private const val WRITABLE = "share.writable"
     private const val SEEN = "seen."
     private const val TERM_SIZE = "term.size"
+    private const val MY_NAME = "me.name"
 
     private fun prefs(context: Context) = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
@@ -32,6 +33,16 @@ object Settings {
     fun share(context: Context, folder: Boolean, writable: Boolean) {
         prefs(context).edit().putBoolean(FOLDER, folder).putBoolean(WRITABLE, writable).apply()
     }
+
+    /** What you are called on this phone, in place of Me; empty is Me. */
+    fun myName(context: Context): String = prefs(context).getString(MY_NAME, "") ?: ""
+
+    fun nameMe(context: Context, name: String) {
+        prefs(context).edit().putString(MY_NAME, name.trim()).apply()
+    }
+
+    /** What the list calls you: your name, or Me. */
+    fun me(context: Context): String = myName(context).ifEmpty { "Me" }
 
     /** How big a terminal is drawn, in pixels of text, as it was last pinched to; zero before it ever was. */
     fun termSize(context: Context): Float = prefs(context).getFloat(TERM_SIZE, 0f)

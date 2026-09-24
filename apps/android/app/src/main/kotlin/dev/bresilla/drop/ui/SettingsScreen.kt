@@ -68,6 +68,7 @@ fun SettingsScreen(go: (Screen) -> Unit, back: () -> Unit) {
     val tick by Drop.tick.collectAsState()
     var me by remember { mutableStateOf<Me?>(null) }
     var name by remember { mutableStateOf(Settings.name(context)) }
+    var called by remember { mutableStateOf(Settings.myName(context)) }
     var folder by remember { mutableStateOf(Settings.sharesFolder(context)) }
     var writable by remember { mutableStateOf(Settings.folderWritable(context)) }
     var restarting by remember { mutableStateOf(false) }
@@ -95,6 +96,25 @@ fun SettingsScreen(go: (Screen) -> Unit, back: () -> Unit) {
         },
     ) { pad ->
         LazyColumn(contentPadding = PaddingValues(top = pad.calculateTopPadding(), bottom = 32.dp)) {
+            item { Section("You") }
+            item {
+                Column(Modifier.padding(horizontal = 20.dp)) {
+                    OutlinedTextField(
+                        value = called,
+                        onValueChange = { called = it },
+                        label = { Text("Your name") },
+                        placeholder = { Text("Me") },
+                        supportingText = { Text("What this phone calls you, in place of Me.") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Button(
+                        enabled = called.trim() != Settings.myName(context),
+                        onClick = { Settings.nameMe(context, called); called = Settings.myName(context) },
+                    ) { Text("Save") }
+                }
+            }
+
             item { Section("This phone") }
             item {
                 Column(Modifier.padding(horizontal = 20.dp)) {
