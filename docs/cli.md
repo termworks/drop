@@ -27,6 +27,23 @@ a name. See [pairing](pairing.md).
 
 ## The groups
 
+**Adding a device**, whoever's it is, and then deciding what it is to you.
+
+```console
+drop add                       show a code and a QR for the other device
+drop add <code>                take the code another device shows
+drop promote <name>            make a device you added one of your machines
+drop join <name>               make this machine one of its machines
+drop nearby                    devices on this network, and devices asking this one
+drop nearby pair <name>        add one without a code; its person says yes
+drop nearby mine <name>        make one of them yours, the same way
+drop nearby yes <name>         say yes to one asking this machine, or no
+```
+
+Promoting and joining are asked of the other device; its person says yes, with the same number on
+both screens. A machine that wears a badge cannot sign one for another, so it has one of your
+machines that holds your key do the asking.
+
 **`drop machine`** — your own machines.
 
 ```console
@@ -51,6 +68,8 @@ drop me user vouch <machine>   make a machine yours, keeping your key here
 drop me user export            your key as a code, to carry to another machine
 drop me user take <code>       on that machine: become yours from the code
 drop me vault                  whether what is kept on this disk is encrypted
+drop me leave                  take this machine back out of your machines
+drop me reset --yes            delete everything drop knows here, and start over
 drop me passwd                 hash a password, to guard a path with
 drop me log [name]             a conversation, or all of them
 ```

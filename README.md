@@ -2,20 +2,24 @@
 
 Peer-to-peer file transfer, chat, folders and terminals. No account, no server holding your data.
 
-Your own machines join each other with one short code, and somebody else's pair with you the same
-way. After that either can reach the other from anywhere — across NATs, across networks, through
-address changes.
+Every device is added the same way, whoever's it is. After that either can reach the other from
+anywhere — across NATs, across networks, through address changes.
 
 ```console
-drop machine add                    # on a machine of yours: prints a code, and a QR of it
-drop machine join qxwo-e62y-k3fa    # on the new one: it is yours, and all your machines know it
+drop add                     # on one device: prints a code, and a QR of it
+drop add qxwo-e62y-k3fa      # on the other: the two are added to each other
 
-drop peer pair                      # with somebody else: the same, for a person
-drop peer pair qxwo-e62y-k3fa
+drop promote laptop          # make a device you added one of your machines
+drop join laptop             # or make this machine one of its
 ```
 
-A phone joins by pointing its camera at that code: the [Android app](apps/android/README.md) is the
-same node, with chat, files, and a live view of a terminal on the machine it paired with.
+Promoting and joining are asked of the other device, whose person says yes with the same number on
+both screens. A device on the same network needs no code at all: `drop nearby` lists it, and the
+phone shows it under *Nearby*. Your machines keep one address book between them — whatever you add,
+rename, trust or remove on one of them happens on all of them.
+
+The [Android app](apps/android/README.md) is the same node, with chat, files, and a live view of a
+terminal on the machine it is connected to.
 
 ---
 
