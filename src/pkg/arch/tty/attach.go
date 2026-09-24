@@ -81,7 +81,9 @@ func attach(ctx context.Context, d *live.Duplex, stage *cast.Caster, into io.Wri
 				toldCols, toldRows = cols, rows
 				_ = d.Resize(int(cols), int(rows))
 			}
-			if now := stage.Watching(); now != toldWatching {
+			// A terminal closing under its watchers counts nobody on it. This watcher is still
+			// here to be told, so it is never told fewer than itself.
+			if now := max(stage.Watching(), 1); now != toldWatching {
 				toldWatching = now
 				_ = d.Tell(live.Company{Watching: now, Own: own})
 			}
