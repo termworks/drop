@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.2] - 2026-09-24
+
+### <!-- 0 -->⛰️  Features
+
+- Manage people, machines and access
+- Manage machines, people and access
+- Machines taken out stay out everywhere
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Forget one machine of mine, not all
+
+### <!-- 3 -->📚 Documentation
+
+- Managing machines, people and access
+
 ## [0.5.1] - 2026-09-24
 
 ### <!-- 6 -->🧪 Testing
