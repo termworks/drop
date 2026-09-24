@@ -45,6 +45,13 @@ slices and interfaces, so a list crosses as JSON and a callback is an interface 
 
 What arrives lands in `Download/drop/`, where the phone's own file manager finds it.
 
+## Installing and updating
+
+Every release carries `drop-<version>-android.apk`, signed with one key that never changes, so each
+installs over the last as an update and keeps its pairings. The easiest way to follow them is
+[Obtainium](https://github.com/ImranR98/Obtainium): add an app, give it
+`https://github.com/termworks/drop`, and it offers each new release as an update.
+
 ## Building it
 
 Needs the Android shell, which carries a pinned SDK, NDK, gomobile, JDK and Gradle:
@@ -87,5 +94,5 @@ which is not done yet.
 ## The APK from CI
 
 The `android` job in `.github/workflows/release.yml` builds it in the same flake shell and uploads
-it as an artifact on every push. It is signed with the debug key, so it installs — but it is not a
-release signature, and two builds signed that way are not upgradeable over each other.
+it as an artifact on every push, and a tag attaches it to the release. Its version code is worked out from the version — 0.4.3 is 403 — so
+each release is a larger number than the last, which Android needs to take it as an update.
