@@ -167,6 +167,17 @@ class TermView(context: Context) : View(context) {
         if (typing) post { requestFocus() }
     }
 
+    // The keyboard belongs to the terminal, and goes with it: leaving by the arrow, by the system's
+    // back, or to another screen altogether.
+    override fun onDetachedFromWindow() {
+        hideKeyboard()
+        super.onDetachedFromWindow()
+    }
+
+    fun hideKeyboard() {
+        context.getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(windowToken, 0)
+    }
+
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
         if (typing && hasWindowFocus) requestFocus()

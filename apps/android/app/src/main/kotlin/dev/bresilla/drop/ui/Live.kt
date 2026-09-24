@@ -126,7 +126,7 @@ fun LiveScreen(at: Screen.Live, back: () -> Unit) {
                         Text(describe(at, company, grid), style = Mono, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
-                navigationIcon = { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                navigationIcon = { IconButton(onClick = { view?.hideKeyboard(); back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 actions = {
                     if (at.typing) IconButton(onClick = { view?.toggleKeyboard() }) { Icon(Icons.Filled.Keyboard, "Keyboard") }
                 },
