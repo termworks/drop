@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -69,6 +70,52 @@ type running struct {
 	held *dial.Kept
 	// known is what this machine's own namespaces are, for describing them back to itself.
 	known *arch.Registry
+	// id is this device, whichever process holds its address.
+	id node.ID
+	// daemon says the daemon holds it, and this has no endpoint of its own: everything that
+	// reaches another device is the daemon reaching it, over the connections it keeps.
+	daemon bool
+}
+
+// open is a stream to a device, and what hands it back once the caller is done with it.
+func (l *running) open(ctx context.Context, to book.Entry, alpn string) (proto.Stream, func(), error) {
+	if l.daemon {
+		s, err := viaDaemon(ctx, to, alpn)
+		if err != nil {
+			return nil, nil, err
+		}
+		return s, func() { _ = s.Done() }, nil
+	}
+	s, err := l.held.To(ctx, to, alpn)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s, func() { _ = s.Close() }, nil
+}
+
+// reaches is how a queue is pushed: over the daemon's connections, or this interface's own.
+func (l *running) reaches() reaches {
+	if l.daemon {
+		return borrowed{fallback: nobody{}}
+	}
+	return kept{held: l.held}
+}
+
+// reaching says whether a connection to a device is open right now.
+func (l *running) reaching(ctx context.Context) func(node.ID) bool {
+	if l.daemon {
+		held := heldHere(ctx)
+		return func(id node.ID) bool { return held[id] }
+	}
+	return l.held.Reaching
+}
+
+// nobody is what a view onto the daemon falls back to when the daemon has gone: it has no endpoint
+// of its own to dial with.
+type nobody struct{}
+
+func (nobody) To(context.Context, book.Entry, string) (io.Closer, proto.Stream, error) {
+	return nil, nil, errors.New("the daemon stopped, and this interface has no way out without it")
 }
 
 // Arrivals is how the interface learns that something landed while it was sitting there.
@@ -89,6 +136,7 @@ func knock(at chan struct{}) {
 // spend a handshake per device per redraw, and a device that answered a moment ago is the useful
 // thing to say anyway.
 func (l *running) Reaching() map[string]bool {
+	reaching := l.reaching(context.Background())
 	pinned, err := book.Load()
 	if err != nil {
 		return nil
@@ -96,7 +144,7 @@ func (l *running) Reaching() map[string]bool {
 
 	out := map[string]bool{}
 	for _, entry := range pinned.All() {
-		if l.held.Reaching(entry.ID) {
+		if reaching(entry.ID) {
 			out[entry.Name] = true
 		}
 	}
@@ -147,11 +195,11 @@ func availableServes(with book.Entry, asked []proto.Served, askErr error) ([]pro
 }
 
 func (l *running) askShares(ctx context.Context, with book.Entry) ([]proto.Served, error) {
-	s, err := l.held.To(ctx, with, node.ALPNHello)
+	s, done, err := l.open(ctx, with, node.ALPNHello)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = s.Close() }()
+	defer done()
 	defer stopStreamOnDone(ctx, s)()
 
 	hello, err := proto.AskHello(s)
@@ -178,7 +226,7 @@ func (l *running) Compose(to book.Entry, body string) error {
 
 // Deliver sends whatever is queued for a device, over the connection this interface is holding.
 func (l *running) Deliver(ctx context.Context, to book.Entry) error {
-	_, err := deliverOver(ctx, kept{held: l.held}, to, "/chat", "chat")
+	_, err := deliverOver(ctx, l.reaches(), to, "/chat", "chat")
 	return err
 }
 
@@ -215,7 +263,7 @@ func (l *running) Mine() ([]proto.Served, error) {
 
 	// Described as they would be to somebody paired, which is what the list is for: seeing what a
 	// device you have paired with would be offered.
-	return proto.Describe(cfg.Mounts, l.known, ns.Caller{ID: l.node.ID().String(), Paired: true}), nil
+	return proto.Describe(cfg.Mounts, l.known, ns.Caller{ID: l.id.String(), Paired: true}), nil
 }
 
 // Send copies files to a path on the far device.
@@ -233,14 +281,14 @@ func (l *running) Send(ctx context.Context, to book.Entry, path string, files []
 	}
 	defer func() { _ = transfer.Close() }()
 	open := func(ctx context.Context) (*wire.Conn, func(), error) {
-		s, err := l.held.To(ctx, to, node.ALPNSession)
+		s, done, err := l.open(ctx, to, node.ALPNSession)
 		if err != nil {
 			return nil, nil, err
 		}
 		stop := stopStreamOnDone(ctx, s)
 		close := func() {
 			stop()
-			_ = s.Close()
+			done()
 		}
 		conn, err := proto.Open(s, path, "share", 0, "", node.DisplayName())
 		if err != nil {
@@ -267,11 +315,11 @@ func (l *running) Post(ctx context.Context, to book.Entry, path, archetype strin
 		return err
 	}
 
-	s, err := l.held.To(ctx, to, node.ALPNSession)
+	s, done, err := l.open(ctx, to, node.ALPNSession)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = s.Close() }()
+	defer done()
 	defer stopStreamOnDone(ctx, s)()
 
 	conn, err := proto.Open(s, path, archetype, 0, "", node.DisplayName())
@@ -284,11 +332,11 @@ func (l *running) Post(ctx context.Context, to book.Entry, path, archetype strin
 
 // Watch reads a live path into a screen, nudging the interface whenever the picture changes.
 func (l *running) Watch(ctx context.Context, w tui.Watching) error {
-	s, err := l.held.To(ctx, w.On, node.ALPNSession)
+	s, release, err := l.open(ctx, w.On, node.ALPNSession)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = s.Close() }()
+	defer release()
 
 	conn, err := proto.Open(s, w.Path, w.Archetype, 0, "", node.DisplayName())
 	if err != nil {
@@ -352,13 +400,13 @@ func (l *running) Self() (tui.Identity, error) {
 	// Which process is the node matters to whoever is reading: if the daemon holds the address,
 	// this is a view onto something that goes on running after the interface is closed.
 	reach := tui.ReachServing
-	if !l.node.Own() {
+	if l.daemon {
 		reach = tui.ReachDaemon
 	}
 
 	return tui.Identity{
 		Name:  node.DisplayName(),
-		ID:    l.node.ID().String(),
+		ID:    l.id.String(),
 		User:  myKey(),
 		Reach: reach,
 	}, nil
@@ -374,12 +422,12 @@ func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
 		return "", nil, err
 	}
 
-	invite := ticketFor(l.node.ID(), code)
+	invite := ticketFor(l.id, code)
 	done := make(chan string, 1)
 
 	// Whoever takes the code dials this identity, and the daemon is what answers it. A code this
 	// process answered for itself would be one nobody could ever reach.
-	if !l.node.Own() {
+	if l.daemon {
 		said, closeOffer, err := offerAtDaemon(ctx, code, "", false)
 		if err != nil {
 			return "", nil, err
@@ -449,7 +497,7 @@ func (l *running) Offer(ctx context.Context) (string, <-chan string, error) {
 // other.
 func (l *running) Join(ctx context.Context, ticket string) (string, error) {
 	// The daemon, when it holds the address, is what the other device reaches afterwards.
-	if !l.node.Own() {
+	if l.daemon {
 		name, _, _, err := joinThroughDaemon(ctx, ticket, "", false, nil)
 		return name, err
 	}
@@ -542,7 +590,7 @@ func arrange(held []tui.Held) {
 // browsing opens a files namespace on another device, over the connection this interface is already
 // holding to it.
 func (l *running) browsing(ctx context.Context, on book.Entry, path string) (*files.Browsing, func(), error) {
-	s, err := l.held.To(ctx, on, node.ALPNSession)
+	s, done, err := l.open(ctx, on, node.ALPNSession)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -551,14 +599,14 @@ func (l *running) browsing(ctx context.Context, on book.Entry, path string) (*fi
 	conn, err := proto.Open(s, path, "files", 0, "", node.DisplayName())
 	if err != nil {
 		stop()
-		_ = s.Close()
+		done()
 		return nil, nil, err
 	}
 
 	walk, err := files.Browse(conn)
 	if err != nil {
 		stop()
-		_ = s.Close()
+		done()
 		return nil, nil, err
 	}
 
@@ -566,7 +614,7 @@ func (l *running) browsing(ctx context.Context, on book.Entry, path string) (*fi
 	// device is doing is on it.
 	return walk, func() {
 		stop()
-		_ = s.Close()
+		done()
 	}, nil
 }
 

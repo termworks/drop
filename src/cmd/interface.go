@@ -72,6 +72,24 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 	ctx, cancel := context.WithCancel(ctx)
 	undo = append(undo, cancel)
 
+	// Depth one, and a full channel is left alone: the signal carries nothing, so one pending
+	// knock means the same as ten, and a device that says a great deal at once still redraws once.
+	arriving := make(chan struct{}, 1)
+
+	// With the daemon up, this is a view onto it and nothing more: no endpoint of its own. A second
+	// endpoint under the same identity, however briefly, announces itself on the wire, publishes
+	// where it is and takes over the relay's route to this identity — after which the far end's
+	// answers to the daemon go to a port nobody is reading, and the daemon cannot reach anybody.
+	if daemonUp(ctx) {
+		id, err := node.LocalID()
+		if err != nil {
+			down()
+			return nil, nil, err
+		}
+		go hearDaemon(ctx, arriving)
+		return &running{id: id, daemon: true, arriving: arriving, known: known}, down, nil
+	}
+
 	n, err := node.Start(ctx)
 	if err != nil {
 		down()
@@ -81,10 +99,6 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 
 	lan, _ := discovery.StartLAN(ctx, n)
 	startRendezvous(ctx, n)
-
-	// Depth one, and a full channel is left alone: the signal carries nothing, so one pending
-	// knock means the same as ten, and a device that says a great deal at once still redraws once.
-	arriving := make(chan struct{}, 1)
 
 	// What arrives while the interface is open belongs in the conversation the same way it would
 	// with the daemon running, and the screen is nudged so it is drawn as it happens.
@@ -173,7 +187,7 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 		go hearDaemon(ctx, arriving)
 	}
 
-	return &running{node: n, lan: lan, ears: ears, arriving: arriving, held: held, known: known}, down, nil
+	return &running{node: n, id: n.ID(), lan: lan, ears: ears, arriving: arriving, held: held, known: known}, down, nil
 }
 
 // Entry finds somebody in the address book by the name they are filed under, or by their id.
@@ -188,3 +202,6 @@ func Entry(name string) (book.Entry, error) {
 	}
 	return entry, nil
 }
+
+// daemonUp says whether this identity's daemon is running on this machine and answering it.
+func daemonUp(ctx context.Context) bool { return heldHere(ctx) != nil }

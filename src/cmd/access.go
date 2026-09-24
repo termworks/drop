@@ -195,11 +195,11 @@ func hasWho(all []tui.Who, name string) bool {
 
 // AskFor rings the bell on a path this machine can see but not open.
 func (l *running) AskFor(ctx context.Context, on book.Entry, path, why string) error {
-	stream, err := l.held.To(ctx, on, node.ALPNSession)
+	stream, done, err := l.open(ctx, on, node.ALPNSession)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = stream.Close() }()
+	defer done()
 	defer stopStreamOnDone(ctx, stream)()
 
 	return proto.Ask(ctx, stream, path, why, node.DisplayName())
@@ -237,10 +237,11 @@ func (l *running) Managed(name string) (tui.Managed, error) {
 	if !person {
 		out.ID = entry.ID.String()
 	}
+	reaching := l.reaching(context.Background())
 	for _, one := range entries {
 		out.Paired = out.Paired || one.Paired()
 		out.Trusted = out.Trusted || one.Trusted
-		if l.held.Reaching(one.ID) {
+		if reaching(one.ID) {
 			out.Reaching = true
 		}
 	}
