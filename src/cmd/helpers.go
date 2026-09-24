@@ -91,7 +91,7 @@ func greeting(pinned *book.Book, mounts *ns.Table, known *arch.Registry, from no
 		}
 	}
 
-	return proto.Hello{Name: node.DisplayName(), Version: version, Serves: serves}
+	return proto.Hello{Name: node.DisplayName(), Version: version, Serves: serves, Renewed: renewalFor(pinned, from, badge)}
 }
 
 // whoIs turns a caller into what the address book knows about it, for the access rules to judge.
@@ -131,6 +131,7 @@ func whoIs(pinned *book.Book) func(node.ID, proto.Badged, proto.Stood) ns.Caller
 		// A machine of my own is filed under "me". Nobody writes it in the address book, because
 		// there is nothing to pair with: it is whatever my own user key has signed.
 		if mine := myKey(); mine != "" && badge.Key == mine {
+			learnMine(pinned, from)
 			who.UserName, who.Paired, who.Trusted = "me", true, true
 			return who
 		}
