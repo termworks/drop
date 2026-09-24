@@ -73,6 +73,7 @@ fun SettingsScreen(go: (Screen) -> Unit, back: () -> Unit) {
     var writable by remember { mutableStateOf(Settings.folderWritable(context)) }
     var restarting by remember { mutableStateOf(false) }
     var leaving by remember { mutableStateOf(false) }
+    var wiping by remember { mutableStateOf(false) }
 
     LaunchedEffect(tick) { me = Drop.self() ?: me }
 
@@ -213,8 +214,42 @@ fun SettingsScreen(go: (Screen) -> Unit, back: () -> Unit) {
                     )
                 }
             }
+            item { Section("Start over") }
+            item {
+                Column(Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
+                    Text(
+                        "Deletes everything drop knows on this phone: everybody you paired with, your machines, who may open what, and every conversation. Your other machines are told first and forget it. Files in Download stay.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(onClick = { wiping = true }, enabled = !restarting) {
+                        Text("Delete everything", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
             item { Spacer(Modifier.height(8.dp)) }
         }
+    }
+
+    if (wiping) {
+        AlertDialog(
+            onDismissRequest = { wiping = false },
+            title = { Text("Delete everything?") },
+            text = { Text("Everybody, every machine, every permission and every conversation on this phone is deleted, and cannot be brought back. This phone starts over as nobody's.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    wiping = false
+                    restarting = true
+                    scope.launch {
+                        Drop.startOver(context.applicationContext)
+                        me = Drop.self()
+                        restarting = false
+                        Drop.bump()
+                    }
+                }) { Text("Delete everything", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { wiping = false }) { Text("Cancel") } },
+        )
     }
 
     if (leaving) {

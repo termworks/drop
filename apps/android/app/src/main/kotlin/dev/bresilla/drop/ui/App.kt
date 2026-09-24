@@ -41,6 +41,8 @@ sealed interface Screen {
     data class Access(val machine: String, val path: String) : Screen
     data class AddMachine(val code: String? = null) : Screen
     data object Settings : Screen
+    data class Join(val code: String? = null) : Screen
+    data object Add : Screen
 }
 
 /** Something the activity was handed from outside: a link, a notification, another app's share. */
@@ -63,7 +65,7 @@ fun App(arrival: Arrival?, taken: () -> Unit) {
 
     LaunchedEffect(arrival) {
         when (arrival) {
-            is Arrival.Join -> stack = listOf(Screen.Home, if (Drop.machining(arrival.ticket)) Screen.AddMachine(arrival.ticket) else Screen.Pair(arrival.ticket))
+            is Arrival.Join -> stack = listOf(Screen.Home, Screen.Join(arrival.ticket))
             is Arrival.Open -> stack = listOf(Screen.Home, Screen.Chat(arrival.machine))
             is Arrival.Send -> stack = listOf(Screen.Home, Screen.Sending(arrival.uris, arrival.text))
             null -> return@LaunchedEffect
@@ -96,6 +98,11 @@ fun App(arrival: Arrival?, taken: () -> Unit) {
             is Screen.Access -> AccessScreen(screen.machine, screen.path, back)
             is Screen.AddMachine -> AddMachineScreen(screen.code, back)
             Screen.Settings -> SettingsScreen(go, back)
+            is Screen.Join -> JoinScreen(screen.code, back, done = home)
+            Screen.Add -> AddScreen(back, added = { instead(Screen.Machine(it)) })
         }
     }
+
+    // A device asking to connect is answered from wherever the app is.
+    InvitePrompt()
 }

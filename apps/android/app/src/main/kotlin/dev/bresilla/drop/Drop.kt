@@ -260,9 +260,48 @@ object Drop {
         return reachable(name)
     }
 
-    /** Takes this phone back out of your machines, and starts it again as its own. */
-    suspend fun leave(context: Context): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching { Mobile.leave() }.onSuccess { restart(context) }
+    /** Takes this phone back out of your machines, telling the rest of them first, and starts it again as its own. */
+    suspend fun leave(context: Context): Result<Unit> =
+        call { it.leaveMine() }.onSuccess { withContext(Dispatchers.IO) { restart(context) } }
+
+    /** Deletes everything drop knows on this phone, telling your other machines first, and starts it again as nobody's. */
+    suspend fun startOver(context: Context): Result<Unit> =
+        call { it.startOver() }.onSuccess { withContext(Dispatchers.IO) { restart(context) } }
+
+    /** Every drop on this network nobody here has connected with yet. */
+    suspend fun nearby(): List<Near> = call { node ->
+        val all = JSONArray(node.nearby())
+        List(all.length()) { Near.from(all.getJSONObject(it)) }
+    }.getOrNull() ?: emptyList()
+
+    /** Asks one of them to connect: "mine", "pair" or "join". Waits for their person's yes. */
+    suspend fun invite(id: String, kind: String): Result<String> = call { it.invite(id, kind) }
+
+    /** Every device waiting for a yes from this phone. */
+    suspend fun invited(): List<Invited> = call { node ->
+        val all = JSONArray(node.invited())
+        List(all.length()) { Invited.from(all.getJSONObject(it)) }
+    }.getOrNull() ?: emptyList()
+
+    suspend fun decide(id: String, yes: Boolean): Result<Unit> = call { it.decide(id, yes) }
+
+    /**
+     * Takes any code another device is showing: a machine of yours adding this phone, or somebody
+     * pairing. Says what happened in words, and starts the node again when the phone became somebody's.
+     */
+    suspend fun joinAny(context: Context, code: String): Result<String> {
+        val given = code.trim()
+        if (owning(given)) return take(context, given)
+        val before = self()?.owner
+        return call { it.join(given) }.map { with ->
+            val now = self()?.owner
+            if (now != null && now != before) {
+                withContext(Dispatchers.IO) { restart(context) }
+                "This phone is one of your machines now, alongside $with. The rest of them hear about it within seconds."
+            } else {
+                "Paired with $with."
+            }
+        }
     }
 
     suspend fun list(machine: String, path: String, dir: String): Result<List<Held>> = call { node ->
@@ -454,6 +493,20 @@ data class Managed(
 }
 
 data class Asking(val who: String, val why: String, val `when`: String)
+
+/** A device on this network nobody here has connected with yet. */
+data class Near(val id: String, val name: String, val whose: String) {
+    companion object {
+        fun from(o: JSONObject) = Near(o.optString("id"), o.optString("name"), o.optString("whose"))
+    }
+}
+
+/** A device asking this phone to connect: what it asks, and the number both screens show. */
+data class Invited(val id: String, val name: String, val whose: String, val kind: String, val check: String) {
+    companion object {
+        fun from(o: JSONObject) = Invited(o.optString("id"), o.optString("name"), o.optString("whose"), o.optString("kind"), o.optString("check"))
+    }
+}
 
 /** What one person may open on one machine of yours, the empty machine being this phone. */
 data class Reachable(val machine: String, val called: String, val known: Boolean, val paths: List<PathOpen>, val err: String) {
