@@ -370,9 +370,8 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
                 machines.singleOrNull()?.let { only ->
                     item {
                         Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (me?.signs == true) {
-                                Button(onClick = { promoting = only to "mine" }, modifier = Modifier.fillMaxWidth()) { Text("Make it one of my machines") }
-                            }
+                            // Whether this phone signs itself, with a YubiKey, or has a machine of yours that holds the key do it.
+                            Button(onClick = { promoting = only to "mine" }, modifier = Modifier.fillMaxWidth()) { Text("Make it one of my machines") }
                             OutlinedButton(onClick = { promoting = only to "join" }, modifier = Modifier.fillMaxWidth()) { Text("Join their machines") }
                         }
                     }
@@ -416,7 +415,7 @@ fun PersonScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: () 
                             }
                         }
                         machines.size > 1 -> {
-                            { PeerActions(me?.signs == true, promote = { promoting = m to "mine" }, join = { promoting = m to "join" }) }
+                            { PeerActions(promote = { promoting = m to "mine" }, join = { promoting = m to "join" }) }
                         }
                         else -> null
                     },
@@ -573,12 +572,12 @@ private fun Nobody() {
 
 /** The ⋮ on somebody else's machine: make it one of yours, or make this phone one of theirs. */
 @Composable
-private fun PeerActions(signs: Boolean, promote: () -> Unit, join: () -> Unit) {
+private fun PeerActions(promote: () -> Unit, join: () -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
         IconButton(onClick = { open = true }) { Icon(Icons.Filled.MoreVert, "Machine actions") }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            if (signs) DropdownMenuItem(text = { Text("Make it one of my machines") }, onClick = { open = false; promote() })
+            DropdownMenuItem(text = { Text("Make it one of my machines") }, onClick = { open = false; promote() })
             DropdownMenuItem(text = { Text("Join their machines") }, onClick = { open = false; join() })
         }
     }

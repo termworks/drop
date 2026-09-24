@@ -7,6 +7,7 @@ import (
 
 	"github.com/bresilla/drop/src/cmd"
 	tickets "github.com/bresilla/drop/src/pkg/ticket"
+	"github.com/bresilla/drop/src/pkg/user"
 )
 
 // offerFor is how long a code stays up when nobody takes it.
@@ -202,3 +203,22 @@ func (n *Node) StartOver() error {
 // CheckWith is the number this phone's screen shows when it asks a device something, the same the
 // other device shows.
 func CheckWith(id string) (string, error) { return cmd.CheckWith(id) }
+
+// Hardware is how the phone reaches a security key: held to its back over NFC, or plugged into it.
+type Hardware interface {
+	// Sign has the key make one assertion over clientDataHash, for the credential handle under
+	// application, and hands back the authenticator data followed by the signature.
+	Sign(application string, handle []byte, clientDataHash []byte) ([]byte, error)
+}
+
+// UseHardware lets the phone sign with a security key whenever the user key is one it knows the
+// handle of: badges for machines it makes yours, and its own.
+func UseHardware(h Hardware) {
+	if h == nil {
+		user.AssertWith(nil)
+		return
+	}
+	user.AssertWith(func(application string, handle, clientDataHash []byte) ([]byte, error) {
+		return h.Sign(application, handle, clientDataHash)
+	})
+}

@@ -105,4 +105,5 @@ fun App(arrival: Arrival?, taken: () -> Unit) {
 
     // A device asking to connect is answered from wherever the app is.
     InvitePrompt()
+    YubiKeyPrompt()
 }

@@ -71,6 +71,8 @@ object Drop {
 
         downloads = inbox(context)
         val files = context.filesDir
+        // A user key in a YubiKey signs here, with the key held to the phone or plugged in.
+        Mobile.useHardware(YubiKey)
         // What this phone serves is a config the node starts from, written from the settings.
         Mobile.share(files.resolve("config").absolutePath, downloads.absolutePath, Settings.sharesFolder(context), Settings.folderWritable(context))
         val started = Mobile.start(

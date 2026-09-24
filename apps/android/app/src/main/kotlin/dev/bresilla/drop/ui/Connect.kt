@@ -15,6 +15,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -34,6 +35,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -56,6 +59,9 @@ import dev.bresilla.drop.Me
 import dev.bresilla.drop.Near
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.yubico.yubikit.android.YubiKitManager
+import com.yubico.yubikit.android.transport.nfc.NfcConfiguration
+import com.yubico.yubikit.android.transport.usb.UsbConfiguration
 import mobile.Mobile
 
 /**
@@ -350,4 +356,45 @@ fun AskDialog(id: String, name: String, kind: String, title: String, says: Strin
         },
         dismissButton = { if (!waiting) TextButton(onClick = dismiss) { Text("Cancel") } },
     )
+}
+
+/**
+ * The prompt for a YubiKey, whenever something on the phone needs one to sign: it watches for the
+ * key held to the phone and for one plugged in, for as long as it is up.
+ */
+@Composable
+fun YubiKeyPrompt() {
+    val ask by dev.bresilla.drop.YubiKey.asking.collectAsState()
+    val current = ask ?: return
+    val context = LocalContext.current
+    val activity = context.findActivity()
+
+    DisposableEffect(current) {
+        val kit = YubiKitManager(context.applicationContext)
+        kit.startUsbDiscovery(UsbConfiguration()) { device -> dev.bresilla.drop.YubiKey.found(device) }
+        activity?.let { runCatching { kit.startNfcDiscovery(NfcConfiguration(), it) { device -> dev.bresilla.drop.YubiKey.found(device) } } }
+        onDispose {
+            kit.stopUsbDiscovery()
+            activity?.let { runCatching { kit.stopNfcDiscovery(it) } }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = {},
+        icon = { Icon(Icons.Filled.Key, null) },
+        title = { Text("Hold your YubiKey to the phone") },
+        text = { Text("Touch it to the back of the phone, or plug it in and touch it. It signs here, and your key never leaves it.") },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = { dev.bresilla.drop.YubiKey.cancel() }) { Text("Cancel") } },
+    )
+}
+
+/** The activity a context belongs to, which is what NFC needs to read anything. */
+private fun android.content.Context.findActivity(): android.app.Activity? {
+    var at: android.content.Context? = this
+    while (at is android.content.ContextWrapper) {
+        if (at is android.app.Activity) return at
+        at = at.baseContext
+    }
+    return null
 }

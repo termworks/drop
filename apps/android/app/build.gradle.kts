@@ -97,4 +97,8 @@ dependencies {
 
     // Reading a pairing code off another screen.
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
+    // Signing with a YubiKey held to the phone or plugged into it: FIDO assertions over NFC and USB.
+    implementation("com.yubico.yubikit:android:3.0.1")
+    implementation("com.yubico.yubikit:fido:3.0.1")
 }
