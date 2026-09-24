@@ -11,6 +11,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/convo"
 	"github.com/bresilla/drop/src/pkg/dial"
 	"github.com/bresilla/drop/src/pkg/discovery"
+	"github.com/bresilla/drop/src/pkg/made"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"github.com/bresilla/drop/src/pkg/tui"
@@ -65,6 +66,19 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 		down()
 		return nil, nil, err
 	}
+	store, err := made.Load()
+	if err != nil {
+		down()
+		return nil, nil, err
+	}
+	skipped, err := cfg.Created(store)
+	if err != nil {
+		down()
+		return nil, nil, err
+	}
+	for _, one := range skipped {
+		doing.warn(one.String())
+	}
 	if err := unlock(cfg); err != nil {
 		down()
 		return nil, nil, err
@@ -117,6 +131,19 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 	held := dial.Hold(n, lan, finder(n))
 	undo = append(undo, held.Close)
 
+	// What several machines hold is kept level while this is open, the same as the daemon keeps
+	// it: a note saved here goes out, one saved there comes in, and a folder follows along.
+	doing.changed = told(ctx, kept{held: held}, cfg.Mounts, pinned)
+	doing.pulls = fetching(ctx, kept{held: held}, cfg.Mounts, pinned)
+	notesStopped := doing.noting().Watch(ctx, cfg.Mounts)
+	filesStopped := doing.filing().Watch(ctx, cfg.Mounts)
+	undo = append(undo, func() {
+		cancel()
+		<-notesStopped
+		<-filesStopped
+	})
+	put := newMountHost(cfg.Mounts, known)
+
 	// The interface serves while it is open, so a device that pairs with it can reach it — and
 	// so what arrives lands in a conversation rather than being refused.
 	answer := map[string]func(node.ID, *iroh.Stream){
@@ -138,6 +165,7 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 				Moved:      moving(pinned, func(string) {}),
 				Refused:    noting(pinned),
 				Asked:      taking(),
+				Met:        meeting(cfg.Mounts, pinned, doing.changed),
 			})
 		},
 		node.ALPNHello: func(from node.ID, s *iroh.Stream) {
@@ -180,9 +208,8 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 		if !known || !entry.Paired() {
 			return
 		}
-		if _, err := deliverOver(ctx, onlyHeld{held: held}, entry, "/chat", "chat"); err == nil {
-			knock(arriving)
-		}
+		pushTo(ctx, onlyHeld{held: held}, entry, cfg.Mounts, pinned)
+		knock(arriving)
 	})
 
 	go holding(ctx, pinned, held)
@@ -192,7 +219,7 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 		go hearDaemon(ctx, arriving)
 	}
 
-	return &running{node: n, id: n.ID(), lan: lan, ears: ears, arriving: arriving, held: held, known: known}, down, nil
+	return &running{node: n, id: n.ID(), lan: lan, ears: ears, arriving: arriving, held: held, known: known, put: put}, down, nil
 }
 
 // Entry finds somebody in the address book by the name they are filed under, or by their id.

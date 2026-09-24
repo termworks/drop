@@ -28,6 +28,9 @@ func (l *running) Access(path string) (tui.Rule, error) {
 		return tui.Rule{}, err
 	}
 	defer cfg.Close()
+	if err := created(cfg); err != nil {
+		return tui.Rule{}, err
+	}
 
 	// Read before the grants are attached, and again after.
 	written, _ := cfg.Mounts.AccessFor(path)

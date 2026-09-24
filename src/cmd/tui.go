@@ -79,6 +79,8 @@ type running struct {
 	held *dial.Kept
 	// known is what this machine's own namespaces are, for describing them back to itself.
 	known *arch.Registry
+	// put is what puts up a namespace taken up while this runs; nil while the daemon serves.
+	put *mountHost
 	// id is this device, whichever process holds its address.
 	id node.ID
 	// daemon says the daemon holds it, and this has no endpoint of its own: everything that
@@ -261,14 +263,11 @@ func (l *running) Waiting(with book.Entry) (map[string]bool, error) {
 // Mine is what this device serves. No network: it is this machine's own config, and asking the
 // wire what this machine shares would be asking somebody else what is in your own pocket.
 func (l *running) Mine() ([]proto.Served, error) {
-	cfg, err := conf.Load(l.known)
+	cfg, err := l.ours()
 	if err != nil {
 		return nil, err
 	}
 	defer cfg.Close()
-	if _, err := cfg.Grants(); err != nil {
-		return nil, err
-	}
 
 	// Described as they would be to somebody paired, which is what the list is for: seeing what a
 	// device you have paired with would be offered.
@@ -523,7 +522,7 @@ func (l *running) Join(ctx context.Context, ticket string) (string, error) {
 // is in your own pocket would be a strange way to find out. The same screen walks it as walks
 // somebody else's, so the answer has the same shape.
 func (l *running) Holding(path, dir string) ([]tui.Held, error) {
-	cfg, err := conf.Load(l.known)
+	cfg, err := l.ours()
 	if err != nil {
 		return nil, err
 	}
