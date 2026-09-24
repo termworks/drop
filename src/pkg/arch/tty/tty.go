@@ -43,12 +43,16 @@ const (
 
 var terminalSlots = make(chan struct{}, MaxTerminals)
 
-// Config is what a tty namespace was told: what to start, and whether the far end may type.
+// Config is what a tty namespace was told: what to start, whether the far end may type, and whether
+// everybody shares one terminal or each gets their own.
 type Config struct {
 	// Shell is what this namespace starts; empty means $SHELL.
 	Shell string
 	// Input lets the far end type into it.
 	Input bool
+	// Private gives every watcher a terminal of their own, which nobody else sees and which ends
+	// when they leave. Without it there is one, and everybody who opens the path is in it together.
+	Private bool
 }
 
 // Into is what the process running a tty hands it.
@@ -83,15 +87,23 @@ func (t *TTY) Version() int { return 1 }
 func (t *TTY) Read(d arch.Declared) (arch.Config, error) {
 	shell, _ := d.String("shell")
 	input, _ := d.Bool("input")
-	return Config{Shell: shell, Input: input}, nil
+	private, _ := d.Bool("private")
+	return Config{Shell: shell, Input: input, Private: private}, nil
 }
 
 func (t *TTY) Note(c arch.Config) arch.Note {
 	cfg, _ := c.(Config)
 
-	detail, about := "read-only", "a terminal, as it is being used"
-	if cfg.Input {
-		detail, about = "interactive", "a terminal, as it is being used, and you may type"
+	// Whether it is one terminal or one each is the thing somebody needs to know before opening it:
+	// typing into a shared one is typing where everybody else is looking.
+	detail, about := "read-only", "one terminal, the same for everybody watching"
+	switch {
+	case cfg.Private && cfg.Input:
+		detail, about = "interactive", "a shell of your own, which nobody else sees"
+	case cfg.Private:
+		detail, about = "read-only", "a terminal of your own, to watch"
+	case cfg.Input:
+		detail, about = "interactive", "one shell, shared: everybody on it sees what you type"
 	}
 	return arch.Note{
 		Writable: cfg.Input,
@@ -101,21 +113,35 @@ func (t *TTY) Note(c arch.Config) arch.Note {
 	}
 }
 
-// Serve attaches one watcher to the namespace's terminal.
+// Serve attaches one watcher to the namespace's terminal: the one everybody shares, or one of their
+// own.
 func (t *TTY) Serve(ctx context.Context, at arch.Session) error {
 	cfg, _ := at.Config.(Config)
 	d := live.New(at.Conn, at.Stream)
 
 	// A screen somebody is already casting is a terminal like any other, but it is being fed from
-	// elsewhere rather than started here, so it is answered before a shell is looked for.
+	// elsewhere rather than started here, so it is answered before a shell is looked for. It has
+	// the shape it is being cast at, whatever anybody watching it has for a window.
 	if t.into.Showing != nil {
 		if stage, cast := t.into.Showing(at.Path); cast {
 			if stage == nil {
 				return fmt.Errorf("nothing is being cast")
 			}
 			t.watched(at, stage.Watching()+1)
-			return attach(ctx, d, stage, io.Discard, nil)
+			return attach(ctx, d, stage, io.Discard, false, false)
 		}
+	}
+
+	// A terminal of this watcher's own, started for them and ended when they go.
+	if cfg.Private {
+		term, err := t.start(at.Path, cfg, false)
+		if err != nil {
+			return err
+		}
+		defer term.end()
+
+		t.watched(at, 1)
+		return attach(ctx, d, term.stage, term.typedInto(cfg), true, true)
 	}
 
 	term, err := t.at(at.Path, cfg)
@@ -123,21 +149,17 @@ func (t *TTY) Serve(ctx context.Context, at arch.Session) error {
 		return err
 	}
 	t.watched(at, term.stage.Watching()+1)
-
-	// What a watcher types reaches the shell only when the namespace said it may.
-	into := io.Writer(io.Discard)
-	if cfg.Input {
-		into = term.ptmx
-	}
-
-	// One shell, so the last watcher to resize decides. That is what sharing a terminal means.
-	resize := func(cols, rows uint16) {
-		_ = pty.Setsize(term.ptmx, &pty.Winsize{Cols: cols, Rows: rows})
-		term.stage.Resize(cols, rows)
-	}
-	return attach(ctx, d, term.stage, into, resize)
+	return attach(ctx, d, term.stage, term.typedInto(cfg), false, true)
 }
 
+// typedInto is where what a watcher types goes: the shell, when the namespace said it may, and
+// nowhere otherwise.
+func (term *terminal) typedInto(cfg Config) io.Writer {
+	if cfg.Input {
+		return term.ptmx
+	}
+	return io.Discard
+}
 func (t *TTY) watched(at arch.Session, total int) {
 	if t.into.Watched != nil {
 		t.into.Watched(at.Path, at.From, total)
@@ -164,6 +186,17 @@ func (t *TTY) at(path string, cfg Config) (*terminal, error) {
 	if live, ok := t.open[path]; ok {
 		return live, nil
 	}
+	term, err := t.start(path, cfg, true)
+	if err != nil {
+		return nil, err
+	}
+	t.open[path] = term
+	return term, nil
+}
+
+// start runs a shell in a pty. shared says it is the namespace's one terminal, which the table holds
+// for the next watcher, rather than one watcher's own.
+func (t *TTY) start(path string, cfg Config, shared bool) (*terminal, error) {
 	terminals := t.terminals
 	if terminals == nil {
 		terminals = terminalSlots
@@ -204,7 +237,10 @@ func (t *TTY) at(path string, cfg Config) (*terminal, error) {
 		reaped:  make(chan struct{}),
 		drained: make(chan struct{}),
 	}
-	t.open[path] = term
+	// The pty is as big as the smallest window watching it, which the screen works out.
+	term.stage.Follow(func(cols, rows uint16) {
+		_ = pty.Setsize(ptmx, &pty.Winsize{Cols: cols, Rows: rows})
+	})
 	started = true
 
 	go func() {
@@ -230,10 +266,15 @@ func (t *TTY) at(path string, cfg Config) (*terminal, error) {
 		close(term.reaped)
 
 		// Out of the table before it is taken apart, so the next watcher starts a fresh shell
-		// rather than being handed this one with its feeds ended.
-		t.mu.Lock()
-		delete(t.open, path)
-		t.mu.Unlock()
+		// rather than being handed this one with its feeds ended. Only if it is still the one there:
+		// a watcher's own terminal never was.
+		if shared {
+			t.mu.Lock()
+			if t.open[path] == term {
+				delete(t.open, path)
+			}
+			t.mu.Unlock()
+		}
 
 		select {
 		case <-term.drained:

@@ -278,3 +278,47 @@ func TestTTYConfigurationAndNote(t *testing.T) {
 		t.Fatalf("read-only note = %#v", readOnly)
 	}
 }
+
+// shown is what a watcher was sent: the data, and who it was told was on the terminal.
+func shown(t *testing.T, out []byte) (string, live.Company) {
+	t.Helper()
+	var data bytes.Buffer
+	var company live.Company
+	d := live.New(wire.NewConn(&terminalStream{input: bytes.NewReader(out)}), nil)
+	d.OnCompany = func(c live.Company) { company = c }
+	_ = d.Pump(&data)
+	return data.String(), company
+}
+
+// A private terminal is each watcher's own: two watchers get two shells, neither is kept for
+// whoever comes next, and each is told the shell is theirs.
+func TestAPrivateTerminalIsEachWatchersOwn(t *testing.T) {
+	script := terminalScript(t, "echo shell:$$\n")
+	terminals := New(Into{})
+	cfg := Config{Shell: script, Input: true, Private: true}
+
+	var shells []string
+	for i := range 2 {
+		stream := terminalFrames(t, func(sender *live.Duplex) { _ = sender.Close() })
+		waitTerminal(t, serveTerminal(t, terminals, stream, cfg, node.From([32]byte{byte(i + 1)})))
+
+		data, company := shown(t, stream.output())
+		at := strings.Index(data, "shell:")
+		if at < 0 {
+			t.Fatalf("watcher %d saw no shell: %q", i+1, data)
+		}
+		shells = append(shells, strings.Fields(data[at:])[0])
+		if !company.Own || company.Watching != 1 {
+			t.Fatalf("watcher %d was told %+v about a terminal of its own", i+1, company)
+		}
+	}
+	if shells[0] == shells[1] {
+		t.Fatalf("two watchers of a private terminal shared %s", shells[0])
+	}
+
+	terminals.mu.Lock()
+	defer terminals.mu.Unlock()
+	if len(terminals.open) != 0 {
+		t.Fatalf("a private terminal was kept for the next watcher: %v", terminals.open)
+	}
+}

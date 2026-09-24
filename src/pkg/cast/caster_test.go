@@ -224,3 +224,103 @@ func TestWritingAfterTheCastEndedGoesNowhere(t *testing.T) {
 		t.Errorf("what was written after the cast ended is on the screen: %q", picture)
 	}
 }
+
+// A terminal has one shape at a time, and every watcher has to hear when it changes — the one who
+// asked for the change as much as anybody.
+func TestEveryWatcherHearsTheNewShape(t *testing.T) {
+	c := New(80, 24)
+	one, _, _, _ := c.Join()
+	two, _, _, _ := c.Join()
+
+	c.Resize(132, 40)
+
+	for i, v := range []*Viewer{one, two} {
+		select {
+		case <-v.Changed():
+		default:
+			t.Fatalf("watcher %d was not told the terminal changed shape", i+1)
+		}
+	}
+	if cols, rows := c.Size(); cols != 132 || rows != 40 {
+		t.Fatalf("the terminal is %dx%d, not the shape it was given", cols, rows)
+	}
+}
+
+// A terminal that follows its watchers is as big as the smallest window watching it, so everybody
+// sees all of it; when the small window goes, it grows to the next smallest.
+func TestTheSmallestWindowSetsTheShape(t *testing.T) {
+	c := New(80, 24)
+	var applied [][2]uint16
+	c.Follow(func(cols, rows uint16) { applied = append(applied, [2]uint16{cols, rows}) })
+
+	big, _, _, _ := c.Join()
+	small, _, _, _ := c.Join()
+	c.Want(big, 200, 50)
+	c.Want(small, 90, 40)
+
+	if cols, rows := c.Size(); cols != 90 || rows != 40 {
+		t.Fatalf("the terminal is %dx%d with a 200x50 and a 90x40 window on it", cols, rows)
+	}
+
+	c.Leave(small)
+	if cols, rows := c.Size(); cols != 200 || rows != 50 {
+		t.Fatalf("the terminal stayed %dx%d after the small window left", cols, rows)
+	}
+	if last := applied[len(applied)-1]; last != [2]uint16{200, 50} {
+		t.Fatalf("the program behind it was last told %v", last)
+	}
+}
+
+// A recording has the shape it was made at: somebody's window is not a reason to change it.
+func TestARecordingKeepsItsShape(t *testing.T) {
+	c := New(100, 30)
+	v, _, _, _ := c.Join()
+	c.Want(v, 40, 10)
+
+	if cols, rows := c.Size(); cols != 100 || rows != 30 {
+		t.Fatalf("a recording was reshaped to %dx%d", cols, rows)
+	}
+}
+
+// Who is watching is part of what a watcher is told: somebody joining or leaving is a change.
+func TestJoiningAndLeavingAreChanges(t *testing.T) {
+	c := New(80, 24)
+	first, _, _, _ := c.Join()
+	<-first.Changed()
+
+	second, _, _, _ := c.Join()
+	select {
+	case <-first.Changed():
+	default:
+		t.Fatal("a watcher was not told somebody joined")
+	}
+
+	c.Leave(second)
+	select {
+	case <-first.Changed():
+	default:
+		t.Fatal("a watcher was not told somebody left")
+	}
+	if c.Watching() != 1 {
+		t.Fatalf("%d watching after one left", c.Watching())
+	}
+}
+
+// Shared, a terminal is not held below the size terminals are made at: the small window crops
+// rather than taking everybody else's with it. Watched by one, it is that one window's.
+func TestOneSmallWindowDoesNotShrinkItForEverybody(t *testing.T) {
+	c := New(80, 24)
+	c.Follow(func(uint16, uint16) {})
+
+	phone, _, _, _ := c.Join()
+	c.Want(phone, 50, 30)
+	if cols, rows := c.Size(); cols != 50 || rows != 30 {
+		t.Fatalf("watched by one window it is %dx%d, not that window's 50x30", cols, rows)
+	}
+
+	desk, _, _, _ := c.Join()
+	c.Want(desk, 160, 45)
+	if cols, rows := c.Size(); cols != leastCols || rows != 30 {
+		t.Fatalf("shared by 50x30 and 160x45 it is %dx%d, want %dx30", cols, rows, leastCols)
+	}
+}

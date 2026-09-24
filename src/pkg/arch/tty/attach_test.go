@@ -28,7 +28,7 @@ func TestAnEndedFeedEndsTheAttach(t *testing.T) {
 	d := live.New(wire.NewConn(s), s)
 
 	done := make(chan error, 1)
-	go func() { done <- attach(context.Background(), d, stage, io.Discard, nil) }()
+	go func() { done <- attach(context.Background(), d, stage, io.Discard, false, false) }()
 
 	select {
 	case err := <-done:
