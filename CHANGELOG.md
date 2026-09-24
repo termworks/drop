@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.1] - 2026-09-24
+
+### <!-- 0 -->⛰️  Features
+
+- Serve only to your own machines by default
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Say a pairing code is one, not bad base64
+- Paint the QR in exact black and white
+- Pair first when adding this phone
+- Leave to the key a machine began with
+- List this machine as its owner sees it
+
+### <!-- 3 -->📚 Documentation
+
+- Only your machines by default
+
 ## [0.4.0] - 2026-09-24
 
 ### <!-- 0 -->⛰️  Features
