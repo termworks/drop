@@ -18,6 +18,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"github.com/bresilla/drop/src/pkg/seen"
+	"github.com/bresilla/drop/src/pkg/user"
 )
 
 // accepting builds the policy that decides whose sessions to take. Pairing is the gate: a peer
@@ -94,6 +95,7 @@ func greeting(pinned *book.Book, mounts *ns.Table, known *arch.Registry, from no
 	hello := proto.Hello{Name: node.DisplayName(), Version: version, Serves: serves, Renewed: renewalFor(pinned, from, badge)}
 	if who.UserName == ns.LevelMe {
 		hello.Circle, hello.Mine = circleFor(pinned, from)
+		hello.Gone = marksFor()
 	}
 	return hello
 }
@@ -113,6 +115,11 @@ func whoIs(pinned *book.Book) func(node.ID, proto.Badged, proto.Stood) ns.Caller
 	return func(from node.ID, badge proto.Badged, on proto.Stood) ns.Caller {
 		who := ns.Caller{ID: from.String()}
 		ambiguous := false
+
+		// A machine taken out of this user's is a stranger, whatever badge it still wears.
+		if user.Removed(from.String()) {
+			return who
+		}
 
 		// What machine it is running on, which is a different question from whose it is: several
 		// people with accounts on one machine all stand on the same one.

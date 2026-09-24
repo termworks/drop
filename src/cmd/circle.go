@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/dial"
 	"github.com/bresilla/drop/src/pkg/node"
 	"github.com/bresilla/drop/src/pkg/proto"
+	"github.com/bresilla/drop/src/pkg/shares"
 	"github.com/bresilla/drop/src/pkg/user"
 )
 
@@ -33,11 +36,77 @@ func circleFor(pinned *book.Book, to node.ID) ([]byte, []proto.Member) {
 		mine = append(mine, proto.Member{ID: self.String(), Name: node.DisplayName()})
 	}
 	for _, entry := range pinned.All() {
-		if entry.User != "" && entry.User == myKey() && entry.ID != to {
+		if entry.User != "" && entry.User == myKey() && entry.ID != to && !user.Removed(entry.ID.String()) {
 			mine = append(mine, proto.Member{ID: entry.ID.String(), Name: entry.Name})
 		}
 	}
 	return secret, mine
+}
+
+// marksFor is every machine of this user's taken out or put back, newest first, as a hello carries
+// them.
+func marksFor() []proto.Mark {
+	held, err := user.Marks()
+	if err != nil {
+		return nil
+	}
+	out := make([]proto.Mark, 0, len(held))
+	for id, m := range held {
+		out = append(out, proto.Mark{ID: id, At: m.At, Gone: m.Gone})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].At > out[j].At })
+	if len(out) > proto.MaxMarks {
+		out = out[:proto.MaxMarks]
+	}
+	return out
+}
+
+// takeMarks keeps the marks another machine of this user's holds, and forgets here every machine
+// they newly take out.
+func takeMarks(marked []proto.Mark) {
+	if len(marked) == 0 {
+		return
+	}
+	theirs := make(map[string]user.Mark, len(marked))
+	for _, m := range marked {
+		theirs[m.ID] = user.Mark{At: m.At, Gone: m.Gone}
+	}
+	gone, err := user.Merge(theirs)
+	if err != nil || len(gone) == 0 {
+		return
+	}
+	pinned, err := book.Load()
+	if err != nil {
+		return
+	}
+	_ = pinned.Change(func() (bool, error) {
+		wrote := false
+		for _, at := range gone {
+			id, err := node.ParseID(at)
+			if err != nil {
+				continue
+			}
+			if entry, ok := pinned.ByID(id); ok && entry.User == myKey() {
+				_ = shares.Forget(id)
+				pinned.Remove(entry.Name)
+				wrote = true
+			}
+		}
+		return wrote, nil
+	})
+}
+
+// removeMine takes a machine out of this user's: marked, so every machine of theirs turns it
+// away, and forgotten here.
+func removeMine(entry book.Entry) error {
+	if self, err := node.LocalID(); err == nil && entry.ID == self {
+		return errors.New("that is this machine: take it out from another one of yours")
+	}
+	if err := user.Remove(entry.ID.String(), time.Now()); err != nil {
+		return err
+	}
+	nudgeMine()
+	return nil
 }
 
 // joinCircle writes down the machines of this user's that another one named, each under the secret
@@ -47,6 +116,7 @@ func joinCircle(from book.Entry, hello proto.Hello) {
 	if len(hello.Circle) == 0 || from.User == "" || from.User != myKey() {
 		return
 	}
+	takeMarks(hello.Gone)
 	changed, err := user.AdoptCircle(hello.Circle)
 	if err != nil {
 		return
@@ -77,7 +147,7 @@ func joinCircle(from book.Entry, hello proto.Hello) {
 		}
 		for _, m := range hello.Mine {
 			id, err := node.ParseID(m.ID)
-			if err != nil || id == self {
+			if err != nil || id == self || user.Removed(m.ID) {
 				continue
 			}
 			if _, known := pinned.ByID(id); known {

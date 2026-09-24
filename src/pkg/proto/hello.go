@@ -65,6 +65,9 @@ type Hello struct {
 	// has never met.
 	Circle []byte
 	Mine   []Member
+	// Gone is every machine of that user's one of them took out, or put back. Written only when
+	// there is one, so a hello to a machine that predates it reads as it always did.
+	Gone []Mark
 }
 
 // encode writes what this node says it offers, cut to what the far end will read.
@@ -113,6 +116,18 @@ func (h Hello) encode() []byte {
 	for _, m := range mine {
 		w.String(m.ID)
 		w.String(m.Name)
+	}
+	gone := h.Gone
+	if len(gone) > MaxMarks {
+		gone = gone[:MaxMarks]
+	}
+	if len(gone) > 0 {
+		w.Uint(uint64(len(gone)))
+		for _, m := range gone {
+			w.String(m.ID)
+			w.Uint(uint64(max(m.At, 0)))
+			w.Bool(m.Gone)
+		}
 	}
 	return w.Body()
 }
@@ -221,7 +236,44 @@ func decodeHello(body []byte) (Hello, error) {
 		out.Mine = append(out.Mine, Member{ID: id, Name: plain.Line(name)})
 	}
 	if !r.Done() {
+		if out.Gone, err = decodeMarks(r); err != nil {
+			return out, err
+		}
+	}
+	if !r.Done() {
 		return out, fmt.Errorf("a hello has trailing bytes")
+	}
+	return out, nil
+}
+
+// decodeMarks reads which machines of a user's were taken out, or put back.
+func decodeMarks(r *wire.Reader) ([]Mark, error) {
+	count, err := r.Uint()
+	if err != nil {
+		return nil, err
+	}
+	// Written only when there is one, so a list of none is bytes that should not be there.
+	if count == 0 {
+		return nil, fmt.Errorf("a hello has trailing bytes")
+	}
+	if count > MaxMarks {
+		return nil, fmt.Errorf("a node marked %d machines, which is more than %d", count, MaxMarks)
+	}
+	out := make([]Mark, 0, count)
+	for range count {
+		id, err := r.String(128)
+		if err != nil {
+			return nil, err
+		}
+		at, err := r.Uint()
+		if err != nil {
+			return nil, err
+		}
+		gone, err := r.Bool()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, Mark{ID: id, At: int64(min(at, 1<<62)), Gone: gone})
 	}
 	return out, nil
 }
@@ -422,3 +474,14 @@ type Member struct {
 
 // MaxMembers bounds how many machines one user's machine names to another.
 const MaxMembers = 256
+
+// Mark says a machine was taken out of its user's machines, or put back, and when: the later of two
+// marks for one machine is the one that stands.
+type Mark struct {
+	ID   string
+	At   int64
+	Gone bool
+}
+
+// MaxMarks bounds how many marks one machine hands another.
+const MaxMarks = 512
