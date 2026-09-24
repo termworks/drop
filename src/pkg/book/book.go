@@ -44,6 +44,10 @@ type Entry struct {
 	// written against -- a path visible to "trusted" is not visible to somebody you paired with
 	// once at a conference.
 	Trusted bool
+	// Circle marks a machine of this user's written down because another machine of theirs
+	// named it, rather than paired by hand. Its secret is worked out from the secret all of this
+	// user's machines share, and is worked out again when that changes.
+	Circle bool `json:"circle,omitempty"`
 }
 
 // Owned reports whether this entry is somebody's machine, rather than a machine on its own.
@@ -127,6 +131,7 @@ type stored struct {
 	User    string   `json:"user,omitempty"`
 	Person  string   `json:"person,omitempty"`
 	Trusted bool     `json:"trusted,omitempty"`
+	Circle  bool     `json:"circle,omitempty"`
 }
 
 func path() (string, error) {
@@ -184,7 +189,7 @@ func Load() (*Book, error) {
 				continue
 			}
 		}
-		b.entries[name] = Entry{Name: name, ID: id, Secret: secret, Addrs: entry.Addrs, User: entry.User, Person: entry.Person, Trusted: entry.Trusted}
+		b.entries[name] = Entry{Name: name, ID: id, Secret: secret, Addrs: entry.Addrs, User: entry.User, Person: entry.Person, Trusted: entry.Trusted, Circle: entry.Circle}
 	}
 	return b, nil
 }
@@ -209,7 +214,7 @@ func (b *Book) Save() error {
 
 	onDisk := make(map[string]stored, len(b.entries))
 	for name, entry := range b.entries {
-		out := stored{ID: entry.ID.String(), Addrs: entry.Addrs, User: entry.User, Person: entry.Person, Trusted: entry.Trusted}
+		out := stored{ID: entry.ID.String(), Addrs: entry.Addrs, User: entry.User, Person: entry.Person, Trusted: entry.Trusted, Circle: entry.Circle}
 		if entry.Paired() {
 			out.Secret = base64.StdEncoding.EncodeToString(entry.Secret)
 		}
@@ -671,4 +676,40 @@ func (b *Book) RenamePerson(old, name string) error {
 		return fmt.Errorf("%s is nobody in the address book", old)
 	}
 	return nil
+}
+
+// Join writes down a machine of this user's that another of theirs named, with the secret the two
+// work out between them. A name already taken here gets a number after it.
+func (b *Book) Join(name string, id node.ID, secret []byte, user string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	at := name
+	for i := 2; ; i++ {
+		if _, taken := b.entries[at]; !taken {
+			break
+		}
+		at = fmt.Sprintf("%s-%d", name, i)
+	}
+	b.entries[at] = cloneEntry(Entry{
+		Name:    at,
+		ID:      id,
+		Secret:  secret,
+		User:    user,
+		Person:  b.personFor(user, at),
+		Trusted: true,
+		Circle:  true,
+	})
+	return at
+}
+
+// Resecret gives a machine written down from the circle a secret worked out again.
+func (b *Book) Resecret(name string, secret []byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if entry, ok := b.entries[name]; ok && entry.Circle {
+		entry.Secret = append([]byte(nil), secret...)
+		b.entries[name] = entry
+	}
 }
