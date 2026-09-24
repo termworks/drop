@@ -1521,3 +1521,19 @@ func TestAFreeLandingHasCompleteBytesAtItsCommit(t *testing.T) {
 		t.Fatalf("removing the part changed the destination to %q", got)
 	}
 }
+
+// A directory the config names and nothing has made yet is served as an empty one.
+func TestADirectoryNotMadeYetIsServedEmpty(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "not", "yet")
+
+	entries, err := opened(t, dir, false, Into{}).List("")
+	if err != nil {
+		t.Fatalf("listing a directory nothing has made yet: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("a new directory holds %v", entries)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("the directory was not made: %v", err)
+	}
+}
