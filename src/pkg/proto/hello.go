@@ -57,6 +57,9 @@ type Hello struct {
 	Name    string
 	Version string
 	Serves  []Served
+	// Renewed is a fresh badge for the caller, signed by its own user's key: sent to a machine of
+	// this user's whose badge is running low and that cannot sign one itself. Empty otherwise.
+	Renewed []byte
 }
 
 // encode writes what this node says it offers, cut to what the far end will read.
@@ -95,6 +98,7 @@ func (h Hello) encode() []byte {
 			w.String(key)
 		}
 	}
+	w.Bytes(h.Renewed)
 	return w.Body()
 }
 
@@ -175,6 +179,11 @@ func decodeHello(body []byte) (Hello, error) {
 			Holders:   holders,
 		})
 	}
+	renewed, err := r.Bytes(MaxSigned)
+	if err != nil {
+		return out, err
+	}
+	out.Renewed = renewed
 	if !r.Done() {
 		return out, fmt.Errorf("a hello has trailing bytes")
 	}
@@ -338,6 +347,9 @@ func AskHello(s Stream) (Hello, error) {
 		out, err = readHello(c)
 		return err
 	})
+	if err == nil && len(out.Renewed) > 0 {
+		renewing(out.Renewed)
+	}
 	return out, err
 }
 
