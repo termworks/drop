@@ -33,6 +33,12 @@ type Service struct {
 	publishers map[string]*iroh.PkarrPublisher
 	resolver   iroh.AddressResolver
 	relay      string
+
+	// What this machine rings its person's doorbell with, and who it heard ringing.
+	bellUser  []byte
+	bellProof string
+	rang      chan struct{}
+	rung      map[node.ID]Rung
 }
 
 // New builds a service that publishes to relay, or to the default relay when it is empty.
@@ -49,6 +55,8 @@ func New(n *node.Node, relay string) (*Service, error) {
 		publishers: make(map[string]*iroh.PkarrPublisher),
 		resolver:   resolver,
 		relay:      relay,
+		rang:       make(chan struct{}, 1),
+		rung:       make(map[node.ID]Rung),
 	}, nil
 }
 
@@ -121,6 +129,8 @@ func (s *Service) Run(ctx context.Context) {
 				}
 			}
 			say(false)
+		case <-s.rang:
+			say(true)
 		case <-slow.C:
 			say(true)
 		}
@@ -191,6 +201,7 @@ func (s *Service) publishRound(now time.Time) error {
 		}
 	}
 
+	s.ringRound(now, data, live)
 	s.retire(live)
 	return nil
 }
@@ -228,6 +239,10 @@ func (s *Service) Find(ctx context.Context, entry book.Entry) (netaddr.EndpointA
 }
 
 func (s *Service) findAt(ctx context.Context, entry book.Entry, now time.Time) (netaddr.EndpointAddr, bool) {
+	// A machine that rang a moment ago is where it said, whether or not the two share a secret yet.
+	if at, ok := s.rungAt(entry); ok {
+		return at, true
+	}
 	if !entry.Paired() {
 		return netaddr.EndpointAddr{}, false
 	}
