@@ -1,0 +1,208 @@
+package cmd
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+	"golang.org/x/crypto/ssh"
+
+	"github.com/bresilla/drop/src/pkg/conf"
+	"github.com/bresilla/drop/src/pkg/keep"
+	"github.com/bresilla/drop/src/pkg/user"
+)
+
+// Your key: the one thing that says who you are, and the only thing that lets a machine become
+// yours.
+//
+// drop makes one the first time it runs, so it works with nothing set up — but a key somebody never
+// chose is a key they cannot see, and a machine joining "with no key" is what that looks like. So
+// the key is shown, what it is and where it lives, and pointing drop at an SSH key you already have
+// or at a YubiKey is one command.
+
+// keySays is what the user key is, in a sentence: its fingerprint, and where it signs from.
+func keySays() string {
+	text := myKey()
+	if text == "" {
+		return "none: this machine wears no badge"
+	}
+	pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(text))
+	if err != nil {
+		return "unreadable"
+	}
+	fp := user.Fingerprint(pub)
+	where, err := user.Where()
+	if err != nil {
+		return fp
+	}
+	raw, err := keep.ReadFile(where, keep.MaxState)
+	private := err == nil && strings.Contains(string(raw), "PRIVATE KEY")
+	switch {
+	case user.CanAssert():
+		return fp + "  a YubiKey, held to this device when it signs"
+	case isHardware(pub) && user.Named():
+		return fp + "  a YubiKey, " + where
+	case user.Named() && private:
+		return fp + "  your SSH key, " + where
+	case user.Named():
+		return fp + "  held by ssh-agent, " + where
+	case private:
+		return fp + "  a key drop made itself, " + where
+	}
+	return fp + "  on another machine of yours, which signed this one's badge"
+}
+
+// isHardware reports whether a key lives in a security key.
+func isHardware(pub ssh.PublicKey) bool {
+	return pub.Type() == ssh.KeyAlgoSKED25519 || pub.Type() == ssh.KeyAlgoSKECDSA256
+}
+
+func newKeyCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "key",
+		Short: "Your key: who you are, and what lets a machine become yours",
+		Long: "Every machine of yours carries a badge this key signed, and only a machine that holds\n" +
+			"it — or has the YubiKey it lives in — can make another one yours.\n\n" +
+			"  drop me key use ~/.ssh/id_ed25519       an SSH key you already have\n" +
+			"  drop me key use ~/.ssh/id_ed25519_sk.pub a key in a YubiKey",
+		Args: cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			fmt.Printf("  your key  %s\n", keySays())
+			if _, quiet := user.Quiet(); quiet && !user.Named() {
+				fmt.Println("\n  drop made this one. To be your SSH key or your YubiKey instead:")
+				fmt.Println("    drop me key use ~/.ssh/id_ed25519")
+				fmt.Println("    drop me key use ~/.ssh/id_ed25519_sk.pub")
+			}
+			return nil
+		},
+	}
+
+	var sure bool
+	use := &cobra.Command{
+		Use:   "use <file>",
+		Short: "Be the SSH key at a file, or the YubiKey whose .pub it is",
+		Long: "A private key drop can read signs with no touch. The .pub of a key made with\n" +
+			"`ssh-keygen -t ed25519-sk -O resident -O application=ssh:drop` is a YubiKey: it signs when\n" +
+			"the key is there, and on a phone it is held to the phone.\n\n" +
+			"This is a new you: every machine of yours is added again under it, with\n" +
+			"`drop machine add` on each. It asks nothing: pass --yes.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			at, err := filepath.Abs(expandHome(args[0]))
+			if err != nil {
+				return err
+			}
+			pub, err := keyAt(at)
+			if err != nil {
+				return err
+			}
+			same := myKey() == user.Text(pub)
+			if !sure && !same {
+				return fmt.Errorf("%s is %s: being it is a new you, and every machine of yours is added again; run this again with --yes", at, user.Fingerprint(pub))
+			}
+			if os.Getenv("DROP_USER_KEY") != "" {
+				return errors.New("$DROP_USER_KEY names the key here, and wins over the config: change that instead")
+			}
+			was := ""
+			if user.Named() {
+				was, _ = user.Where()
+			}
+			user.Use(at)
+			if !same {
+				// Signed before the config names it, so a key that cannot sign is never left named,
+				// and a YubiKey asks for its touch in this terminal.
+				badge, signed, err := user.Mine(time.Now())
+				if err != nil {
+					user.Use(was)
+					return fmt.Errorf("signing this machine's badge with %s: %w", at, err)
+				}
+				wear(badge, signed)
+			}
+			if err := writeUserKey(at); err != nil {
+				return err
+			}
+			if same {
+				fmt.Printf("you are %s, and drop reads it from %s now\n", user.Fingerprint(pub), at)
+				return nil
+			}
+			fmt.Printf("you are %s now\n  %s\n", user.Fingerprint(pub), at)
+			fmt.Println("\n  add your other machines again: `drop machine add` here, and the code on each")
+			restartDaemon()
+			return nil
+		},
+	}
+	use.Flags().BoolVar(&sure, "yes", false, "really be this key")
+	cmd.AddCommand(use)
+	return cmd
+}
+
+// keyAt reads the public half of the key a file names: a private key, or the .pub of one held in
+// hardware or by an agent.
+func keyAt(at string) (ssh.PublicKey, error) {
+	raw, err := keep.ReadFile(at, keep.MaxState)
+	if err != nil {
+		return nil, err
+	}
+	if signer, err := ssh.ParsePrivateKey(raw); err == nil {
+		return signer.PublicKey(), nil
+	} else if errors.As(err, new(*ssh.PassphraseMissingError)) {
+		return nil, fmt.Errorf("%s is locked with a passphrase, and drop signs when nobody is there to type it: use its .pub with ssh-agent holding it, or a key without one", at)
+	}
+	if pub, _, _, _, err := ssh.ParseAuthorizedKey(raw); err == nil {
+		return pub, nil
+	}
+	return nil, fmt.Errorf("%s is not an SSH key", at)
+}
+
+// userKeyLine is the config line that names the user key.
+var userKeyLine = regexp.MustCompile(`(?m)^\s*drop\.user_key\s*=.*$`)
+
+// writeUserKey says in the config which key is the user key.
+func writeUserKey(at string) error {
+	file, err := conf.FilePath()
+	if err != nil {
+		return err
+	}
+	line := fmt.Sprintf("drop.user_key = %q", at)
+	raw, err := os.ReadFile(file)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		raw = []byte("local drop = require(\"drop\")\n\n" + line + "\n")
+	case err != nil:
+		return err
+	case userKeyLine.Match(raw):
+		raw = userKeyLine.ReplaceAll(raw, []byte(line))
+	default:
+		text := string(raw)
+		if at := strings.Index(text, "require(\"drop\")"); at >= 0 {
+			end := strings.Index(text[at:], "\n")
+			if end < 0 {
+				text += "\n"
+				end = len(text) - at - 1
+			}
+			cut := at + end + 1
+			text = text[:cut] + line + "\n" + text[cut:]
+		} else {
+			text = "local drop = require(\"drop\")\n" + line + "\n" + text
+		}
+		raw = []byte(text)
+	}
+	return keep.Replace(file, raw)
+}
+
+// expandHome is a path with ~ at its front made absolute.
+func expandHome(at string) string {
+	if !strings.HasPrefix(at, "~") {
+		return at
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return at
+	}
+	return filepath.Join(home, strings.TrimPrefix(at, "~"))
+}

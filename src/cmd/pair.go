@@ -148,7 +148,7 @@ func (k offerKind) mine() bool { return k == offerMine || k == offerMineKey }
 func admitted(p *proto.Pairing, kind offerKind) (proto.Grant, error) {
 	switch {
 	case kind.mine() && !p.Wants:
-		return proto.Grant{}, errors.New("this code adds a machine of mine: take it with `drop add <code>`")
+		return proto.Grant{}, errors.New("this code adds a machine of mine: take it with `drop machine add <code>`")
 	case !kind.mine() && p.Wants:
 		return proto.Grant{}, errors.New("this code pairs with a person rather than adding a machine: take it with `drop peer pair`")
 	case !kind.mine():
@@ -400,7 +400,7 @@ func joinPairing(parent context.Context, ticket, as string, wait time.Duration, 
 	// on, so it is the one whose address the pairing has to carry.
 	name, id, called, err := joinThroughDaemon(ctx, ticket, as, kind, at)
 	if err == nil {
-		announce(name, id, called, kind)
+		joined(name, id, called, kind)
 		return nil
 	}
 	if !errors.Is(err, errNoDaemon) {
@@ -426,7 +426,7 @@ func joinPairing(parent context.Context, ticket, as string, wait time.Duration, 
 	if err != nil {
 		return err
 	}
-	announce(name, p.Peer.String(), p.Machine, kind)
+	joined(name, p.Peer.String(), p.Machine, kind)
 
 	return nil
 }
@@ -494,6 +494,44 @@ func filed(p proto.Pairing, as string, machine bool) (string, error) {
 	return name, err
 }
 
+// joined says what taking a code made this machine: one of its user's, or paired with somebody.
+func joined(name, id, called string, kind offerKind) {
+	if kind == offerAny && sameUserAs(name) {
+		kind = offerMine
+	}
+	if !kind.mine() {
+		announce(name, id, called, kind)
+		return
+	}
+	fmt.Printf("\nthis machine is one of yours now, with %s\n  %s\n", name, id)
+	fmt.Printf("  your key  %s\n", keyPrint())
+	fmt.Printf("\nthe rest of your machines hear about it within a few minutes, and it about them.\n")
+}
+
+// sameUserAs reports whether a device in the book belongs to whoever this machine does now.
+func sameUserAs(name string) bool {
+	pinned, err := book.Load()
+	if err != nil {
+		return false
+	}
+	entry, ok := pinned.Lookup(name)
+	if !ok || entry.User == "" {
+		return false
+	}
+	pub, err := user.Public()
+	return err == nil && entry.User == user.Text(pub)
+}
+
+// keyPrint is the fingerprint of the key this machine belongs to, read afresh: taking a code can
+// have just changed it.
+func keyPrint() string {
+	pub, err := user.Public()
+	if err != nil {
+		return "unreadable"
+	}
+	return user.Fingerprint(pub)
+}
+
 // announce says who was paired with, for the interfaces that print rather than draw.
 func announce(name, id, called string, kind offerKind) {
 	if kind == offerAny {
@@ -502,6 +540,7 @@ func announce(name, id, called string, kind offerKind) {
 	}
 	if kind.mine() {
 		fmt.Printf("\n%s is one of your machines now\n  %s\n", name, id)
+		fmt.Printf("  signed with your key %s\n", keyPrint())
 		fmt.Printf("\nthe rest of your machines hear about it within a few minutes, and it about them.\n")
 		return
 	}
@@ -662,9 +701,9 @@ func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration
 // short code is what a person types: it is looked up, so the id never has to be.
 func showTicket(invite, code string, wait time.Duration, kind offerKind) {
 	// One command takes either kind: the code says which it is.
-	link, command := tickets.Link(invite), "drop add"
+	link, command := tickets.Link(invite), "drop person add"
 	if kind.mine() {
-		link = tickets.LinkAs(tickets.KindMachine, invite)
+		link, command = tickets.LinkAs(tickets.KindMachine, invite), "drop machine add"
 	}
 
 	if term.IsTerminal(int(os.Stdout.Fd())) {
@@ -676,9 +715,17 @@ func showTicket(invite, code string, wait time.Duration, kind offerKind) {
 	}
 
 	fmt.Printf("\n  code:    %s\n", code)
-	fmt.Printf("  link:    %s\n\n", link)
+	fmt.Printf("  link:    %s\n", link)
+	if kind.mine() {
+		// What the new machine is made yours by, so nobody joins one without seeing it.
+		fmt.Printf("  key:     %s\n", keySays())
+		if _, quiet := user.Quiet(); quiet && !user.Named() {
+			fmt.Printf("           `drop me key use ~/.ssh/id_ed25519` makes it your SSH key\n")
+		}
+	}
+	fmt.Println()
 	fmt.Printf("on the other machine, within %s, run\n\n  %s %s\n\n", wait, command, code)
-	fmt.Printf("or on a phone, tap Join in drop and scan the code above.\n\n")
+	fmt.Printf("or on a phone, tap Add in drop and scan the code above.\n\n")
 	fmt.Printf("waiting...\n")
 }
 
