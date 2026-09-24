@@ -83,23 +83,43 @@ not answer a typo by inventing a second identity.
 
 ## Making a machine yours
 
-A machine that made its own key — a phone, most of all — pairs as a person of its own. Two ways
-make it one of yours, and both end in a code the other machine takes:
+One code, the way a phone is linked to a messenger. On a machine that is already yours:
 
 ```console
-drop me user vouch phone      # your key stays here; the phone wears a badge this signs
-drop me user export           # the key itself, carried over; the phone signs its own
-drop me user take <code>      # on the other machine, or Me → Add a machine on the phone
+$ drop machine add
+  code:    tevp-spsd-uyle
+
+on the other machine, within 5m0s, run
+
+  drop machine join tevp-spsd-uyle
 ```
+
+On the new one, type that — or on a phone, *Add a machine → Scan*. The two pair and the new one
+becomes yours in the same exchange: the machine showing the code signs it a badge and hands it
+over, and every other machine of yours hears about it within a few minutes. A phone that holds
+your key can show the code instead, for a computer to join.
+
+The code is all anybody types. It is looked up under a key only the code works out, which says
+which machine is showing it, so the sixty-four-character id never leaves the screen; the relay
+holding that record learns neither the code nor who asked. A code shown for adding a machine
+is refused to a device that came to pair with a person, and the other way round.
 
 | | |
 |---|---|
-| vouch | the code is a badge for that machine and no other. When it has under sixty days left, the next time it reaches a machine of yours that signs without a touch, that machine hands it a fresh one on the hello — so it lasts as long as the two keep meeting |
-| export | the code is the key: whoever reads it is you, everywhere. Only an ed25519 key drop can read can leave; one in hardware cannot, which is the point of it |
+| `drop machine add` | the new machine wears a badge this one signs, for it and no other. When it has under sixty days left, the next time it reaches a machine of yours that signs without a touch, that machine hands it a fresh one on the hello — so it lasts as long as the two keep meeting |
+| `drop machine add --key` | it is handed the key itself: whoever holds it is you, everywhere. Only an ed25519 key drop can read can leave; one in hardware cannot, which is the point of it |
 
-Either way the key the machine had is set aside beside the new one, and every machine of yours
-files it under *me* the first time it shows your badge. A vouched machine whose badge runs out
+Either way the key the machine had is set aside beside the new one. A machine whose badge runs out
 before it meets one of yours still starts, wearing the stale badge, which proves nothing to anyone.
+A machine wearing a badge cannot sign one, so `drop machine add` is run on one that holds the key.
+
+The same, a step at a time, for a machine that is already paired:
+
+```console
+drop me user vouch phone      # a badge for it, as a code
+drop me user export           # the key itself, as a code
+drop me user take <code>      # on the other machine
+```
 
 ### All of them, through any one
 
