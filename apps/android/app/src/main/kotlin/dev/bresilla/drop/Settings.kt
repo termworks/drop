@@ -10,6 +10,7 @@ object Settings {
     private const val FOLDER = "share.folder"
     private const val WRITABLE = "share.writable"
     private const val SEEN = "seen."
+    private const val TERM_SIZE = "term.size"
 
     private fun prefs(context: Context) = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
@@ -30,6 +31,13 @@ object Settings {
 
     fun share(context: Context, folder: Boolean, writable: Boolean) {
         prefs(context).edit().putBoolean(FOLDER, folder).putBoolean(WRITABLE, writable).apply()
+    }
+
+    /** How big a terminal is drawn, in pixels of text, as it was last pinched to; zero before it ever was. */
+    fun termSize(context: Context): Float = prefs(context).getFloat(TERM_SIZE, 0f)
+
+    fun termSized(context: Context, size: Float) {
+        prefs(context).edit().putFloat(TERM_SIZE, size).apply()
     }
 
     /** When a conversation was last looked at, which is what counts the rest as unread. */
