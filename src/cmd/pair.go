@@ -148,7 +148,7 @@ func (k offerKind) mine() bool { return k == offerMine || k == offerMineKey }
 func admitted(p *proto.Pairing, kind offerKind) (proto.Grant, error) {
 	switch {
 	case kind.mine() && !p.Wants:
-		return proto.Grant{}, errors.New("this code adds a machine of mine: take it with `drop machine join`")
+		return proto.Grant{}, errors.New("this code adds a machine of mine: take it with `drop add <code>`")
 	case !kind.mine() && p.Wants:
 		return proto.Grant{}, errors.New("this code pairs with a person rather than adding a machine: take it with `drop peer pair`")
 	case !kind.mine():
@@ -661,9 +661,10 @@ func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration
 // phone with a camera as a machine with a keyboard. Piped, it is only the text a script wants. The
 // short code is what a person types: it is looked up, so the id never has to be.
 func showTicket(invite, code string, wait time.Duration, kind offerKind) {
-	link, command := tickets.Link(invite), "drop peer pair"
+	// One command takes either kind: the code says which it is.
+	link, command := tickets.Link(invite), "drop add"
 	if kind.mine() {
-		link, command = tickets.LinkAs(tickets.KindMachine, invite), "drop machine join"
+		link = tickets.LinkAs(tickets.KindMachine, invite)
 	}
 
 	if term.IsTerminal(int(os.Stdout.Fd())) {
@@ -677,9 +678,7 @@ func showTicket(invite, code string, wait time.Duration, kind offerKind) {
 	fmt.Printf("\n  code:    %s\n", code)
 	fmt.Printf("  link:    %s\n\n", link)
 	fmt.Printf("on the other machine, within %s, run\n\n  %s %s\n\n", wait, command, code)
-	if kind.mine() {
-		fmt.Printf("or scan the code above with drop on a phone.\n\n")
-	}
+	fmt.Printf("or on a phone, tap Join in drop and scan the code above.\n\n")
 	fmt.Printf("waiting...\n")
 }
 

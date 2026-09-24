@@ -63,27 +63,6 @@ func newMineCmd() *cobra.Command {
 	return cmd
 }
 
-func newTakeCodeCmd() *cobra.Command {
-	var (
-		as string
-		at []string
-	)
-	cmd := &cobra.Command{
-		Use:   "join <code>",
-		Short: "Take a code another device is showing, whatever it is for",
-		Long: "A code from `drop machine add` makes this machine one of that user's; one from `drop peer\n" +
-			"pair` pairs it with whoever showed it. The code says which, so this is the one command for\n" +
-			"either. A device on this network is simpler still: `drop nearby`.",
-		Args: cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return joinPairing(cmd.Context(), strings.Join(args, " "), as, joinWithin, offerAny, at)
-		},
-	}
-	cmd.Flags().StringVar(&as, "as", "", "the name to file whoever showed the code under")
-	cmd.Flags().StringSliceVar(&at, "at", nil, "where to reach the other device, when finding it fails (host:port)")
-	return cmd
-}
-
 // mineNamed is the machine of this user's filed under a name.
 func mineNamed(name string) (book.Entry, error) {
 	pinned, err := book.Load()
