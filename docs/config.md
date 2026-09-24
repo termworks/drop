@@ -20,8 +20,10 @@ drop.mount("/term",    { type = "tty",    shell = "/bin/sh", input = false })
 
 With no file at all, drop serves a small default: `/inbox` to send to, `/chat` to talk in, `/open`
 for links — and nothing that hands over a directory, runs a command or shares a terminal, because
-those are decisions.
-
+those are decisions. All three are open to your own machines alone: somebody you paired with is
+let in by putting a path on a wider step (`drop path level /chat paired`) or by name (`drop path
+grant /chat bob`). The same goes for `drop path create` without `--access`, and for the paths the
+phone serves.
 A file that exists and does not parse is **fatal**, and the error names the file and the line,
 whether what is wrong is the Lua or a setting an archetype refused. A typo that silently drops half
 your namespaces is worse than not starting.
