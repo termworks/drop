@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.6.0] - 2026-09-24
+
+### <!-- 0 -->⛰️  Features
+
+- Sign with a YubiKey over NFC or USB
+- Sign with a security key the host reaches
+- Renew badges with a key in a YubiKey
+- One add, nearby, promote and join
+- Add, nearby, promote and answer asks
+- Add every device, then promote or join
+- Promote from a machine that cannot sign
+- Leave your machines, or start over
+- One join takes any code
+- Connect to a device nearby by asking
+- One address book across your machines
+
+### <!-- 3 -->📚 Documentation
+
+- A YubiKey on the phone
+- Add first, then promote or join
+
 ## [0.5.2] - 2026-09-24
 
 ### <!-- 0 -->⛰️  Features
