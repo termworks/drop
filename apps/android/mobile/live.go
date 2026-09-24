@@ -17,6 +17,9 @@ type Screen interface {
 	Drawn(frame string)
 	// Ended says the path has stopped, and why; empty when it simply ended.
 	Ended(why string)
+	// Company says who is on the terminal: how many are watching, and whether the shell is this
+	// device's alone.
+	Company(watching int, own bool)
 }
 
 // frameEvery bounds how often a screen is repainted. A terminal redrawing flat out would otherwise
@@ -58,6 +61,7 @@ func (n *Node) Watch(name, path, archetype string, cols, rows int, into Screen) 
 			Archetype: archetype,
 			Into:      l,
 			Sized:     l.sized,
+			Told:      into.Company,
 			Ready:     l.ready,
 		})
 		cancel()

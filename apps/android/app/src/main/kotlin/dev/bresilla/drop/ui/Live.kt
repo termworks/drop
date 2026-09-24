@@ -134,9 +134,11 @@ fun LiveScreen(at: Screen.Live, back: () -> Unit) {
     val scope = rememberCoroutineScope()
     val frames = remember { MutableStateFlow<Frame?>(null) }
     val ends = remember { MutableStateFlow<String?>(null) }
+    val companies = remember { MutableStateFlow<Pair<Long, Boolean>?>(null) }
     val frame by frames.collectAsState()
     LightBars()
     val ended by ends.collectAsState()
+    val company by companies.collectAsState()
     var live by remember { mutableStateOf<Live?>(null) }
 
     DisposableEffect(at) {
@@ -147,6 +149,10 @@ fun LiveScreen(at: Screen.Live, back: () -> Unit) {
 
             override fun ended(why: String) {
                 ends.value = why.ifEmpty { "it ended" }
+            }
+
+            override fun company(watching: Long, own: Boolean) {
+                companies.value = watching to own
             }
         }
         var started: Live? = null
@@ -169,7 +175,7 @@ fun LiveScreen(at: Screen.Live, back: () -> Unit) {
                     Column {
                         Text(at.path.trimStart('/'))
                         Text(
-                            at.machine + if (at.typing) " · you may type" else " · watching",
+                            describe(at, company, frame),
                             style = Mono,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -293,4 +299,19 @@ private fun LightBars() {
             bars.isAppearanceLightNavigationBars = navigation
         }
     }
+}
+
+/** The line under a terminal's name: whose machine, whose shell, and its shape. */
+private fun describe(at: Screen.Live, company: Pair<Long, Boolean>?, frame: Frame?): String {
+    val parts = mutableListOf(at.machine)
+    company?.let { (watching, own) ->
+        parts += when {
+            own -> "your own shell"
+            watching > 1 -> "shared, $watching watching"
+            else -> "shared, only you"
+        }
+    }
+    frame?.let { parts += "${it.cols}×${it.rows}" }
+    parts += if (at.typing) "you may type" else "watching"
+    return parts.joinToString(" · ")
 }
