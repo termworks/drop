@@ -179,6 +179,7 @@ func Interface(ctx context.Context, hooks Hooks) (tui.Backend, func(), error) {
 			}, moving(pinned, func(string) {}))
 		},
 		node.ALPNManage: managing(pinned, known),
+		node.ALPNSync:   syncing(pinned),
 	}
 
 	// The same as the daemon: answer whatever a device opens on a connection we made, keep the

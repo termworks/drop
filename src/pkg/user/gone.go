@@ -104,7 +104,7 @@ func Removed(id string) bool {
 
 // Remove takes a machine out of this user's, from now.
 func Remove(id string, now time.Time) error {
-	_, err := change(map[string]Mark{id: {At: now.Unix(), Gone: true}})
+	_, err := change(map[string]Mark{id: {At: now.UnixNano(), Gone: true}})
 	return err
 }
 
@@ -114,7 +114,7 @@ func Restore(id string, now time.Time) error {
 	if err != nil || !held[id].Gone {
 		return err
 	}
-	_, err = change(map[string]Mark{id: {At: now.Unix()}})
+	_, err = change(map[string]Mark{id: {At: now.UnixNano()}})
 	return err
 }
 

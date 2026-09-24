@@ -154,12 +154,8 @@ func admitted(p *proto.Pairing, kind offerKind) (proto.Grant, error) {
 	case !kind.mine():
 		return proto.Grant{}, nil
 	case p.User != "" && p.User == myKey():
-		// Already this user's, by a key of its own or a badge: nothing to hand it, though one taken
-		// out before is put back.
-		return proto.Grant{}, user.Restore(p.Peer.String(), time.Now())
-	}
-	if err := user.Restore(p.Peer.String(), time.Now()); err != nil {
-		return proto.Grant{}, err
+		// Already this user's, by a key of its own or a badge: nothing to hand it.
+		return proto.Grant{}, nil
 	}
 
 	if kind == offerMineKey {
@@ -424,6 +420,12 @@ func joinPairing(parent context.Context, ticket, as string, wait time.Duration, 
 // Machine means what it says: the device key is kept and the user key is not, so the rest of that
 // person's machines stay strangers however many badges they sign.
 func filed(p proto.Pairing, as string, machine bool) (string, error) {
+	// Pairing again with something taken out is putting it back, on every machine of this user's.
+	if err := user.Restore(p.Peer.String(), time.Now()); err != nil {
+		return "", err
+	}
+	defer nudgeMine()
+
 	b, err := book.Load()
 	if err != nil {
 		return "", err
@@ -569,12 +571,6 @@ func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as stri
 			return proto.Pairing{}, "", fmt.Errorf("becoming one of your machines: %w", err)
 		}
 	}
-	if kind.mine() {
-		if err := user.Restore(id.String(), time.Now()); err != nil {
-			return proto.Pairing{}, "", err
-		}
-	}
-
 	name, err := filed(p, as, kind == offerMachine)
 	if err == nil {
 		nudgeMine()

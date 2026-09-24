@@ -86,7 +86,7 @@ func takeMarks(marked []proto.Mark) {
 			if err != nil {
 				continue
 			}
-			if entry, ok := pinned.ByID(id); ok && entry.User == myKey() {
+			if entry, ok := pinned.ByID(id); ok {
 				_ = shares.Forget(id)
 				pinned.Remove(entry.Name)
 				wrote = true
@@ -96,9 +96,9 @@ func takeMarks(marked []proto.Mark) {
 	})
 }
 
-// removeMine takes a machine out of this user's: marked, so every machine of theirs turns it
-// away, and forgotten here.
-func removeMine(entry book.Entry) error {
+// markRemoved takes a machine out, whoever's it is: marked, so every machine of this user's forgets
+// it too and turns it away, and none of them writes it back in.
+func markRemoved(entry book.Entry) error {
 	if self, err := node.LocalID(); err == nil && entry.ID == self {
 		return errors.New("that is this machine: take it out from another one of yours")
 	}
@@ -205,22 +205,41 @@ func keepMine(ctx context.Context, held *dial.Kept) {
 		return
 	case <-time.After(20 * time.Second):
 	}
+	// The book is watched as well as nudged: a command run in another process changes it too, and
+	// what it changed has to reach the rest of this user's machines as quickly as a change made here.
+	watch := time.NewTicker(watchEvery)
+	defer watch.Stop()
+
 	for {
 		if pinned, err := book.Load(); err == nil {
 			for _, entry := range pinned.All() {
-				if entry.User == "" || entry.User != myKey() {
+				if entry.User == "" || entry.User != myKey() || user.Removed(entry.ID.String()) {
 					continue
 				}
 				if hello, ok := askedHello(ctx, kept{held: held}, entry); ok {
 					joinCircle(entry, hello)
+					_ = syncWith(ctx, kept{held: held}, pinned, entry)
 				}
 			}
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-		case <-mineNudge:
+		seen := bookStamp()
+	wait:
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				break wait
+			case <-mineNudge:
+				break wait
+			case <-watch.C:
+				if bookStamp() != seen {
+					break wait
+				}
+			}
 		}
 	}
 }
+
+// watchEvery is how often the book is looked at for a change made by another process.
+const watchEvery = 3 * time.Second

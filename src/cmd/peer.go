@@ -147,11 +147,10 @@ func forgetKnown(name string, personFirst bool) error {
 			return false, fmt.Errorf("%q is not known", name)
 		}
 		for _, entry := range targets {
-			// A machine of mine is taken out of mine, or it comes straight back.
-			if entry.User != "" && entry.User == myKey() {
-				if err := removeMine(entry); err != nil {
-					return false, err
-				}
+			// Marked, so the rest of this user's machines forget it too, and nothing writes it
+			// back in.
+			if err := markRemoved(entry); err != nil {
+				return false, err
 			}
 			if err := shares.Forget(entry.ID); err != nil {
 				return false, fmt.Errorf("forgetting what %s shared: %w", entry.Name, err)
