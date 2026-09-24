@@ -243,3 +243,33 @@ func (q *quiet) SetReadDeadline(t time.Time) error {
 }
 
 func (q *quiet) SetWriteDeadline(time.Time) error { return nil }
+
+// Who is on a terminal crosses the wire intact, and a count past any real one is refused rather
+// than believed.
+func TestDuplexCarriesCompany(t *testing.T) {
+	var buf bytes.Buffer
+
+	sender := &Duplex{conn: wireConn(&buf)}
+	if err := sender.Tell(Company{Watching: 3, Own: true}); err != nil {
+		t.Fatalf("Tell(): %v", err)
+	}
+	if err := sender.Close(); err != nil {
+		t.Fatalf("Close(): %v", err)
+	}
+
+	var got Company
+	receiver := &Duplex{conn: wireConn(&buf), OnCompany: func(c Company) { got = c }}
+	if err := receiver.Pump(io.Discard); err != nil {
+		t.Fatalf("Pump(): %v", err)
+	}
+	if got != (Company{Watching: 3, Own: true}) {
+		t.Fatalf("company came through as %+v", got)
+	}
+
+	w := wire.NewWriter()
+	w.Uint(mostWatching + 1)
+	w.Bool(false)
+	if _, err := decodeCompany(w.Body()); err == nil {
+		t.Fatal("an absurd count of watchers was believed")
+	}
+}

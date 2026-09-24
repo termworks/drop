@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bresilla/drop/src/pkg/wire"
@@ -89,11 +90,30 @@ type Duplex struct {
 	mu     sync.Mutex // one writer at a time, so frames do not interleave mid-body
 	// OnResize, when set, is called when the far end reports a new terminal size.
 	OnResize func(cols, rows uint16)
+	// OnCompany, when set, is called when the far end says who else is on the terminal.
+	OnCompany func(Company)
+	// heard is when anything last arrived from the far end, as unix nanoseconds.
+	heard atomic.Int64
 }
 
 // New takes a stream that has already been accepted and runs a duplex over it.
 func New(conn *wire.Conn, s Stream) *Duplex {
-	return &Duplex{conn: conn, stream: s}
+	d := &Duplex{conn: conn, stream: s}
+	d.heard.Store(time.Now().UnixNano())
+	return d
+}
+
+// Quiet is how long it has been since anything arrived from the far end. A far end that answers
+// pings is never quiet for long, so one that has been is gone.
+func (d *Duplex) Quiet() time.Duration {
+	return time.Since(time.Unix(0, d.heard.Load()))
+}
+
+// Ping asks the far end to say something, which it does whatever else it is doing.
+func (d *Duplex) Ping() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.conn.WriteFrame(wire.KindPing, nil)
 }
 
 // Write sends bytes, split into data frames.
@@ -198,6 +218,7 @@ func (d *Duplex) Pump(out io.Writer) error {
 			}
 			return err
 		}
+		d.heard.Store(time.Now().UnixNano())
 
 		switch kind {
 		case wire.KindData:
@@ -225,6 +246,19 @@ func (d *Duplex) Pump(out io.Writer) error {
 				d.OnResize(cols, rows)
 			}
 
+		case wire.KindCompany:
+			body := make([]byte, size)
+			if err := d.conn.ReadBody(body, size); err != nil {
+				return err
+			}
+			company, err := decodeCompany(body)
+			if err != nil {
+				return err
+			}
+			if d.OnCompany != nil {
+				d.OnCompany(company)
+			}
+
 		case wire.KindEnd:
 			return d.conn.Discard(size)
 
@@ -245,4 +279,48 @@ func (d *Duplex) Pump(out io.Writer) error {
 			}
 		}
 	}
+}
+
+// Company is who is on a terminal with the watcher it is told to.
+type Company struct {
+	// Watching is how many are watching it, this watcher included.
+	Watching int
+	// Own says the shell is this watcher's alone: nobody else sees it, and it ends when they leave.
+	Own bool
+}
+
+// mostWatching bounds what a company frame may claim, so a count is a count and not an allocation.
+const mostWatching = 1 << 16
+
+// Tell says who is on the terminal.
+func (d *Duplex) Tell(c Company) error {
+	w := wire.NewWriter()
+	w.Uint(uint64(max(c.Watching, 0)))
+	w.Bool(c.Own)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.conn.WriteFrame(wire.KindCompany, w.Body())
+}
+
+func decodeCompany(body []byte) (Company, error) {
+	var out Company
+
+	r := wire.NewReader(body)
+	watching, err := r.Uint()
+	if err != nil {
+		return out, err
+	}
+	if watching > mostWatching {
+		return out, fmt.Errorf("a terminal claims %d watchers", watching)
+	}
+	own, err := r.Bool()
+	if err != nil {
+		return out, err
+	}
+	if !r.Done() {
+		return out, fmt.Errorf("a company frame has trailing bytes")
+	}
+	out.Watching, out.Own = int(watching), own
+	return out, nil
 }

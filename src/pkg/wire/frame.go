@@ -26,6 +26,9 @@ const (
 	// namespace, and what came of it.
 	KindRequest byte = 11
 	KindReply   byte = 12
+	// KindCompany is who else is on a live terminal: how many are watching it, and whether it is
+	// one shell they all share or the watcher's own.
+	KindCompany byte = 13
 )
 
 // MaxFrame caps a single frame. Data is chunked well under this; a control frame never approaches
