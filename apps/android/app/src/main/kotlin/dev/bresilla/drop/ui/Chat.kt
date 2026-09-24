@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import dev.bresilla.drop.Drop
 import dev.bresilla.drop.Said
 import dev.bresilla.drop.Served
+import dev.bresilla.drop.Settings
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -97,7 +98,11 @@ fun ChatScreen(machine: String, go: (Screen) -> Unit, back: () -> Unit) {
         Drop.call { it.deliver(machine) }
         inbox = Drop.paths(machine).getOrNull()?.paths?.firstOrNull { it.kind == "share" && !it.locked }
     }
-    LaunchedEffect(talk.size) { if (talk.isNotEmpty()) list.animateScrollToItem(0) }
+    // What is on screen has been read, which is what the count of unread is kept against.
+    LaunchedEffect(talk.size) {
+        Settings.saw(context, machine)
+        if (talk.isNotEmpty()) list.animateScrollToItem(0)
+    }
 
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris: List<Uri> ->
         val to = inbox ?: return@rememberLauncherForActivityResult

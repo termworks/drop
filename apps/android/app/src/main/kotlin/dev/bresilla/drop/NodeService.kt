@@ -9,7 +9,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.media.MediaScannerConnection
 import android.os.IBinder
+import android.webkit.MimeTypeMap
+import androidx.core.content.FileProvider
 import kotlin.concurrent.thread
 
 /**
@@ -40,6 +43,7 @@ class NodeService : Service() {
         }
 
         Drop.onSaid = { from, text -> tell(this, from, text) }
+        Drop.onLanded = { from, name, at -> handed(this, from, name, at) }
         // Off the main thread: starting a node reads keys and binds sockets, which is long enough for
         // Android to call the app frozen.
         thread(name = "drop-start") {
@@ -51,6 +55,7 @@ class NodeService : Service() {
 
     override fun onDestroy() {
         Drop.onSaid = null
+        Drop.onLanded = null
         Drop.stop()
         super.onDestroy()
     }
@@ -103,6 +108,28 @@ class NodeService : Service() {
                 .setCategory(Notification.CATEGORY_MESSAGE)
                 .build()
             context.getSystemService(NotificationManager::class.java).notify(from.hashCode(), said)
+        }
+
+        /** Says a file arrived: tapping it opens the conversation, and Open opens the file. */
+        private fun handed(context: Context, from: String, name: String, at: java.io.File) {
+            MediaScannerConnection.scanFile(context, arrayOf(at.absolutePath), null, null)
+
+            val builder = Notification.Builder(context, LOUD)
+                .setSmallIcon(R.drawable.ic_stat_drop)
+                .setContentTitle(from)
+                .setContentText("sent $name")
+                .setContentIntent(opening(context, from))
+                .setAutoCancel(true)
+                .setCategory(Notification.CATEGORY_MESSAGE)
+
+            if (at.isFile) {
+                val uri = FileProvider.getUriForFile(context, "dev.bresilla.drop.files", at)
+                val type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(at.extension.lowercase()) ?: "*/*"
+                val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, type).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                val pending = PendingIntent.getActivity(context, at.hashCode(), view, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+                builder.addAction(Notification.Action.Builder(null, "Open", pending).build())
+            }
+            context.getSystemService(NotificationManager::class.java).notify((from + name).hashCode(), builder.build())
         }
     }
 }

@@ -55,12 +55,17 @@ object Drop {
 
     var onSaid: ((from: String, text: String) -> Unit)? = null
 
+    /** Told about a file that arrived: who from, what it is called, and where it is now. */
+    var onLanded: ((from: String, name: String, at: File) -> Unit)? = null
+
     @Synchronized
     fun start(context: Context): Node {
         node?.let { return it }
 
         downloads = inbox(context)
         val files = context.filesDir
+        // What this phone serves is a config the node starts from, written from the settings.
+        Mobile.share(files.resolve("config").absolutePath, downloads.absolutePath, Settings.sharesFolder(context), Settings.folderWritable(context))
         val started = Mobile.start(
             files.resolve("config").absolutePath,
             files.resolve("data").absolutePath,
@@ -78,6 +83,13 @@ object Drop {
         node?.stop()
         node = null
         bump()
+    }
+
+    /** Starts the node again, for a change it reads only when it starts: its name, what it shares. */
+    @Synchronized
+    fun restart(context: Context) {
+        stop()
+        start(context)
     }
 
     fun bump() {
@@ -126,6 +138,11 @@ object Drop {
         override fun moving(name: String, done: Long, size: Long) {
             _moving.value = if (size in 1..done) null else Moving(name, done, size)
         }
+
+        override fun landed(from: String, name: String, at: String) {
+            onLanded?.invoke(from, name, File(at))
+            bump()
+        }
     }
 
     /** A Go call, off the main thread, with its failure as a value rather than a crash. */
@@ -146,6 +163,20 @@ object Drop {
     suspend fun history(machine: String): Result<List<Said>> = call { node ->
         val all = JSONArray(node.history(machine))
         List(all.length()) { Said.from(all.getJSONObject(it)) }
+    }
+
+    suspend fun conversations(): Result<List<Chat>> = call { node ->
+        val all = JSONArray(node.conversations())
+        List(all.length()) { Chat.from(all.getJSONObject(it)) }
+    }
+
+    suspend fun managed(name: String): Result<Managed> = call { Managed.from(JSONObject(it.managed(name))) }
+
+    suspend fun access(path: String): Result<Rule> = call { Rule.from(JSONObject(it.access(path))) }
+
+    suspend fun knocked(): Result<List<Knock>> = call { node ->
+        val all = JSONArray(node.knocked())
+        List(all.length()) { Knock.from(all.getJSONObject(it)) }
     }
 
     suspend fun list(machine: String, path: String, dir: String): Result<List<Held>> = call { node ->
@@ -273,3 +304,83 @@ data class Held(val name: String, val size: Long, val at: Long, val dir: Boolean
         fun from(o: JSONObject) = Held(o.optString("name"), o.optLong("size"), o.optLong("at"), o.optBoolean("dir"))
     }
 }
+
+data class Chat(val machine: String, val last: Said, val arrivals: List<Long>) {
+    companion object {
+        fun from(o: JSONObject): Chat {
+            val arrived = o.optJSONArray("in") ?: JSONArray()
+            return Chat(
+                o.optString("machine"),
+                Said.from(o.optJSONObject("last") ?: JSONObject()),
+                List(arrived.length()) { arrived.getLong(it) },
+            )
+        }
+    }
+}
+
+data class Managed(
+    val name: String,
+    val person: String,
+    val id: String,
+    val machines: Int,
+    val trusted: Boolean,
+    val reaching: Boolean,
+    val allowed: List<String>,
+    val refused: List<String>,
+) {
+    companion object {
+        fun from(o: JSONObject) = Managed(
+            o.optString("name"),
+            o.optString("person"),
+            o.optString("id"),
+            o.optInt("machines"),
+            o.optBoolean("trusted"),
+            o.optBoolean("reaching"),
+            strings(o.optJSONArray("allowed")),
+            strings(o.optJSONArray("refused")),
+        )
+    }
+}
+
+/** Somebody and how they stand with one of this phone's paths: "allowed", "refused", or "". */
+data class Standing(val name: String, val person: Boolean, val machines: Int, val at: String, val inConfig: Boolean)
+
+data class Asking(val who: String, val why: String, val `when`: String)
+
+data class Rule(
+    val path: String,
+    val anyone: Boolean,
+    val paired: Boolean,
+    val password: Boolean,
+    val who: List<Standing>,
+    val asked: List<Asking>,
+) {
+    companion object {
+        fun from(o: JSONObject): Rule {
+            val who = o.optJSONArray("who") ?: JSONArray()
+            val asked = o.optJSONArray("asked") ?: JSONArray()
+            return Rule(
+                o.optString("path"),
+                o.optBoolean("anyone"),
+                o.optBoolean("paired"),
+                o.optBoolean("password"),
+                List(who.length()) {
+                    val w = who.getJSONObject(it)
+                    Standing(w.optString("name"), w.optBoolean("person"), w.optInt("machines"), w.optString("at"), w.optBoolean("config"))
+                },
+                List(asked.length()) {
+                    val a = asked.getJSONObject(it)
+                    Asking(a.optString("who"), a.optString("why"), a.optString("when"))
+                },
+            )
+        }
+    }
+}
+
+data class Knock(val id: String, val brief: String, val at: Long, val asked: String, val why: String) {
+    companion object {
+        fun from(o: JSONObject) = Knock(o.optString("id"), o.optString("brief"), o.optLong("at"), o.optString("asked"), o.optString("why"))
+    }
+}
+
+private fun strings(a: JSONArray?): List<String> = if (a == null) emptyList() else List(a.length()) { a.getString(it) }

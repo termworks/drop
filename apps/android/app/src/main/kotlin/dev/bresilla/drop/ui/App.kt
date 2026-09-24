@@ -12,8 +12,10 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 
 /** Where somebody is. Entering rather than tabbing: what a path is depends on the machine it is on. */
@@ -27,6 +29,9 @@ sealed interface Screen {
     data class Pair(val ticket: String? = null, val scan: Boolean = false) : Screen
     data object Me : Screen
     data class Sending(val uris: List<Uri>) : Screen
+    data class Note(val machine: String, val path: String) : Screen
+    data class Access(val path: String) : Screen
+    data class Manage(val name: String) : Screen
 }
 
 /** Something the activity was handed from outside: a link, a notification, another app's share. */
@@ -40,6 +45,7 @@ sealed interface Arrival {
 fun App(arrival: Arrival?, taken: () -> Unit) {
     var stack by remember { mutableStateOf(listOf<Screen>(Screen.Home)) }
     var forward by remember { mutableStateOf(true) }
+    var tab by rememberSaveable { mutableIntStateOf(0) }
 
     val go: (Screen) -> Unit = { forward = true; stack = stack + it }
     val back: () -> Unit = { if (stack.size > 1) { forward = false; stack = stack.dropLast(1) } }
@@ -70,7 +76,7 @@ fun App(arrival: Arrival?, taken: () -> Unit) {
         label = "screens",
     ) { screen ->
         when (screen) {
-            Screen.Home -> HomeScreen(go)
+            Screen.Home -> HomeScreen(tab, onTab = { tab = it }, go = go)
             is Screen.Person -> PersonScreen(screen.name, go, back)
             is Screen.Machine -> MachineScreen(screen.name, go, back, home)
             is Screen.Chat -> ChatScreen(screen.machine, go, back)
@@ -79,6 +85,9 @@ fun App(arrival: Arrival?, taken: () -> Unit) {
             is Screen.Pair -> PairScreen(screen.ticket, screen.scan, back, paired = { instead(Screen.Machine(it)) })
             Screen.Me -> MeScreen(back)
             is Screen.Sending -> SendingScreen(screen.uris, back, done = { instead(Screen.Chat(it)) })
+            is Screen.Note -> NoteScreen(screen.machine, screen.path, back)
+            is Screen.Access -> AccessScreen(screen.path, back)
+            is Screen.Manage -> ManageScreen(screen.name, back, home)
         }
     }
 }

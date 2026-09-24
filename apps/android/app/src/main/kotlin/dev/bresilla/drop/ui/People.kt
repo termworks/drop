@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,7 +25,6 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -65,7 +65,7 @@ import dev.bresilla.drop.Person
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(go: (Screen) -> Unit) {
+fun PeopleTab(go: (Screen) -> Unit) {
     val tick by Drop.tick.collectAsState()
     val trouble by Drop.trouble.collectAsState()
     var me by remember { mutableStateOf<Me?>(null) }
@@ -78,17 +78,14 @@ fun HomeScreen(go: (Screen) -> Unit) {
             .onSuccess { people = it; failed = null }
             .onFailure { failed = it.message }
     }
-    Pulse()
 
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     Scaffold(
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
+        contentWindowInsets = WindowInsets(0),
         topBar = {
             LargeTopAppBar(
                 title = { Text("drop") },
-                actions = {
-                    IconButton(onClick = { go(Screen.Me) }) { Icon(Icons.Filled.Settings, "This device") }
-                },
                 scrollBehavior = scroll,
             )
         },

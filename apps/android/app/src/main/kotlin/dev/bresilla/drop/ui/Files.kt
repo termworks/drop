@@ -3,9 +3,11 @@ package dev.bresilla.drop.ui
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -15,10 +17,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -30,7 +34,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -42,6 +48,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -50,7 +60,7 @@ import dev.bresilla.drop.Held
 import java.io.File
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
     val context = LocalContext.current
@@ -61,6 +71,11 @@ fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
     var failed by remember { mutableStateOf<String?>(null) }
     var fetching by remember { mutableStateOf<String?>(null) }
     var again by remember { mutableIntStateOf(0) }
+    // acting is the row a long press chose, and naming is a name being typed: a new folder, or a new
+    // name for acting.
+    var acting by remember { mutableStateOf<Held?>(null) }
+    var naming by remember { mutableStateOf<Held?>(null) }
+    var making by remember { mutableStateOf(false) }
 
     LaunchedEffect(at, again) {
         failed = null
@@ -92,7 +107,12 @@ fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
                     }
                 },
                 navigationIcon = { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-                actions = { IconButton(onClick = { again++ }) { Icon(Icons.Filled.Refresh, "Reload") } },
+                actions = {
+                    if (at.writable) {
+                        IconButton(onClick = { making = true }) { Icon(Icons.Filled.CreateNewFolder, "New folder") }
+                    }
+                    IconButton(onClick = { again++ }) { Icon(Icons.Filled.Refresh, "Reload") }
+                },
             )
         },
         floatingActionButton = {
@@ -120,7 +140,10 @@ fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
                     modifier = Modifier
                         .padding(horizontal = 12.dp, vertical = 2.dp)
                         .clip(RoundedCornerShape(16.dp))
-                        .clickable(enabled = fetching == null) {
+                        .combinedClickable(
+                            enabled = fetching == null,
+                            onLongClick = { acting = h },
+                        ) {
                             if (h.dir) {
                                 val inner = if (at.dir.isEmpty()) h.name else at.dir.trimEnd('/') + "/" + h.name
                                 go(at.copy(dir = inner))
@@ -159,4 +182,87 @@ fun FilesScreen(at: Screen.Files, go: (Screen) -> Unit, back: () -> Unit) {
             }
         }
     }
+
+    acting?.let { h ->
+        AlertDialog(
+            onDismissRequest = { acting = null },
+            title = { Text(h.name) },
+            text = { Text(if (h.dir) "A folder on ${at.machine}." else "${size(context, h.size)} on ${at.machine}.") },
+            confirmButton = {
+                Row {
+                    if (at.writable) {
+                        TextButton(onClick = { acting = null; naming = h }) { Text("Rename") }
+                        TextButton(onClick = {
+                            acting = null
+                            scope.launch {
+                                Drop.call { it.remove(at.machine, at.path, at.dir, h.name) }
+                                    .onFailure { said.showSnackbar("${h.name}: ${it.message}") }
+                                again++
+                            }
+                        }) { Text("Delete") }
+                    }
+                    if (!h.dir) {
+                        TextButton(onClick = {
+                            acting = null
+                            fetching = h.name
+                            scope.launch {
+                                Drop.call { it.fetch(at.machine, at.path, at.dir, h.name) }
+                                    .onSuccess { said.showSnackbar("Saved to Download/drop") }
+                                    .onFailure { said.showSnackbar("${h.name}: ${it.message}") }
+                                fetching = null
+                            }
+                        }) { Text("Download") }
+                    }
+                }
+            },
+            dismissButton = { TextButton(onClick = { acting = null }) { Text("Close") } },
+        )
+    }
+
+    naming?.let { h ->
+        Named(title = "Rename ${h.name}", start = h.name, done = { naming = null }) { called ->
+            scope.launch {
+                Drop.call { it.move(at.machine, at.path, at.dir, h.name, called) }
+                    .onFailure { said.showSnackbar("${h.name}: ${it.message}") }
+                again++
+            }
+        }
+    }
+
+    if (making) {
+        Named(title = "New folder", start = "", done = { making = false }) { called ->
+            scope.launch {
+                Drop.call { it.mkdir(at.machine, at.path, at.dir, called) }
+                    .onFailure { said.showSnackbar("$called: ${it.message}") }
+                again++
+            }
+        }
+    }
+}
+
+/** A name to type: a folder to make, or a new name for something. */
+@Composable
+private fun Named(title: String, start: String, done: () -> Unit, use: (String) -> Unit) {
+    // The name without its extension comes up chosen, so typing replaces the part that is the name.
+    val stem = start.substringBeforeLast('.').ifEmpty { start }.length
+    var name by remember { mutableStateOf(TextFieldValue(start, TextRange(0, stem))) }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    AlertDialog(
+        onDismissRequest = done,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                name, { name = it },
+                singleLine = true,
+                label = { Text("Name") },
+                modifier = Modifier.focusRequester(focus),
+            )
+        },
+        confirmButton = {
+            val typed = name.text.trim()
+            TextButton(enabled = typed.isNotBlank() && !typed.contains('/'), onClick = { done(); use(typed) }) { Text("OK") }
+        },
+        dismissButton = { TextButton(onClick = done) { Text("Cancel") } },
+    )
 }

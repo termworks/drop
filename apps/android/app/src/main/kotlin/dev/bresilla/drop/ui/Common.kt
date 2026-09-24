@@ -55,6 +55,7 @@ import androidx.core.content.FileProvider
 import dev.bresilla.drop.Drop
 import java.io.File
 import kotlin.math.absoluteValue
+import kotlin.math.min
 
 private val Hues = listOf(
     Color(0xFF5B4FD6), Color(0xFF2F6FDB), Color(0xFF00897B), Color(0xFFD84F7A),
@@ -159,8 +160,11 @@ fun Transfer(modifier: Modifier = Modifier) {
 
 fun size(context: Context, bytes: Long): String = Formatter.formatShortFileSize(context, bytes)
 
-fun ago(at: Long): String =
-    DateUtils.getRelativeTimeSpanString(at, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE).toString()
+fun ago(at: Long): String {
+    // Two clocks never quite agree, and something written a second ago over there is not "in a minute".
+    val now = System.currentTimeMillis()
+    return DateUtils.getRelativeTimeSpanString(min(at, now), now, DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE).toString()
+}
 
 fun copy(context: Context, label: String, text: String) {
     context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(label, text))

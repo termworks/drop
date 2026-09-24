@@ -78,6 +78,7 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
     var forgetting by remember { mutableStateOf(false) }
     var linking by remember { mutableStateOf<Served?>(null) }
     var sendingTo by remember { mutableStateOf<Served?>(null) }
+    var ringing by remember { mutableStateOf<Served?>(null) }
 
     Pulse()
     LaunchedEffect(tick) {
@@ -107,13 +108,13 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
 
     val open: (Served) -> Unit = { s ->
         when {
-            s.locked -> scope.launch { said.showSnackbar("${s.path} can be seen but not opened; ask on a computer with drop path ask") }
+            s.locked -> ringing = s
             s.kind == "chat" -> go(Screen.Chat(name))
             s.kind == "files" -> go(Screen.Files(name, s.path, "", s.writable))
             s.kind == "share" -> { sendingTo = s; pick.launch("*/*") }
             s.kind == "link" -> linking = s
             s.kind == "stream" || s.kind == "tty" -> go(Screen.Live(name, s.path, s.archetype, s.writable && s.kind == "tty"))
-            s.kind == "note" -> scope.launch { said.showSnackbar("A shared note is edited from a computer: drop path join $name:${s.path}") }
+            s.kind == "note" -> go(Screen.Note(name, s.path))
             else -> scope.launch { said.showSnackbar("This build does not know how to open ${s.archetype}") }
         }
     }
@@ -147,6 +148,7 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
                                 }
                             },
                         )
+                        DropdownMenuItem(text = { Text("Manage") }, onClick = { menu = false; go(Screen.Manage(name)) })
                         DropdownMenuItem(text = { Text("Forget") }, onClick = { menu = false; forgetting = true })
                     }
                 },
@@ -187,6 +189,32 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
                 }) { Text("Send") }
             },
             dismissButton = { TextButton(onClick = { linking = null }) { Text("Cancel") } },
+        )
+    }
+
+    ringing?.let { s ->
+        var why by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { ringing = null },
+            title = { Text("Ask for ${s.path.trimStart('/')}") },
+            text = {
+                Column {
+                    Text("$name sees you can't open it yet. Asking lets them know, and they decide.")
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(why, { why = it }, label = { Text("Why (optional)") }, singleLine = true)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    ringing = null
+                    scope.launch {
+                        Drop.call { it.askFor(name, s.path, why.trim()) }
+                            .onSuccess { said.showSnackbar("Asked $name") }
+                            .onFailure { said.showSnackbar(it.message ?: "Could not ask") }
+                    }
+                }) { Text("Ask") }
+            },
+            dismissButton = { TextButton(onClick = { ringing = null }) { Text("Cancel") } },
         )
     }
 
