@@ -143,7 +143,11 @@ hand over, and it is off unless you say otherwise.
 
 One shell per path, not per watcher: somebody arriving late is handed the screen as it stands,
 rebuilt from the scrollback, and sees the same thing everybody else does. When the shell exits the
-terminal leaves the table so the next watcher starts a fresh one.
+terminal leaves the table so the next watcher starts a fresh one. It is as big as the smallest window
+watching it, and never below 80×24 while it is shared — see [sharing a terminal](terminal.md).
+
+`private = true` gives every watcher a shell of their own instead, which nobody else sees and which
+ends when they leave.
 
 `drop path cast` is the other half: a terminal read from standard input and served as an asciicast,
 for output that was recorded rather than a shell that is live.
