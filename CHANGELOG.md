@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.1] - 2026-09-24
+
+### <!-- 6 -->🧪 Testing
+
+- Read the ticket out of the link
+
 ## [0.5.0] - 2026-09-24
 
 ### <!-- 0 -->⛰️  Features
