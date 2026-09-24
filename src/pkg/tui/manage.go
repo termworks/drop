@@ -136,9 +136,38 @@ func loadManaged(back Backend, name string) tea.Cmd {
 	}
 }
 
+// Rows of the account screen, which is you rather than somebody.
+const (
+	actLeave     = "leave"
+	actStartOver = "startover"
+)
+
+// accountRows is you: who you are, and the two things only you can do to this machine.
+func accountRows(self Identity) []list.Item {
+	key := self.User
+	if len(key) > 60 {
+		key = key[:28] + "…" + key[len(key)-24:]
+	}
+	return []list.Item{
+		dividerItem{label: "you"},
+		manageItem{what: "you", label: self.Name, note: "this machine, as the others see it"},
+		manageItem{what: "you", label: "your key", note: key},
+		dividerItem{label: groupWhat},
+		manageItem{what: groupWhat, label: "leave your machines", note: "this machine goes back to its own, and the rest of yours forget it — enter", act: actLeave},
+		manageItem{what: groupWhat, label: "start over", note: "delete everything drop knows on this machine: everybody, every machine, every conversation — enter", act: actStartOver, off: true},
+	}
+}
+
 // showManage puts somebody in the list, keeping the cursor where it was.
 func (m *Model) showManage() {
 	at := m.list.Index()
+	if m.managed.Name == Me {
+		m.fill("manage\x00"+Me, accountRows(m.me))
+		m.list.Select(at)
+		m.offHeading()
+		m.list.SetSize(m.listWidth(), m.listHeight())
+		return
+	}
 	m.fill("manage\x00"+m.managed.Name, manageRows(m.managed, m.opens, m.askingReach))
 	m.list.Select(at)
 	m.offHeading()

@@ -176,6 +176,10 @@ type Model struct {
 	prompt  *prompting
 	confirm *confirming
 	menu    *menuState
+	// near is the devices on this network nobody here has connected with yet, and asked the devices
+	// waiting for a yes from here.
+	near  []Near
+	asked []Invited
 	// under is where in a device's paths the list is standing, "/" being the top.
 	under string
 	// steps is what is at that level: namespaces, and the ways further down.
@@ -246,7 +250,7 @@ func New(back Backend) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadSelf(m.back), loadPeers(m.back), listenFor(m.back.Arrivals()))
+	return tea.Batch(loadSelf(m.back), loadPeers(m.back), listenFor(m.back.Arrivals()), poll(m.back))
 }
 
 // ---------------------------------------------------------------- what arrives
