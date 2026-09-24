@@ -28,13 +28,19 @@ slices and interfaces, so a list crosses as JSON and a callback is an interface 
 
 | | |
 |---|---|
+| **Chats, People, This phone** | three tabs: every conversation newest first with what is unread, everybody paired, and what the phone itself serves |
 | **People, then machines, then paths** | the same arrangement as the terminal interface: who, which of their machines, and what it shares with you |
 | **Pairing** | *My code* shows a QR the other device scans; *Scan* reads one off a computer's `drop peer pair` or another phone. A `drop://pair/…` link opens the same way |
 | **Chat** | a conversation per machine, kept on both devices. A message for a machine that is off waits and goes when it is back; a message that arrives while the app is closed is a notification |
-| **Files** | walk a `files` namespace, download with a tap, upload into one that is writable |
-| **Handing things over** | *Send files* to a machine's share, or share from any app on the phone and pick who it goes to |
+| **Files** | walk a `files` namespace, download with a tap, upload into one that is writable; long press to rename or delete, and make folders in it |
+| **Notes** | read a `note` where it is held, or keep a copy on the phone and write in it. The copy is kept level with every other machine holding it, and what two people type at once is merged |
+| **Shared folders** | keep a copy of a folder several machines hold in `Download/drop-kept/`, followed both ways |
+| **Handing things over** | *Send files* to a machine's share, or share from any app on the phone and pick who it goes to. A file that arrives is a notification that opens it |
 | **Terminals and streams** | a `tty` or a `stream` drawn live, in colour. One you may type into is resized for the phone, with the keys a phone keyboard lacks |
 | **Links** | send one to a machine's `link` namespace and it opens over there |
+| **Access** | ask to be let into a path you can see but not open. On the phone's own paths: who may reach each, let in or keep out, answer who asked, and see who knocked without being paired |
+| **A person** | trust them, see and undo what the phone let them into or kept them out of, or forget them |
+| **The phone's folder** | let paired devices browse `Download/drop/`, and put things in it when that is on too |
 
 What arrives lands in `Download/drop/`, where the phone's own file manager finds it.
 

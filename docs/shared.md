@@ -11,6 +11,10 @@ $ drop path create /standup note --set file=~/notes/standup.md --access paired -
 $ drop path join tron:/standup --at /standup --set file=~/notes/standup.md
 ```
 
+Whatever holds the address keeps what it joined level: the daemon, the interface when no daemon is
+running, and the [Android app](../apps/android/README.md), where *Keep a copy* on a note or a folder
+is the same join.
+
 The share id is what both machines call the same thing. A namespace is one machine's own word for
 it; the id is what two of them are talking *about*, so two machines that spell the path differently
 still meet about one thing.
