@@ -32,6 +32,8 @@ import (
 type synced struct {
 	Entries []syncedEntry        `json:"entries"`
 	Marks   map[string]user.Mark `json:"marks"`
+	// Handle names the user key in a security key, for a machine that reaches the key itself.
+	Handle *user.Handle `json:"handle,omitempty"`
 }
 
 // syncedEntry is one machine as the book holds it. The secret goes only for somebody else's
@@ -53,6 +55,9 @@ func bookToHand(pinned *book.Book) synced {
 	if held, err := user.Marks(); err == nil {
 		out.Marks = held
 	}
+	if h, ok := user.KnownHandle(); ok {
+		out.Handle = &h
+	}
 	for _, e := range pinned.All() {
 		one := syncedEntry{Name: e.Name, ID: e.ID.String(), Addrs: e.Addrs, User: e.User, Person: e.Person, Trusted: e.Trusted, At: e.At}
 		if e.User == "" || e.User != myKey() {
@@ -66,6 +71,9 @@ func bookToHand(pinned *book.Book) synced {
 // takeState keeps whatever another machine of this user's holds that is newer than what is held
 // here, and forgets whatever it took out. It says whether anything changed.
 func takeState(pinned *book.Book, theirs synced) (bool, error) {
+	if theirs.Handle != nil {
+		_ = user.KeepHandle(*theirs.Handle)
+	}
 	gone, err := user.Merge(theirs.Marks)
 	if err != nil {
 		return false, err

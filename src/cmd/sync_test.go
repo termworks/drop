@@ -2,8 +2,15 @@ package cmd
 
 import (
 	stdbytes "bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	"github.com/bresilla/drop/src/pkg/book"
 	"github.com/bresilla/drop/src/pkg/user"
@@ -140,5 +147,59 @@ func TestForgettingSomebodyMarksThem(t *testing.T) {
 	}
 	if held := bookToHand(loaded(t)); len(held.Marks) == 0 {
 		t.Fatal("the mark is not handed to the rest of my machines")
+	}
+}
+
+// A phone whose user key is in a YubiKey learns which credential it is from another machine of
+// the user's, and from then on signs with the key held to it: nothing to set up on the phone.
+func TestAMachineLearnsTheHandleOfAKeyInHardware(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ssh.ParsePublicKey(ssh.Marshal(struct {
+		Type        string
+		Key         []byte
+		Application string
+	}{ssh.KeyAlgoSKED25519, pub, "ssh:drop"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	asMe(t, user.Text(key))
+	where, err := user.Where()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(where), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(where, ssh.MarshalAuthorizedKey(key), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	user.AssertWith(func(application string, handle, hash []byte) ([]byte, error) {
+		app := sha256.Sum256([]byte(application))
+		data := append(append(app[:], 0x01), 0, 0, 0, 1)
+		return append(data, ed25519.Sign(priv, append(append([]byte(nil), data...), hash...))...), nil
+	})
+	defer user.AssertWith(nil)
+
+	if user.CanAssert() {
+		t.Fatal("a machine that does not know the credential says it can sign")
+	}
+	if _, err := takeState(loaded(t), synced{Handle: &user.Handle{Application: "ssh:drop", Handle: []byte("cred")}}); err != nil {
+		t.Fatal(err)
+	}
+	if !user.CanAssert() || canAdd(offerMine) != nil {
+		t.Fatal("a machine handed the credential still cannot sign")
+	}
+	badge, sig, err := user.Vouch(idFor(9).String(), "laptop", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := user.Read(badge.Bytes(), sig, time.Now()); err != nil {
+		t.Fatalf("the badge the phone signed does not check out: %v", err)
 	}
 }

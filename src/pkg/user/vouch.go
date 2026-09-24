@@ -303,6 +303,11 @@ func signFor(device, name string, now time.Time) (Badge, []byte, error) {
 		return Badge{}, nil, err
 	}
 
+	// A security key this machine reaches itself, which on a phone is the only way it signs.
+	if CanAssert() {
+		return signedWithHardware(device, name, now)
+	}
+
 	if command := signCommand(where); command != "" {
 		who, err := Public()
 		if err != nil {
@@ -325,6 +330,7 @@ func Leave() error {
 	if err != nil {
 		return err
 	}
+	forgetHandle()
 	err = keep.While(where, func() error {
 		for _, file := range []string{where, where + ".pub"} {
 			if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {

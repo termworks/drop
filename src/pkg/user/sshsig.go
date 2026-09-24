@@ -39,20 +39,22 @@ type signed struct {
 func Signature(by ssh.Signer, message []byte) ([]byte, error) {
 	namespace := Namespace
 
-	sum := sha512.Sum512(message)
-
-	blob := append([]byte(magic), ssh.Marshal(signed{
-		Namespace: namespace,
-		Hash:      hashName,
-		Digest:    string(sum[:]),
-	})...)
-
-	sig, err := by.Sign(nil, blob)
+	sig, err := by.Sign(nil, sshsigBlobIn(namespace, message))
 	if err != nil {
 		return nil, fmt.Errorf("signing: %w", err)
 	}
 
 	return pem.EncodeToMemory(&pem.Block{Type: pemType, Bytes: armour(by.PublicKey(), namespace, sig)}), nil
+}
+
+// sshsigBlobIn is what a signature over message under namespace puts through the key.
+func sshsigBlobIn(namespace string, message []byte) []byte {
+	sum := sha512.Sum512(message)
+	return append([]byte(magic), ssh.Marshal(signed{
+		Namespace: namespace,
+		Hash:      hashName,
+		Digest:    string(sum[:]),
+	})...)
 }
 
 // armour builds the signature blob.
@@ -123,14 +125,7 @@ func Verify(armoured, message []byte, namespace string) (ssh.PublicKey, error) {
 		return nil, fmt.Errorf("reading the signature itself: %w", err)
 	}
 
-	sum := sha512.Sum512(message)
-	blob := append([]byte(magic), ssh.Marshal(signed{
-		Namespace: namespace,
-		Hash:      hashName,
-		Digest:    string(sum[:]),
-	})...)
-
-	if err := key.Verify(blob, &sig); err != nil {
+	if err := key.Verify(sshsigBlobIn(namespace, message), &sig); err != nil {
 		return nil, fmt.Errorf("the signature does not match: %w", err)
 	}
 	return key, nil

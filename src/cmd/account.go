@@ -80,7 +80,7 @@ func leaveMine(ctx context.Context, over reaches) error {
 func startOver(ctx context.Context, over reaches) error {
 	farewell(ctx, over)
 
-	all := configFiles("peers.json", "gone.json", "circle", "badge", "badge.sig", "grants.json", "paths.json")
+	all := configFiles("peers.json", "gone.json", "circle", "badge", "badge.sig", "grants.json", "paths.json", "handle.json")
 	if where, err := user.Where(); err == nil && !user.Named() {
 		all = append(all, where, where+".pub", where+".before", where+".before.pub")
 	}

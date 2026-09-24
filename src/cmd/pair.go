@@ -187,7 +187,7 @@ func admitted(p *proto.Pairing, kind offerKind) (proto.Grant, error) {
 func canAdd(kind offerKind) error {
 	switch kind {
 	case offerMine:
-		if _, quiet := user.Quiet(); quiet || user.Named() {
+		if _, quiet := user.Quiet(); quiet || user.Named() || user.CanAssert() {
 			return nil
 		}
 		return errors.New("this machine wears a badge another one signed, so it cannot sign one: run `drop machine add` on a machine that holds your key")
