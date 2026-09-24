@@ -282,7 +282,7 @@ drop.mount("/work", { type = "files", dir = "~/work", writable = true, access = 
 
 -- on orin: what it is actually doing
 drop.mount("/logs", { type = "stream", command = "journalctl -f -n 50", access = { "me" } })
-drop.mount("/term", { type = "tty", shell = "/bin/bash", input = true, access = { "me" } })
+drop.mount("/term", { type = "tty", input = true, access = { "me" } })
 ```
 
 ```console

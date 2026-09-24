@@ -135,8 +135,12 @@ ended with the session — see [hardening](security.md) for why that is not the 
 A shell on this machine, one terminal shared by everybody watching it.
 
 ```lua
-drop.mount("/term", { type = "tty", shell = "/bin/sh", input = false })
+drop.mount("/term", { type = "tty", input = false })
 ```
+
+`shell` is what it starts, and left out it is `$SHELL` — the login shell when that is not set, and
+`/bin/sh` when there is neither — so whoever runs drop gets the shell they set up. Name one to start
+something else: `shell = "btop"` is a terminal that shows btop.
 
 `input` decides whether watchers may type. Watching a shell and driving one are different things to
 hand over, and it is off unless you say otherwise.

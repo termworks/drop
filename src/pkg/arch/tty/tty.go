@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -46,7 +48,7 @@ var terminalSlots = make(chan struct{}, MaxTerminals)
 // Config is what a tty namespace was told: what to start, whether the far end may type, and whether
 // everybody shares one terminal or each gets their own.
 type Config struct {
-	// Shell is what this namespace starts; empty means $SHELL.
+	// Shell is what this namespace starts; empty means $SHELL, then the login shell, then /bin/sh.
 	Shell string
 	// Input lets the far end type into it.
 	Input bool
@@ -218,6 +220,9 @@ func (t *TTY) start(path string, cfg Config, shared bool) (*terminal, error) {
 		shell = os.Getenv("SHELL")
 	}
 	if shell == "" {
+		shell = loginShell()
+	}
+	if shell == "" {
 		shell = "/bin/sh"
 	}
 
@@ -357,4 +362,22 @@ func (term *terminal) hangUp() {
 	case <-time.After(hangUpWithin):
 		_ = syscall.Kill(group, syscall.SIGKILL)
 	}
+}
+
+// loginShell is the shell the account running this logs in with, for a process started without
+// $SHELL — a service manager hands its units very little — so the terminal is still the one its
+// owner chose rather than whatever /bin/sh happens to be.
+func loginShell() string {
+	raw, err := os.ReadFile("/etc/passwd")
+	if err != nil {
+		return ""
+	}
+	uid := strconv.Itoa(os.Getuid())
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) >= 7 && fields[2] == uid {
+			return strings.TrimSpace(fields[6])
+		}
+	}
+	return ""
 }
