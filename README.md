@@ -2,15 +2,19 @@
 
 Peer-to-peer file transfer, chat, folders and terminals. No account, no server holding your data.
 
-Pair two devices once, by key. After that either can reach the other from anywhere — across NATs,
-across networks, through address changes.
+Your own machines join each other with one short code, and somebody else's pair with you the same
+way. After that either can reach the other from anywhere — across NATs, across networks, through
+address changes.
 
 ```console
-drop peer pair                      # on one machine: prints a ticket, and a QR of it
-drop peer pair 9363f77d…#qxwo-e62y  # on the other: done, forever
+drop machine add                    # on a machine of yours: prints a code, and a QR of it
+drop machine join qxwo-e62y-k3fa    # on the new one: it is yours, and all your machines know it
+
+drop peer pair                      # with somebody else: the same, for a person
+drop peer pair qxwo-e62y-k3fa
 ```
 
-A phone pairs by pointing its camera at that code: the [Android app](apps/android/README.md) is the
+A phone joins by pointing its camera at that code: the [Android app](apps/android/README.md) is the
 same node, with chat, files, and a live view of a terminal on the machine it paired with.
 
 ---

@@ -166,7 +166,7 @@ fun SettingsScreen(go: (Screen) -> Unit, back: () -> Unit) {
                         if (!m.signs || m.took) {
                             OutlinedButton(onClick = { leaving = true }, enabled = !restarting) { Text("Leave") }
                         } else {
-                            Button(onClick = { go(Screen.AddMachine) }) { Text("Make it one of my machines") }
+                            Button(onClick = { go(Screen.AddMachine()) }) { Text("Make it one of my machines") }
                         }
                     }
                 }

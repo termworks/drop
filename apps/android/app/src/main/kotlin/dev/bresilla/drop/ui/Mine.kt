@@ -1,47 +1,47 @@
 package dev.bresilla.drop.ui
 
+import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,60 +49,67 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import dev.bresilla.drop.Drop
-import dev.bresilla.drop.Knock
-import dev.bresilla.drop.Machine
 import dev.bresilla.drop.Me
-import dev.bresilla.drop.PathState
+import dev.bresilla.drop.News
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import mobile.Mobile
 
-/** The two ways a machine becomes yours: this phone joining, or another computer being added. */
+/**
+ * Adding a machine of yours is one code: a computer shows it with `drop machine add` and this phone
+ * scans it, or this phone shows one and the computer types it. Either way the other becomes yours.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AddMachineScreen(go: (Screen) -> Unit, back: () -> Unit) {
+fun AddMachineScreen(given: String?, back: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var me by remember { mutableStateOf<Me?>(null) }
     var taking by remember { mutableStateOf(false) }
     var told by remember { mutableStateOf<String?>(null) }
     var failed by remember { mutableStateOf<String?>(null) }
-    var pasting by remember { mutableStateOf(false) }
+    var typing by remember { mutableStateOf(false) }
+    var showing by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { me = Drop.self() }
+    LaunchedEffect(Unit) {
+        Drop.news.collect { if (it is News.Paired) { showing = false; told = "${it.with} is one of your machines now." } }
+    }
 
-    // One scan for both steps: a pairing code pairs, and a code from vouch or export makes this phone theirs.
     val take: (String) -> Unit = { code ->
         taking = true
         failed = null
+        told = null
         scope.launch {
-            if (Drop.owning(code)) {
-                Drop.take(context.applicationContext, code)
-                    .onSuccess { told = it; me = Drop.self() }
-                    .onFailure { failed = it.message }
-            } else {
-                Drop.call { it.join(code.trim()) }
-                    .onSuccess { told = "Paired with $it. Now run the vouch command there, and scan what it shows." }
-                    .onFailure { failed = it.message }
-            }
+            Drop.joinMachine(context.applicationContext, code)
+                .onSuccess { told = it }
+                .onFailure { failed = it.message }
+            me = Drop.self()
             taking = false
         }
     }
+    LaunchedEffect(given) { if (given != null) take(given) }
+
     val camera = rememberLauncherForActivityResult(ScanContract()) { result -> result.contents?.let(take) }
     val scan = {
         camera.launch(
             ScanOptions()
                 .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                .setPrompt("Point at the code drop is showing")
+                .setPrompt("Point at the code drop machine add is showing")
                 .setBeepEnabled(false)
                 .setOrientationLocked(false),
         )
     }
-    val phone = me?.name ?: "this-phone"
 
     Scaffold(
         topBar = {
@@ -115,13 +122,10 @@ fun AddMachineScreen(go: (Screen) -> Unit, back: () -> Unit) {
         LazyColumn(contentPadding = PaddingValues(top = pad.calculateTopPadding(), bottom = 32.dp)) {
             item {
                 WayIn(
-                    title = "Make this phone one of your machines",
-                    says = "On a computer that has your key, pair with this phone, then have it vouch for it. Scan each code it shows:",
-                    commands = listOf(
-                        "drop peer pair" to "first, unless it knows this phone already",
-                        "drop me user vouch $phone" to "your key stays on the computer",
-                        "drop me user export" to "or instead: copies your key onto this phone",
-                    ),
+                    title = "Join a computer of yours",
+                    says = "On a computer of yours, run",
+                    command = "drop machine add",
+                    after = "then scan the code it shows, or type it.",
                 ) {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                         Button(onClick = scan, enabled = !taking) {
@@ -129,50 +133,97 @@ fun AddMachineScreen(go: (Screen) -> Unit, back: () -> Unit) {
                             Spacer(Modifier.width(6.dp))
                             Text("Scan")
                         }
-                        TextButton(onClick = { pasting = true }, enabled = !taking) { Text("Paste") }
+                        TextButton(onClick = { typing = true }, enabled = !taking) { Text("Type the code") }
                         if (taking) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
                     }
                     told?.let { Banner(it, Modifier.padding(top = 8.dp)) }
                     failed?.let { Banner(it, Modifier.padding(top = 8.dp), error = true) }
                 }
             }
-            item {
-                WayIn(
-                    title = "Add another computer of yours",
-                    says = "Pair with it first. If it already carries your key it lands here straight away; if it has a key of its own, a computer with yours vouches for it.",
-                    commands = listOf(
-                        "drop peer pair" to "on it, then scan what it shows",
-                        "drop me user vouch <it>" to "on a computer with your key",
-                        "drop me user take <code>" to "back on it, with that code",
-                    ),
-                ) {
-                    Button(onClick = { go(Screen.Pair(scan = true)) }) {
-                        Icon(Icons.Filled.QrCodeScanner, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Scan its pairing code")
+            if (me?.signs == true) {
+                item {
+                    WayIn(
+                        title = "Add a computer to this phone",
+                        says = "Show a code here, and on the computer run",
+                        command = "drop machine join <code>",
+                        after = "It becomes one of your machines, signed for by this phone.",
+                    ) {
+                        if (showing) MachineCode() else FilledTonalButton(onClick = { showing = true }) { Text("Show a code") }
                     }
                 }
             }
         }
     }
 
-    if (pasting) {
-        var pasted by remember { mutableStateOf("") }
+    if (typing) {
+        var typed by remember { mutableStateOf("") }
         AlertDialog(
-            onDismissRequest = { pasting = false },
-            title = { Text("Paste the code") },
-            text = { OutlinedTextField(pasted, { pasted = it }, placeholder = { Text("a pairing ticket, or drop://badge/…") }, textStyle = Mono) },
+            onDismissRequest = { typing = false },
+            title = { Text("Type the code") },
+            text = { OutlinedTextField(typed, { typed = it }, placeholder = { Text("abcd-efgh-ijkl") }, textStyle = Mono, singleLine = true) },
             confirmButton = {
-                TextButton(enabled = pasted.isNotBlank(), onClick = { pasting = false; take(pasted) }) { Text("Take it") }
+                TextButton(enabled = typed.isNotBlank(), onClick = { typing = false; take(typed) }) { Text("Join") }
             },
-            dismissButton = { TextButton(onClick = { pasting = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { typing = false }) { Text("Cancel") } },
         )
     }
 }
 
-/** One way of adding a machine: what it does, the commands it takes, and what to press here. */
+/** This phone's code for a computer to join with, up for as long as it is on screen. */
 @Composable
-private fun WayIn(title: String, says: String, commands: List<Pair<String, String>>, actions: @Composable () -> Unit) {
+private fun MachineCode() {
+    val context = LocalContext.current
+    var code by remember { mutableStateOf<String?>(null) }
+    var drawn by remember { mutableStateOf<ImageBitmap?>(null) }
+    var failed by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        Drop.call { it.offerMachine() }
+            .onSuccess { ticket ->
+                code = ticket.substringAfter('#')
+                drawn = withContext(Dispatchers.Default) {
+                    val png = Mobile.machineCode(ticket, 12)
+                    BitmapFactory.decodeByteArray(png, 0, png.size)?.asImageBitmap()
+                }
+            }
+            .onFailure { failed = it.message }
+    }
+    DisposableEffect(Unit) { onDispose { Drop.node?.stopOffer() } }
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+        failed?.let { Banner(it, error = true) }
+        code?.let { c ->
+            Text(c, style = MaterialTheme.typography.headlineSmall.copy(fontFamily = Mono.fontFamily), color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = { copy(context, "drop machine code", "drop machine join $c") }) {
+                Icon(Icons.Filled.ContentCopy, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Copy the command")
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+        Surface(color = Color.White, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth(0.7f).aspectRatio(1f)) {
+            Box(contentAlignment = Alignment.Center) {
+                val image = drawn
+                if (image == null) {
+                    if (failed == null) CircularProgressIndicator()
+                } else {
+                    Image(image, "machine code", filterQuality = FilterQuality.None, modifier = Modifier.fillMaxSize().padding(10.dp))
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Works once, for ten minutes, while this is open.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** One way of adding a machine: what it does, the command it takes, and what to press here. */
+@Composable
+private fun WayIn(title: String, says: String, command: String, after: String, actions: @Composable () -> Unit) {
     Card(
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -182,13 +233,13 @@ private fun WayIn(title: String, says: String, commands: List<Pair<String, Strin
             Text(title, style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(8.dp))
             Text(says, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(10.dp))
-            commands.forEach { (command, why) ->
-                Text(command, style = Mono, color = MaterialTheme.colorScheme.primary)
-                Text(why, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(6.dp))
+            Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+                Text(command, style = Mono, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(12.dp))
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
+            Text(after, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(14.dp))
             actions()
         }
     }

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0] - 2026-09-24
+
+### <!-- 0 -->⛰️  Features
+
+- Add a machine with one code
+- Drop machine add and drop machine join
+- A pairing can make a machine yours
+- Find a machine by its short code
+
+### <!-- 3 -->📚 Documentation
+
+- Adding a machine is one code
+
 ## [0.4.3] - 2026-09-24
 
 ### <!-- 0 -->⛰️  Features

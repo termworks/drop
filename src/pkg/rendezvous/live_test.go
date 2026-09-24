@@ -2,7 +2,10 @@ package rendezvous
 
 import (
 	"context"
+	"crypto/rand"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,4 +104,38 @@ func TestLiveRoundTrip(t *testing.T) {
 		time.Sleep(3 * time.Second)
 	}
 	t.Fatal("the record never came back from the relay")
+}
+
+// TestLiveCodeRoundTrip shows a short code for a machine and finds that machine by it.
+func TestLiveCodeRoundTrip(t *testing.T) {
+	if os.Getenv("DROP_LIVE") == "" {
+		t.Skip("set DROP_LIVE=1 to run this; it publishes to a public pkarr relay")
+	}
+	code, err := newTestCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := node.From([32]byte{9, 9, 9})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := PublishCode(ctx, code, id); err != nil {
+		t.Fatalf("PublishCode(): %v", err)
+	}
+	o, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := o.FindCode(ctx, "  "+strings.ToUpper(code)+" ")
+	if !ok || got != id {
+		t.Fatalf("FindCode() = %v, %v; want %v", got, ok, id)
+	}
+}
+
+func newTestCode() (string, error) {
+	raw := make([]byte, 6)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("test-%x", raw), nil
 }

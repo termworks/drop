@@ -25,7 +25,7 @@ func Link(text string) string {
 func FromLink(text string) string {
 	text = strings.TrimSpace(text)
 
-	for _, prefix := range []string{Scheme + "://pair/", Scheme + ":pair/", Scheme + "://"} {
+	for _, prefix := range []string{Scheme + "://pair/", Scheme + ":pair/", Scheme + "://" + KindMachine + "/", Scheme + "://"} {
 		if rest, found := strings.CutPrefix(text, prefix); found {
 			return strings.Trim(rest, "/")
 		}
@@ -158,6 +158,8 @@ func Wide(code *qr.Code) string {
 const (
 	KindBadge = "badge"
 	KindKey   = "key"
+	// KindMachine is a code for adding a machine of your own: pairing and becoming yours at once.
+	KindMachine = "machine"
 )
 
 // LinkAs is a code of one kind as a link.
@@ -167,7 +169,7 @@ func LinkAs(kind, text string) string { return Scheme + "://" + kind + "/" + tex
 // "pair".
 func Kind(text string) (string, string) {
 	text = strings.TrimSpace(text)
-	for _, kind := range []string{KindBadge, KindKey} {
+	for _, kind := range []string{KindBadge, KindKey, KindMachine} {
 		if rest, found := strings.CutPrefix(text, LinkAs(kind, "")); found {
 			return kind, strings.Trim(rest, "/")
 		}

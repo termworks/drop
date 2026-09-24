@@ -217,36 +217,32 @@ that lets them find each other later without publishing anything anybody else ca
 On **core**:
 
 ```console
-$ drop peer pair
-9363f77d…#qxwo-e62y
+$ drop machine add
+  code:    qxwo-e62y-k3fa
 ```
 
-On **tron**, with that ticket:
+On **tron**, with that code:
 
 ```console
-$ drop peer pair 9363f77d…#qxwo-e62y
+$ drop machine join qxwo-e62y-k3fa
 ```
 
 Now **core ↔ tron**. Do it once more for **core ↔ orin**.
 
-### Do you need tron ↔ orin?
+### tron ↔ orin comes free
 
-Try it before you do it:
-
-```console
-# on tron
-$ drop path ls orin
-```
-
-Pairing is with a **person**. Once `tron` has learnt your user key from `core`, a machine of yours
-it has never met presents its own badge and is recognised — the third pairing is often unnecessary.
-If it is refused, pair them and move on; it costs one command.
+Your machines tell each other about the rest of your machines, so within a few minutes `tron` and
+`orin` know each other without ever meeting:
 
 ```console
-$ drop peer ls
-  core   paired   core   ec325aa2…
-  orin   paired   orin   a9620d59…
+$ drop machine ls
+  core   this one  ec325aa2…
+  tron   paired    9363f77d…
+  orin   paired    a9620d59…
 ```
+
+Without the YubiKey setup of step 5, `drop machine add` makes the new machine yours in the same
+step — it is handed a badge `core` signs — so step 5 is only for keeping the key in hardware.
 
 ---
 

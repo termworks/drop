@@ -214,17 +214,21 @@ func runServe(parent context.Context, quiet bool) error {
 		node.ALPNPair: func(from node.ID, s *iroh.Stream) {
 			defer func() { _ = s.Close() }()
 
-			code, _ := offers.asking()
+			code, kind := offers.asking()
 			if code == "" {
 				return
 			}
 
-			_, _ = proto.AnswerPairing(s, n.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(n)), func(p proto.Pairing) error {
+			_, _ = proto.AnswerPairing(s, n.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(n)), func(p proto.Pairing) (proto.Grant, error) {
 				if !hmac.Equal(p.Proof, codeProof(code, from, n.ID())) {
 					fmt.Fprintf(os.Stderr, "drop: %s tried to pair without the code\n", node.Brief(from))
-					return errNotTheCode
+					return proto.Grant{}, errNotTheCode
 				}
-				return offers.answered(p)
+				grant, err := admitted(&p, kind)
+				if err != nil {
+					return proto.Grant{}, err
+				}
+				return grant, offers.answered(p)
 			})
 		},
 	}

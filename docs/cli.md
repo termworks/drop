@@ -27,6 +27,15 @@ a name. See [pairing](pairing.md).
 
 ## The groups
 
+**`drop machine`** — your own machines.
+
+```console
+drop machine add               show a code another machine joins you with
+drop machine add --key         and hand it your key, rather than a badge
+drop machine join <code>       on that machine: become yours
+drop machine ls                every machine of yours this one knows
+```
+
 **`drop me`** — this machine, and who it belongs to.
 
 ```console
@@ -47,8 +56,8 @@ drop me log [name]             a conversation, or all of them
 **`drop peer`** — the machines this one knows.
 
 ```console
-drop peer pair                 print a ticket
-drop peer pair <ticket>        take one
+drop peer pair                 print a code, to pair with somebody
+drop peer pair <code>          take one
 drop peer ls                   everything in the address book
 drop peer whois <name>         what this machine knows about another
 drop peer trust <name>         the second, deliberate step after pairing

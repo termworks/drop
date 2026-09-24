@@ -107,6 +107,24 @@ object Drop {
         runCatching { Mobile.take(code.trim()) }.onSuccess { restart(context) }
     }
 
+    /** Whether a code is for joining a computer of yours as one of your machines. */
+    fun machining(code: String): Boolean = code.trim().startsWith("drop://machine/")
+
+    /**
+     * Makes this phone one of the machines of whoever is showing a code, `drop machine add`, and starts
+     * the node again wearing what it was given. A code from vouch or export still works.
+     */
+    suspend fun joinMachine(context: Context, code: String): Result<String> {
+        val given = code.trim()
+        if (owning(given)) return take(context, given)
+        if (given.startsWith("drop://pair/")) {
+            return Result.failure(IllegalArgumentException("That code pairs with a person. On your computer run drop machine add instead."))
+        }
+        return call { it.joinMachine(given) }
+            .map { "This phone is one of your machines now, alongside $it. The rest of them hear about it within a few minutes." }
+            .onSuccess { withContext(Dispatchers.IO) { restart(context) } }
+    }
+
     fun bump() {
         _tick.value = _tick.value + 1
     }

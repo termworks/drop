@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"os/signal"
@@ -26,6 +27,7 @@ import (
 	"github.com/bresilla/drop/src/pkg/proto"
 	"github.com/bresilla/drop/src/pkg/rendezvous"
 	tickets "github.com/bresilla/drop/src/pkg/ticket"
+	"github.com/bresilla/drop/src/pkg/user"
 )
 
 func newPairCmd() *cobra.Command {
@@ -49,10 +51,14 @@ func newPairCmd() *cobra.Command {
 			"build server wants, or a deliberate refusal to trust the rest of somebody's machines.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 1 {
-				return joinPairing(cmd.Context(), args[0], as, wait, machine, at)
+			kind := offerPerson
+			if machine {
+				kind = offerMachine
 			}
-			return offerPairing(cmd.Context(), as, code, wait, machine)
+			if len(args) == 1 {
+				return joinPairing(cmd.Context(), args[0], as, wait, kind, at)
+			}
+			return offerPairing(cmd.Context(), as, code, wait, kind)
 		},
 	}
 
@@ -119,6 +125,136 @@ func asAddrs(written []string) ([]netip.AddrPort, error) {
 // errNotTheCode is what a device that did not hold the code is told.
 var errNotTheCode = errors.New("that is not the code being shown")
 
+// offerKind is what a code being shown is for, which decides what the device taking it becomes.
+type offerKind string
+
+const (
+	// offerPerson pairs with somebody: their machine, and through its badge, them.
+	offerPerson offerKind = "person"
+	// offerMachine pairs with that device alone, and none of its owner's other machines.
+	offerMachine offerKind = "machine"
+	// offerMine adds a machine of this user's own, with a badge this machine signs for it.
+	offerMine offerKind = "mine"
+	// offerMineKey adds one and hands it the key itself, so it signs for itself from then on.
+	offerMineKey offerKind = "minekey"
+)
+
+func (k offerKind) mine() bool { return k == offerMine || k == offerMineKey }
+
+// admitted is what a machine showing a code does with a device that proved it holds it. A device
+// that came for the other kind of code is refused, so nobody becomes somebody's machine by pairing
+// with them; one taking a code for a machine of this user's own is given what makes it one, and is
+// filed as this user's from the start.
+func admitted(p *proto.Pairing, kind offerKind) (proto.Grant, error) {
+	switch {
+	case kind.mine() && !p.Wants:
+		return proto.Grant{}, errors.New("this code adds a machine of mine: take it with `drop machine join`")
+	case !kind.mine() && p.Wants:
+		return proto.Grant{}, errors.New("this code pairs with a person rather than adding a machine: take it with `drop peer pair`")
+	case !kind.mine():
+		return proto.Grant{}, nil
+	case p.User != "" && p.User == myKey():
+		// Already this user's, by a key of its own or a badge: nothing to hand it.
+		return proto.Grant{}, nil
+	}
+
+	if kind == offerMineKey {
+		seed, err := user.Export()
+		if err != nil {
+			return proto.Grant{}, err
+		}
+		p.User = myKey()
+		return proto.Grant{Kind: proto.GrantKey, Body: seed}, nil
+	}
+
+	name := p.Name
+	if name == "" {
+		name = node.Brief(p.Peer)
+	}
+	badge, sig, err := user.Vouch(p.Peer.String(), name, time.Now())
+	if err != nil {
+		return proto.Grant{}, fmt.Errorf("signing a badge for %s: %w", name, err)
+	}
+	packed, err := user.Pack(badge, sig)
+	if err != nil {
+		return proto.Grant{}, err
+	}
+	p.User = myKey()
+	return proto.Grant{Kind: proto.GrantBadge, Body: packed}, nil
+}
+
+// canAdd says, before any code is shown, why this machine could not make another one its user's.
+func canAdd(kind offerKind) error {
+	switch kind {
+	case offerMine:
+		if _, quiet := user.Quiet(); quiet || user.Named() {
+			return nil
+		}
+		return errors.New("this machine wears a badge another one signed, so it cannot sign one: run `drop machine add` on a machine that holds your key")
+	case offerMineKey:
+		_, err := user.Export()
+		return err
+	}
+	return nil
+}
+
+// wearGrant makes this machine what the machine showing the code made it: one of its user's, by a
+// badge signed for it or by the key itself, worn from this moment.
+func wearGrant(g proto.Grant) error {
+	switch g.Kind {
+	case proto.GrantBadge:
+		badge, sig, err := user.Unpack(g.Body, time.Now())
+		if err != nil {
+			return err
+		}
+		if err := user.Wear(badge, sig, time.Now()); err != nil {
+			return err
+		}
+	case proto.GrantKey:
+		if err := user.Import(g.Body); err != nil {
+			return err
+		}
+	default:
+		return errors.New("the machine showing that code sent nothing that makes this one its own")
+	}
+	return wearBadge()
+}
+
+// publishCode puts a code up for finding by itself: whoever types just the code looks it up and gets
+// this machine's id, so nobody has to type sixty-four characters of it.
+func publishCode(ctx context.Context, code string, id node.ID) {
+	if !node.Rendezvous() {
+		return
+	}
+	if err := rendezvous.PublishCode(ctx, code, id); err != nil {
+		fmt.Fprintf(os.Stderr, "drop: the code cannot be looked up by itself: %v\n", err)
+	}
+}
+
+// whoShows is the machine a ticket or a bare code names, and the code: a ticket says it outright,
+// and a code is looked up.
+func whoShows(ctx context.Context, text string) (node.ID, string, error) {
+	text = strings.TrimSpace(tickets.FromLink(text))
+	if strings.Contains(text, "#") {
+		return readTicket(text)
+	}
+	code := rendezvous.NormalCode(text)
+	if code == "" {
+		return node.ID{}, "", errors.New("that is not a code")
+	}
+	found, err := rendezvous.Open()
+	if err != nil {
+		return node.ID{}, "", err
+	}
+	look, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	id, ok := found.FindCode(look, code)
+	if !ok {
+		return node.ID{}, "", fmt.Errorf("nothing is showing %s: check it, and that the other machine is still waiting", code)
+	}
+	return id, code, nil
+}
+
 // codeProof binds an attempt to the code, so a device that was not invited cannot complete one.
 func codeProof(code string, initiator, responder node.ID) []byte {
 	mac := hmac.New(sha256.New, []byte(code))
@@ -126,7 +262,7 @@ func codeProof(code string, initiator, responder node.ID) []byte {
 	return mac.Sum(nil)
 }
 
-func offerPairing(parent context.Context, as, code string, wait time.Duration, machine bool) error {
+func offerPairing(parent context.Context, as, code string, wait time.Duration, kind offerKind) error {
 	// A given code makes pairing scriptable: the ticket can be built by the caller rather than
 	// scraped out of this output.
 	if code == "" {
@@ -136,6 +272,10 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, m
 		}
 		code = generated
 	}
+	code = rendezvous.NormalCode(code)
+	if err := canAdd(kind); err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -144,7 +284,7 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, m
 
 	// Through the daemon when one is running: it holds this identity's address, so it is the one
 	// anybody dialling the ticket will reach, and only it can answer them.
-	if err := offerThroughDaemon(ctx, as, code, wait, machine); err == nil {
+	if err := offerThroughDaemon(ctx, as, code, wait, kind); err == nil {
 		return nil
 	} else if !errors.Is(err, errNoDaemon) {
 		return err
@@ -155,7 +295,8 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, m
 	if err != nil {
 		return err
 	}
-	defer func() { _ = n.Close() }()
+	// Cancelled first, so the loop answering on it knows the close is on purpose.
+	defer func() { cancel(); _ = n.Close() }()
 
 	if _, err := discovery.StartLAN(ctx, n); err != nil {
 		fmt.Fprintf(os.Stderr, "drop: mDNS unavailable: %v\n", err)
@@ -168,8 +309,9 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, m
 	}
 
 	invite := ticketFor(n.ID(), code)
+	publishCode(ctx, code, n.ID())
 
-	showTicket(invite, wait)
+	showTicket(invite, code, wait, kind)
 
 	// One pairing per code. The first that proves it holds the code is written down, and only then
 	// answered, so whatever it opens straight afterwards is met by somebody who knows it.
@@ -184,26 +326,41 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, m
 		node.ALPNPair: func(from node.ID, s *iroh.Stream) {
 			defer func() { _ = s.Close() }()
 
-			_, _ = proto.AnswerPairing(s, n.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(n)), func(p proto.Pairing) error {
+			var done *filedAs
+			_, err := proto.AnswerPairing(s, n.ID(), from, node.DisplayName(), written(discovery.LocalAddrs(n)), func(p proto.Pairing) (proto.Grant, error) {
 				// The far end has to prove it was given the code, not merely the address.
 				if !hmac.Equal(p.Proof, codeProof(code, from, n.ID())) {
 					fmt.Fprintf(os.Stderr, "drop: %s tried to pair without the code\n", node.Brief(from))
-					return errNotTheCode
+					return proto.Grant{}, errNotTheCode
 				}
 
 				once.Lock()
 				defer once.Unlock()
 				if taken {
-					return errors.New("that code has already been used")
+					return proto.Grant{}, errors.New("that code has already been used")
 				}
-				name, err := filed(p, as, machine)
+				grant, err := admitted(&p, kind)
 				if err != nil {
-					return err
+					return proto.Grant{}, err
+				}
+				name, err := filed(p, as, kind == offerMachine)
+				if err != nil {
+					return proto.Grant{}, err
 				}
 				taken = true
-				paired <- filedAs{p: p, name: name}
-				return nil
+				done = &filedAs{p: p, name: name}
+				return grant, nil
 			})
+			if err != nil || done == nil {
+				return
+			}
+
+			// Handed on only once the far end has read the answer and hung up: this process exits
+			// the moment it hears, and an endpoint closed under an answer still in flight loses it.
+			_ = s.Close()
+			_ = s.SetReadDeadline(time.Now().Add(5 * time.Second))
+			_, _ = io.Copy(io.Discard, s)
+			paired <- *done
 		},
 	})
 
@@ -211,12 +368,12 @@ func offerPairing(parent context.Context, as, code string, wait time.Duration, m
 	case <-ctx.Done():
 		return fmt.Errorf("nobody paired within %s", wait)
 	case at := <-paired:
-		announce(at.p, at.name, machine)
+		announce(at.name, at.p.Peer.String(), at.p.Machine, kind)
 		return nil
 	}
 }
 
-func joinPairing(parent context.Context, ticket, as string, wait time.Duration, machine bool, at []string) error {
+func joinPairing(parent context.Context, ticket, as string, wait time.Duration, kind offerKind, at []string) error {
 	trace("start")
 
 	ctx, cancel := context.WithTimeout(parent, wait)
@@ -224,13 +381,9 @@ func joinPairing(parent context.Context, ticket, as string, wait time.Duration, 
 
 	// Through the daemon when one is running: it is the node the other device will reach from now
 	// on, so it is the one whose address the pairing has to carry.
-	name, id, called, err := joinThroughDaemon(ctx, ticket, as, machine, at)
+	name, id, called, err := joinThroughDaemon(ctx, ticket, as, kind, at)
 	if err == nil {
-		fmt.Printf("\npaired with %s\n  %s\n", name, id)
-		if called != "" && !machine {
-			fmt.Printf("  a machine of theirs, called %q\n", called)
-		}
-		fmt.Printf("\neither device can now reach the other by name.\n")
+		announce(name, id, called, kind)
 		return nil
 	}
 	if !errors.Is(err, errNoDaemon) {
@@ -252,11 +405,11 @@ func joinPairing(parent context.Context, ticket, as string, wait time.Duration, 
 
 	trace("LAN up; reaching")
 
-	p, name, err := join(ctx, n, lan, ticket, as, machine, at)
+	p, name, err := join(ctx, n, lan, ticket, as, kind, at)
 	if err != nil {
 		return err
 	}
-	announce(p, name, machine)
+	announce(name, p.Peer.String(), p.Machine, kind)
 
 	return nil
 }
@@ -267,17 +420,21 @@ func joinPairing(parent context.Context, ticket, as string, wait time.Duration, 
 // Machine means what it says: the device key is kept and the user key is not, so the rest of that
 // person's machines stay strangers however many badges they sign.
 func filed(p proto.Pairing, as string, machine bool) (string, error) {
+	b, err := book.Load()
+	if err != nil {
+		return "", err
+	}
+
+	// A device already known keeps the name it is known by, unless another was asked for.
 	name := as
+	if held, known := b.ByID(p.Peer); name == "" && known {
+		name = held.Name
+	}
 	if name == "" {
 		name = p.Name
 	}
 	if name == "" {
 		name = node.Brief(p.Peer)
-	}
-
-	b, err := book.Load()
-	if err != nil {
-		return "", err
 	}
 	nextUser := ""
 	if !machine {
@@ -315,28 +472,33 @@ func filed(p proto.Pairing, as string, machine bool) (string, error) {
 }
 
 // announce says who was paired with, for the interfaces that print rather than draw.
-func announce(p proto.Pairing, name string, machine bool) {
-	fmt.Printf("\npaired with %s\n", name)
-	fmt.Printf("  %s\n", p.Peer)
+func announce(name, id, called string, kind offerKind) {
+	if kind.mine() {
+		fmt.Printf("\n%s is one of your machines now\n  %s\n", name, id)
+		fmt.Printf("\nthe rest of your machines hear about it within a few minutes, and it about them.\n")
+		return
+	}
+	fmt.Printf("\npaired with %s\n  %s\n", name, id)
 	switch {
-	case machine && p.User != "":
+	case kind == offerMachine:
 		fmt.Printf("  this machine alone; the rest of theirs stay strangers\n")
-	case p.User != "":
-		fmt.Printf("  a machine of theirs, called %q\n", p.Machine)
+	case called != "":
+		fmt.Printf("  a machine of theirs, called %q\n", called)
 	}
 	fmt.Println()
 	fmt.Printf("either device can now reach the other by name.\n")
 }
 
-// record files a pairing and says so, which is what the offering side does when it completes.
-func record(p proto.Pairing, as string, machine bool) error {
-	name, err := filed(p, as, machine)
+// record files a pairing and says so, which is what the offering side does when it completes, and
+// says what it was filed under.
+func record(p proto.Pairing, as string, kind offerKind) (string, error) {
+	name, err := filed(p, as, kind == offerMachine)
 	if err != nil {
-		return err
+		return "", err
 	}
-	announce(p, name, machine)
+	announce(name, p.Peer.String(), p.Machine, kind)
 
-	return nil
+	return name, nil
 }
 
 // trace reports progress through pairing while it is being brought up on a new transport.
@@ -356,18 +518,14 @@ func written(addrs []netip.AddrPort) []string {
 	return out
 }
 
-// joinWith pairs with whoever is showing a ticket, using a node that is already running.
-//
-// The command builds its own node and tears it down; an interface already has one, and starting a
-// second would mean two endpoints on one identity fighting over a port.
-// join is the whole of taking somebody's ticket, over a node that is already up.
+// join is the whole of taking somebody's ticket or code, over a node that is already up.
 //
 // One function, because there are two callers -- the command line and the interface -- and when
 // this was two functions they drifted: one learnt how to find a device that is not on the same
 // wire and the other did not, so pairing worked from one and failed from the other with an error
 // that said nothing about why.
-func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as string, machine bool, at []string) (proto.Pairing, string, error) {
-	id, code, err := readTicket(tickets.FromLink(ticket))
+func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as string, kind offerKind, at []string) (proto.Pairing, string, error) {
+	id, code, err := whoShows(ctx, ticket)
 	if err != nil {
 		return proto.Pairing{}, "", err
 	}
@@ -394,12 +552,21 @@ func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as stri
 	defer func() { _ = conn.Close() }()
 	defer func() { _ = s.Close() }()
 
-	p, err := proto.Pair(s, n.ID(), id, node.DisplayName(), codeProof(code, n.ID(), id), written(discovery.LocalAddrs(n)))
+	p, err := proto.Pair(s, n.ID(), id, node.DisplayName(), codeProof(code, n.ID(), id), written(discovery.LocalAddrs(n)), kind.mine())
 	if err != nil {
 		return proto.Pairing{}, "", err
 	}
 
-	name, err := filed(p, as, machine)
+	// Worn before it is filed, so the machine that showed the code is filed as this user's own. One
+	// already this user's is handed nothing, and needs nothing.
+	already := p.Grant.Kind == proto.GrantNone && p.User != "" && p.User == myKey()
+	if kind.mine() && !already {
+		if err := wearGrant(p.Grant); err != nil {
+			return proto.Pairing{}, "", fmt.Errorf("becoming one of your machines: %w", err)
+		}
+	}
+
+	name, err := filed(p, as, kind == offerMachine)
 	if err == nil {
 		nudgeMine()
 	}
@@ -407,8 +574,8 @@ func join(ctx context.Context, n *node.Node, lan *discovery.LAN, ticket, as stri
 }
 
 // offerThroughDaemon asks the running node to show a code, and waits for somebody to take it.
-func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration, machine bool) error {
-	said, done, err := offerAtDaemon(ctx, code, as, machine)
+func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration, kind offerKind) error {
+	said, done, err := offerAtDaemon(ctx, code, as, kind)
 	if err != nil {
 		return err
 	}
@@ -418,7 +585,7 @@ func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration
 	if err != nil {
 		return err
 	}
-	showTicket(ticketFor(id, code), wait)
+	showTicket(ticketFor(id, code), code, wait, kind)
 
 	select {
 	case <-ctx.Done():
@@ -432,7 +599,7 @@ func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration
 		switch what {
 		case "paired":
 			name, id, _ := strings.Cut(rest, " ")
-			fmt.Printf("\npaired with %s\n  %s\n\neither device can now reach the other by name.\n", name, id)
+			announce(name, id, "", kind)
 			return nil
 		case "busy":
 			return errors.New(rest)
@@ -444,25 +611,35 @@ func offerThroughDaemon(ctx context.Context, as, code string, wait time.Duration
 // showTicket prints an invitation the same way whoever is answering it happens to be arranged.
 //
 // The code is drawn whenever a person is reading, because the other device is as likely to be a
-// phone with a camera as a machine with a keyboard. Piped, it is only the text a script wants.
-func showTicket(invite string, wait time.Duration) {
+// phone with a camera as a machine with a keyboard. Piped, it is only the text a script wants. The
+// short code is what a person types: it is looked up, so the id never has to be.
+func showTicket(invite, code string, wait time.Duration, kind offerKind) {
+	link, command := tickets.Link(invite), "drop peer pair"
+	if kind.mine() {
+		link, command = tickets.LinkAs(tickets.KindMachine, invite), "drop machine join"
+	}
+
 	if term.IsTerminal(int(os.Stdout.Fd())) {
-		if qrCode, err := tickets.Code(invite); err == nil {
+		if qrCode, err := tickets.CodeOf(link); err == nil {
 			fmt.Printf("\n%s", tickets.Painted(qrCode))
 		} else {
 			fmt.Fprintf(os.Stderr, "drop: could not draw a code: %v\n", err)
 		}
 	}
 
-	fmt.Printf("\n  ticket:  %s\n", invite)
-	fmt.Printf("  link:    %s\n\n", tickets.Link(invite))
-	fmt.Printf("run this on the other machine, within %s:\n\n  drop peer pair %s\n\nwaiting...\n", wait, invite)
+	fmt.Printf("\n  code:    %s\n", code)
+	fmt.Printf("  link:    %s\n\n", link)
+	fmt.Printf("on the other machine, within %s, run\n\n  %s %s\n\n", wait, command, code)
+	if kind.mine() {
+		fmt.Printf("or scan the code above with drop on a phone.\n\n")
+	}
+	fmt.Printf("waiting...\n")
 }
 
 // offerAtDaemon asks the running node to show a code, and yields the one line it answers with: who
 // paired, or why nobody did. What it hands back closes the connection, which is what takes the code
 // back down, so an offer that is abandoned does not leave one live.
-func offerAtDaemon(ctx context.Context, code, as string, machine bool) (<-chan string, func(), error) {
+func offerAtDaemon(ctx context.Context, code, as string, kind offerKind) (<-chan string, func(), error) {
 	path, err := castSocket()
 	if err != nil {
 		return nil, nil, errNoDaemon
@@ -480,10 +657,6 @@ func offerAtDaemon(ctx context.Context, code, as string, machine bool) (<-chan s
 	name := as
 	if name == "" {
 		name = "-"
-	}
-	kind := "person"
-	if machine {
-		kind = "machine"
 	}
 	if err := writeLocal(conn, "pair %s %s %s\n", code, name, kind); err != nil {
 		_ = conn.Close()
