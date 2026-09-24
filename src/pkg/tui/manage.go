@@ -43,8 +43,16 @@ type manageItem struct {
 	// label is the left-hand text, and note the line under it.
 	label string
 	note  string
-	// path is set on the rows that stand for a granted or refused path.
-	path string
+	// path is set on the rows that stand for a path, and machine is which machine of yours it is
+	// on, the empty one being this; called is what that machine calls whoever the row is about.
+	path    string
+	machine string
+	called  string
+	// act is what enter and the letters do to the row, level the step a step row puts a path on,
+	// and who the name a row lets in or keeps out.
+	act   string
+	level string
+	who   string
 	// on marks a row that is in effect: trusted, allowed, held.
 	on bool
 	// off marks one that is refused, as against merely absent.
@@ -56,75 +64,40 @@ func (m manageItem) FilterValue() string { return m.label }
 // Headings on the management screen.
 const (
 	groupWho   = "who they are"
-	groupCan   = "what they may reach"
-	groupCant  = "what they are shut out of"
+	groupCan   = "what they may open"
 	groupWhat  = "what you can do"
 	groupTrust = "trust"
 )
 
-// manageRows arranges somebody for the list.
-func manageRows(who Managed) []list.Item {
+// manageRows arranges somebody for the list: who they are, whether you trust them, what they may
+// open on every machine of yours, and what else can be done about them.
+func manageRows(who Managed, reach []Reachable, asking bool) []list.Item {
 	var items []list.Item
 
 	items = append(items, dividerItem{label: groupWho})
 	items = append(items, manageItem{what: groupWho, label: who.Name, note: describeWho(who)})
 
-	if who.ID != "" {
-		items = append(items, manageItem{
-			what:  groupWho,
-			label: brief(who.ID),
-			note:  "the device key, which the handshake proves on every connection",
-		})
-	}
-	if who.User != "" {
-		items = append(items, manageItem{
-			what:  groupWho,
-			label: "signed by a user key",
-			note:  "so machines they add later are recognised without pairing again",
-		})
-	}
-
-	// Trust, which is the one thing on this screen that changes what rules do.
+	// Trust, which is the one thing on this screen that changes what the steps do.
 	items = append(items, dividerItem{label: groupTrust})
 	items = append(items, manageItem{
 		what:  groupTrust,
 		label: trustSays(who.Trusted),
-		note:  "pairing is recognition; trust is the second, deliberate step — t changes it",
+		note:  "paths on Trusted open for people you trust — enter or t changes it",
+		act:   actTrust,
 		on:    who.Trusted,
 	})
 
-	if len(who.Allowed) > 0 {
-		items = append(items, dividerItem{label: groupCan})
-		for _, at := range who.Allowed {
-			items = append(items, manageItem{
-				what:  groupCan,
-				label: at,
-				note:  "granted here — x shuts them out of it",
-				path:  at,
-				on:    true,
-			})
-		}
+	items = append(items, dividerItem{label: groupCan})
+	if asking && len(reach) == 0 {
+		items = append(items, manageItem{what: groupCan, label: "asking your machines…", note: "each of them says what they may open there"})
 	}
-
-	if len(who.Refused) > 0 {
-		items = append(items, dividerItem{label: groupCant})
-		for _, at := range who.Refused {
-			items = append(items, manageItem{
-				what:  groupCant,
-				label: at,
-				note:  "refused here, whatever the config says — d leaves it to the config",
-				path:  at,
-				off:   true,
-			})
-		}
-	}
+	items = append(items, reachRows(reach)...)
 
 	items = append(items, dividerItem{label: groupWhat})
-	items = append(items, manageItem{
-		what:  groupWhat,
-		label: "forget them",
-		note:  "drops the pairing: they arrive as a stranger from then on — press f",
-	})
+	items = append(items,
+		manageItem{what: groupWhat, label: "rename", note: "file them under another name here — n", act: actRename},
+		manageItem{what: groupWhat, label: "remove them", note: "every machine of theirs is forgotten here, and arrives as a stranger — x", act: actForget},
+	)
 	return items
 }
 
@@ -163,9 +136,12 @@ func loadManaged(back Backend, name string) tea.Cmd {
 	}
 }
 
-// showManage puts somebody in the list.
+// showManage puts somebody in the list, keeping the cursor where it was.
 func (m *Model) showManage() {
-	m.fill("manage", manageRows(m.managed))
+	at := m.list.Index()
+	m.fill("manage\x00"+m.managed.Name, manageRows(m.managed, m.opens, m.askingReach))
+	m.list.Select(at)
+	m.offHeading()
 	m.list.SetSize(m.listWidth(), m.listHeight())
 }
 
@@ -187,24 +163,5 @@ type managed struct {
 func trusting(back Backend, name string, to bool) tea.Cmd {
 	return func() tea.Msg {
 		return managed{name: name, err: back.Trust(name, to)}
-	}
-}
-
-// forgetting drops a pairing.
-func forgetting(back Backend, name string) tea.Cmd {
-	return func() tea.Msg {
-		return managed{name: name, gone: true, err: back.Forget(name)}
-	}
-}
-
-// changeThen makes a grant and comes back to whoever is being managed, rather than to a path.
-func changeThen(back Backend, path, who string, to Standing, name string) tea.Cmd {
-	return func() tea.Msg {
-		if msg := change(back, path, who, to)(); msg != nil {
-			if done, ok := msg.(changed); ok && done.err != nil {
-				return managed{name: name, err: done.err}
-			}
-		}
-		return managed{name: name}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/spf13/cobra"
 	"github.com/tmc/go-iroh/iroh"
@@ -19,53 +20,22 @@ import (
 	"github.com/bresilla/drop/src/pkg/ns"
 	"github.com/bresilla/drop/src/pkg/proto"
 	"github.com/bresilla/drop/src/pkg/tui"
+	"github.com/bresilla/drop/src/pkg/user"
 )
 
 // Who may reach this machine's paths, read and changed as steps on a ladder. The same answer for
 // the interface on this machine and for a machine of this user's asking from elsewhere, so the two
 // cannot come to mean different things.
 
-// PathState is one path, and who may reach it.
-type PathState struct {
-	Path      string `json:"path"`
-	Archetype string `json:"archetype"`
-	About     string `json:"about"`
-	// Level is the step it stands on, and Chosen says it was put there from an interface rather
-	// than by the config, whose own step is Config.
-	Level  string `json:"level"`
-	Chosen bool   `json:"chosen"`
-	Config string `json:"config"`
-	// Shown says those who may not open it may see it is there, and ask.
-	Shown    bool `json:"shown"`
-	Password bool `json:"password"`
-	// Allowed is who is let in beyond the step, and Refused who is kept out whatever it says.
-	Allowed []string `json:"allowed"`
-	Refused []string `json:"refused"`
-	Asked   int      `json:"asked"`
-}
-
-// PathDetail is one path with everybody who might be let in or kept out, and who asked.
-type PathDetail struct {
-	PathState
-	Who    []WhoState    `json:"who"`
-	Asking []AskingState `json:"asking"`
-}
-
-// WhoState is somebody in the address book, and how they stand with a path.
-type WhoState struct {
-	Name     string `json:"name"`
-	Person   bool   `json:"person"`
-	Trusted  bool   `json:"trusted"`
-	At       string `json:"at"`
-	InConfig bool   `json:"inConfig"`
-}
-
-// AskingState is somebody waiting to be let in.
-type AskingState struct {
-	Who  string `json:"who"`
-	Why  string `json:"why"`
-	When string `json:"when"`
-}
+// The shapes the answers take, which the terminal interface draws and the phone reads as JSON.
+type (
+	PathState   = tui.PathState
+	PathDetail  = tui.PathDetail
+	WhoState    = tui.WhoState
+	AskingState = tui.AskingState
+	ReachState  = tui.ReachState
+	PathOpen    = tui.PathOpen
+)
 
 // errNotMine is an ask from a machine that is not this user's.
 var errNotMine = errors.New("only a machine of this machine's owner may change who reaches it")
@@ -84,6 +54,12 @@ func ManageHere(known *arch.Registry, m proto.Manage) ([]byte, error) {
 			return nil, err
 		}
 		return json.Marshal(all)
+	case proto.ManageFor:
+		reach, err := reachOf(known, m.Who)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(reach)
 	case proto.ManageRead:
 	case proto.ManageLevel:
 		err = store.SetLevel(m.Path, m.Level)
@@ -180,7 +156,7 @@ func pathDetail(known *arch.Registry, path string) (PathDetail, error) {
 	}
 	out := PathDetail{PathState: stateOf(known, written, granted, mount, len(asking))}
 	for _, a := range asking {
-		out.Asking = append(out.Asking, AskingState{Who: a.Who, Why: a.Why, When: a.When})
+		out.Asking = append(out.Asking, AskingState(a))
 	}
 
 	pinned, err := book.Load()
@@ -194,6 +170,51 @@ func pathDetail(known *arch.Registry, path string) (PathDetail, error) {
 		who.InConfig = named(config, who.Name)
 		out.Who = append(out.Who, who)
 	}
+	return out, nil
+}
+
+// reachOf is what one person may open here, who being their user key or, for a machine that
+// belongs to nobody, its id. Judged by the same rule a connection from them would be.
+func reachOf(known *arch.Registry, who string) (ReachState, error) {
+	pinned, err := book.Load()
+	if err != nil {
+		return ReachState{}, err
+	}
+	out := ReachState{Paths: []PathOpen{}}
+	caller := ns.Caller{ID: who, User: who}
+	if owner, ok := pinned.ByUser(who); ok {
+		out.Called, out.Known = owner.Person, true
+		caller = ns.Caller{ID: owner.ID.String(), Name: owner.Name, User: who, UserName: owner.Person, Paired: true, Trusted: owner.Trusted}
+	} else if id, err := node.ParseID(who); err == nil {
+		if entry, ok := pinned.ByID(id); ok {
+			out.Called, out.Known = entry.Name, true
+			caller = ns.Caller{ID: who, Name: entry.Name, Paired: entry.Paired(), Trusted: entry.Trusted}
+		}
+	}
+
+	written, granted, err := ruled(known)
+	if err != nil {
+		return ReachState{}, err
+	}
+	defer written.Close()
+	defer granted.Close()
+
+	for _, m := range granted.Mounts.All() {
+		if m.Branch() {
+			continue
+		}
+		rule, _ := granted.Mounts.AccessFor(m.Path)
+		opens, _ := rule.Admits(caller)
+		one := PathOpen{Path: m.Path, Archetype: m.Archetype, Level: ns.LevelOf(rule), Opens: opens}
+		if out.Called != "" {
+			one.At = standingName(standingIn(rule, out.Called))
+		}
+		if answers, ok := known.Lookup(m.Archetype, m.Version); ok {
+			one.About = answers.Note(m.Config).About
+		}
+		out.Paths = append(out.Paths, one)
+	}
+	sort.Slice(out.Paths, func(i, j int) bool { return out.Paths[i].Path < out.Paths[j].Path })
 	return out, nil
 }
 
@@ -293,6 +314,65 @@ func managing(pinned *book.Book, known *arch.Registry) func(node.ID, *iroh.Strea
 			return ManageHere(known, m)
 		})
 	}
+}
+
+// Ask asks a machine of this user's, by name, about its paths; this one when the name is empty.
+func (l *running) Ask(ctx context.Context, machine string, m proto.Manage) ([]byte, error) {
+	if machine == "" {
+		return l.Manage(ctx, nil, m)
+	}
+	on, err := mineNamed(machine)
+	if err != nil {
+		return nil, err
+	}
+	return l.Manage(ctx, &on, m)
+}
+
+// Reachable is what somebody may open on this machine and on every other of this user's, each
+// asked at once so one that is off costs its own wait and nobody else's.
+func (l *running) Reachable(ctx context.Context, name string) ([]tui.Reachable, error) {
+	pinned, err := book.Load()
+	if err != nil {
+		return nil, err
+	}
+	entries, _, err := managedEntries(pinned, name, true)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("%s is not in the address book", name)
+	}
+	who := entries[0].User
+	if who == "" {
+		who = entries[0].ID.String()
+	}
+
+	machines := []string{""}
+	for _, entry := range pinned.All() {
+		if entry.User != "" && entry.User == myKey() && !user.Removed(entry.ID.String()) {
+			machines = append(machines, entry.Name)
+		}
+	}
+	sort.Strings(machines[1:])
+
+	out := make([]tui.Reachable, len(machines))
+	var wg sync.WaitGroup
+	for i, machine := range machines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			out[i] = tui.Reachable{Machine: machine}
+			raw, err := l.Ask(ctx, machine, proto.Manage{Op: proto.ManageFor, Who: who})
+			if err == nil {
+				err = json.Unmarshal(raw, &out[i].ReachState)
+			}
+			if err != nil {
+				out[i].Err = err.Error()
+			}
+		}()
+	}
+	wg.Wait()
+	return out, nil
 }
 
 // Manage asks about a path on another machine of this user's, or on this one when on is nil.

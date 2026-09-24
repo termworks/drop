@@ -52,7 +52,8 @@ type fake struct {
 	paired    chan string
 	stream    string
 	self      Identity
-	rules     map[string]Rule
+	details   map[string]PathDetail
+	admin     adminFake
 	// remembered is what a device said last time, handed back when it cannot be reached.
 	remembered   map[string][]proto.Served
 	refuseServes error
@@ -1332,133 +1333,6 @@ func TestBackComesOutOneLevelAtATime(t *testing.T) {
 	}
 }
 
-func (f *fake) Access(path string) (Rule, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	rule := f.rules[path]
-	rule.Path = path
-	return rule, nil
-}
-
-func (f *fake) Grant(path, who string) error  { return f.stand(path, who, Allowed) }
-func (f *fake) Refuse(path, who string) error { return f.stand(path, who, Refused) }
-func (f *fake) Unset(path, who string) error  { return f.stand(path, who, NotNamed) }
-
-// stand is the fake's whole grant store: it moves one name to one standing.
-func (f *fake) stand(path, who string, to Standing) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if f.rules == nil {
-		f.rules = map[string]Rule{}
-	}
-
-	rule := f.rules[path]
-	rule.Path = path
-	for i := range rule.Who {
-		if rule.Who[i].Name == who {
-			rule.Who[i].At = to
-			f.rules[path] = rule
-			return nil
-		}
-	}
-	rule.Who = append(rule.Who, Who{Name: who, At: to})
-	f.rules[path] = rule
-	return nil
-}
-
-// Who may reach one of your own paths is a thing you look at and change from here, because the
-// alternative is editing a config by hand every time somebody gets a new laptop.
-func TestWhoMayReachAPathIsShownAndChanged(t *testing.T) {
-	back := &fake{
-		self:  Identity{Name: "tron", ID: "e88c42df318c…", User: "ssh-ed25519 MINE"},
-		peers: []book.Entry{{Name: "beta", ID: idFor(2), Secret: make([]byte, book.SecretBytes)}},
-		mine:  []proto.Served{{Path: "/work", Archetype: "chat"}},
-		rules: map[string]Rule{
-			"/work": {Who: []Who{
-				{Name: "bob", Person: true, Machines: 2},
-				{Name: "carol", Person: true, Machines: 1, At: Allowed, InConfig: true},
-			}},
-		},
-	}
-
-	m := start(t, back)
-
-	// Into this machine's own paths, then onto /work.
-	m = intoSelf(t, m)
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-
-	if m.at != levelAccess {
-		t.Fatalf("w did not open the access list, at level %d", m.at)
-	}
-	shown := m.View()
-	for _, want := range []string{"who may reach it", "bob", "carol", "ANYONE"} {
-		if !strings.Contains(shown, want) {
-			t.Errorf("the access list is missing %q:\n%s", want, shown)
-		}
-	}
-
-	// Allowing bob, from the list.
-	onto(t, &m, "bob")
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
-
-	if got := standingFor(m, "bob"); got != Allowed {
-		t.Errorf("bob stands at %d after being allowed", got)
-	}
-
-	// And refusing him again, which is what revocation is from here.
-	onto(t, &m, "bob")
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
-
-	if got := standingFor(m, "bob"); got != Refused {
-		t.Errorf("bob stands at %d after being refused", got)
-	}
-}
-
-// The rules that name nobody are shown but not toggled: making a path public is a decision that
-// belongs in the config, where it can be read back, rather than behind one keystroke.
-func TestThePublicRungIsNotAKeystroke(t *testing.T) {
-	back := &fake{
-		mine:  []proto.Served{{Path: "/work", Archetype: "chat"}},
-		rules: map[string]Rule{"/work": {}},
-	}
-
-	m := start(t, back)
-	m = intoSelf(t, m)
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-
-	onto(t, &m, "anyone with the id")
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
-
-	if rule, _ := back.Access("/work"); rule.Anyone {
-		t.Error("a keystroke made a path public")
-	}
-}
-
-// onto puts the cursor on the access row for one name.
-func onto(t *testing.T, m *Model, name string) {
-	t.Helper()
-
-	for i, item := range m.list.Items() {
-		if it, ok := item.(accessItem); ok && it.who.Name == name {
-			m.list.Select(i)
-			return
-		}
-	}
-	t.Fatalf("no row for %q in:\n%s", name, m.View())
-}
-
-// standingFor is how somebody stands, as the list has it.
-func standingFor(m Model, name string) Standing {
-	for _, who := range m.rule.Who {
-		if who.Name == name {
-			return who.At
-		}
-	}
-	return NotNamed
-}
-
 // A device that is off still has a conversation sitting on this disk, and the way in to it is the
 // list of paths — which comes from the device. What it last shared is what makes that reachable.
 func TestADeviceThatIsOffStillOpens(t *testing.T) {
@@ -1728,43 +1602,6 @@ func TestALockedPathIsShownAndCanBeAskedFor(t *testing.T) {
 	}
 }
 
-// The other side: a request waiting on an answer sits in the access pane, where the keys that
-// answer it are the same keys that grant anything else.
-func TestARequestWaitsInTheAccessPane(t *testing.T) {
-	back := &fake{
-		mine: []proto.Served{{Path: "/vault", Archetype: "chat"}},
-		rules: map[string]Rule{
-			"/vault": {
-				Seen: true,
-				Asked: []Wanting{{
-					Who:  "carol",
-					Why:  "for the thing we discussed",
-					When: "24 Aug 21:05",
-				}},
-			},
-		},
-	}
-
-	m := start(t, back)
-	m = intoSelf(t, m)
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-
-	shown := m.View()
-	for _, want := range []string{"ASKED FOR IT", "carol", "waiting", "for the thing we discussed"} {
-		if !strings.Contains(shown, want) {
-			t.Errorf("the pending request is missing %q:\n%s", want, shown)
-		}
-	}
-
-	// Answering it is the ordinary allow.
-	onto(t, &m, "carol")
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
-
-	if got := standingFor(m, "carol"); got != Allowed {
-		t.Errorf("carol stands at %d after being allowed", got)
-	}
-}
-
 func (f *fake) Managed(name string) (Managed, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1793,97 +1630,6 @@ func (f *fake) Forget(name string) error {
 
 	f.forgot = append(f.forgot, name)
 	return nil
-}
-
-// Managing somebody is a different question from reaching them, and has a screen of its own: who
-// they are, whether they are trusted, and what they have been given.
-func TestSomebodyCanBeManaged(t *testing.T) {
-	back := &fake{
-		self:  Identity{Name: "tron", ID: "e88c…", User: "ssh-ed25519 MINE"},
-		peers: []book.Entry{{Name: "bob", ID: idFor(3), Secret: make([]byte, book.SecretBytes), User: "ssh-ed25519 BOB", Person: "bob"}},
-		manages: map[string]Managed{
-			"bob": {
-				Person:   "bob",
-				User:     "ssh-ed25519 BOB",
-				Machines: 2,
-				Paired:   true,
-				Allowed:  []string{"/work"},
-				Refused:  []string{"/keys"},
-			},
-		},
-	}
-
-	m := start(t, back)
-
-	// From bob's row on the users screen: trust and grants belong to the user.
-	onUser(t, &m, "bob")
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
-
-	if m.at != levelManage {
-		t.Fatalf("m did not open the management screen, at level %d", m.at)
-	}
-	// Read off the list rather than the screen: the rows are three lines each and more of them
-	// than a terminal holds, and what is being tested is what is there, not what fits.
-	var rows []string
-	for _, item := range m.list.Items() {
-		switch it := item.(type) {
-		case dividerItem:
-			rows = append(rows, strings.ToUpper(it.label))
-		case manageItem:
-			rows = append(rows, it.label)
-		}
-	}
-	got := strings.Join(rows, " | ")
-
-	for _, want := range []string{"bob", "not trusted", "/work", "/keys", "forget them",
-		"WHO THEY ARE", "TRUST", "WHAT THEY MAY REACH", "WHAT THEY ARE SHUT OUT OF"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the management screen is missing %q:\n  %s", want, got)
-		}
-	}
-	if !strings.Contains(m.View(), "2 machines") {
-		t.Errorf("it does not say how many machines they have:\n%s", m.View())
-	}
-
-	// Trust is the one thing here that changes what the rules do.
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
-	if !m.managed.Trusted {
-		t.Error("t did not trust them")
-	}
-	if !strings.Contains(m.View(), "trusted") {
-		t.Errorf("the screen did not say so:\n%s", m.View())
-	}
-
-	// And out again, back to the list.
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-	if m.at != levelUsers {
-		t.Errorf("esc left the management screen at level %d", m.at)
-	}
-}
-
-// Forgetting drops the pairing and goes back to the list, because there is nobody left to show.
-func TestForgettingSomebodyLeavesTheScreen(t *testing.T) {
-	back := &fake{
-		peers:   []book.Entry{{Name: "bob", ID: idFor(3), Secret: make([]byte, book.SecretBytes)}},
-		manages: map[string]Managed{"bob": {Paired: true}},
-	}
-
-	// bob has no user key here, so he is a machine under anon and is managed as the machine.
-	m := start(t, back)
-	m = intoUser(t, m, Anon)
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
-	m = settle(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
-
-	back.mu.Lock()
-	forgot := append([]string(nil), back.forgot...)
-	back.mu.Unlock()
-
-	if len(forgot) != 1 || forgot[0] != "bob" {
-		t.Fatalf("forgot %v", forgot)
-	}
-	if m.at == levelManage {
-		t.Errorf("it stayed on a screen for somebody who is gone")
-	}
 }
 
 // intoUser opens somebody's machines from the users screen.

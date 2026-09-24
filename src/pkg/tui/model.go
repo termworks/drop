@@ -53,15 +53,17 @@ type Backend interface {
 	Put(ctx context.Context, to book.Entry, path, dir, from string, progress func(name string, done, size int64)) error
 	// Remove deletes one thing from a files namespace on another device.
 	Remove(ctx context.Context, on book.Entry, path, dir, name string) error
-	// Access is who may reach one of this machine's own paths: what the config says, and what
-	// has been granted here.
-	Access(path string) (Rule, error)
-	// Grant lets somebody reach a path, Refuse stops them whatever else says otherwise, and
-	// Unset leaves them to whatever the config says. All three write drop's own file, never the
-	// config.
-	Grant(path, who string) error
-	Refuse(path, who string) error
-	Unset(path, who string) error
+	// Rename files a person or a machine under another name here.
+	Rename(old, name string) error
+	// Ask asks a machine of this user's — this one, when machine is empty — who may reach its
+	// paths, and changes it. The answer is the JSON the phone reads too.
+	Ask(ctx context.Context, machine string, m proto.Manage) ([]byte, error)
+	// Reachable is what somebody may open, on this machine and every other of this user's.
+	Reachable(ctx context.Context, who string) ([]Reachable, error)
+	// OfferMachine shows a code another machine of this user's joins with, and JoinMachine takes
+	// one: either way the other becomes one of this user's machines.
+	OfferMachine(ctx context.Context) (ticket string, done <-chan string, err error)
+	JoinMachine(ctx context.Context, code string) (with string, err error)
 	// History is a conversation as it stands.
 	History(with book.Entry) ([]convo.Message, error)
 	// Compose writes a message into the conversation without sending it. It returns as fast as a
@@ -148,10 +150,20 @@ type Model struct {
 	reaching map[string]bool
 	// knocked is what has dialled this device and been turned away.
 	knocked []Knock
-	// rule is who may reach the path whose access is being looked at.
-	rule Rule
-	// managed is whoever the management screen is showing.
-	managed Managed
+	// detail is who may reach the path whose access is being looked at, and onMachine the machine
+	// of yours it is on, the empty one being this.
+	detail    PathDetail
+	onMachine string
+	// managed is whoever the management screen is showing, opens what they may open on each of
+	// your machines, and askingReach says the machines are still being asked.
+	managed     Managed
+	opens       []Reachable
+	askingReach bool
+	// prompt is a line being typed for something, confirm a question waiting for a yes, and menu
+	// every action the screen has, opened with space.
+	prompt  *prompting
+	confirm *confirming
+	menu    *menuState
 	// under is where in a device's paths the list is standing, "/" being the top.
 	under string
 	// steps is what is at that level: namespaces, and the ways further down.
@@ -399,7 +411,7 @@ func waitForFrame(s *screen) tea.Cmd {
 // The room a list has, inside the panel it is drawn in: the header and its rule, the footer, and
 // the panel's own top and bottom edges.
 func (m Model) listHeight() int {
-	got := m.height - 5
+	got := m.height - 6
 	if got < rowHeight {
 		return rowHeight
 	}
@@ -426,7 +438,7 @@ func (m Model) viewWidth() int {
 }
 
 func (m Model) viewHeight() int {
-	got := m.height - 5
+	got := m.height - 6
 	if got < 4 {
 		return 4
 	}
@@ -517,6 +529,21 @@ type pairing struct {
 	code   string
 	waited <-chan string
 	stop   context.CancelFunc
+	// machine says the code adds a machine of yours rather than pairing with somebody.
+	machine bool
+}
+
+// drawn paints a code for a camera: a phone has no keyboard worth typing a ticket on, and a camera
+// is the whole point of showing one.
+func drawn(at *pairing) *pairing {
+	link := tickets.Link(at.ticket)
+	if at.machine {
+		link = tickets.LinkAs(tickets.KindMachine, at.ticket)
+	}
+	if code, err := tickets.CodeOf(link); err == nil {
+		at.code = tickets.Painted(code)
+	}
+	return at
 }
 
 type pairStarted struct {
@@ -537,14 +564,7 @@ func offer(back Backend) tea.Cmd {
 			return pairStarted{err: err}
 		}
 
-		at := &pairing{ticket: ticket, waited: waited, stop: stop}
-
-		// The code is drawn rather than the ticket alone: a phone has no keyboard worth typing a
-		// hundred characters on, and a camera is the whole point of showing one.
-		if drawn, err := tickets.Code(ticket); err == nil {
-			at.code = tickets.Painted(drawn)
-		}
-		return pairStarted{at: at}
+		return pairStarted{at: drawn(&pairing{ticket: ticket, waited: waited, stop: stop})}
 	}
 }
 
