@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/tmc/go-iroh/key"
@@ -2094,5 +2095,53 @@ func TestAFilterStaysOnTheScreenItWasTypedOver(t *testing.T) {
 	}
 	if shown, all := len(m.list.VisibleItems()), len(m.list.Items()); shown != all || all == 0 {
 		t.Fatalf("the paths screen shows %d of its %d paths", shown, all)
+	}
+}
+
+// Entering a filtered row opens that row. The rows were looked up by where the cursor was among the
+// ones on show, against the whole list, so a filter down to /term opened whatever was first.
+func TestEnteringAFilteredPathOpensIt(t *testing.T) {
+	m := intoPeer(t, start(t, withOne()), 0)
+	if m.at != levelPaths {
+		t.Fatalf("at level %d, not a machine's paths", m.at)
+	}
+
+	keys := []tea.Msg{tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}}
+	for _, r := range "term" {
+		keys = append(keys, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = settle(t, m, keys...)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	at, ok := m.path()
+	if !ok || at.Path != "/term" {
+		t.Fatalf("a filter down to /term opened %q", at.Path)
+	}
+}
+
+// With a filter narrowing the list, esc takes the filter away before it takes you back: otherwise
+// there is no way to clear one, and the next filter is typed on the end of it.
+func TestEscClearsAFilterBeforeGoingBack(t *testing.T) {
+	m := intoPeer(t, start(t, withOne()), 0)
+
+	keys := []tea.Msg{tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}}
+	for _, r := range "term" {
+		keys = append(keys, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = settle(t, m, keys...)
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.list.FilterState() != list.FilterApplied {
+		t.Fatalf("the filter was not applied: %v", m.list.FilterState())
+	}
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.at != levelPaths || m.list.FilterState() != list.Unfiltered {
+		t.Fatalf("esc left level %d with the filter %v", m.at, m.list.FilterState())
+	}
+
+	m = settle(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.at == levelPaths {
+		t.Fatal("esc with nothing to clear did not go back")
 	}
 }

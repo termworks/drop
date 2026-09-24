@@ -437,6 +437,13 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.back_()
 
 	case "esc", "left", "h":
+		// A filter still narrowing the list is the first thing esc takes away, the way it is
+		// everywhere else a list is filtered. Going back a level instead left the filter with no
+		// way to be cleared, and typed over the next time it was opened.
+		if msg.String() == "esc" && m.at != levelOpen && m.list.FilterState() == list.FilterApplied {
+			m.list.ResetFilter()
+			return m, nil
+		}
 		return m.back_()
 
 	case "enter", "right", "l":
@@ -678,7 +685,7 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.onSelf = false
-		m.atPeer = m.peerFor(m.list.Index())
+		m.atPeer = m.peerFor(m.list.GlobalIndex())
 		m.at = levelPaths
 
 		with, _ := m.peer()
@@ -697,7 +704,7 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		at := m.steps[m.list.Index()]
+		at := m.steps[m.list.GlobalIndex()]
 
 		// A way down is walked into, whether or not it is also a namespace: what is inside is
 		// listed along with the path itself, so nothing becomes unreachable by having something
@@ -711,7 +718,7 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		m.atPath = m.list.Index()
+		m.atPath = m.list.GlobalIndex()
 
 		// A namespace that is a directory is walked at its own level, where the list carries the
 		// arrows and the filtering.
