@@ -279,3 +279,59 @@ func TestServingAnswersAConnectionMadeBeforeTheHandler(t *testing.T) {
 func testSharedSecret() []byte {
 	return []byte("0123456789abcdef0123456789abcdef")
 }
+
+// A device that restarted dials again for what it was connected for, and says nothing on the
+// connection from before: a stream opened there waits for an answer that never comes. So its
+// arrival takes the place of an old connection that still looks alive, and whatever else is held to
+// it is dialled afresh rather than trusted.
+func TestAnArrivalSupersedesAnOldConnection(t *testing.T) {
+	t.Setenv("DROP_PORT", "0")
+	wasRendezvous := node.Rendezvous()
+	node.SetRendezvous(false)
+	t.Cleanup(func() { node.SetRendezvous(wasRendezvous) })
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	remote, err := node.Start(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = remote.Close() })
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	local, err := node.Start(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = local.Close() })
+
+	pinned, err := book.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned.Pair("remote", remote.ID(), testSharedSecret())
+	if err := pinned.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	held := Hold(nil, nil, nil)
+	oldDial, oldArrival := connectNodes(t, remote, local)
+	t.Cleanup(func() { _ = oldDial.Close() })
+	_, otherArrival := connectNodes(t, remote, local)
+	held.Adopt(remote.ID(), node.ALPNSession, oldArrival)
+	held.Adopt(remote.ID(), node.ALPNHello, otherArrival)
+
+	// Old enough not to have crossed with anything on the way.
+	held.born[oldArrival] = time.Now().Add(-time.Minute)
+	held.born[otherArrival] = time.Now().Add(-time.Minute)
+
+	newDial, newArrival := connectNodes(t, remote, local)
+	t.Cleanup(func() { _ = newDial.Close() })
+	held.Adopt(remote.ID(), node.ALPNSession, newArrival)
+
+	if held.open[key(remote.ID(), node.ALPNSession)] != newArrival {
+		t.Fatal("an old connection outlived the arrival that replaced it")
+	}
+	if held.held(remote.ID(), node.ALPNHello) != nil {
+		t.Fatal("a connection from before the device came back was offered again")
+	}
+}
