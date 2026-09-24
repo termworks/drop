@@ -17,6 +17,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -31,10 +32,14 @@ import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MoveToInbox
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -42,6 +47,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -259,4 +267,23 @@ fun Toggle(title: String, says: String, on: Boolean, enabled: Boolean = true, on
         supportingContent = { Text(says, color = MaterialTheme.colorScheme.onSurfaceVariant) },
         trailingContent = { androidx.compose.material3.Switch(checked = on, onCheckedChange = onChange, enabled = enabled) },
     )
+}
+
+/**
+ * The ⋮ every path carries, for what can be set about it. One with nothing yet says so, so the
+ * menu is already where it will be once there is.
+ */
+@Composable
+fun TopicMenu(content: (@Composable ColumnScope.(close: () -> Unit) -> Unit)? = null) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) { Icon(Icons.Filled.MoreVert, "Settings") }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            if (content == null) {
+                DropdownMenuItem(text = { Text("Nothing to set here yet") }, onClick = { open = false }, enabled = false)
+            } else {
+                content { open = false }
+            }
+        }
+    }
 }

@@ -4,9 +4,12 @@ import android.app.Activity
 import android.content.res.Configuration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -15,16 +18,21 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -58,7 +66,7 @@ private val Ground = Color(Grid.GROUND)
  * grid is what it tells the far end it is, again whenever the keyboard comes or goes or the text is
  * pinched to another size.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun LiveScreen(at: Screen.Live, back: () -> Unit) {
     val context = LocalContext.current
@@ -73,6 +81,8 @@ fun LiveScreen(at: Screen.Live, back: () -> Unit) {
     var view by remember { mutableStateOf<TermView?>(null) }
     var size by remember { mutableStateOf(0 to 0) }
     var held by remember { mutableStateOf(false to false) }
+    var textSp by remember { mutableStateOf(0f) }
+    val keyboard = WindowInsets.isImeVisible
     LightBars()
 
     DisposableEffect(at) {
@@ -127,9 +137,7 @@ fun LiveScreen(at: Screen.Live, back: () -> Unit) {
                     }
                 },
                 navigationIcon = { IconButton(onClick = { view?.hideKeyboard(); back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-                actions = {
-                    if (at.typing) IconButton(onClick = { view?.toggleKeyboard() }) { Icon(Icons.Filled.Keyboard, "Keyboard") }
-                },
+                actions = { TermSettings(at.typing, view, textSp, keyboard) { textSp = it } },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Ground,
                     titleContentColor = Ink,
@@ -141,6 +149,13 @@ fun LiveScreen(at: Screen.Live, back: () -> Unit) {
     ) { pad ->
         Column(Modifier.fillMaxSize().padding(pad).background(Ground).navigationBarsPadding().imePadding()) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
+                if (sideways) {
+                    Box(Modifier.align(Alignment.TopEnd).padding(4.dp).background(Color(0xCC17171D), CircleShape)) {
+                        CompositionLocalProvider(LocalContentColor provides Ink) {
+                            TermSettings(at.typing, view, textSp, keyboard) { textSp = it }
+                        }
+                    }
+                }
                 AndroidView(
                     factory = { ctx ->
                         TermView(ctx).also { made ->
@@ -149,7 +164,8 @@ fun LiveScreen(at: Screen.Live, back: () -> Unit) {
                             made.onSize = resize
                             made.onType = { text -> live?.let { talking -> scope.launch { Drop.call { talking.type(text) } } } }
                             made.onModifiers = { ctrl, alt -> held = ctrl to alt }
-                            made.onTextSize = { Settings.termSized(ctx, it) }
+                            made.onTextSize = { Settings.termSized(ctx, it); textSp = made.textSp }
+                            textSp = made.textSp
                             view = made
                             if (at.typing) made.post { made.showKeyboard() }
                         }
@@ -245,4 +261,27 @@ private fun describe(at: Screen.Live, company: Pair<Long, Boolean>?, grid: Grid?
     grid?.let { parts += "${it.cols}×${it.rows}" }
     parts += if (at.typing) "you may type" else "watching"
     return parts.joinToString(" · ")
+}
+
+/** What can be set about a terminal: how big its text is drawn, and whether the keyboard is up. */
+@Composable
+private fun TermSettings(typing: Boolean, view: TermView?, textSp: Float, keyboard: Boolean, sized: (Float) -> Unit) {
+    TopicMenu { close ->
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 16.dp, end = 4.dp)) {
+            Text("Text size", modifier = Modifier.weight(1f, fill = false).padding(end = 12.dp))
+            IconButton(onClick = { view?.let { it.stepText(larger = false); sized(it.textSp) } }) { Icon(Icons.Filled.Remove, "Smaller") }
+            Text("%.0f".format(textSp), fontFamily = FontFamily.Monospace)
+            IconButton(onClick = { view?.let { it.stepText(larger = true); sized(it.textSp) } }) { Icon(Icons.Filled.Add, "Larger") }
+        }
+        if (typing) {
+            DropdownMenuItem(
+                text = { Text(if (keyboard) "Hide keyboard" else "Show keyboard") },
+                leadingIcon = { Icon(Icons.Filled.Keyboard, null) },
+                onClick = {
+                    close()
+                    if (keyboard) view?.hideKeyboard() else view?.showKeyboard()
+                },
+            )
+        }
+    }
 }

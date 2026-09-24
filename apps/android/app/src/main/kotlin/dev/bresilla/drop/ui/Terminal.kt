@@ -117,7 +117,9 @@ class TermView(context: Context) : View(context) {
     private var ctrl = false
     private var alt = false
 
-    private val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.MONOSPACE }
+    // Subpixel, so a glyph's width is what its size makes it and not rounded to whole pixels: at a small
+    // size two sizes apart would otherwise measure the same, and a smaller text would fit no more.
+    private val ink = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply { typeface = Typeface.MONOSPACE }
     private val fill = Paint()
     private var cellW = 1f
     private var cellH = 1f
@@ -125,9 +127,9 @@ class TermView(context: Context) : View(context) {
     private var told = 0 to 0
 
     /** How big a cell is drawn, in pixels of text size; pinching changes it, and the grid with it. */
-    var textSize = 12f * resources.displayMetrics.scaledDensity
+    var textSize = 6f * resources.displayMetrics.scaledDensity
         set(value) {
-            field = value.coerceIn(6f * resources.displayMetrics.scaledDensity, 32f * resources.displayMetrics.scaledDensity)
+            field = value.coerceIn(3f * resources.displayMetrics.scaledDensity, 32f * resources.displayMetrics.scaledDensity)
             measureCells()
             tellSize()
             invalidate()
@@ -176,6 +178,14 @@ class TermView(context: Context) : View(context) {
 
     fun hideKeyboard() {
         context.getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(windowToken, 0)
+    }
+
+    /** The text size in sp, as the menu shows it, and a step up or down from it. */
+    val textSp: Float get() = textSize / resources.displayMetrics.scaledDensity
+
+    fun stepText(larger: Boolean) {
+        textSize = (textSp + if (larger) 1f else -1f) * resources.displayMetrics.scaledDensity
+        onTextSize(textSize)
     }
 
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
