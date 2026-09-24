@@ -90,6 +90,19 @@ It asks what is there and picks the right client. That is what `Shape` in
 [namespaces](namespaces.md) is for: an archetype this build has never heard of still opens, as
 whatever it says it speaks like.
 
+**`drop tui`** — an interface open in another terminal, looked at and typed into from this one.
+
+```console
+drop tui ls                    the interfaces open on this machine
+drop tui show [--to x]         print what one is showing
+drop tui keys [--to x] <key>…  press keys: enter, esc, down, tab, ctrl+], or one character
+drop tui type [--to x] <text>  type text into it, a key at a time
+```
+
+With more than one open, `--to` picks one by process id, device name, profile or id. It works over
+ssh as well as it does here, so one person can walk another through both ends of a pairing while
+both watch their own screens.
+
 ## Putting a namespace up without editing the config
 
 ```console

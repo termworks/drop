@@ -73,6 +73,19 @@ takes it back. While it has the keyboard it gets *every* key there is, `esc` and
 because half a keyboard is not a terminal. The panel says `· typing` so you can see where your keys
 are going. See [sharing a terminal](terminal.md).
 
+## Beside the daemon
+
+With `drop serve` running, the interface is a view onto it and has no endpoint of its own:
+everything it reaches, it reaches through the daemon's connections, and what arrives is announced
+to it over a socket on this machine. A second endpoint under the same identity — even one that only
+lived for a moment — would announce itself on the wire and take the relay's route to this
+identity, and the far end's answers to the daemon would go somewhere nobody is reading.
+
+## Driven from another terminal
+
+Every interface listens on a socket of its own, readable only by this account, and `drop tui` in
+another terminal reads its screen and presses its keys. See [the command line](cli.md).
+
 ## Where it lives
 
 `src/pkg/tui/`. What a peer supplies is cleaned before it is drawn — see
