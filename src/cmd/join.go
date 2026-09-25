@@ -82,7 +82,7 @@ func runJoin(parent context.Context, target, here string, declared made.Settings
 		return fmt.Errorf("%s is this machine, and join takes up somebody else's namespace", address)
 	}
 	if address.Path == ns.Root {
-		return fmt.Errorf("%s names a machine and not a namespace on it: `drop path ls %s` says what it shares", address, address)
+		return fmt.Errorf("%s names a machine and not a namespace on it: `drop topic ls %s` says what it has", address, address)
 	}
 
 	entry, err := resolve(parent, address)
@@ -169,7 +169,7 @@ func joinable(known *arch.Registry, serves []proto.Served, address ns.Address) (
 		return proto.Served{}, fmt.Errorf("%s is visible but not shared with you: ask for it with `drop path ask %s`", address, address)
 	}
 	if served.Archetype == "" {
-		return proto.Served{}, fmt.Errorf("%s holds other namespaces and is none itself: `drop path ls %s`", address, address)
+		return proto.Served{}, fmt.Errorf("%s holds other namespaces and is none itself: `drop topic ls %s`", address, address)
 	}
 	// What kind of thing it is is asked first, and of this machine rather than of the far end. A
 	// namespace of a kind that is one machine's own is nobody else's to hold however the peer

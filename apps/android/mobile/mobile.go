@@ -155,6 +155,8 @@ type self struct {
 	Until int64  `json:"until"`
 	// Took says it set a key of its own aside to become somebody's, and can leave.
 	Took bool `json:"took"`
+	// Key says what the user key is, and where it signs from.
+	Key string `json:"key"`
 }
 
 // Self is this device: what it is called and who it is.
@@ -163,7 +165,7 @@ func (n *Node) Self() string {
 	if err != nil {
 		return "{}"
 	}
-	out := self{Name: me.Name, ID: me.ID, Brief: brief(me.ID), User: me.User}
+	out := self{Name: me.Name, ID: me.ID, Brief: brief(me.ID), User: me.User, Key: me.Key}
 	if pub, err := user.Public(); err == nil {
 		out.Owner = user.Fingerprint(pub)
 	}

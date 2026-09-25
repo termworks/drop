@@ -21,7 +21,8 @@ func newMeCmd() *cobra.Command {
 	cmd.AddCommand(
 		newIDCmd(),
 		newMachineCmd(),
-		newUserCmd(),
+		newKeyCmd(),
+		hidden(newUserCmd()),
 		newVaultCmd(),
 		newLeaveCmd(),
 		newStartOverCmd(),

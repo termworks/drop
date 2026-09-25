@@ -30,6 +30,10 @@ const (
 	// ManageInvite asks the machine to invite a device, Who its id and Level what to ask, for a
 	// machine of the same user's that cannot do it itself.
 	ManageInvite = "invite"
+	// ManageAdd puts a topic up on the machine and writes it down, Path where, Level who may open
+	// it and Body what it is; ManageRemove takes one down.
+	ManageAdd    = "add"
+	ManageRemove = "remove"
 )
 
 // Manage is one ask. Level is the step to put the path on, empty to hand it back to its config;
@@ -40,6 +44,9 @@ type Manage struct {
 	Who   string
 	Level string
 	Shown bool
+	// Body is what a topic being added is, as JSON. Written only when there is one, so an ask to a
+	// machine that predates it reads as it always did.
+	Body string
 }
 
 // MaxManaged bounds an answer: every path a machine serves, and who is let in and kept out of each.
@@ -53,6 +60,9 @@ func (m Manage) encode() []byte {
 	w.String(m.Who)
 	w.String(m.Level)
 	w.Bool(m.Shown)
+	if m.Body != "" {
+		w.String(m.Body)
+	}
 	return w.Body()
 }
 
@@ -72,6 +82,14 @@ func decodeManage(from node.ID, body []byte) (Badged, Manage, error) {
 	}
 	if m.Shown, err = r.Bool(); err != nil {
 		return Badged{}, m, err
+	}
+	if !r.Done() {
+		if m.Body, err = r.String(MaxManaged); err != nil {
+			return Badged{}, m, err
+		}
+		if m.Body == "" {
+			return Badged{}, m, errors.New("a manage ask has trailing bytes")
+		}
 	}
 	if !r.Done() {
 		return Badged{}, m, errors.New("a manage ask has trailing bytes")
@@ -133,4 +151,10 @@ func AnswerManage(s Stream, from node.ID, do func(Badged, Manage) ([]byte, error
 		}
 		return c.WriteFrame(wire.KindOpen, answer)
 	})
+}
+
+// TopicBody is what adding a topic carries: its kind, and the command when the kind takes one.
+type TopicBody struct {
+	Kind    string `json:"kind"`
+	Command string `json:"command,omitempty"`
 }

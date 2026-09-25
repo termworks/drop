@@ -123,6 +123,7 @@ func runServe(parent context.Context, quiet bool) error {
 	go keepConnected(ctx, held, pinned)
 	go keepMine(ctx, held)
 	go keepRenewing(ctx)
+	go keepDoorbell(ctx)
 	go backlog(ctx, pinned, held, cfg.Mounts)
 
 	// What an archetype calls when something in one of its namespaces moves. Set here rather than
@@ -211,7 +212,7 @@ func runServe(parent context.Context, quiet bool) error {
 				return greeting(pinned, cfg.Mounts, known, from, badge)
 			}, moving(pinned, func(said string) { log.Printf("%s", said) }))
 		},
-		node.ALPNManage: managing(pinned, known, func() *inviting { return invites }),
+		node.ALPNManage: managing(pinned, known, func() *inviting { return invites }, put),
 		node.ALPNSync:   syncing(pinned),
 		node.ALPNInvite: invites.answering(pinned),
 		// Pairing is answered by whoever holds the address, which is this. A separate `drop peer pair`

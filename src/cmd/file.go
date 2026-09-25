@@ -239,7 +239,7 @@ func listOwnFiles(under string) error {
 	mount, rest, ok := cfg.Mounts.Lookup(under)
 	switch {
 	case !ok:
-		return fmt.Errorf("this machine serves nothing at %s: `drop path ls` says what it does serve", under)
+		return fmt.Errorf("this machine serves nothing at %s: `drop topic` says what it does serve", under)
 	case mount.Archetype != "files":
 		return fmt.Errorf("%s is a %s namespace here, not a directory to walk", mount.Path, kindOf(mount.Archetype))
 	}

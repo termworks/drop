@@ -441,3 +441,14 @@ func startingOver(back Backend) tea.Cmd {
 		return leftOrWiped{err: back.StartOver(ctx)}
 	}
 }
+
+// usingKey makes the key at a file who you are.
+func usingKey(back Backend, at string) tea.Cmd {
+	return func() tea.Msg {
+		now, err := back.UseKey(at)
+		if err != nil {
+			return adminDone{err: err}
+		}
+		return adminDone{said: "you are " + now + " — your machines holding it find this one by themselves"}
+	}
+}

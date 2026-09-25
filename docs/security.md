@@ -208,6 +208,10 @@ or the far end forgets you.
 **Traffic analysis by a relay.** A relay knows two parties are talking, though not who they are or
 what they say. See [pairing](pairing.md) for what the rendezvous does and does not hide.
 
+**Where a machine joining by your key is, while it rings.** Anybody who knows your public key can
+read its doorbell record: the new machine's address, id and name, until it meets another machine of
+yours. See [pairing](pairing.md).
+
 **Background processes a person starts in their own shell.** A `tty` watcher who backgrounds
 something and leaves keeps it running. That is what a terminal is.
 

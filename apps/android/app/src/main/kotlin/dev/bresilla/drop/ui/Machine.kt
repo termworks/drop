@@ -17,10 +17,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MoveToInbox
@@ -37,6 +40,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -62,6 +66,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import dev.bresilla.drop.Drop
 import dev.bresilla.drop.Kept
+import dev.bresilla.drop.Kind
 import dev.bresilla.drop.Machine
 import dev.bresilla.drop.PathState
 import dev.bresilla.drop.Paths
@@ -97,6 +102,8 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
     var linking by remember { mutableStateOf<Served?>(null) }
     var sendingTo by remember { mutableStateOf<Served?>(null) }
     var ringing by remember { mutableStateOf<Served?>(null) }
+    var adding by remember { mutableStateOf(false) }
+    var removingTopic by remember { mutableStateOf<String?>(null) }
 
     Pulse()
     LaunchedEffect(tick) {
@@ -220,7 +227,14 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
 
             val stepped = levels
             if (mine && stepped != null) {
-                item { Section(if (here) "What it shares" else "Its paths") }
+                item { Section("Topics") }
+                item {
+                    FilledTonalButton(onClick = { adding = true }, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) {
+                        Icon(Icons.Filled.Add, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Add a topic")
+                    }
+                }
                 items(stepped, key = { "l:" + it.path }) { p ->
                     val s = byPath[p.path]
                     PathRow(
@@ -233,12 +247,13 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
                                 if (p.asked > 0) Badge { Text("${p.asked}") }
                                 Spacer(Modifier.width(4.dp))
                                 LevelChip(p.level) { go(Screen.Access(name, p.path)) }
+                                TopicActions(who = { go(Screen.Access(name, p.path)) }, remove = { removingTopic = p.path })
                             }
                         },
                     )
                 }
             } else if (served.isNotEmpty()) {
-                item { Section("Shared with you") }
+                item { Section("Topics shared with you") }
                 items(served, key = { "s:" + it.path }) { s ->
                     PathRow(s.kind, s.path, s.about.ifEmpty { s.archetype }, onClick = { open(s) }) {
                         if (s.locked) Icon(Icons.Filled.Lock, "locked — ask for it", tint = MaterialTheme.colorScheme.outline)
@@ -298,6 +313,36 @@ fun MachineScreen(name: String, go: (Screen) -> Unit, back: () -> Unit, home: ()
                 }) { Text("Ask") }
             },
             dismissButton = { TextButton(onClick = { ringing = null }) { Text("Cancel") } },
+        )
+    }
+
+    val where = if (here) "this phone" else name
+    if (adding) {
+        AddTopic(where, done = { adding = false }) { topic, kind, command ->
+            scope.launch {
+                Drop.addTopic(name, topic, kind, command)
+                    .onSuccess { said.showSnackbar("$topic is a $kind on $where. Only you can open it until you say otherwise.") }
+                    .onFailure { said.showSnackbar(it.message ?: "Could not add it") }
+            }
+        }
+    }
+
+    removingTopic?.let { at ->
+        AlertDialog(
+            onDismissRequest = { removingTopic = null },
+            title = { Text("Remove ${at.trimStart('/')} from $where?") },
+            text = { Text("Nobody can open it from now on. What it kept on disk stays where it is.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    removingTopic = null
+                    scope.launch {
+                        Drop.removeTopic(name, at)
+                            .onSuccess { said.showSnackbar("${at.trimStart('/')} is gone from $where") }
+                            .onFailure { said.showSnackbar(it.message ?: "Could not remove it") }
+                    }
+                }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { removingTopic = null }) { Text("Cancel") } },
         )
     }
 
@@ -386,6 +431,72 @@ private fun PathRow(kind: String, path: String, about: String, onClick: () -> Un
         headlineContent = { Text(path.trimStart('/').ifEmpty { "/" }, style = MaterialTheme.typography.titleMedium) },
         supportingContent = { Text(about, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2) },
         trailingContent = trailing,
+    )
+}
+
+/** The ⋮ on a topic of yours: who may open it, or take it away. */
+@Composable
+private fun TopicActions(who: () -> Unit, remove: () -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) { Icon(Icons.Filled.MoreVert, "Topic actions") }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(text = { Text("Who may open it") }, onClick = { open = false; who() })
+            DropdownMenuItem(text = { Text("Remove") }, onClick = { open = false; remove() })
+        }
+    }
+}
+
+/** A new topic: what it is called, what kind it is, and the command when the kind needs one. */
+@Composable
+private fun AddTopic(on: String, done: () -> Unit, add: (name: String, kind: String, command: String) -> Unit) {
+    var kinds by remember { mutableStateOf<List<Kind>>(emptyList()) }
+    LaunchedEffect(Unit) { kinds = Drop.kinds() }
+    var called by remember { mutableStateOf("") }
+    var kind by remember { mutableStateOf<Kind?>(null) }
+    var command by remember { mutableStateOf("") }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+
+    val topic = called.trim().trim('/')
+    val picked = kind
+    val fine = topic.isNotEmpty() && topic.none { it in "@: " } && picked != null && (!picked.command || command.isNotBlank())
+    AlertDialog(
+        onDismissRequest = done,
+        title = { Text("Add a topic on $on") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                OutlinedTextField(
+                    called,
+                    { called = it },
+                    singleLine = true,
+                    label = { Text("Name") },
+                    placeholder = { Text("work") },
+                    modifier = Modifier.focusRequester(focus),
+                )
+                Spacer(Modifier.height(12.dp))
+                kinds.forEach { k ->
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { kind = k }.padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = kind == k, onClick = { kind = k })
+                        Column {
+                            Text(k.name, style = MaterialTheme.typography.titleSmall)
+                            Text(k.about, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+                if (picked?.command == true) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(command, { command = it }, singleLine = true, label = { Text("The command it shows") })
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = fine, onClick = { done(); picked?.let { add(topic, it.name, command.trim()) } }) { Text("Add") }
+        },
+        dismissButton = { TextButton(onClick = done) { Text("Cancel") } },
     )
 }
 

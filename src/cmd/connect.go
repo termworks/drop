@@ -203,7 +203,7 @@ func runConnect(parent context.Context, text string, args []string, stdinName st
 func choose(serves []proto.Served, at ns.Address, args []string) (proto.Served, string, opener, error) {
 	served, rest, ok := servedAt(serves, at.Path)
 	if !ok && at.Path == ns.Root {
-		return proto.Served{}, "", opener{}, fmt.Errorf("%s is a machine and not a namespace on it: `drop path ls %s` says what it serves", at, at)
+		return proto.Served{}, "", opener{}, fmt.Errorf("%s is a machine and not a namespace on it: `drop topic ls %s` says what it has", at, at)
 	}
 	if !ok {
 		return blind(at, args)
@@ -212,7 +212,7 @@ func choose(serves []proto.Served, at ns.Address, args []string) (proto.Served, 
 		return proto.Served{}, "", opener{}, fmt.Errorf("%s is visible but not shared with you: ask for it with `drop path ask %s`", at, at)
 	}
 	if served.Archetype == "" {
-		return proto.Served{}, "", opener{}, fmt.Errorf("%s holds other namespaces and is none itself: `drop path ls %s`", at, at)
+		return proto.Served{}, "", opener{}, fmt.Errorf("%s holds other namespaces and is none itself: `drop topic ls %s`", at, at)
 	}
 
 	how, ok := openerAt(served)

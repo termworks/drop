@@ -390,11 +390,20 @@ func TestAStreamMountWithoutACommandIsRefused(t *testing.T) {
 	}
 }
 
-func TestConfigServingNothingIsRefused(t *testing.T) {
-	write(t, `local drop = require("drop")`)
+func TestConfigSettingOnlyServesTheDefaults(t *testing.T) {
+	write(t, `local drop = require("drop")
+drop.name = "desk"`)
 
-	if _, err := Load(known()); err == nil {
-		t.Fatal("Load(known()) accepted a config that declares no namespaces")
+	cfg, err := Load(known())
+	if err != nil {
+		t.Fatalf("Load(known()) refused a config that only sets things: %v", err)
+	}
+	defer cfg.Close()
+	if cfg.Name != "desk" {
+		t.Errorf("Name = %q, want desk", cfg.Name)
+	}
+	if m, _, ok := cfg.Mounts.Lookup("/chat"); !ok || m.Path != "/chat" {
+		t.Error("a config that declares no namespaces does not serve /chat")
 	}
 }
 

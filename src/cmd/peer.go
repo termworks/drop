@@ -47,7 +47,7 @@ func newPeerListCmd() *cobra.Command {
 
 			entries := pinned.All()
 			if len(entries) == 0 {
-				fmt.Println("nothing known yet: `drop machine add` for a machine of yours, `drop peer pair` for somebody else's")
+				fmt.Println("nothing known yet: `drop machine add` for a machine of yours, `drop person add` for somebody else")
 				return nil
 			}
 			// As wide as the longest name, so one a phone chose for itself does not push its row

@@ -4,10 +4,10 @@ Two devices pair once, by key. After that either can reach the other from anywhe
 across networks, through address changes — with no account and no server holding your data.
 
 ```console
-$ drop peer pair                        # on one machine
-9363f77d…#qxwo-e62y
+$ drop person add                        # on one machine
+  code:    qxwo-e62y-k3fa
 
-$ drop peer pair 9363f77d…#qxwo-e62y    # on the other: done, forever
+$ drop person add qxwo-e62y-k3fa         # on the other: done, forever
 ```
 
 ## A code a camera can read
@@ -81,20 +81,59 @@ signed by `ssh-keygen -Y sign`, which every machine with SSH already has and whi
 key directly — no agent involved. A key drop was *pointed at* and cannot find is an error: it will
 not answer a typo by inventing a second identity.
 
-## Adding a device, and making it yours
+Choosing the key is `drop me key`, which lists every key the machine has — the SSH keys in `~/.ssh`,
+the YubiKey ones, and the one drop made — and `drop me key use <file> --yes` or `u` in the interface
+to be one of them. `drop me key yubikey` takes the handles of the keys a YubiKey holds, with its PIN
+and a touch, and becomes the one made for drop; `--new` makes one on it first. On a phone it is
+*Your key* → *Change*: hold the YubiKey to the phone, its PIN says which key is yours, or pick an SSH
+key file.
 
-Every device comes in the same way, whoever's it is: added. On one of them `drop add` shows a code
-and a QR, and on the other `drop add <code>` takes it — or *Add* on a phone, which shows your code
-and scans theirs. The two are paired from then on.
+## Three ways a machine becomes yours
+
+| | |
+|---|---|
+| **it holds your key** | give it the key — `drop me key use`, or the YubiKey held to the phone — and it is yours by itself: it signs its own badge and finds your other machines holding the same key within a minute or two. No code, and nothing to say yes to |
+| **a one-time code** | a machine holding your key shows one with `drop machine add`, and the new machine takes it with `drop machine add <code>`. It wears a badge the key signed, renewed whenever the two meet |
+| **one of yours asks it** | `drop machine add <name>` on a device you added or one on this network, and its person says yes, with the same number on both screens |
+
+The first is the doorbell. Two machines that have met find each other under a secret they made when
+they met; a machine that only holds the key has met nobody. So while it knows no other machine of
+yours it rings: it says where it is under an identity worked out from the public key, with its badge
+in a hundred and seventy bytes, and every machine of yours that chose the same key looks there once
+a minute, checks the badge, writes it down, and the hello and the shared address book do the rest.
+A key drop made for itself never rings: it is on one machine, and there is nobody to find with it.
+
+## Adding a person, and adding a machine
+
+Somebody comes in by being added. On one device `drop person add` shows a code and a QR, and on the
+other `drop person add <code>` takes it — or *Add a person* on a phone, which shows your code and
+scans theirs. The two are paired from then on.
 
 ```console
-$ drop add
+$ drop person add
   code:    tevp-spsd-uyle
 
 on the other machine, within 5m0s, run
 
-  drop add tevp-spsd-uyle
+  drop person add tevp-spsd-uyle
 ```
+
+A machine of your own comes in the same way, with `drop machine add` in place of `drop person add`,
+on a machine that holds your key. The code screen says which key signs the new machine, and the new
+one says which key it belongs to once it has taken the code:
+
+```console
+$ drop machine add
+  code:    qxwo-e62y-k3fa
+  key:     SHA256:6pVn…  your SSH key, ~/.ssh/id_ed25519
+
+$ drop machine add qxwo-e62y-k3fa        # on the new machine
+this machine is one of yours now, with core
+  your key  SHA256:6pVn…
+```
+
+A machine that only wears a badge cannot sign one for another, and says so rather than showing a
+code. `drop me key` says which key you are on any machine.
 
 The code is all anybody types. It is looked up under a key only the code works out, which says
 which machine is showing it and what the code is for, so the sixty-four-character id never leaves
@@ -107,18 +146,18 @@ no, and both screens show the same six-digit number, so the yes is for this devi
 another one next to it. Underneath it is the pairing a code makes, with the code handed over on the
 connection the two already share instead of by a person.
 
-What a device you added is to you comes afterwards, and is asked of it the same way:
+A device you already added can change what it is to you, asked of it the same way:
 
 | | |
 |---|---|
-| `drop promote <name>` | it becomes one of your machines: it wears a badge one of yours signs, and every other machine of yours learns of it |
-| `drop join <name>` | this machine becomes one of its machines |
+| `drop machine add <name>` | it becomes one of your machines: it wears a badge your key signs, and every other machine of yours learns of it |
+| `drop machine join <name>` | this machine becomes one of its person's machines |
 
-A machine that wears a badge cannot sign one for another, so a phone promoting something has one
-of your machines that holds your key do the asking; the number is worked out from your key rather
-than from whichever machine asked, so it is the same on all of them. Joining with `--key` from
-`drop machine add` hands over the key itself instead: whoever holds it is you, everywhere, and only
-an ed25519 key drop can read can leave; one in hardware cannot, which is the point of it.
+A phone making something one of your machines has one of your machines that holds your key do the
+asking; the number is worked out from your key rather than from whichever machine asked, so it is
+the same on all of them. `drop machine add --key` hands over the key itself instead: whoever holds
+it is you, everywhere, and only an ed25519 key drop can read can leave; one in hardware cannot,
+which is the point of it.
 
 Either way the key the machine had is set aside beside the new one. A machine whose badge runs out
 before it meets one of yours still starts, wearing the stale badge, which proves nothing to anyone.
@@ -201,6 +240,13 @@ The pair secret itself is derived during pairing over a stream QUIC has already 
 mutually authenticated, mixing both sides' nonces through HKDF, salted with both endpoint ids and
 ordered so the two ends compute the same value.
 
+The doorbell is the exception, and is weaker on purpose. Its identity is worked out from your public
+key, which is not a secret — it may be on GitHub — so whoever has it can read the record: where the
+ringing machine is, its id and its name. That is why a machine rings only while it knows no other
+machine of yours, and stops the moment it meets one. Anybody can write a record there too, and all
+it earns them is being ignored: a ring is believed only with a badge your key signed for the machine
+that rang, and an RSA key, whose signatures do not fit, never rings.
+
 ## Finding each other, cheapest first
 
 1. **mDNS**, if both machines are on the same network
@@ -229,9 +275,9 @@ conversations, on a port derived from the name so two can run at once. Two profi
 who must pair — which is how a rule that names somebody else gets tried without a second computer.
 
 ```console
-$ DROP_PROFILE=bob drop me user     # a different person
+$ DROP_PROFILE=bob drop me key      # a different person
 $ DROP_PROFILE=bob drop serve       # alongside your own, on its own port
-$ drop peer pair                    # then pair them, as you would two machines
+$ drop person add                   # then add them, as you would two people
 ```
 
 A profile that sets `drop.user_key` to the same key you use is *you* again — leave it out for a

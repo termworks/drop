@@ -301,7 +301,7 @@ func waitingAll() (map[string]int, error) {
 }
 
 // managing answers a machine of this user's asking about this machine's paths.
-func managing(pinned *book.Book, known *arch.Registry, invites func() *inviting) func(node.ID, *iroh.Stream) {
+func managing(pinned *book.Book, known *arch.Registry, invites func() *inviting, put *mountHost) func(node.ID, *iroh.Stream) {
 	return func(from node.ID, s *iroh.Stream) {
 		defer func() { _ = s.Close() }()
 		if err := pinned.Refresh(); err != nil {
@@ -310,6 +310,9 @@ func managing(pinned *book.Book, known *arch.Registry, invites func() *inviting)
 		_ = proto.AnswerManage(s, from, func(badge proto.Badged, m proto.Manage) ([]byte, error) {
 			if who := whoIs(pinned)(from, badge, proto.Stood{}); who.UserName != ns.LevelMe {
 				return nil, errNotMine
+			}
+			if m.Op == proto.ManageAdd || m.Op == proto.ManageRemove {
+				return manageTopic(context.Background(), known, put, m)
 			}
 			if m.Op == proto.ManageInvite {
 				return inviteFor(invites(), m)
@@ -397,6 +400,9 @@ func (l *running) Reachable(ctx context.Context, name string) ([]tui.Reachable, 
 
 // Manage asks about a path on another machine of this user's, or on this one when on is nil.
 func (l *running) Manage(ctx context.Context, on *book.Entry, m proto.Manage) ([]byte, error) {
+	if on == nil && (m.Op == proto.ManageAdd || m.Op == proto.ManageRemove) {
+		return manageTopic(ctx, l.known, l.put, m)
+	}
 	if on == nil {
 		return ManageHere(l.known, m)
 	}

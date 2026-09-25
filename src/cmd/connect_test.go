@@ -125,7 +125,7 @@ func TestConnectSaysWhyItWillNotOpenSomething(t *testing.T) {
 			what:    "a machine with no path on it",
 			serving: offers(proto.Served{Path: "/chat", Archetype: "chat"}),
 			text:    "orin",
-			says:    "drop path ls",
+			says:    "drop topic ls",
 		},
 		{
 			what:    "a path that is visible but locked",
@@ -137,7 +137,7 @@ func TestConnectSaysWhyItWillNotOpenSomething(t *testing.T) {
 			what:    "a branch, which is no namespace at all",
 			serving: offers(proto.Served{Path: "/work"}),
 			text:    "orin:/work",
-			says:    "drop path ls",
+			says:    "drop topic ls",
 		},
 		{
 			what:    "words given to something that takes none",

@@ -240,6 +240,32 @@ object Drop {
         PathDetail.from(JSONObject(node.manage(machine, op, path, who, level, shown)))
     }
 
+    /** Makes an SSH private key who you are: the phone keeps it, and your machines holding it find the phone by themselves. */
+    suspend fun useKeyFile(name: String, raw: ByteArray): Result<String> =
+        call { it.useKeyFile(name, raw) }.onSuccess { bump() }
+
+    /** Makes the key in your YubiKey who you are: read off it with its PIN, then held once more to sign this phone's badge. */
+    suspend fun useYubiKey(pin: CharArray): Result<String> = withContext(Dispatchers.IO) {
+        runCatching { YubiKey.read(pin) }.mapCatching { held ->
+            val at = node ?: throw IllegalStateException("drop is not running")
+            at.useYubiKey(held.application, held.key, held.handle)
+        }.onSuccess { bump() }
+    }
+
+    /** Every kind a topic can be, in the order they are offered. */
+    suspend fun kinds(): List<Kind> = call { node ->
+        val all = JSONArray(node.kinds())
+        List(all.length()) { Kind.from(all.getJSONObject(it)) }
+    }.getOrDefault(emptyList())
+
+    /** Puts a topic on this phone (machine empty) or on a machine of yours, open only to you at first. */
+    suspend fun addTopic(machine: String, name: String, kind: String, command: String = ""): Result<Unit> =
+        call { it.addTopic(machine, "/" + name.trim('/', ' '), kind, command); Unit }.onSuccess { bump() }
+
+    /** Takes a topic that was added away again. */
+    suspend fun removeTopic(machine: String, path: String): Result<Unit> =
+        call { it.removeTopic(machine, path); Unit }.onSuccess { bump() }
+
     /** What somebody may open on this phone and on every other machine of yours, machine by machine. */
     suspend fun reachable(name: String): Result<List<Reachable>> = call { node ->
         val all = JSONArray(node.reachable(name))
@@ -333,6 +359,8 @@ data class Me(
     val signs: Boolean,
     val until: Long,
     val took: Boolean,
+    /** What the user key is, and where it signs from. */
+    val key: String,
 ) {
     companion object {
         fun from(o: JSONObject) = Me(
@@ -344,6 +372,7 @@ data class Me(
             o.optBoolean("signs"),
             o.optLong("until"),
             o.optBoolean("took"),
+            o.optString("key"),
         )
     }
 }
@@ -609,5 +638,12 @@ data class PathDetail(val state: PathState, val who: List<WhoState>, val asking:
 data class WhoState(val name: String, val person: Boolean, val trusted: Boolean, val at: String, val inConfig: Boolean) {
     companion object {
         fun from(o: JSONObject) = WhoState(o.optString("name"), o.optBoolean("person"), o.optBoolean("trusted"), o.optString("at"), o.optBoolean("inConfig"))
+    }
+}
+
+/** One kind of topic as a person picks it: a chat, a folder, a note. Command says it needs one typed. */
+data class Kind(val name: String, val archetype: String, val about: String, val command: Boolean) {
+    companion object {
+        fun from(o: JSONObject) = Kind(o.optString("name"), o.optString("archetype"), o.optString("about"), o.optBoolean("command"))
     }
 }

@@ -76,6 +76,13 @@ type Backend interface {
 	// drop knows here. Both tell the rest of this user's machines first.
 	Leave(ctx context.Context) error
 	StartOver(ctx context.Context) error
+	// UseKey makes the key at a file who this user is — an SSH key, or the .pub of one in a
+	// YubiKey — and says what it is now.
+	UseKey(at string) (string, error)
+	// Keys is every key on this machine this user could be, the one in use first.
+	Keys() []KeyChoice
+	// Rekey takes up whichever key the config names now, after something else chose it.
+	Rekey() error
 	// Renewing is how many of this user's machines have badges running low that wait for the key,
 	// and Renew signs them now, a touch each for a key that wants one.
 	Renewing() int
@@ -484,6 +491,8 @@ type Identity struct {
 	// User is the person this machine belongs to, written the way authorized_keys writes a key.
 	// It is what tells your own machines apart from everybody else's in the list.
 	User string
+	// Key says what the user key is: its fingerprint, and where it signs from.
+	Key string
 	// How this device is reachable while the interface is open.
 	Reach Reach
 }
@@ -575,18 +584,22 @@ type pairStarted struct {
 
 type pairDone struct{ with string }
 
-// offer puts this device up for pairing.
-func offer(back Backend) tea.Cmd {
+// offer shows a code: for somebody to add you, or for a new machine of yours to take.
+func offer(back Backend, machine bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, stop := context.WithCancel(context.Background())
 
-		ticket, waited, err := back.Offer(ctx)
+		start := back.Offer
+		if machine {
+			start = back.OfferMachine
+		}
+		ticket, waited, err := start(ctx)
 		if err != nil {
 			stop()
 			return pairStarted{err: err}
 		}
 
-		return pairStarted{at: drawn(&pairing{ticket: ticket, waited: waited, stop: stop})}
+		return pairStarted{at: drawn(&pairing{ticket: ticket, waited: waited, stop: stop, machine: machine})}
 	}
 }
 
@@ -664,4 +677,14 @@ func waitForTalk(said chan Talk, cols, rows int) tea.Cmd {
 
 		return talking{talk: talk}
 	}
+}
+
+// KeyChoice is one key a person could be: where it is, what it is, and why it cannot be used when
+// it cannot.
+type KeyChoice struct {
+	Path    string
+	Print   string
+	Kind    string
+	Note    string
+	Current bool
 }

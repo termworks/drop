@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.6.1] - 2026-09-25
+
+### <!-- 0 -->⛰️  Features
+
+- Choose your key, and join by holding it
+- Take a key file or a YubiKey as yours
+- Pick your key from a list with u
+- List your keys and fetch one from a YubiKey
+- Machines holding your key join by themselves
+- A doorbell for machines holding a key
+- Join a known device from drop machine join
+- Add a person, a machine, a topic
+- Add and remove topics, show the key
+- Add people, machines and topics alike
+- Show and choose the key you are
+- Person, machine and topic commands
+- Serve defaults for a settings-only file
+- Carry a body in manage requests
+
+### <!-- 2 -->🚜 Refactor
+
+- Share topic kinds and the add body
+
+### <!-- 3 -->📚 Documentation
+
+- Three ways a machine becomes yours
+- People, machines, topics, and your key
+
 ## [0.6.0] - 2026-09-24
 
 ### <!-- 0 -->⛰️  Features

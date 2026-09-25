@@ -14,15 +14,17 @@ import (
 // adminKey is what a key does on the screens that manage rather than reach, and whether it did
 // anything: a key it leaves alone goes on to do whatever it does everywhere else.
 func (m Model) adminKey(key string) (tea.Model, tea.Cmd, bool) {
+	// Who you are is chosen from wherever the lists are, the same key on every one of them.
+	if key == "u" && m.at != levelOpen && m.at != levelBrowse {
+		return m.keyMenu(), nil, true
+	}
 	switch m.at {
 	case levelUsers:
 		return m.usersKey(key)
 	case levelMachines:
 		return m.machinesKey(key)
 	case levelPaths:
-		if key == "w" && m.mineOpen() {
-			return m.openAccess()
-		}
+		return m.topicsKey(key)
 	case levelAccess:
 		return m.accessKey(key)
 	case levelManage:
@@ -56,7 +58,7 @@ func (m Model) usersKey(key string) (tea.Model, tea.Cmd, bool) {
 	switch key {
 	case "a":
 		if m.linking == nil {
-			return m, offer(m.back), true
+			return m, offer(m.back, false), true
 		}
 	case "m":
 		if onUser && it.mine {
@@ -90,9 +92,12 @@ func (m Model) machinesKey(key string) (tea.Model, tea.Cmd, bool) {
 
 	switch key {
 	case "a":
-		if m.linking == nil {
-			return m, offer(m.back), true
+		// A machine is added to your own, where the code it takes makes it yours. Somebody else's
+		// machines are theirs to add.
+		if m.atUser == Me && m.linking == nil {
+			return m, offer(m.back, true), true
 		}
+		return m, nil, true
 	case "o", "i":
 		// What a device you added is to you: one of your machines, or this one one of theirs.
 		if !other || m.atUser == Me {
@@ -253,6 +258,8 @@ func (m Model) manageKey(key string) (tea.Model, tea.Cmd, bool) {
 			m.confirm = &confirming{ask: "leave your machines? this machine goes back to its own", yes: leaving(m.back)}
 		case actStartOver:
 			m.confirm = &confirming{ask: "delete everything drop knows on this machine? it cannot be brought back", yes: startingOver(m.back)}
+		case actUseKey:
+			return m.keyMenu(), nil, true
 		}
 		return m, nil, true
 	}

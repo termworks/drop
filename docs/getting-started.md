@@ -143,16 +143,15 @@ drop.mount("/chat",  { type = "chat" })
 Check it before relying on it — a config that does not parse is fatal, and the error names the line:
 
 ```console
-$ drop path ls
-$ drop me user
-  key      ~/.ssh/id_ed25519_sk.pub
-  identity sk-ssh-ed25519@openssh.com AAAA…
-  as       SHA256:…
-
-  this machine is "core", until 2026-11-26
+$ drop topic
+$ drop me key
+  your key  SHA256:…  a YubiKey, ~/.ssh/id_ed25519_sk.pub
 ```
 
 That fingerprint is **you**. The same line should appear on all three machines when you are done.
+
+`drop me key use ~/.ssh/id_ed25519_sk.pub --yes` writes the `drop.user_key` line for you, and signs
+this machine's badge with the key there and then — a touch on the YubiKey.
 
 ---
 
@@ -197,8 +196,8 @@ drop.name = "tron"
 Repeat on **orin**. Then check all three agree:
 
 ```console
-$ drop me user | grep as        # on each machine — the same fingerprint
-  as       SHA256:…
+$ drop me key                    # on each machine — the same fingerprint
+  your key  SHA256:…  a YubiKey, ~/.ssh/id_ed25519_sk.pub
 ```
 
 **Nothing secret was copied.** The handle files are useless without the YubiKey; the identity itself
@@ -209,12 +208,14 @@ never left it.
 
 ---
 
-## 6. Pair them
+## 6. Let them find each other
 
-Even with one identity, two machines still have to meet once — pairing establishes the shared secret
-that lets them find each other later without publishing anything anybody else can read.
+With the same key on all three, there is nothing to do: each rings for your other machines while it
+knows none of them, and within a minute or two `drop machine` on any of them lists all three. The
+first meeting is how they make the secret they find each other under from then on.
 
-On **core**:
+A machine that does *not* have the key — one you would rather not fetch the YubiKey's handle onto —
+takes a one-time code instead. On **core**:
 
 ```console
 $ drop machine add
@@ -224,7 +225,7 @@ $ drop machine add
 On **tron**, with that code:
 
 ```console
-$ drop machine join qxwo-e62y-k3fa
+$ drop machine add qxwo-e62y-k3fa
 ```
 
 Now **core ↔ tron**. Do it once more for **core ↔ orin**.
@@ -250,13 +251,16 @@ step — it is handed a badge `core` signs — so step 5 is only for keeping the
 
 ```console
 # what does orin share with you?
-$ drop path ls orin
+$ drop topic ls orin
 
 # send it a file
 $ drop connect orin:/inbox ~/notes.pdf
 
 # talk to it
 $ drop connect orin:/chat
+
+# put a folder on it, from here: it lives in ~/drop/papers over there
+$ drop topic add papers folder --on orin
 
 # or just look around
 $ drop

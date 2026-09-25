@@ -197,7 +197,11 @@ func (n *Node) Note(name, path string) (string, error) {
 // It takes effect the next time the node starts.
 func Share(configDir, downloads string, folder, writable bool) error {
 	file := filepath.Join(configDir, "drop", "init.lua")
-	if !folder {
+	key, err := chosenLine(configDir)
+	if err != nil {
+		return err
+	}
+	if !folder && key == "" {
 		err := os.Remove(file)
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -208,22 +212,22 @@ func Share(configDir, downloads string, folder, writable bool) error {
 		return err
 	}
 
-	arrived := filepath.Join(downloads, "drop")
-	if strings.Contains(arrived, "]==]") {
-		return fmt.Errorf("%s cannot be written into a config", arrived)
-	}
-	if err := os.MkdirAll(arrived, 0o700); err != nil {
-		return err
-	}
-
-	lua := fmt.Sprintf(`-- Written by the drop app, from what its settings say this phone shares. Changed there, not here.
-local drop = require("drop")
-
+	lua := "-- Written by the drop app, from what its settings say. Changed there, not here.\nlocal drop = require(\"drop\")\n\n" + key
+	if folder {
+		arrived := filepath.Join(downloads, "drop")
+		if strings.Contains(arrived, "]==]") {
+			return fmt.Errorf("%s cannot be written into a config", arrived)
+		}
+		if err := os.MkdirAll(arrived, 0o700); err != nil {
+			return err
+		}
+		lua += fmt.Sprintf(`
 drop.mount("/inbox", { type = "share", dir = [==[%s]==], access = "me" })
 drop.mount("/chat", { type = "chat", access = "me" })
 drop.mount("/open", { type = "link", access = "me" })
 drop.mount("/phone", { type = "files", dir = [==[%s]==], writable = %t, access = "me" })
 `, arrived, arrived, writable)
+	}
 
 	staging := file + ".new"
 	if err := os.WriteFile(staging, []byte(lua), 0o600); err != nil {
