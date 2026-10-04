@@ -139,6 +139,10 @@ tag whose cache workflow has passed. Accept the flake's cache configuration when
 prompted, or run `cachix use termworks` on the consumer machine. Consumers using
 Drop as a flake input also need the cache configured on their machine.
 
+Only the latest release per package and architecture is protected from cache
+cleanup. Pins use `*-latest-*` with `--keep-revisions 1`; older releases may
+need rebuilding after garbage collection.
+
 The shared `termworks` cache is published only on `v*` tag pushes. Its workflow
 builds on native x86_64 and ARM64 runners, checks version, help and static linkage,
 uploads and pins the runtime closures, and verifies fresh downloads with builders
