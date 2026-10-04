@@ -52,7 +52,7 @@ jobs:
         run: |
           cachix push termworks < "$RUNNER_TEMP/drop-store-paths"
           path=$(cat "$RUNNER_TEMP/drop-store-paths")
-          cachix pin termworks "drop-latest-$SYSTEM" "$path" --keep-revisions 1
+          cachix pin termworks "drop-$SYSTEM" "$path" --keep-revisions 5
 
   verify-download:
     needs: publish
