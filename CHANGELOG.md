@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.2] - 2026-10-04
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Package drop and cache tagged releases
+
 ## [0.6.1] - 2026-09-25
 
 ### <!-- 0 -->⛰️  Features
