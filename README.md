@@ -126,6 +126,26 @@ machines of different architectures.
 
 ## Quick start
 
+**Nix.** The flake provides a static Linux package for x86_64 and ARM64:
+
+```sh
+nix build .#drop
+nix run . -- --help
+```
+
+Use `inputs.drop.url = "github:termworks/drop/vX.Y.Z";` in another flake and add
+`drop.packages.${system}.default` to its packages. Replace `vX.Y.Z` with a released
+tag whose cache workflow has passed. Accept the flake's cache configuration when
+prompted, or run `cachix use termworks` on the consumer machine. Consumers using
+Drop as a flake input also need the cache configured on their machine.
+
+The shared `termworks` cache is published only on `v*` tag pushes. Its workflow
+builds on native x86_64 and ARM64 runners, checks version, help and static linkage,
+uploads and pins the runtime closures, and verifies fresh downloads with builders
+disabled. Publishing requires a Cachix per-cache write token in the repository's
+`CACHIX_AUTH_TOKEN` Actions secret. Never commit that token. Different source
+revisions or build inputs may require a new build.
+
 **Build.** One Go module; the build is [`.make.lua`](.make.lua), run with `oslo make`.
 
 ```console

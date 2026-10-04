@@ -1,6 +1,13 @@
 {
   description = "drop distributed file transfer";
 
+  nixConfig = {
+    extra-substituters = [ "https://termworks.cachix.org" ];
+    extra-trusted-public-keys = [
+      "termworks.cachix.org-1:Ty7sSVALfD5ajbcWBIdaNHcaEx3fEmVrOo+rSzy0mvE="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
@@ -23,6 +30,50 @@
       system:
       let
         pkgs = import nixpkgs { inherit system; };
+        lib = pkgs.lib;
+        version = builtins.head (builtins.match
+          ''.*version[[:space:]]*=[[:space:]]*"([^"]+)".*''
+          (builtins.readFile ./src/main.go));
+        drop = pkgs.buildGoModule {
+          pname = "drop";
+          inherit version;
+          src = lib.cleanSource ./.;
+          vendorHash = "sha256-sV+7iZoxLMqDNbXy48FtYXwVTPYWNRCDwxcRUXRVKSc=";
+          subPackages = [ "src" ];
+          env.CGO_ENABLED = "0";
+          ldflags = [ "-s" "-w" ];
+          doCheck = false;
+          postInstall = ''
+            mv "$out/bin/src" "$out/bin/drop"
+          '';
+          doInstallCheck = true;
+          nativeInstallCheckInputs = [ pkgs.binutils ];
+          installCheckPhase = ''
+            runHook preInstallCheck
+            test "$("$out/bin/drop" --version)" = "drop version ${version}"
+            "$out/bin/drop" --help
+            if readelf -l "$out/bin/drop" | grep -q 'program interpreter'; then
+              echo "error: drop requests a dynamic loader" >&2
+              exit 1
+            fi
+            if readelf -d "$out/bin/drop" | grep -q NEEDED; then
+              echo "error: drop has dynamic dependencies" >&2
+              exit 1
+            fi
+            runHook postInstallCheck
+          '';
+          meta = {
+            description = "Peer-to-peer file transfer and communication";
+            homepage = "https://github.com/termworks/drop";
+            mainProgram = "drop";
+            platforms = lib.platforms.linux;
+          };
+        };
+        dropApp = {
+          type = "app";
+          program = "${drop}/bin/drop";
+          meta.description = "Run Drop";
+        };
 
         # The Android SDK is unfree and its licence is accepted by whoever builds, not by the
         # expression, so it needs an instance of nixpkgs that says so.
@@ -126,6 +177,16 @@
         };
       in
       {
+        packages = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          inherit drop;
+          default = drop;
+        };
+        apps = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          drop = dropApp;
+          default = dropApp;
+        };
+        checks = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux { inherit drop; };
+
         # For a job that wants the toolchain without the release tools. The release workflow uses
         # actions/setup-go rather than entering this.
         devShells.ci = pkgs.mkShell { packages = buildTools; };

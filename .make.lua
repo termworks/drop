@@ -216,6 +216,18 @@ make.recipe{
 
 make.alias("t", "test")
 
+make.recipe{
+  name = "nix-build",
+  desc = "build the static Nix package",
+  run = function() sh.nix("build", "--accept-flake-config", ".#drop", "-L") end,
+}
+
+make.recipe{
+  name = "nix-check",
+  desc = "validate flake outputs and package smoke checks",
+  run = function() sh.nix("flake", "check", "--accept-flake-config", "-L") end,
+}
+
 
 make.recipe{
   name = "e2e",
